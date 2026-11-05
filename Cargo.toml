@@ -9,6 +9,8 @@ members = [
     "rust/code_match",
     "rust/sdk/cocoindex",
     "rust/sdk/cocoindex_macros",
+    "rust/cli",
+    "rust/cli/tests/fixture_app",
 ]
 resolver = "3"
 
@@ -27,6 +29,8 @@ base64 = "0.22.1"
 blake2 = "0.10.6"
 bytes = "1.11.0"
 chrono = "0.4.42"
+clap = { version = "4.6", features = ["derive"] }
+dotenvy = "0.15.7"
 encoding_rs = "0.8.35"
 env_logger = "0.11.8"
 futures = "0.3.31"

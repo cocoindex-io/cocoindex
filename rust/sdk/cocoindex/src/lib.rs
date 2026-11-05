@@ -2,6 +2,7 @@ extern crate self as cocoindex;
 
 pub mod app;
 pub mod batched;
+pub mod cli;
 pub mod connectors;
 pub mod ctx;
 #[cfg(any(feature = "neo4j", feature = "falkordb"))]
@@ -28,6 +29,8 @@ pub mod mount;
 pub mod ops;
 pub mod prelude;
 pub(crate) mod profile;
+#[doc(hidden)]
+pub mod registry;
 pub mod resources;
 pub mod row_schema;
 #[cfg(any(feature = "doris", feature = "sqlite", feature = "surrealdb"))]
@@ -74,6 +77,19 @@ pub use live_component::{
 };
 #[doc(hidden)]
 pub use logic::{COCO_FN_LOGIC, FnLogicEntry};
+// Re-exported for `#[cocoindex::app]` / `#[cocoindex::lifespan]` output.
+#[doc(hidden)]
+pub use registry::{AppEntry, COCO_APPS, COCO_LIFESPANS, LifespanEntry};
+// Re-exported so `#[cocoindex::main]` can build its runtime without the user
+// crate depending on tokio.
+#[doc(hidden)]
+pub use tokio;
+
+/// Items the proc macros expand to; not part of the public API.
+#[doc(hidden)]
+pub mod __private {
+    pub use futures::future::BoxFuture;
+}
 pub use resources::chunk::{Chunk, TextPosition};
 pub use resources::embedder::Embedder;
 pub use resources::live_map::LiveMap;
@@ -96,7 +112,9 @@ pub use target_state::{
 pub use user_state::{IntoStateKey, StateHandle};
 
 // Re-export proc macros
-pub use cocoindex_macros::{MemoInput, SchemaFields, function, mount_each, use_mount};
+pub use cocoindex_macros::{
+    MemoInput, SchemaFields, app, function, lifespan, main, mount_each, use_mount,
+};
 pub use row_schema::{LogicalType, SchemaField, SchemaFields};
 
 // Re-exported so users can implement the async `LiveComponent` / `LiveMapFeed`

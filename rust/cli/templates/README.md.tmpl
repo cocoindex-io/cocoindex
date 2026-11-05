@@ -1,0 +1,24 @@
+# {{name}}
+
+A CocoIndex application.
+
+## Getting Started
+
+Run the app (builds the crate, then processes `data/` into `out/`):
+
+```bash
+cocoindex update
+```
+
+Inspect or remove its state:
+
+```bash
+cocoindex show
+cocoindex drop
+```
+
+## Project Structure
+
+- `src/main.rs` - the lifespan (environment setup), the app, and `main`
+- `Cargo.toml` - crate metadata and dependencies
+- `data/` - sample input

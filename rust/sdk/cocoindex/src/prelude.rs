@@ -49,6 +49,6 @@ pub use crate::{
     UpdateOptions,
 };
 
-pub use crate::{function, mount_each, use_mount};
+pub use crate::{app, function, lifespan, main, mount_each, use_mount};
 
 pub use serde::{Deserialize, Serialize};

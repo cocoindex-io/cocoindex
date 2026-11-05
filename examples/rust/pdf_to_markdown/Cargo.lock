@@ -394,6 +394,7 @@ dependencies = [
  "rmp-serde",
  "rustc-hash",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "tracing",

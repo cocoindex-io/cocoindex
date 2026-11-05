@@ -98,6 +98,7 @@ jobs:
               - '.github/workflows/e2e_type_check.yml'
             rust-sdk:
               - 'rust/sdk/**'
+              - 'rust/cli/**'
               - 'examples/rust/**'
               - 'benchmarks/*/rust/**'
               - '.github/workflows/CI.yml'

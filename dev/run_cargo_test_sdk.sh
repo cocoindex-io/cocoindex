@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests the Rust SDK. The workspace `cargo test` hook leaves the SDK's crates
+# Tests the Rust SDK and the `cocoindex` CLI for Rust projects (rust/cli),
+# which builds on it. The workspace `cargo test` hook leaves these crates
 # out, so this is their test run. The `cocoindex` SDK crate has no default
 # features: this type-checks all of its optional connectors and ops, and runs
 # the tests of the ones that need no external server.
@@ -22,3 +23,10 @@ cargo check -p cocoindex --all-features --all-targets
 SDK_TEST_FEATURES="code_match,doris,embed_api,fs_live,google_drive,kafka,lancedb"
 SDK_TEST_FEATURES+=",oci_object_storage,postgres,sqlite,text,turbopuffer,valkey"
 cargo test -p cocoindex --features "$SDK_TEST_FEATURES" "$@"
+
+# The CLI's tests: unit tests, and end-to-end tests that build the fixture app
+# (rust/cli/tests/fixture_app) and drive it through the real binary. Arguments
+# narrow the SDK run above, so a narrowed run leaves these out.
+if [[ $# -eq 0 ]]; then
+  cargo test -p cocoindex_cli
+fi
