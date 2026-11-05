@@ -315,6 +315,57 @@ async def test_postgres_declare_vector_index(pg_env: _PgEnv) -> None:
 
 
 @pytest.mark.asyncio
+async def test_vector_index_failed_replacement_preserves_existing_indexes(
+    pg_env: _PgEnv,
+) -> None:
+    """A failed CREATE must roll back its preceding DROP and earlier deletions."""
+    import asyncpg
+
+    from cocoindex.connectors.postgres import _target as pg_target
+
+    pool = pg_env.pool
+    table_name = _unique_name("test_vec_rollback")
+    old_index = f"{table_name}__vector__old"
+    replacement_index = f"{table_name}__vector__replacement"
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            await conn.execute(f'CREATE TABLE "{table_name}" (embedding vector(4))')
+            for index in (old_index, replacement_index):
+                await conn.execute(
+                    f'CREATE INDEX "{index}" ON "{table_name}" '
+                    "USING ivfflat (embedding vector_cosine_ops)"
+                )
+        handler = pg_target._VectorIndexHandler(pool, table_name, None)
+        spec = pg_target._VectorIndexSpec(
+            column="embedding",
+            metric="cosine",
+            op_class="vector_cosine_ops",
+            method="hnsw",
+            lists=None,
+            m=-1,  # pgvector rejects this after the old indexes were dropped.
+            ef_construction=None,
+        )
+        actions = [
+            pg_target._VectorIndexAction("old", None),
+            pg_target._VectorIndexAction("replacement", spec),
+        ]
+        with pytest.raises(asyncpg.PostgresError):
+            await handler._apply_actions(pg_env.coco_env.context_provider, actions)
+        assert await _index_info(pool, old_index) == {"amname": "ivfflat"}
+        assert await _index_info(pool, replacement_index) == {"amname": "ivfflat"}
+
+        # The pooled connection remains usable, and a corrected retry applies
+        # both actions together instead of leaving partial index state.
+        actions[1] = pg_target._VectorIndexAction("replacement", spec._replace(m=16))
+        await handler._apply_actions(pg_env.coco_env.context_provider, actions)
+        assert await _index_info(pool, old_index) is None
+        assert await _index_info(pool, replacement_index) == {"amname": "hnsw"}
+    finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
 async def test_postgres_declare_vector_index_recreate_in_non_default_schema(
     pg_env: _PgEnv,
 ) -> None:
