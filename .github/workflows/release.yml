@@ -240,9 +240,10 @@ jobs:
           args: --non-interactive --skip-existing wheels-*/*
     
   # The docs site shows the docs of the latest release. The tag GitHub lists
-  # as the repository's "Latest" release deploys the docs from its commit. A
-  # patch of an older minor (published with `--latest=false`), a prerelease,
-  # or a tag pushed without a release leaves the site as it is.
+  # as the repository's "Latest" release deploys the docs from its commit; a
+  # patch of an older minor (published with `--latest=false`) or a prerelease
+  # leaves the site as it is. An API error fails this job rather than skip
+  # the deploy quietly: rerun the failed jobs.
   docs-gate:
     name: Docs Gate
     runs-on: ubuntu-latest
@@ -256,7 +257,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name || echo none)
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
           if [ "$latest" = "$TAG" ]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
             echo "$TAG is the latest release: deploying the docs"

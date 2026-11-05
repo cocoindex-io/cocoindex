@@ -304,10 +304,9 @@ git fetch origin --tags && git rev-parse <tag>^{commit}   # must print <sha>
 ```
 
 A stable release becomes "Latest" on its own unless it was created with
-`--latest=false`; check the draft before publishing (`gh release view <tag>`
-shows `Latest` next to its name once published, and the repository's
-releases page marks it). If the user drops the release instead, delete the
-draft: `gh release delete <tag> --yes`.
+`--latest=false`; `gh release list` marks the Latest one once it is
+published. If the user drops the release instead, delete the draft:
+`gh release delete <tag> --yes`.
 
 ## 6. Watch the workflow and verify
 

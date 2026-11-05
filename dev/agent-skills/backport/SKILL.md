@@ -91,8 +91,10 @@ git cherry-pick -x <sha>
 ```
 
 `-x` appends `(cherry picked from commit <sha>)` to the message. Keep it: the
-squash merge keeps the body, and the release-notes collector reads the
-trailer to credit the original pull request and its author.
+repository squashes with the commit messages as the body (its
+`squash_merge_commit_message` setting), so the trailer reaches the branch,
+and the release-notes collector reads it to credit the original pull request
+and its author.
 
 **One pull request per original pull request** is the default; it keeps one
 squash commit per change on the branch. A coherent series (a docs redesign

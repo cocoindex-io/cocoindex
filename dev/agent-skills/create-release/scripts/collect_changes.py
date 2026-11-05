@@ -12,7 +12,8 @@ how to group, how to word it).
 
 A backport (a pull request to a release branch that cherry-picks commits of
 `main` with `git cherry-pick -x`) lands as a squash commit whose body keeps
-one `(cherry picked from commit <sha>)` trailer per commit it carried. Such a
+one `(cherry picked from commit <sha>)` trailer per commit it carried (the
+repository squashes with the commit messages as the body). Such a
 commit is expanded into one entry per trailer, each with the original
 commit's subject, PR number and author, and `backport_pr` set to the backport
 pull request; the originals must be in the clone (`git fetch origin main`),
@@ -97,18 +98,23 @@ def pr_author(pr: int) -> str | None:
     return out or None
 
 
+def pr_number(subject: str) -> int | None:
+    """The `(#NNNN)` GitHub appends to a squash commit's subject."""
+    m = PR_RE.search(subject)
+    return int(m.group(1)) if m else None
+
+
 def commit_entry(
     sha: str, subject: str, author_name: str, author_email: str, backport_pr: int | None
 ) -> dict:
     m = CONV_RE.match(subject)
-    pr_m = PR_RE.search(subject)
     return {
         "sha": sha,
         "subject": subject,
         "type": (m.group("type") if m else None),
         "scope": (m.group("scope") if m else None),
         "breaking": bool(m and m.group("bang")),
-        "pr": int(pr_m.group(1)) if pr_m else None,
+        "pr": pr_number(subject),
         "author_name": author_name,
         "author_email": author_email,
         "backport_pr": backport_pr,
@@ -120,7 +126,7 @@ def expand_backport(
 ) -> list[dict] | None:
     """One entry per cherry-picked original, newest first; None when an
     original isn't in the clone (the caller then lists the squash commit)."""
-    backport_pr = commit_entry(sha, subject, "", "", None)["pr"]
+    backport_pr = pr_number(subject)
     entries = []
     for original in originals:
         try:
