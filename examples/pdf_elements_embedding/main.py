@@ -81,7 +81,12 @@ def extract_pdf_elements(content: bytes) -> list[PdfPage]:
     pages = []
     for i, page in enumerate(reader.pages):
         images = []
+        seen: set[str] = set()
         for image in page.images:
+            # A page can draw the same image object twice; index it once.
+            if image.name in seen:
+                continue
+            seen.add(image.name)
             img = image.image
             if img is None:
                 continue
