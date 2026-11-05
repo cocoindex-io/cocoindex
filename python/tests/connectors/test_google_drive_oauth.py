@@ -669,6 +669,19 @@ def test_without_a_client_file_the_built_in_client_signs_in(
     assert flow.account().email == EMAIL
 
 
+def test_a_client_file_wins_over_the_built_in_client(
+    flow: Flow, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    # A built-in client the fake Google doesn't know: using it would fail the consent.
+    other = tmp_path / "builtin.json"
+    other.write_text(
+        json.dumps({"installed": {"client_id": "other", "client_secret": "other"}})
+    )
+    monkeypatch.setattr(_oauth, "BUILTIN_CLIENT_PATH", other)
+    assert flow.sign_in() == EMAIL
+    assert flow.stored()["client_id"] == CLIENT_ID
+
+
 def test_a_build_without_the_built_in_client_asks_for_a_client_file(
     flow: Flow, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
