@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Generator, Iterator
+from collections.abc import AsyncIterator, Callable, Generator, Iterator
+import concurrent.futures
+import contextvars
 import subprocess
 import sys
 import textwrap
 import threading
 import time
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -15,6 +18,69 @@ from cocoindex.connectorkits.async_adapters import (
     async_to_sync_iter,
     sync_to_async_iter,
 )
+
+
+@pytest.mark.parametrize("finish", ["exhaust", "error", "close", "cancel"])
+def test_executor_submissions_do_not_inherit_consumer_context(finish: str) -> None:
+    marker = contextvars.ContextVar("adapter_consumer", default="empty")
+    submissions: list[str] = []
+    producer_contexts: list[str] = []
+    release = threading.Event()
+    started = threading.Event()
+
+    def source() -> Iterator[int]:
+        producer_contexts.append(marker.get())
+        started.set()
+        if finish == "cancel":
+            release.wait()
+        yield 1
+        if finish == "error":
+            raise ValueError("source failed")
+
+    async def consume() -> None:
+        loop = asyncio.get_running_loop()
+        # A dedicated executor ensures this test covers submissions that start
+        # a worker, not just submissions to an already-warm default pool.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            loop.set_default_executor(executor)
+            original_submit = executor.submit
+
+            def record_submit(
+                fn: Callable[..., object], /, *args: object, **kwargs: object
+            ) -> concurrent.futures.Future[object]:
+                submissions.append(marker.get())
+                return original_submit(fn, *args, **kwargs)
+
+            token = marker.set("consumer")
+            try:
+                with patch.object(executor, "submit", side_effect=record_submit):
+                    iterator = sync_to_async_iter(source, max_queue_size=1)
+                    if finish == "cancel":
+                        pending = asyncio.create_task(anext(iterator))
+                        while not started.is_set():
+                            await asyncio.sleep(0)
+                        pending.cancel()
+                        with pytest.raises(asyncio.CancelledError):
+                            await pending
+                    elif finish == "close":
+                        assert await anext(iterator) == 1
+                        await iterator.aclose()
+                    elif finish == "error":
+                        with pytest.raises(ValueError, match="source failed"):
+                            async for _ in iterator:
+                                pass
+                    else:
+                        assert [item async for item in iterator] == [1]
+                    assert marker.get() == "consumer"
+            finally:
+                marker.reset(token)
+                release.set()
+
+    asyncio.run(consume())
+    assert producer_contexts == ["consumer"]
+    # Covers both blocking queue reads and the join in the finally block.
+    assert len(submissions) >= 2
+    assert submissions == ["empty"] * len(submissions)
 
 
 def test_cancelled_read_does_not_hang_asyncio_shutdown() -> None:
