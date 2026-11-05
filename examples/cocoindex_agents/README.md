@@ -3,9 +3,8 @@
 **One prompt, many files, kept current.**
 
 Incremental agents over your data, on top of CocoIndex. You describe an outcome
-in a prompt
-("turn the invoices under `./invoices` into a table of JSON files in `./out`");
-an orchestrator agent decides how to split it into subagents over sources and
+in a prompt ("turn the invoices under `./invoices` into a table of JSON files in
+`./out`"); an orchestrator agent decides how to split it into subagents over sources and
 targets, following the recipes in its system prompt; CocoIndex makes the whole
 thing incremental, so when the inputs change only the affected subagents,
 reducers and model turns run again.

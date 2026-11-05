@@ -1,8 +1,7 @@
 # CocoIndex Agents — design
 
 Incremental agents over your data, on top of CocoIndex. A user describes a flow
-in a prompt
-("for every doc under `docs/`, write a review note against `AGENTS.md`";
+in a prompt ("for every doc under `docs/`, write a review note against `AGENTS.md`";
 "what do these 2,000 interview notes say about pricing?"). An orchestrator
 agent runs the flow with subagents, sources and targets. CocoIndex makes the
 whole thing **incremental**: when the inputs change, only the affected
