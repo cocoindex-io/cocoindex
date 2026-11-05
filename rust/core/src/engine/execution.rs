@@ -17,7 +17,7 @@ use crate::engine::target_state::{
     ChildHandling, ChildInvalidation, ChildTargetSlot, TargetActionSinkKeeper,
     TargetActionWithChildSlot, TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
 };
-use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
+use crate::state::stable_path::{StableKey, StablePath};
 use crate::state::stable_path_set::ChildStablePathSet;
 use crate::state::target_state_path::{
     TargetProviderDeps, TargetStatePath, TargetStatePathWithProviderId,
@@ -2121,18 +2121,6 @@ pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(
     comp_ctx
         .app_store()
         .cleanup_tombstone(&owner_path, &relative_path)
-        .await
-}
-
-pub(crate) async fn ensure_path_node_type(
-    app_store: &AppStore,
-    wtxn: &mut WriteTxn<'_>,
-    parent_path: StablePathRef<'_>,
-    key: &StableKey,
-    target_node_type: db_schema::StablePathNodeType,
-) -> Result<()> {
-    app_store
-        .ensure_path_node_type(wtxn, parent_path, key, target_node_type)
         .await
 }
 
