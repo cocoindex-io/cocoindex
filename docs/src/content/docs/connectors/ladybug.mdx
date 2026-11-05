@@ -1,0 +1,313 @@
+---
+title: "*LadybugDB* connector"
+toc_max_heading_level: 4
+description: >
+  Write to LadybugDB (an embedded, Kuzu-derived property graph database) with support for node
+  tables, relationship tables (edges), and native vector columns.
+---
+
+The `ladybug` connector writes records to LadybugDB, an embedded Cypher-compatible graph database (a Kuzu-derived fork). It supports node tables (labels) and relationship tables (edge types). The database lives in a file (or in memory) — there is no server to run.
+
+```python
+from cocoindex.connectors import ladybug
+```
+
+:::note[Dependencies]
+This connector requires additional dependencies. Install with:
+
+```bash
+pip install cocoindex[ladybug]
+
+```
+
+:::
+
+## Connection setup
+
+Create a `ManagedConnection` and provide it via a `ContextKey`. The key names the database file — keep it stable across runs, since it's the identity CocoIndex uses to track managed rows (see [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity)).
+
+```python
+from collections.abc import Iterator
+from cocoindex.connectors import ladybug
+import cocoindex as coco
+
+LADYBUG_DB: coco.ContextKey[ladybug.ManagedConnection] = coco.ContextKey("ladybug_db")
+
+@coco.lifespan
+def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+    builder.provide_with(LADYBUG_DB, ladybug.managed_connection("knowledge.lbdb"))
+    yield
+```
+
+`ladybug.connect(path)` opens (or creates) the database file; `ladybug.managed_connection(path)` wraps it as a context manager for `builder.provide_with()`. Both accept extra keyword arguments forwarded to `ladybug.Database` (e.g. `buffer_pool_size`). Use `":memory:"` for an in-memory database.
+
+## As target
+
+The `ladybug` connector provides target state APIs for writing nodes to node tables and edges to relationship tables. CocoIndex tracks what records should exist and automatically handles upserts and deletions.
+
+Writes within a batch are applied in **node upserts → relation upserts → relation deletes → node deletes** order, so dependent edges always see their endpoints. Each write is an idempotent Cypher `MERGE`, so a retried batch is safe.
+
+### Declaring target states
+
+#### Node tables (parent state)
+
+Declares a node table as a target state. Returns a `NodeTarget` for declaring nodes.
+
+```python
+def declare_node_target(
+    db: ContextKey,
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    primary_key: str = "id",
+    managed_by: Literal["system", "user"] = "system",
+) -> NodeTarget[RowT, coco.PendingS]
+```
+
+**Parameters:**
+
+- `db` — A `ContextKey[ladybug.ManagedConnection]` for the LadybugDB database.
+- `table_name` — The Cypher node label (e.g. `"Document"`).
+- `table_schema` — Schema definition (see [Table Schema](#table-schema-from-python-class)). Unlike server graph stores, LadybugDB enforces column types, so the schema is required: it is emitted as the table DDL.
+- `primary_key` — Single property name used as the node's primary key. Defaults to `"id"`. Must match the schema's primary key. Compound primary keys are not supported in v1.0.
+- `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
+
+**Returns:** A pending `NodeTarget`. Use `await ladybug.mount_node_target(LADYBUG_DB, ...)` to get a resolved target.
+
+#### Nodes (child states)
+
+Once a `NodeTarget` is resolved, declare nodes to be upserted (translated to `MERGE (n:Label {pk: $key_0}) SET n.`field` = $prop_0, ...`):
+
+```python
+def NodeTarget.declare_record(
+    self,
+    *,
+    row: RowT,
+) -> None
+```
+
+`declare_row` is an alias of `declare_record`.
+
+#### Relationship tables (parent state)
+
+Declares a relationship table (edge type) as a target state. Returns a `RelationshipTarget` for declaring edges.
+
+```python
+def declare_relationship_target(
+    db: ContextKey,
+    table_name: str,
+    from_table: NodeTarget,
+    to_table: NodeTarget,
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    primary_key: str = "id",
+    managed_by: Literal["system", "user"] = "system",
+) -> RelationshipTarget[RowT, coco.PendingS]
+```
+
+**Parameters:**
+
+- `db`, `table_name`, `primary_key`, `managed_by` — As in `declare_node_target`; `table_name` is the relationship type.
+- `from_table`, `to_table` — The endpoint `NodeTarget`s (resolved or pending).
+- `table_schema` — Optional schema for the edge's own properties. Omit it for edges that carry no properties beyond the primary key; the table is then created with just the key column (`STRING`).
+
+#### Relationships (child states)
+
+Once a `RelationshipTarget` is resolved, declare edges (the endpoints are `MERGE`d; only the edge's own properties are `SET` — endpoint properties stay owned by the node tables):
+
+```python
+def RelationshipTarget.declare_relationship(
+    self,
+    *,
+    from_id: Any,
+    to_id: Any,
+    record: RowT | None = None,
+) -> None
+```
+
+Without a `record` carrying the primary key, the relationship's id is derived from its endpoints (endpoint ids must then be `int` or `str` — the derived id is a string). Declaring a relationship with a record that carries properties requires a `table_schema` for the relationship table.
+
+### Table schema: from Python class
+
+Build a `TableSchema` by introspecting a record type:
+
+```python
+@classmethod
+async def TableSchema.from_class(
+    cls,
+    record_type: type[RowT],
+    *,
+    primary_key: str = "id",
+    column_overrides: dict[str, LadybugType | VectorSchemaProvider] | None = None,
+) -> TableSchema[RowT]
+```
+
+**Parameters:**
+
+- `record_type` — A dataclass, NamedTuple, or Pydantic model.
+- `primary_key` — Field name to use as the table's primary key. Defaults to `"id"`.
+- `column_overrides` — Optional dict mapping field names to `LadybugType` or `VectorSchemaProvider` to override the default Python-to-LadybugDB type mapping.
+
+**Returns:** A `TableSchema[RowT]` populated from the class's fields.
+
+#### Default Python → LadybugDB type mapping
+
+| Python type | LadybugDB type | Notes |
+|---|---|---|
+| `bool` | `BOOL` | |
+| `int` | `INT64` | NumPy integers map to their width: `np.int8` → `INT8`, `np.uint32` → `UINT32`, etc. |
+| `float` | `DOUBLE` | `np.float32` / `np.float16` → `FLOAT`. |
+| `decimal.Decimal` | `DECIMAL` | Native type; values pass through. |
+| `str` | `STRING` | |
+| `bytes` | `BLOB` | |
+| `uuid.UUID` | `UUID` | Encoded via `str()`. |
+| `datetime.date` | `DATE` | |
+| `datetime.time` | `TIME` | |
+| `datetime.datetime` | `TIMESTAMP` | |
+| `datetime.timedelta` | `INTERVAL` | |
+| `numpy.ndarray` (with `VectorSchema` annotation) | `DOUBLE[N]` / `FLOAT[N]` | Encoded as a list. `FLOAT[N]` when the vector dtype is `float16`/`float32`. |
+| homogeneous `list[T]` | `T[]` | Native list column. |
+| `dict`, nested record, union, `Any` | `JSON` | Native JSON type — stays queryable (e.g. `u.data.name`). |
+
+#### LadybugType
+
+Override the default mapping for a single column with `LadybugType`:
+
+```python
+class LadybugType(NamedTuple):
+    ladybug_type: str
+    encoder: ValueEncoder | None = None
+```
+
+Use with `typing.Annotated`:
+
+```python
+from typing import Annotated
+from dataclasses import dataclass
+from cocoindex.connectors.ladybug import LadybugType
+
+@dataclass
+class Row:
+    id: str
+    code: Annotated[str, LadybugType("INT32")]
+```
+
+The `ladybug_type` string is the DDL type emitted in `CREATE NODE TABLE` — LadybugDB enforces it — and it participates in the schema fingerprint, so two flows declaring the same table must agree.
+
+#### VectorSchemaProvider
+
+For NumPy `ndarray` columns, attach a `VectorSchema` annotation to specify dtype + dimension. Vectors live in fixed-size array columns and are compared with functions like `array_cosine_similarity`. There is no vector index DDL in LadybugDB. See [VectorSchema](../common_resources/vector_schema) for details.
+
+### Table schema: explicit column definitions
+
+Build a `TableSchema` directly from a dict of column definitions when the row type is dynamic:
+
+```python
+from cocoindex.connectors.ladybug import TableSchema, ColumnDef
+
+schema = TableSchema(
+    columns={
+        "filename": ColumnDef(type="STRING"),
+        "title": ColumnDef(type="STRING"),
+        "summary": ColumnDef(type="STRING", nullable=True),
+    },
+    primary_key="filename",
+)
+```
+
+`ColumnDef` fields:
+
+- `type` — The LadybugDB DDL type (see table above). Enforced server-side.
+- `nullable` — Whether the column may be `None`. Defaults to `True`.
+- `encoder` — Optional `Callable[[Any], Any]` applied to non-`None` values before they're sent to LadybugDB.
+
+### DDL: tables and schema evolution
+
+For each managed table, the connector emits `CREATE NODE TABLE` (with `PRIMARY KEY`) or `CREATE REL TABLE (FROM ... TO ...)` on first run.
+
+A system-managed table owns its label or relationship type, the way a Postgres table owns its rows. When the table is no longer declared, or on `cocoindex drop`, the connector destroys it: every node carrying the label is deleted (`DETACH DELETE`, so the relationships attached to those nodes go with them) or every relationship of the type is deleted, and then the table is dropped. Dropping a node table while a relationship table still references it fails, so relationship tables are always dropped first. This includes nodes and relationships written under that label or type by anything other than CocoIndex — to share a table with data CocoIndex doesn't own, declare it with `managed_by="user"`.
+
+The same teardown happens when a table's identity changes — its primary key field, or a relationship table's endpoint tables or their primary keys: the table is dropped and recreated, and the components that declared its records are reprocessed.
+
+Adding, removing, or re-typing a non-PK column evolves the table in place with `ALTER TABLE ... ADD` / `DROP COLUMN` (a re-typed column's data is lost, but the rows survive); dependents re-upsert defensively. Primary-key changes rebuild the table.
+
+When `managed_by="user"` is set, the connector skips DDL entirely (you're responsible for creating and dropping the table) and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.
+
+### Example: Node tables
+
+```python
+from dataclasses import dataclass
+import cocoindex as coco
+from cocoindex.connectors import ladybug
+
+LADYBUG_DB: coco.ContextKey[ladybug.ManagedConnection] = coco.ContextKey("ladybug_db")
+
+@dataclass
+class Document:
+    filename: str
+    title: str
+    summary: str | None = None
+
+@coco.fn
+async def process_docs(docs_target: ladybug.NodeTarget[Document]) -> None:
+    docs_target.declare_record(
+        row=Document(filename="a.md", title="Doc A", summary="About A")
+    )
+
+@coco.main_fn
+async def app_main() -> None:
+    docs_target = await coco.use_mount(
+        coco.component_subpath("docs"),
+        ladybug.mount_node_target,
+        LADYBUG_DB,
+        "Document",
+        await ladybug.TableSchema.from_class(Document, primary_key="filename"),
+        primary_key="filename",
+    )
+    await coco.use_mount(process_docs, docs_target)
+```
+
+### Example: Relationship tables (knowledge graph)
+
+```python
+from dataclasses import dataclass
+import cocoindex as coco
+from cocoindex.connectors import ladybug
+
+@dataclass
+class Entity:
+    value: str
+    kind: str
+
+@dataclass
+class Mention:
+    id: str
+    confidence: float
+
+@coco.main_fn
+async def app_main() -> None:
+    entity = await coco.use_mount(
+        coco.component_subpath("entity"),
+        ladybug.mount_node_target,
+        LADYBUG_DB,
+        "Entity",
+        await ladybug.TableSchema.from_class(Entity, primary_key="value"),
+        primary_key="value",
+    )
+    mention = await coco.use_mount(
+        coco.component_subpath("mention"),
+        ladybug.mount_relationship_target,
+        LADYBUG_DB,
+        "Mention",
+        entity,
+        entity,
+        await ladybug.TableSchema.from_class(Mention, primary_key="id"),
+    )
+    entity.declare_record(row=Entity(value="CocoIndex", kind="project"))
+    entity.declare_record(row=Entity(value="graph", kind="concept"))
+    mention.declare_relationship(
+        from_id="CocoIndex",
+        to_id="graph",
+        record=Mention(id="m1", confidence=0.9),
+    )
+```
