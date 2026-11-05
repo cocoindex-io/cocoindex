@@ -9,14 +9,14 @@ The chunk → embed → store half is the same as [Semantic Search 101](https://
 3. Embed each chunk with `sentence-transformers/all-MiniLM-L6-v2`.
 4. Store the chunks and vectors in Postgres, each row with a link back to Discord.
 
-Runs are incremental. A post re-embeds when it gets a reply, loses a message, or is renamed, retagged, closed, reopened or locked; other posts are left alone. A deleted post's rows are removed. The channel only picks the fields its text and links read (`MESSAGE_FIELDS` and `THREAD_FIELDS` in [`main.py`](main.py)), so a reaction, a pin or someone joining a thread doesn't re-embed anything.
+Runs are incremental. A post re-embeds when it gets a reply, loses a message, or is renamed or retagged; other posts are left alone. Closing or locking a post reruns it, but its text is the same, and embeddings are cached by text, so nothing is embedded again. A deleted post's rows are removed. The channel only picks the fields its text and links read (`MESSAGE_FIELDS` and `THREAD_FIELDS` in [`main.py`](main.py)), so a reaction, a pin or someone joining a thread doesn't re-embed anything.
 
 One thing isn't picked up right away: **an edit to a message inside a post**. Discord reports no change on the post for it, so it's indexed the next time the post changes in one of the ways above. See [The gap inside threads](https://cocoindex.io/docs/connectors/discord/#the-gap-inside-threads).
 
 ## Requirements
 
 - A Discord bot in your server, with the **Message Content** intent turned on, and **View Channels** and **Read Message History** in the channels to index. The connector page's [Setup](https://cocoindex.io/docs/connectors/discord/#setup) walks through it. The bot only reads.
-- Channels to index: forum, text or announcement channels. To fill one of each with made-up posts, `seed_server.py` posts through webhooks (below): support posts in the forum, a chat in the text channel, and release notes as rich embeds in the announcement channel. It creates forum posts without tags, so the forum mustn't require them.
+- Channels to index: forum, text or announcement channels. To fill one of each with made-up posts, `seed_server.py` posts through webhooks (below): support posts in the forum, a chat in the text channel, and announcements as rich embeds (a release note and a maintenance notice) in the announcement channel. It creates forum posts without tags, so the forum mustn't require them.
 - Postgres with pgvector.
 
 ## Run it
