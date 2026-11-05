@@ -128,6 +128,7 @@ A walkthrough URL means there's a step-by-step guide at
 - `hn_trending_topics` — scrape HackerNews → LLM topic extraction → Postgres.
 - `manuals_llm_extraction` — PDF manuals → Markdown (docling) → typed module records → Postgres. *(walkthrough: manuals-llm-extraction)*
 - `patient_intake_extraction_baml` / `patient_intake_extraction_dspy` — structured PDF extraction with BAML / DSPy (Gemini vision).
+- `discord_support_faq` — Discord support threads → LLM question and answer → entity resolution merges repeats → `FAQ.md`, a knowledge base for an agent that stays current, with a script that seeds a forum.
 
 ### Knowledge graphs
 - `conversation_to_knowledge` — YouTube podcasts → SurrealDB knowledge graph. *(walkthrough: podcast-to-knowledge-graph)*

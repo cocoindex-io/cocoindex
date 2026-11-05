@@ -89,7 +89,7 @@ app = coco.App("DiscordToMarkdown", app_main, outdir=pathlib.Path("./discord_exp
 
 Each channel becomes a component keyed by its ID, and each message and thread a component under it, keyed by its own ID. Delete a message in Discord and run again: its file disappears. Remove a channel from `CHANNEL_IDS`: all its files disappear.
 
-For semantic search over a forum channel, chunked and embedded into Postgres with pgvector, see the [`discord_text_embedding` example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/discord_text_embedding).
+For semantic search over a forum channel, chunked and embedded into Postgres with pgvector, see the [`discord_text_embedding` example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/discord_text_embedding). To turn support threads into an FAQ an agent can use as its knowledge base, with an LLM extracting each thread's question and answer and questions asked in other words merged, see the [`discord_support_faq` example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/discord_support_faq).
 
 ### DiscordApp
 

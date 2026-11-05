@@ -727,6 +727,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
       { dir: 'patient_intake_extraction_baml', docs: 'patient-intake-baml', title: 'Patient Intake Extraction · BAML', description: 'Extract structured data from patient intake forms with BAML.', run: RUN_MAIN_PY },
       { dir: 'patient_intake_extraction_dspy', docs: 'patient-intake-dspy', title: 'Patient Intake Extraction · DSPy', description: 'Extract structured data from patient intake forms with DSPy.', run: RUN_MAIN_PY },
       { dir: 'manuals_llm_extraction', docs: 'manuals-llm-extraction', title: 'Manuals to Structured Data', description: 'Convert PDF manuals to Markdown with docling, LLM-extract a typed module summary (classes, methods, arguments), and store one structured record per manual in Postgres.', run: RUN_MAIN },
+      { dir: 'discord_support_faq', title: 'Discord Support Threads → FAQ', description: 'Turn Discord support threads into a knowledge base for an agent: LLM-extract each question and answer, merge repeats with entity resolution, apply corrections, flag disagreements and list open questions, in an FAQ that stays current; a seed script.' },
     ],
   },
   {
