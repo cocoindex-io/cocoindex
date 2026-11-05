@@ -196,11 +196,16 @@ def _is_local_request_failure(error: BaseException) -> bool:
     batch splitting can isolate the input responsible. The wrapped exception
     rides ``__cause__`` when litellm chains it explicitly and ``__context__``
     when it re-raises inside an ``except`` block, the usual path.
+
+    An ``ImportError`` gets the same wrapper and the same treatment: litellm
+    imports some of its own dependencies at call time (a ``litellm``
+    installed without ``mcp`` fails this way on every completion call), and
+    a missing module is not going to appear while the retry loop waits.
     """
     if not isinstance(error, _API_CONNECTION_ERROR_CLASSES):
         return False
     wrapped = error.__cause__ or error.__context__
-    return isinstance(wrapped, (ValueError, TypeError))
+    return isinstance(wrapped, (ValueError, TypeError, ImportError))
 
 
 def _is_retryable_litellm_error(error: BaseException) -> bool:
