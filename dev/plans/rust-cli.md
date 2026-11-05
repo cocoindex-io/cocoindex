@@ -155,14 +155,12 @@ Output wording follows `cli.py` so the two CLIs read the same.
 target-state segment that was never persisted with a readable name renders as `#hex`. Carrying
 provider names over the protocol is phase 2.
 
-## Known limit: `--preview` and child target providers
+## `--preview`
 
-`cocoindex update --preview` passes the engine's preview mode through. The engine previews flat
-(leaf) target actions only and rejects actions that need child target providers
-(`rust/core/src/engine/execution.rs`, "preview currently supports flat/leaf target actions
-only"), for example rows under a Postgres table target. The CLI reports that error (exit 1).
-This is an engine limit shared with the Python SDK; the fixture app's `DirTarget` files preview
-fine.
+`cocoindex update --preview` passes the engine's preview mode through: the run plans target
+actions, applies none and writes nothing to the state db. It covers target states under child
+target providers too, such as the rows of a table target (`tests/sqlite_target.rs`,
+`sqlite_table_target_previews_rows`).
 
 ## Example
 

@@ -45,7 +45,7 @@ Then, from this directory:
 ```bash
 cocoindex update                   # build, then walk ./markdown_files -> chunk -> embed -> pgvector
 cocoindex update -L                # keep watching ./markdown_files for changes (Ctrl-C to stop)
-cocoindex update --preview         # planned changes (see the note below)
+cocoindex update --preview         # planned changes; nothing is applied
 cocoindex show                     # inspect the persisted state
 cocoindex drop                     # drop the app: its state and the Postgres table
 cargo run -- query "your query"    # cosine similarity search
@@ -54,7 +54,3 @@ cargo run -- query "your query"    # cosine similarity search
 `TEXT_EMBEDDING_SOURCE_DIR` points the app at another directory. Without the
 CLI, `cargo run -- index [DIR]` runs one catch-up pass through the same
 `#[cocoindex::lifespan]` (`Environment::from_registered`).
-
-`cocoindex update --preview` stops with an engine error here: preview does not
-yet support target actions under child providers, such as the rows of a
-Postgres table (see `dev/plans/rust-cli.md`).

@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use cocoindex::app::DB_PATH_ENV;
 use cocoindex::cli::protocol::{AppInfo, Event, Outcome};
 
 use crate::build::{self, BuildOpts};
@@ -80,11 +81,20 @@ pub fn format_db_path(path: &str) -> String {
     } else {
         cwd.join(path)
     };
-    // Compare real paths (macOS: /var is a link to /private/var).
-    let cwd = cwd.canonicalize().unwrap_or(cwd);
-    let absolute = absolute.canonicalize().unwrap_or(absolute);
-    match absolute.strip_prefix(&cwd) {
-        Ok(rel) if !rel.as_os_str().is_empty() => format!("./{}", rel.display()),
+    // Compare the paths as written first: a path that does not exist yet has
+    // no real path. Then compare real paths (macOS: /var is a link to
+    // /private/var; Windows: a real path has the `\\?\` prefix).
+    let relative = absolute
+        .strip_prefix(&cwd)
+        .map(Path::to_path_buf)
+        .ok()
+        .or_else(|| {
+            let cwd = cwd.canonicalize().ok()?;
+            let absolute = absolute.canonicalize().ok()?;
+            absolute.strip_prefix(&cwd).map(Path::to_path_buf).ok()
+        });
+    match relative {
+        Some(rel) if !rel.as_os_str().is_empty() => format!("./{}", rel.display()),
         _ => path.to_string(),
     }
 }
@@ -101,7 +111,7 @@ pub async fn ls(target: Option<String>, db: Option<PathBuf>, build: BuildOpts) -
         (Some(_), _) => None,
         (None, Some(db)) => Some(db.clone()),
         (None, None) if Path::new("Cargo.toml").is_file() => None,
-        (None, None) => match std::env::var_os("COCOINDEX_DB") {
+        (None, None) => match std::env::var_os(DB_PATH_ENV) {
             Some(db) => Some(PathBuf::from(db)),
             None => {
                 return Err(CliError::usage(
@@ -463,10 +473,11 @@ mod tests {
     fn formats_db_paths_relative_to_cwd() {
         let cwd = std::env::current_dir().unwrap();
         let inside = cwd.join("state").join("db");
-        assert_eq!(format_db_path(inside.to_str().unwrap()), "./state/db");
-        assert_eq!(
-            format_db_path("/definitely/elsewhere"),
-            "/definitely/elsewhere"
-        );
+        // The separator is the platform's, as in the Python CLI.
+        let expected = format!("./{}", Path::new("state").join("db").display());
+        assert_eq!(format_db_path(inside.to_str().unwrap()), expected);
+        let elsewhere = cwd.parent().unwrap().join("definitely-elsewhere");
+        let elsewhere = elsewhere.to_str().unwrap();
+        assert_eq!(format_db_path(elsewhere), elsewhere);
     }
 }

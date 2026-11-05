@@ -30,7 +30,8 @@ const EXIT_ERROR: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 
 /// Set by the Ctrl-C task once cancellation has been requested, so a
-/// cancelled run is reported as `done {cancelled: true}` and not as an error.
+/// cancelled run is reported as `done` with outcome `cancelled` and not as an
+/// error.
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 
 /// If this process was started as a `__coco` protocol child, run the verb and
@@ -39,11 +40,12 @@ static CANCELLED: AtomicBool = AtomicBool::new(false);
 ///
 /// ```ignore
 /// #[tokio::main]
-/// async fn main() -> cocoindex::Result<()> {
+/// async fn main() -> std::process::ExitCode {
 ///     if let Some(code) = cocoindex::cli::try_dispatch().await {
-///         std::process::exit(code_to_i32(code));
+///         return code;
 ///     }
 ///     // ... the program's own behaviour ...
+///     std::process::ExitCode::SUCCESS
 /// }
 /// ```
 ///
@@ -59,12 +61,13 @@ pub async fn try_dispatch() -> Option<ExitCode> {
 
 /// Run a protocol verb with `args` (everything after `__coco`), writing records
 /// to stdout.
-pub async fn dispatch(args: Vec<String>) -> ExitCode {
+async fn dispatch(args: Vec<String>) -> ExitCode {
     let mut out = std::io::stdout();
     dispatch_to(args, &mut out).await
 }
 
 /// [`dispatch`] with an explicit record sink (tests capture the stream).
+#[doc(hidden)]
 pub async fn dispatch_to(args: Vec<String>, out: &mut (dyn Write + Send)) -> ExitCode {
     let mut emitter = Emitter::new(out);
     emitter.emit(&Event::Hello {

@@ -32,8 +32,8 @@ different version than the hook pins, so run the hooks rather than `ruff` itself
 uv tool install prek                         # one-time; some hooks also need `protoc` (brew install protobuf)
 prek run ruff-check ruff-format --all-files  # Lint (applying safe fixes), then format Python code (same as CI)
 cargo fmt                                    # Format Rust code
-./dev/run_cargo_clippy.sh                    # Lint Rust code other than the Rust SDK (same as CI)
-./dev/run_cargo_clippy_sdk.sh                # Lint the Rust SDK (same as CI)
+./dev/run_cargo_clippy.sh                    # Lint Rust code other than the Rust SDK and its CLI (same as CI)
+./dev/run_cargo_clippy_sdk.sh                # Lint the Rust SDK and its CLI, `rust/cli` (same as CI)
 ```
 
 ### Pre-submission Checks
@@ -50,7 +50,7 @@ prek run --from-ref origin/main --to-ref HEAD
 `prek run --all-files` runs every hook on every file, the Rust SDK hooks
 (`cargo-test-sdk`, `cargo-clippy-sdk`, `cargo-test-rust-externs`) included. The
 Rust SDK isn't launched yet, so those hooks run only for a change under
-`rust/sdk/`, `examples/rust/` or `benchmarks/*/rust/`, not for a change to the
+`rust/sdk/`, `rust/cli/`, `examples/rust/` or `benchmarks/*/rust/`, not for a change to the
 code the SDK builds on. The `Rust SDK Daily` workflow runs them on `main` every
 day and files an issue when they fail.
 
@@ -76,11 +76,11 @@ says what qualifies and how to land one.
 | Rust code only | `uv run maturin develop && cargo test` |
 | Python code only | `uv run mypy && uv run pytest python/` |
 | Both Rust and Python | Run all commands from both categories above |
-| Rust SDK, Rust examples or Rust benchmarks | `prek run cargo-test-sdk cargo-clippy-sdk update-rust-extern-locks cargo-test-rust-externs --all-files` |
+| Rust SDK, Rust CLI (`rust/cli`), Rust examples or Rust benchmarks | `prek run cargo-test-sdk cargo-clippy-sdk update-rust-extern-locks cargo-test-rust-externs --all-files` |
 | Python lint and format | `prek run ruff-check ruff-format --all-files` |
 | Before pushing | `prek run --from-ref origin/main --to-ref HEAD` |
 
-After changing a core engine API (`rust/core`), run `cargo check --workspace --all-targets` to catch call sites in every workspace crate — both `rust/py` and the Rust SDK under `rust/sdk/` call core directly, and the SDK is easy to miss when grepping. The `examples/rust/*` and `benchmarks/*/rust` crates are standalone workspaces that consume the SDK; the `prek` suite's `cargo check (rust examples + benchmarks)` hook covers those. That hook and the other Rust SDK hooks don't run for a change to `rust/core` alone, so this check is the one that catches a broken SDK before the daily run does.
+After changing a core engine API (`rust/core`), run `cargo check --workspace --all-targets` to catch call sites in every workspace crate — `rust/py`, the Rust SDK under `rust/sdk/` and the Rust CLI under `rust/cli/` call core directly, and the SDK and its CLI are easy to miss when grepping. The `examples/rust/*` and `benchmarks/*/rust` crates are standalone workspaces that consume the SDK; the `prek` suite's `cargo check (rust examples + benchmarks)` hook covers those. That hook and the other Rust SDK hooks don't run for a change to `rust/core` alone, so this check is the one that catches a broken SDK before the daily run does.
 
 ## Code Structure
 
@@ -98,9 +98,10 @@ cocoindex/
 │   ├── code_ast/               # Tree-sitter foundation: language registry (links all grammars), CodeSource, positions
 │   ├── ops_text/               # Text processing operations (splitter, language detection)
 │   ├── code_match/             # Structural code pattern matching over tree-sitter ASTs
-│   └── sdk/
-│       ├── cocoindex/          # Rust SDK (`cocoindex` crate); calls core engine APIs directly, like py/
-│       └── cocoindex_macros/   # Proc macros for the Rust SDK (`#[function]`)
+│   ├── sdk/
+│   │   ├── cocoindex/          # Rust SDK (`cocoindex` crate); calls core engine APIs directly, like py/
+│   │   └── cocoindex_macros/   # Proc macros for the Rust SDK (`#[function]`, `#[app]`, `#[lifespan]`, `#[main]`)
+│   └── cli/                    # `cocoindex` CLI for Rust projects: builds the user's crate, drives its binary (spec: dev/plans/rust-cli.md)
 │
 ├── python/
 │   ├── cocoindex/              # Python package
