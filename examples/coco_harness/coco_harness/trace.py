@@ -376,7 +376,8 @@ def explain_run(
 
     The order is the order of evidence: a new session, a changed contract, a
     changed input, a changed read, a failure absorbed last run, an open child
-    that reads (the engine's ``cannot_skip``), and — honestly — no record.
+    whose own read changed (the engine validates a descendant's reads from its
+    entry and re-runs the parent when one fails), and — honestly — no record.
     """
     if is_new:
         return "new", ""
@@ -394,7 +395,7 @@ def explain_run(
     if last.failed:
         return "ran", "absorbed a failure last run"
     if any(_reads_data(c) for c in children):
-        return "ran", "an open child reads data"
+        return "ran", "an open child's read changed"
     return "ran", "reason not recorded"
 
 

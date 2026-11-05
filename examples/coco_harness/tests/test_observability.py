@@ -261,15 +261,17 @@ def test_shape_c_stats_and_plan(
         "stats: model calls 18, sessions 6, tool calls 13, spent tokens ?, files 4, 0.0s"
     )
 
-    # The planner recorded its sample, so the orchestrator's body re-runs every
-    # run (the engine's cannot_skip) while the planner and the workers are
-    # skipped: no inference, but four tool calls spent.
+    # Skipped whole: the planner's recorded sample validates from its own
+    # entry (transitive validation, engine PR #2671), so the orchestrator is
+    # skipped too, and the stored plan shows the planner as reused.
     unchanged = f.run()
-    assert f.model.calls == 0 and unchanged.root.status == "ran"
-    assert unchanged.root.reason == "an open child reads data"
+    assert f.model.calls == 0 and unchanged.root.status == "skipped"
     assert render_stats_line(unchanged) == (
-        "stats: model calls 18 (reused 18 / 100%), sessions 6 (skipped 5 / 83%), "
-        "tool calls 13 (reused 9 / 69%), files 4 (unchanged 4 / 100%), 0.0s"
+        "stats: model calls 18 (reused 18 / 100%), sessions 6 (skipped 6 / 100%), "
+        "tool calls 13 (reused 13 / 100%), files 4 (unchanged 4 / 100%), 0.0s"
+    )
+    assert "     └─ planner                                  reused · 2 turns" in (
+        render_plan(unchanged)
     )
 
     # One edit: the sample covers every file, so the planner re-runs, sees the

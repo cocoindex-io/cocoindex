@@ -830,7 +830,8 @@ Python, so its account has to be stored where the engine returns it.
   `members changed` (a closed session's `read_input` diverged); `<read>
   changed` / `<read> is new` (`walk of src:x`, `sample of src:x`, `read of
   src:x key`, `stats of src:x`); `absorbed a failure last run`; `an open
-  child reads data` (the engine's `cannot_skip`); and `reason not recorded`.
+  child's read changed` (the engine validated a descendant's reads from its
+  entry and one failed); and `reason not recorded`.
   A skipped session is `nothing it read changed` (open), `input unchanged`
   or `members unchanged` (closed).
 - **Nothing here enters a memo key.** The trace is a return value and only

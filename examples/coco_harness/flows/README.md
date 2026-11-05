@@ -80,12 +80,12 @@ respectively.
 
 What the counts show:
 
-- An unchanged `summaries` or `report` run is skipped whole: no session's
-  body runs, no turn is probed (DESIGN.md §7, *Open vs closed*). An unchanged
-  `table` run re-runs the orchestrator's body without inference — its
-  planner records the sample it reads, so the engine cannot skip the parent
-  (`cannot_skip`) — while the planner and the workers are skipped;
-  `--stats` shows it as `sessions 6 (skipped 5 / 83%)`.
+- An unchanged run is skipped whole: no session's body runs, no turn is
+  probed (DESIGN.md §7, *Open vs closed*). For `table` this holds since the
+  engine validates the planner's recorded sample from the planner's own entry
+  (transitive validation, engine PR #2671); before it, the orchestrator's
+  body re-ran without inference and `--stats` showed `sessions 6 (skipped 5
+  / 83%)`.
 - A worker's first turn (`read_input`) hits even for the edited file: its memo
   key is the spec and an empty transcript. Only the turns after the content
   entered the transcript run again.
@@ -109,7 +109,7 @@ tokens and the wall time come from the real run):
 |---|---|---|
 | `summaries` | unchanged | `model calls 12 (reused 12 / 100%), sessions 4 (skipped 4 / 100%), tool calls 9 (reused 9 / 100%), files 3 (unchanged 3 / 100%)` |
 | `summaries` | one edit | `model calls 12 (reused 10 / 83%), sessions 4 (skipped 2 / 50%), tool calls 9 (reused 4 / 44%), spent tokens …, files 3 (unchanged 2 / 67%)` |
-| `table` | unchanged | `model calls 18 (reused 18 / 100%), sessions 6 (skipped 5 / 83%), tool calls 13 (reused 9 / 69%), files 4 (unchanged 4 / 100%)` |
+| `table` | unchanged | `model calls 18 (reused 18 / 100%), sessions 6 (skipped 6 / 100%), tool calls 13 (reused 13 / 100%), files 4 (unchanged 4 / 100%)` |
 | `table` | one edit | `model calls 18 (reused 15 / 83%), sessions 6 (skipped 3 / 50%), tool calls 13 (reused 6 / 46%), spent tokens …, files 4 (unchanged 3 / 75%)` |
 
 The first drive of these flows (2026-11-04, `anthropic/claude-sonnet-5-5`,
