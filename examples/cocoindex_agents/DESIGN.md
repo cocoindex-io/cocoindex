@@ -16,7 +16,8 @@ engine's data dependencies landed (§7, *Open vs closed*). Further findings
 go to implementation and tests. §8 is the delta index between this design and
 the code. CocoIndex Agents lives under `examples/` for now and is expected to
 become its own repository, so it is more elaborate than the other examples.
-It was called coco-harness until 2026-11-05.
+It was called coco-harness until 2026-11-05. Amended 2026-11-05 for
+documents the model reads natively (§3, *Documents*), with the `orders` flow.
 
 ---
 
@@ -99,7 +100,9 @@ Two engine facts shape the design:
 | **D. Group-by reduce** | "Per person, list open action items across all meeting notes." | `for_each`, `reduce` with a grouping step (target, §8) |
 
 What reruns after a change is defined once, in §7 (reuse model) and §6
-(reduce locality); the shapes above only pick tools.
+(reduce locality); the shapes above only pick tools. A shape does not depend
+on what the files are: the `orders` flow is shape A over PDFs, which the
+model reads natively (§3, *Documents*).
 
 Directions kept in view, not in v1:
 
@@ -163,7 +166,7 @@ package's API: JSON calls are canonical, comparable and pickable (§4).
 | `declare(target, key, value)` | declare a target state; `value` is text or a `res:` handle | `declare_file`, owned by the calling session's component | acknowledgement | yes |
 | `observe(key, question, role?, inputs?)` | an open planner that may use volatile methods | `use_mount` at `child/<key>` | `{plan}` | no |
 | `call(handle, method, args)` | call an object method | — | the method's result | yes |
-| `read_input()` | a closed session's input: `{key, text}` for a file, the member list for a reduce | — | the content | yes |
+| `read_input()` | a closed session's input: `{key, text}` for a text file, a document reference for a PDF (*Documents*, below), the member list for a reduce | — | the content, or the reference | yes |
 | `replay(from_step, steps?)` | built-in meta tool, §4 | — | never stored | — |
 | finish (`answer`) | end the session | the component's return value | — | — |
 
@@ -260,6 +263,82 @@ between near-synonyms. No built-in planning step was needed: the
 recipes and the cards were enough for the shapes of §2 with this model, so
 the contracts of §4 and §7 are unchanged.
 
+### Documents: files the model reads natively
+
+(Added 2026-11-05, with the `orders` flow.) A PDF is read by the model, not
+by a local parser: every provider takes a PDF as a document input and reads
+each page as text and as an image, so a table's grid or a ticked box reaches
+the model as it is on the page. The practice, established from the
+providers' documentation and the installed LiteLLM (1.100.4) before the
+design:
+
+- OpenAI chat completions take a `file` content part whose `file_data` is a
+  `data:application/pdf;base64,…` URL (a PDF is the only file that endpoint
+  takes this way; `file_id` names an uploaded file instead), in a `user`
+  message; each file and the request's files together stay under 50 MB.
+- Anthropic takes a `document` block with a base64 source (or a URL, or a
+  Files API id) in a `user` message: 128 MB per request, 600 pages per
+  request (100 under a 1M context); each page costs its text, 1,500–3,000
+  tokens, plus an image; `cache_control` may sit on the block, and the
+  document is best placed before the question.
+- Gemini takes inline data with `mime_type: application/pdf` (or an
+  uploaded file's URI; uploads expire after 48 hours): 50 MB or 1,000 pages
+  per document, read with native vision.
+- LiteLLM's provider-neutral form is OpenAI's: `{"type": "file", "file":
+  {"file_data": "data:application/pdf;base64,…"}}` in a `user` message. It
+  passes the part to OpenAI as is and transforms it into Anthropic's
+  `document` block and Gemini's `inline_data`
+  (`litellm_core_utils/prompt_templates/factory.py`,
+  `llms/vertex_ai/gemini/transformation.py`). The `user` role is the one
+  that carries a document on all three: LiteLLM turns a file in a `tool`
+  message into a document inside Anthropic's `tool_result`, but OpenAI's
+  tool messages are text only.
+
+The choice: inline base64 through LiteLLM's `file` part, in a `user`
+message. It works unchanged across the three providers with the default
+model, needs no upload step and no file lifetime to manage, and a sample
+document is kilobytes, far from the inline limits. Uploaded ids are the form
+for documents near those limits; they are left out (§8).
+
+The contract, as the invariants of §1 and §4 require:
+
+- **The transcript holds a reference, never bytes.** A tool that reads a
+  document returns `{key, media_type, bytes, digest}`, the digest being the
+  engine's content fingerprint: a changed file is a changed result, so
+  exactly the turns that saw the old one miss, and an unchanged file hits.
+  The bytes stay in a run-local store on the session (`Documents`, one per
+  session, shared by its tools and its turns) that reaches the client
+  through the turn's hints, excluded from the key and never stored.
+- **The client attaches the document when it renders the step.** After the
+  step's `tool` messages comes one `user` message per document a result
+  refers to: a text line naming it, then the `file` part. After all the
+  step's tool messages, not between them, because the tool messages must
+  directly follow the assistant turn that called them. The message is
+  byte-identical run after run, so the provider's prompt cache keeps it (§4).
+- **Media type decides, not the flow.** `documents.document_media_type`
+  guesses from the file name; the set is `application/pdf` today, the one
+  type OpenAI's endpoint takes inline. Any other file is text, read as
+  before. Per read path:
+  - `read_input` in a worker: a text file gives `{key, text}`; a document
+    gives the reference, with the document attached.
+  - `read(key)` on a source: the same, recorded as the same `FILE_READ`.
+  - `sample(k)` on a source: a text file shows its head; a document shows its
+    media type and size, no content. A planner that needs to see one reads
+    it, at the cost of one attached document in its transcript; a head for
+    a document (a first page, extracted text) is left out (§8).
+  - A reducer's inputs are worker answers, which are text: unchanged.
+- The protocol text tells every role that the document follows its
+  reference in the next message.
+
+*Acceptance:* `test_documents.py` —
+`test_a_pdf_reaches_the_model_by_reference_and_the_transcript_holds_no_bytes`
+(the rendered request carries the document after the result, the
+transcript holds the reference, an unchanged rerun makes no call, one
+replaced PDF re-runs that worker's turns after `read_input` and nothing
+else), `test_an_open_session_samples_documents_by_size_and_reads_them_attached`
+(a same-size change re-runs the turn after the read only);
+`test_rendering.py::test_documents_render_after_every_tool_message_of_their_step`.
+
 *Acceptance:* `test_for_each.py::test_workers_write_to_the_parents_target_named_by_their_input_cards`
 (the worker finds the target in its input cards),
 `::test_for_each_without_collect_mounts_workers_in_the_background`,
@@ -293,7 +372,10 @@ transcript so far. `hints` is excluded from the key and never stored; it
 carries run-time context (below) and a mutable `TurnScratch` through which the
 turn body tells the loop what happened: nothing (a memo hit), an inference, a
 loop replay, a pick with its step number, and any notes it showed. The loop
-never reads engine internals to learn hit from miss.
+never reads engine internals to learn hit from miss. (Amended 2026-11-05.)
+`hints` also carries the session's `Documents` store (§3, *Documents*): the
+client renders a document beside the result that refers to it, from bytes
+that never enter the key or the memo value.
 
 The transcript is `(output, results)` pairs and nothing else. `ModelOutput`
 has `calls` and `answer`; replay bookkeeping lives in the scratch, not in the
@@ -418,6 +500,7 @@ with one word changed would miss for the whole subtree.
 | Transcript growth | hints are never stored; the transcript is flat `(output, results)` pairs |
 | Advisory alignment for repeated composed actions | picks are exact; only composed duplicates are best effort (rule 4) |
 | A failed run's memo overriding a requested replay | the memo is executed, the model is told, fast-forward stops |
+| Document bytes in the request | the transcript holds a reference; the bytes come from the run-local store at render time, after the step's tool messages, byte-identical run after run (§3) |
 
 *Acceptance:* `test_replay.py` — `test_unchanged_run_makes_no_model_calls`,
 `test_changed_result_shows_dump_once_then_fast_forwards`,
@@ -597,7 +680,9 @@ A session's inputs — and so what invalidates it — are:
   that tool), the **input manifest**, and the config **version**;
 - for a closed session: the item (file identity, then mtime/content memo
   state), and the memo keys of its `inputs` handles (a target's key, a
-  result's content hash);
+  result's content hash); a document's content digest sits in the
+  transcript too, in its reference (§3, *Documents*), which is what makes
+  the turns after the read miss;
 - for an open session: the memo keys of its `inputs` handles (a source's
   identity, a collection's content hash) and its **recorded reads** (below);
 - the **agents config** it reads through `AGENTS_CONFIG`: roles, tool specs,
@@ -917,6 +1002,7 @@ input of a worker whose key must cover everything (*Open vs closed*).
 | Reduce algorithm (pure): admission, bisection, output check, termination, collision | `test_reduce_grouping.py` |
 | Widened counts, bottom-k, stable hash, canonical JSON | `test_stats.py`, `test_stable_hash.py`, `test_transcript.py` |
 | Trace and report: stats line per shape and run, skipped subtrees credited from their stored trace, reasons, plan rendering | `test_observability.py` (§7 *Observability*) |
+| Documents: a PDF by reference in the transcript and attached in the rendered request, text files unchanged, no call on an unchanged rerun, one replaced PDF re-running that worker's content turns only; a source's `sample` showing a document by media type and size and its `read` attaching it | `test_documents.py`, `test_rendering.py` (§3 *Documents*) |
 
 **Implemented, not covered by a test:**
 
@@ -924,6 +1010,7 @@ input of a worker whose key must cover everything (*Open vs closed*).
 |---|---|
 | LiteLLM client: the API call itself (rendering and response parsing are covered; the sample flows under `flows/` drive it with a real model and record the measured inference counts) | §4 |
 | The recipes' effect on a real model: that user-level prompts decompose the same way run after run is measured by the drives recorded in `flows/README.md`, not by a scripted test | §3 |
+| The `file` content part reaching each provider's API as a document: LiteLLM's transformation is read, not tested here; the `orders` flow drives it with the default model and records what it extracted | §3 |
 
 **Target** (contract settled where stated, not implemented):
 
@@ -935,6 +1022,10 @@ input of a worker whose key must cover everything (*Open vs closed*).
 | Always-on / live mode | §2 | no watcher, no refresh design |
 | Reduce roadmap: hysteresis, prefix partitioning, delta prompting | §6 | — |
 | Output schemas for agents/planners | — | dropped from v1 (minimal surface); plans are text |
+| Documents beyond PDF (images, Office files) | §3 | the media-type set is `application/pdf`; OpenAI chat completions take nothing else inline, Anthropic and Gemini take more |
+| A document's head in `sample` (a first page, extracted text) | §3 | a planner reads a document whole or not at all |
+| Uploaded file ids in place of inline bytes | §3 | needed near the inline limits; an id is per provider and per account, and Gemini's expire |
+| Provider-side cache marks on a document (`cache_control`) | §3, §4 | the request prefix is stable, which is what OpenAI's cache keys on; Anthropic's explicit marks are not set |
 
 ## 9. Package layout and testing
 
@@ -956,6 +1047,7 @@ cocoindex_agents/
   handles.py       HandleTable (seed, fork/merge), HandleObject, cards, ResultValue
   model.py         ModelClient protocol, MODEL_CLIENT
   stable_hash.py   keyed blake2b
+  documents.py     Document (bytes + reference), Documents (the run-local store), the media-type rule
   tools/           Tool (closed_ok; key_arg = the argument that names the child slot),
                    ToolRegistry (validate_args), AgentsConfig (spec, version; change-detected);
                    sources (the OBSERVATION and FILE_READ data-dependency kinds), targets,
@@ -966,8 +1058,9 @@ cocoindex_agents/
   testing.py       ScriptedModel (test-only tools live in tests/helpers.py)
   app.py           default config; build a coco.App from a flow prompt; CLI
 tests/             see the Acceptance lines in §3–§7 and the table in §8
-flows/             three sample flows (shapes A–C of §2) with user-level prompts, data, a
-                   runner, and the stability and model calls measured with a real model
+flows/             four sample flows (shapes A–C of §2, and shape A over PDFs) with user-level
+                   prompts, data, a runner, and the stability and model calls measured with a
+                   real model
 ```
 
 Tests use a scripted model that counts its calls, so assertions are about
@@ -1006,3 +1099,8 @@ Pointers only; the substance is in the owning section.
 - Observability: a trace per session as a memo value, skipped subtrees
   credited as their producer ran them, a closed reasons vocabulary, one
   stats line and a plan tree — §7
+- Documents: the model reads a PDF natively; the transcript holds a
+  reference with the content digest, the bytes are attached at render time
+  from a run-local store as a `user` message after the step's tool messages,
+  inline base64 through LiteLLM's `file` part; media type decides, not the
+  flow — §3, §4

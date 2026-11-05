@@ -18,6 +18,11 @@ while every recorded read validates. Two kinds of record:
 
 A source may only be an input of open sessions: a closed session's memo key
 must cover everything it reads, and ``open_source`` is not ``closed_ok``.
+
+What a read returns is decided by the file's media type (``documents.py``):
+text as text; a document (a PDF) as a reference, with the bytes attached to
+the session for the client to render. ``sample`` shows a document's media
+type and size in place of a text head.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
 
+from ..documents import Document, document_media_type
 from ..errors import ToolError
 from ..handles import MethodSpec, Volatility, int_arg
 from ..spec import Item, Json
@@ -157,14 +163,16 @@ class LocalDirSource:
             ),
             MethodSpec(
                 "sample",
-                "`k` representative files (default 5) with the head of each; the set is "
-                "hash-stable, so it barely changes when files are added.",
+                "`k` representative files (default 5) with the head of each text file; "
+                "a PDF shows its media type and size instead. The set is hash-stable, "
+                "so it barely changes when files are added.",
                 Volatility.STABLE,
                 args=("k",),
             ),
             MethodSpec(
                 "read",
-                "Full text of one file by key.",
+                "One file by key: its full text, or for a PDF a reference with the "
+                "document attached to your next message.",
                 Volatility.PER_ITEM,
                 args=("key",),
             ),
@@ -225,13 +233,9 @@ class LocalDirSource:
             # use_state on the session component. Not implemented yet.
             return {"files": format_range(widen_count(len(files)))}
         if method == "sample":
-            k = int_arg(args, "k", 5)
             return [
-                {
-                    "key": key,
-                    "head": (await files[key].read_text())[:_SAMPLE_HEAD_CHARS],
-                }
-                for key in bottom_k(files, k)
+                await _sample_entry(key, files[key])
+                for key in bottom_k(files, int_arg(args, "k", 5))
             ]
         if method == "keys":
             prefix = str(args.get("prefix", ""))
@@ -240,12 +244,14 @@ class LocalDirSource:
             return await _listing(files)
         raise ValueError(f"not an observation: {method!r}")  # call() screens the model
 
-    async def read(self, args: dict[str, Json]) -> str:
-        """Full text of one file, recorded as a read of that file alone.
+    async def read(self, args: dict[str, Json]) -> str | Document:
+        """One file, recorded as a read of that file alone: its text, or a document.
 
         Resolved from the key directly rather than through a walk, so the
         record covers this file and not the listing: an edit elsewhere under
-        the root does not touch the session.
+        the root does not touch the session. A document is returned as is;
+        the ``call`` tool attaches it to the session and returns its
+        reference.
         """
         file_key = args.get("key")
         if not isinstance(file_key, str):
@@ -255,15 +261,20 @@ class LocalDirSource:
         mtime = await asyncio.to_thread(_mtime_ns, path)
         file = localfs.File(localfs.FilePath(path))
         state: FileState = None
+        data = b""
         if mtime is not None:
             try:
-                state = (mtime, _digest(await file.read()))
+                data = await file.read()
+                state = (mtime, _digest(data))
             except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
                 state = None  # vanished, or the key names a directory
         coco.use_data_dep(FILE_READ, key=str(path), state=state)
         if state is None:
             raise ToolError(f"no file {file_key!r} under {self.root}")
-        return await file.read_text()  # decodes the bytes read above
+        media_type = document_media_type(file_key)
+        if media_type is None:
+            return await file.read_text()  # decodes the bytes read above
+        return Document.of(file_key, media_type, data)
 
     def _path_of(self, file_key: str) -> pathlib.Path:
         """The path a walk key denotes; a key outside the root or the patterns is the model's error."""
@@ -278,6 +289,14 @@ class LocalDirSource:
         ):
             raise ToolError(f"no file {file_key!r} under {self.root}")
         return path
+
+
+async def _sample_entry(key: str, file: localfs.File) -> dict[str, Json]:
+    """A text file's head; a document's media type and size (its content is not text)."""
+    media_type = document_media_type(key)
+    if media_type is None:
+        return {"key": key, "head": (await file.read_text())[:_SAMPLE_HEAD_CHARS]}
+    return {"key": key, "media_type": media_type, "bytes": await file.size()}
 
 
 async def _listing(files: dict[str, localfs.File]) -> list[tuple[str, int, int]]:
@@ -355,6 +374,9 @@ async def call_method(ctx: SessionContext, args: dict[str, Json]) -> Json:
             f"{list(spec.args) if spec.args else 'no arguments'}"
         )
     result = await obj.call(method, call_args)
+    if isinstance(result, Document):
+        # The bytes stay with the session; the transcript gets the reference.
+        result = ctx.documents.attach(result)
     if not obj.closed_input_ok:
         # A read beyond the session's arguments: noted so the next run can
         # name it when it is the read that changed.
@@ -368,12 +390,18 @@ async def call_method(ctx: SessionContext, args: dict[str, Json]) -> Json:
 
 @tool(
     "read_input",
-    "Read this session's input: for a file, {key, text}; for a reduce, the list of partial results.",
+    "Read this session's input: for a text file, {key, text}; for a PDF, a reference "
+    "{key, media_type, bytes, digest} with the document attached to your next message; "
+    "for a reduce, the list of partial results.",
     closed_ok=True,
 )
 async def read_input(ctx: SessionContext, args: dict[str, Json]) -> Json:
     if ctx.input is None:
         raise ToolError("this session has no input; it is an open session")
     if isinstance(ctx.input, Item):
-        return {"key": ctx.input.key, "text": await ctx.input.file.read_text()}
+        media_type = document_media_type(ctx.input.key)
+        if media_type is None:
+            return {"key": ctx.input.key, "text": await ctx.input.file.read_text()}
+        data = await ctx.input.file.read()
+        return ctx.documents.attach(Document.of(ctx.input.key, media_type, data))
     return list(ctx.input)

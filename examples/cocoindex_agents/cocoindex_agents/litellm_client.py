@@ -21,15 +21,26 @@ Rendering rules that matter for incrementality (DESIGN.md §4):
   not read its previous plan reworded it, which recomputed everything
   downstream, while a worker reissued an elided ``declare`` it could not
   review and then found it wrong.
+- A document a tool result refers to (``documents.py``) is attached as a
+  ``user`` message right after the step's ``tool`` messages: a text line
+  naming it, then LiteLLM's provider-neutral ``file`` content part with the
+  bytes inline as a data URL, which LiteLLM passes to OpenAI as is and turns
+  into Anthropic's ``document`` block and Gemini's inline data. A user
+  message is the one place all three providers accept a document; it goes
+  after every result of the step, because the tool messages must directly
+  follow the assistant turn that called them. The bytes are the same every
+  run, so the message is byte-identical and the prompt cache keeps it.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import pathlib
 from datetime import timedelta
 from typing import Any
 
+from .documents import Document, Documents
 from .handles import is_handle
 from .hints import RunHints
 from .spec import SessionSpec, ToolSpec
@@ -77,7 +88,7 @@ def render_messages(
             messages.append({"role": "user", "content": render_dump(hints)})
         if i in notes_at:
             messages.extend(_notes(hints, i))
-        messages.extend(_step_messages(i, step))
+        messages.extend(_step_messages(i, step, hints.documents))
         for d in hints.diffs:
             if d.at_step == i:
                 messages.append(
@@ -97,8 +108,9 @@ def render_messages(
     return messages
 
 
-def _step_messages(i: int, step: Step) -> list[Message]:
-    """One step as the provider sees it: the model's turn, then one ``tool`` message per result."""
+def _step_messages(i: int, step: Step, documents: Documents) -> list[Message]:
+    """One step as the provider sees it: the model's turn, one ``tool`` message per
+    result, then the documents the results refer to."""
     if step.output.is_finish:
         return [{"role": "assistant", "content": step.output.answer}]
     ids = [f"call_{i}_{j}" for j in range(len(step.output.calls))]
@@ -122,7 +134,33 @@ def _step_messages(i: int, step: Step) -> list[Message]:
         }
         for call_id, r in zip(ids, step.results)
     ]
-    return [turn, *results]
+    attached = [
+        _document_message(r.tool, doc)
+        for r in step.results
+        if r.ok
+        for doc in documents.referenced_by(r.value)
+    ]
+    return [turn, *results, *attached]
+
+
+def _document_message(tool: str, doc: Document) -> Message:
+    return {
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": f"The document {doc.key} ({doc.media_type}, {len(doc.data)} bytes) "
+                f"that the {tool} result above refers to:",
+            },
+            {
+                "type": "file",
+                "file": {
+                    "filename": pathlib.PurePosixPath(doc.key).name,
+                    "file_data": doc.data_url(),
+                },
+            },
+        ],
+    }
 
 
 def _notes(hints: RunHints, at_step: int) -> list[Message]:
@@ -180,7 +218,16 @@ def _describe_message(m: Message) -> str:
             for tc in m["tool_calls"]
         )
         return f"--- assistant (tool calls)\n{calls}"
-    return f"--- {m['role']}\n{m['content']}"
+    content = m["content"]
+    if isinstance(content, list):
+        # Content parts: text as is, a file by name and size rather than its data URL.
+        content = "\n".join(
+            part["text"]
+            if part["type"] == "text"
+            else f"<file {part['file']['filename']}: {len(part['file']['file_data'])} chars>"
+            for part in content
+        )
+    return f"--- {m['role']}\n{content}"
 
 
 def tools_as_openai(tools: tuple[ToolSpec, ...]) -> list[dict[str, Any]]:

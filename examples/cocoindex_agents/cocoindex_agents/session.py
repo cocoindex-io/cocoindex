@@ -259,7 +259,9 @@ async def _session_loop(
     ctx = SessionContext(
         spec=spec, input=input, handles=table, config=config, trace=sink
     )
-    state = _ReplayState(prev=prev_handle.value)
+    state = _ReplayState(
+        prev=prev_handle.value, hints=RunHints(documents=ctx.documents)
+    )
     steps: list[Step] = []
     step_traces: list[StepTrace] = []
     spec_changed = False  # turn 0 missed although a previous transcript exists
