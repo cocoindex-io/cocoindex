@@ -28,6 +28,7 @@ import logging
 import os
 import queue
 import secrets
+import socketserver
 import stat
 import sys
 import threading
@@ -399,6 +400,22 @@ class _Redirect:
     params: dict[str, list[str]] | None = None
 
 
+class _LoopbackServer(HTTPServer):
+    """The redirect listener, bound to the loopback interface without a DNS lookup.
+
+    ``HTTPServer.server_bind`` looks up the fully qualified name of the address
+    it bound (a reverse DNS query for 127.0.0.1), which a slow resolver can
+    stall for tens of seconds before the sign-in even starts: seen on macOS
+    CI runners. Nothing here uses the name.
+    """
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+
 class _RedirectHandler(BaseHTTPRequestHandler):
     """Answers the one redirect the flow waits for; everything else is a 404."""
 
@@ -439,7 +456,7 @@ def _pump_lines(
 
 
 def _await_redirect(
-    server: HTTPServer,
+    server: _LoopbackServer,
     redirect: _Redirect,
     *,
     timeout: float,
@@ -530,7 +547,7 @@ def _run_consent(
     handler = type("_Handler", (_RedirectHandler,), {"redirect": redirect})
     # Bound before the browser opens, so the redirect URI names a port this
     # process already holds.
-    server = HTTPServer(("127.0.0.1", 0), handler)
+    server = _LoopbackServer(("127.0.0.1", 0), handler)
     try:
         port = server.server_address[1]
         redirect_uri = f"http://127.0.0.1:{port}/"

@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import pathlib
+import socket
 import stat
 import threading
 import urllib.parse
@@ -203,6 +204,13 @@ class Flow:
 @pytest.fixture
 def flow(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Flow:
     google = FakeGoogle()
+
+    def no_dns(name: str = "") -> str:
+        # The listener must not resolve its own address: a slow resolver
+        # stalled every sign-in on macOS CI runners for over 30 seconds.
+        raise AssertionError(f"reverse DNS lookup of {name!r} during sign-in")
+
+    monkeypatch.setattr(socket, "getfqdn", no_dns)
 
     def http_client() -> httpx.Client:
         return httpx.Client(transport=httpx.MockTransport(google.handle))
