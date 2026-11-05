@@ -54,7 +54,7 @@ cp .env.example .env
 pip install -e .
 ```
 
-**2. Get sample PDFs.** The script downloads three board game rulebooks into `source_files/`:
+**2. Get sample PDFs.** The script downloads four board game rulebooks into `source_files/`:
 
 ```sh
 ./fetch_manuals.sh

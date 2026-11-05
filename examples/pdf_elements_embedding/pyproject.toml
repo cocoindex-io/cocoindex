@@ -5,7 +5,7 @@ description = "CocoIndex v1 example: extract text and images from PDFs, embed ea
 requires-python = ">=3.11"
 dependencies = [
     "cocoindex[qdrant,sentence_transformers]>=1.0.7",
-    "pypdf>=5.7.0",
+    "pypdf[crypto]>=5.7.0",  # crypto: some PDFs are AES-encrypted with an empty password
     "pillow>=10.0.0",
     "torch>=2.0.0",
     "transformers>=4.29.0",
