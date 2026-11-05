@@ -4,19 +4,29 @@ annotated with its PR number and GitHub author handle, plus a first-pass
 new-contributor list.
 
 This does the tedious, mechanical part — running git log, parsing PR numbers
-out of the subjects of the default branch's first-parent commits (one per
+out of the subjects of the released branch's first-parent commits (one per
 landed pull request: a squash commit, or the merge commit of an upstream
 merge), and batch-querying `gh` for author handles — so
 the human/agent can spend their attention on the judgment part (what to keep,
 how to group, how to word it).
+
+A backport (a pull request to a release branch that cherry-picks commits of
+`main` with `git cherry-pick -x`) lands as a squash commit whose body keeps
+one `(cherry picked from commit <sha>)` trailer per commit it carried (the
+repository squashes with the commit messages as the body). Such a
+commit is expanded into one entry per trailer, each with the original
+commit's subject, PR number and author, and `backport_pr` set to the backport
+pull request; the originals must be in the clone (`git fetch origin main`),
+or the squash commit is listed as itself with a warning.
 
 Usage:
     collect_changes.py <prev_tag> [head_ref]
 
     prev_tag   The previous release tag, e.g. v1.0.7
     head_ref   What you're releasing (default: HEAD). Prefer the remote
-               default branch (e.g. origin/main) after a `git fetch` — a
-               stale local branch silently drops the newest merges.
+               branch (e.g. origin/main, or origin/release/1.1 for a patch)
+               after a `git fetch` — a stale local branch silently drops the
+               newest merges.
 
 Output: JSON on stdout with shape:
     {
@@ -25,7 +35,7 @@ Output: JSON on stdout with shape:
         {"sha": "1936301a", "subject": "...", "type": "feat", "scope": "py",
          "breaking": false, "pr": 2091, "author_handle": "georgeh0",
          "author_handle_source": "pr", "author_name": "Jiangzhou",
-         "author_email": "..."},
+         "author_email": "...", "backport_pr": null},
         ...
       ],
       "new_contributors": [{"handle": "mulatta", "pr": 2434}, ...],
@@ -55,6 +65,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 CONV_RE = re.compile(r"^(?P<type>\w+)(?:\((?P<scope>[^)]*)\))?(?P<bang>!)?:\s")
 PR_RE = re.compile(r"\(#(\d+)\)\s*$")
+# The trailer `git cherry-pick -x` appends; a backport's squash commit keeps
+# one per cherry-picked commit.
+CHERRY_RE = re.compile(r"\(cherry picked from commit ([0-9a-f]{7,40})\)")
 NOREPLY_RE = re.compile(
     r"^(?:\d+\+)?(?P<handle>[A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?)"
     r"@users\.noreply\.github\.com$"
@@ -83,6 +96,53 @@ def pr_author(pr: int) -> str | None:
     if out.startswith("app/"):
         return out.removeprefix("app/") + "[bot]"
     return out or None
+
+
+def pr_number(subject: str) -> int | None:
+    """The `(#NNNN)` GitHub appends to a squash commit's subject."""
+    m = PR_RE.search(subject)
+    return int(m.group(1)) if m else None
+
+
+def commit_entry(
+    sha: str, subject: str, author_name: str, author_email: str, backport_pr: int | None
+) -> dict:
+    m = CONV_RE.match(subject)
+    return {
+        "sha": sha,
+        "subject": subject,
+        "type": (m.group("type") if m else None),
+        "scope": (m.group("scope") if m else None),
+        "breaking": bool(m and m.group("bang")),
+        "pr": pr_number(subject),
+        "author_name": author_name,
+        "author_email": author_email,
+        "backport_pr": backport_pr,
+    }
+
+
+def expand_backport(
+    sha: str, subject: str, originals: list[str], warnings: list[str]
+) -> list[dict] | None:
+    """One entry per cherry-picked original, newest first; None when an
+    original isn't in the clone (the caller then lists the squash commit)."""
+    backport_pr = pr_number(subject)
+    entries = []
+    for original in originals:
+        try:
+            o_sha, o_subject, o_name, o_email = sh(
+                ["git", "log", "-1", "--format=%h%x1f%s%x1f%an%x1f%ae", original]
+            ).split("\x1f")
+        except subprocess.CalledProcessError:
+            warnings.append(
+                f"{sha} backports {original[:12]}, which isn't in this clone "
+                f"(git fetch origin main); listing the squash commit itself"
+            )
+            return None
+        entries.append(commit_entry(o_sha, o_subject, o_name, o_email, backport_pr))
+    # A squash body lists the cherry-picks oldest first; the output is newest first.
+    entries.reverse()
+    return entries
 
 
 def stale_head_warning(head: str) -> str | None:
@@ -136,30 +196,34 @@ def main() -> int:
     if stale:
         warnings.append(stale)
 
-    # %x1f is an ASCII unit separator — safe against subjects containing pipes.
-    # First parents only: one commit per landed pull request. A merged pull
-    # request's own commits, and an upstream merge's upstream commits, sit
-    # behind second parents and carry no PR number of this repository.
-    raw = sh(["git", "log", rng, "--first-parent", "--format=%h%x1f%s%x1f%an%x1f%ae"])
+    # %x1f is an ASCII unit separator — safe against subjects containing
+    # pipes; %x1e (record separator) ends each commit, since the body spans
+    # lines. First parents only: one commit per landed pull request. A merged
+    # pull request's own commits, and an upstream merge's upstream commits,
+    # sit behind second parents and carry no PR number of this repository.
+    raw = sh(
+        [
+            "git",
+            "log",
+            rng,
+            "--first-parent",
+            "--format=%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e",
+        ]
+    )
     commits = []
-    for line in raw.splitlines():
-        if not line.strip():
+    for record in raw.split("\x1e"):
+        record = record.strip("\n")
+        if not record.strip():
             continue
-        sha, subject, author_name, author_email = line.split("\x1f")
-        m = CONV_RE.match(subject)
-        pr_m = PR_RE.search(subject)
-        commits.append(
-            {
-                "sha": sha,
-                "subject": subject,
-                "type": (m.group("type") if m else None),
-                "scope": (m.group("scope") if m else None),
-                "breaking": bool(m and m.group("bang")),
-                "pr": int(pr_m.group(1)) if pr_m else None,
-                "author_name": author_name,
-                "author_email": author_email,
-            }
+        sha, subject, author_name, author_email, body = record.split("\x1f", 4)
+        originals = CHERRY_RE.findall(body)
+        expanded = (
+            expand_backport(sha, subject, originals, warnings) if originals else None
         )
+        if expanded is None:
+            commits.append(commit_entry(sha, subject, author_name, author_email, None))
+        else:
+            commits.extend(expanded)
 
     # Batch the gh lookups — one network call per unique PR, run concurrently.
     prs = sorted({c["pr"] for c in commits if c["pr"]})

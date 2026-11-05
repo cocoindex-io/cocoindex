@@ -6,7 +6,7 @@ name: Test Docs
 # checks. Keep both path lists below in sync with those reads.
 on:
   pull_request:
-    branches: [main, v1]
+    branches: [main, 'release/**']
     types: [opened, synchronize, reopened, ready_for_review, stacked]
     paths:
       - "docs/**"
@@ -16,7 +16,7 @@ on:
       - "examples/*/.env.example"
       - ".github/workflows/docs_test.yml"
   push:
-    branches: [main, v1]
+    branches: [main, 'release/**']
     paths:
       - "docs/**"
       - "skills/**"

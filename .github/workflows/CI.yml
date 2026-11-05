@@ -3,7 +3,9 @@ name: CI
 # The tiers and the rest of this workflow's shape follow
 # https://github.com/cocoindex-io/.github/blob/main/CI.md: pull requests run a
 # fast tier when `main` has a merge queue, the queue runs the full tier on the
-# commit that lands, and drafts run nothing.
+# commit that lands, and drafts run nothing. A release branch (`release/X.Y`,
+# see AGENTS.md, Versioning) has no queue, so a pull request to it runs the
+# full tier itself.
 #
 # Path filtering happens in the `changes` job, not in `on.<event>.paths`: a
 # workflow skipped by a path filter leaves its checks pending, so they can't
@@ -11,14 +13,14 @@ name: CI
 # require for build, tests and type checks.
 on:
   pull_request:
-    branches: [main, v1]
+    branches: [main, 'release/**']
     # `ready_for_review` starts CI when a draft is marked ready. `stacked`
     # starts it when a pull request joins a stack: its `opened` event can
     # arrive before the stack exists and miss the branch filter.
     types: [opened, synchronize, reopened, ready_for_review, stacked]
   merge_group:
   push:
-    branches: [main, v1]
+    branches: [main, 'release/**']
   # A push the merge queue already tested skips the full tier, so a nightly
   # run keeps main's caches current.
   schedule:
