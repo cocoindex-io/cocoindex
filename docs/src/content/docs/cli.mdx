@@ -105,8 +105,11 @@ cocoindex google-drive [OPTIONS] COMMAND [ARGS]...
 
 ### `google-drive sign-in`
 
-Sign in with the Desktop-app OAuth client at CLIENT_SECRETS (its downloaded
-JSON).
+Sign in with a Google account to read its Google Drive.
+
+Uses CocoIndex's own OAuth client when this release includes one. To use a
+Desktop-app OAuth client of your own, pass CLIENT_SECRETS, the JSON file you
+downloaded for it.
 
 Opens the consent page in the browser, or prints the link when this host has
 none, and keeps the tokens in a file readable by this user only.
@@ -115,7 +118,7 @@ none, and keeps the tokens in a file readable by this user only.
 **Usage:**
 
 ```bash
-cocoindex google-drive sign-in [OPTIONS] CLIENT_SECRETS
+cocoindex google-drive sign-in [OPTIONS] [CLIENT_SECRETS]
 ```
 
 **Options:**
