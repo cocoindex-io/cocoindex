@@ -1248,5 +1248,59 @@ def init(project_name: str | None, dir: str | None) -> None:
         raise click.ClickException(f"Failed to create project: {e}") from e
 
 
+# ---------------------------------------------------------------------------
+# google-drive: the interactive sign-in of the Google Drive connector
+# ---------------------------------------------------------------------------
+
+
+@cli.group("google-drive")
+def google_drive_group() -> None:
+    """Sign a personal Google account in to the Google Drive connector (experimental)."""
+
+
+@google_drive_group.command("sign-in")
+@click.argument(
+    "client_secrets", type=click.Path(exists=True, dir_okay=False, resolve_path=True)
+)
+@click.option(
+    "--token-path",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Where to keep the sign-in; default: cocoindex/google_drive_token.json "
+    "under the user's config directory.",
+)
+def google_drive_sign_in(client_secrets: str, token_path: str | None) -> None:
+    """Sign in with the Desktop-app OAuth client at CLIENT_SECRETS (its downloaded JSON).
+
+    Opens the consent page in the browser, or prints the link when this host has
+    none, and keeps the tokens in a file readable by this user only.
+    """
+    from cocoindex.connectors.google_drive import SignInError, UserAccount
+
+    try:
+        email = UserAccount(token_path).sign_in(client_secrets)
+    except SignInError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Signed in as {email}.")
+
+
+@google_drive_group.command("sign-out")
+@click.option(
+    "--token-path",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="The sign-in to end; default: the one `sign-in` writes by default.",
+)
+def google_drive_sign_out(token_path: str | None) -> None:
+    """Revoke the stored sign-in at Google and delete its token file."""
+    from cocoindex.connectors.google_drive import SignInError, UserAccount
+
+    try:
+        existed = UserAccount(token_path).sign_out()
+    except SignInError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo("Signed out." if existed else "No sign-in was stored.")
+
+
 if __name__ == "__main__":
     cli()
