@@ -1,7 +1,9 @@
 # This workflow can be triggered on tags push (automatic release) or manually on any branch.
 #
-# - When triggered on tags push, it will build and publishes a new version including docs.
-# - When triggered manually, it's a dry-run: only build, without publishing anything.
+# - When triggered on tags push, it builds and publishes a new version, and
+#   deploys the docs when the release is the repository's latest.
+# - When triggered manually (on `main` or a release branch), it's a dry-run:
+#   only build, without publishing anything.
 name: Release CocoIndex
 
 on:
@@ -237,9 +239,35 @@ jobs:
           command: upload
           args: --non-interactive --skip-existing wheels-*/*
     
-  release-docs:
-    name: Release Docs
+  # The docs site shows the docs of the latest release. The tag GitHub lists
+  # as the repository's "Latest" release deploys the docs from its commit. A
+  # patch of an older minor (published with `--latest=false`), a prerelease,
+  # or a tag pushed without a release leaves the site as it is.
+  docs-gate:
+    name: Docs Gate
+    runs-on: ubuntu-latest
     needs: [release]
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    outputs:
+      deploy: ${{ steps.latest.outputs.deploy }}
+    steps:
+      - id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name || echo none)
+          if [ "$latest" = "$TAG" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG is the latest release: deploying the docs"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG is not the latest release ($latest is): the docs stay as they are"
+          fi
+
+  release-docs:
+    name: Release Docs
+    needs: [docs-gate]
+    if: ${{ needs.docs-gate.outputs.deploy == 'true' }}
     uses: ./.github/workflows/_docs_release.yml
     secrets: inherit
