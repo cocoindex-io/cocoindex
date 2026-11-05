@@ -63,6 +63,12 @@ For a full run on a branch before then, use `gh workflow run CI.yml --ref <branc
 The CI tiers, the merge queue and stacked pull requests are described in
 [CI.md](https://github.com/cocoindex-io/.github/blob/main/CI.md).
 
+A pull request to a release branch (`release/X.Y`, see [Versioning](#versioning))
+has no merge queue: its own run is the full tier, and it is squash-merged once
+`ci-gate` passes (`gh pr merge --squash`). Such a pull request is a backport of
+a change that already landed on `main`; `dev/agent-skills/backport/SKILL.md`
+says what qualifies and how to land one.
+
 ### Workflow Summary
 
 | Change Type | Commands to Run |
@@ -351,6 +357,14 @@ When adding new functionality that involves I/O or concurrency:
 
 The current codebase is for CocoIndex v1, which is a fundamental redesign from CocoIndex v0. CocoIndex v1 lives on the `main` branch; the legacy v0 code is preserved on the `v0` branch.
 
+Releases are tagged `v<version>` and follow semver:
+
+- A **minor** release (`1.2.0`) is cut from `main` and carries everything landed since the previous minor.
+- A **patch** release (`1.1.1`) is cut from the minor's release branch, `release/1.1`. The branch starts at the minor's tag (`v1.1.0`) and takes only backports from `main`: fixes, dependency bumps that fix an advisory in what the wheel ships, and docs changes that describe released behavior. A fix makes released behavior match its documentation or intent without adding a way to call CocoIndex; a new API, parameter, connector or option is never backported, experimental or not. The branch is created when its first backport is needed, and only the newest minor's branch takes backports. `dev/agent-skills/backport/SKILL.md` lands a backport; `dev/agent-skills/create-release/SKILL.md` cuts the release.
+- **Experimental** APIs, labelled so in their docs (such as `coco.DataDep`), are outside the compatibility promise: a later release, including a minor one, may change or remove them.
+
+The docs site shows the docs of the latest release: a release deploys the docs from its tagged commit when GitHub lists it as the repository's "Latest" release. Docs for an unreleased feature stay on `main` until the minor that ships it; a docs change that describes released behavior is backported like a fix. The on-demand docs deploy (`docs_release.yml`) runs from the latest release's branch, not from `main`.
+
 ## Docs diagrams
 
 All diagrams embedded in docs pages are built as inline Astro components under `docs/src/components/diagrams/`, not exported SVG files. See [docs/src/components/diagrams/README.md](docs/src/components/diagrams/README.md) for the palette, primitives, shared CSS classes, animation conventions, and step-by-step authoring guidelines. Follow that guide for any new or updated diagram.
@@ -389,6 +403,7 @@ Reusable task-specific agent guidance lives under `dev/agent-skills/`. These pla
 - For new target connectors, read `dev/agent-skills/target-connector/SKILL.md`.
 - For upgrading example package versions, read `dev/agent-skills/upgrade-examples/SKILL.md`.
 - For cutting a release (next version, release notes, GitHub release, PyPI publish), read `dev/agent-skills/create-release/SKILL.md`.
+- For backporting a merged pull request to a release branch, for the next patch release, read `dev/agent-skills/backport/SKILL.md`.
 
 Agent Skills-compatible clients, including Codex, discover the checked-in symlinks under `.agents/skills/`. The public CocoIndex skill is exposed there as `cocoindex`, and contributor playbooks are exposed there from `dev/agent-skills/`.
 
