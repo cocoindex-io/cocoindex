@@ -34,9 +34,9 @@ use crate::statediff::{
     resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    declare_target_state_with_child, mount_target, register_root_target_states_provider,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 // ---------------------------------------------------------------------------
@@ -700,17 +700,13 @@ pub fn collection_target_with_options(
 ) -> Result<TargetState<CollectionSpec>> {
     let collection_name = collection_name.into();
     schema.validate_vector_dimensions()?;
-    let provider = register_root_target_states_provider(
-        ctx,
-        format!(
-            "cocoindex/qdrant/collection/{}/{}",
-            conn.name(),
-            collection_name
-        ),
-        CollectionHandler::new(conn.name().to_string()),
-    )?;
+    let provider = COLLECTION_PROVIDER.get(ctx)?;
     Ok(provider.target_state(
-        "default",
+        CollectionKey {
+            conn_key: conn.name().to_string(),
+            collection_name: collection_name.clone(),
+        }
+        .stable_key(),
         CollectionSpec {
             collection_name,
             schema,
@@ -848,6 +844,8 @@ pub struct CollectionSpec {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct CollectionAction {
+    /// The `ContextKey` name of the connection the collection lives in.
+    conn_key: String,
     name: String,
     schema: CollectionSchema,
     recreate: bool,
@@ -869,14 +867,50 @@ fn resolve_client(host_ctx: &Arc<ContextStore>, conn_key: &str) -> Result<Arc<Qd
         })
 }
 
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static COLLECTION_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<CollectionSpec, CollectionHandler>("cocoindex/qdrant/collection");
+
+/// A collection target state's key: the connection's `ContextKey` name plus
+/// the collection name.
+struct CollectionKey {
+    conn_key: String,
+    collection_name: String,
+}
+
+impl CollectionKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.conn_key)),
+            StableKey::Str(Arc::from(self.collection_name)),
+        ]))
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [StableKey::Str(conn_key), StableKey::Str(collection_name)] = &parts[..]
+        {
+            return Ok(Self {
+                conn_key: conn_key.to_string(),
+                collection_name: collection_name.to_string(),
+            });
+        }
+        Err(Error::engine(format!(
+            "unexpected qdrant collection target key: {key:?}"
+        )))
+    }
+}
+
+/// Root handler for every Qdrant collection target: stateless, the connection
+/// is named by each target state's [`CollectionKey`].
 struct CollectionHandler {
     sink: TargetActionSink<CollectionAction>,
 }
 
-impl CollectionHandler {
-    fn new(conn_key: String) -> Self {
+impl Default for CollectionHandler {
+    fn default() -> Self {
         Self {
-            sink: collection_sink(conn_key),
+            sink: collection_sink(),
         }
     }
 }
@@ -887,14 +921,15 @@ impl TargetHandler<CollectionSpec> for CollectionHandler {
 
     fn reconcile(
         &self,
-        _key: StableKey,
+        key: StableKey,
         desired: Option<CollectionSpec>,
         prev: Vec<MutualTrackingRecord<CollectionSpec>>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<CollectionAction, Self::TrackingRecord>>> {
+        let conn_key = CollectionKey::from_stable_key(&key)?.conn_key;
         match desired {
-            // Always emit when the collection is declared, so the sink runs and
-            // fulfills the point child provider.
+            // Always emit when the collection is declared, so the sink builds
+            // the point child handler.
             Some(spec) => {
                 let prev_is_empty = prev.is_empty();
                 let tracking_record = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
@@ -906,6 +941,7 @@ impl TargetHandler<CollectionSpec> for CollectionHandler {
                 let main_action = diff(resolved.as_ref());
                 let changed = matches!(main_action, Some(DiffAction::Replace));
                 let action = CollectionAction {
+                    conn_key,
                     name: spec.collection_name.clone(),
                     schema: spec.schema.clone(),
                     recreate: changed,
@@ -938,6 +974,7 @@ impl TargetHandler<CollectionSpec> for CollectionHandler {
                 };
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(CollectionAction {
+                        conn_key,
                         name: prev_spec.collection_name,
                         schema: prev_spec.schema,
                         recreate: false,
@@ -953,31 +990,29 @@ impl TargetHandler<CollectionSpec> for CollectionHandler {
     }
 }
 
-fn collection_sink(conn_key: String) -> TargetActionSink<CollectionAction> {
-    TargetActionSink::from_async_fn_with_children_ctx(
-        move |host_ctx, actions: Vec<(TargetAction<CollectionAction>, Option<ChildSlot>)>| {
-            let conn_key = conn_key.clone();
-            async move {
-                let client = resolve_client(&host_ctx, &conn_key)?;
-                for (action, child_slot) in actions {
-                    match action {
-                        TargetAction::Create(a) | TargetAction::Update(a) => {
-                            ensure_collection(&client, &a).await?;
-                            if let Some(slot) = child_slot {
-                                slot.fulfill(ChildTargetDef::new::<Point, _>(PointHandler::new(
-                                    conn_key.clone(),
-                                    a.name,
-                                    a.schema,
-                                )))?;
-                            }
-                        }
-                        TargetAction::Delete(a) => {
-                            drop_collection(&client, &a.name).await?;
-                        }
+fn collection_sink() -> TargetActionSink<CollectionAction> {
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<CollectionAction>>| async move {
+            for action in actions {
+                match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) => {
+                        let client = resolve_client(&host_ctx, &a.conn_key)?;
+                        ensure_collection(&client, &a).await?;
+                    }
+                    TargetAction::Delete(a) => {
+                        let client = resolve_client(&host_ctx, &a.conn_key)?;
+                        drop_collection(&client, &a.name).await?;
                     }
                 }
-                Ok(())
             }
+            Ok(())
+        },
+        |a: &CollectionAction| {
+            Ok(ChildTargetDef::new::<Point, _>(PointHandler::new(
+                a.conn_key.clone(),
+                a.name.clone(),
+                a.schema.clone(),
+            )))
         },
     )
 }
@@ -1056,7 +1091,7 @@ impl TargetHandler<Point> for PointHandler {
         let id = point_id(&key)?;
         match desired {
             Some(point) => {
-                let fp = point_fingerprint(&point);
+                let fp = point_fingerprint(&point)?;
                 let unchanged =
                     !prev_may_be_missing && !prev.is_empty() && prev.iter().all(|p| *p == fp);
                 if unchanged {
@@ -1106,10 +1141,9 @@ fn point_id(key: &StableKey) -> Result<QdrantPointId> {
 
 /// Content fingerprint of a point (vector + payload), as a hex string tracking
 /// record so unchanged points are skipped.
-fn point_fingerprint(point: &Point) -> String {
-    let fp = cocoindex_utils::fingerprint::Fingerprint::from(&(&point.vector, &point.payload))
-        .expect("fingerprint point");
-    format!("{fp:?}")
+fn point_fingerprint(point: &Point) -> Result<String> {
+    let fp = cocoindex_utils::fingerprint::Fingerprint::from(&(&point.vector, &point.payload))?;
+    Ok(format!("{fp:?}"))
 }
 
 fn point_sink(
@@ -1325,9 +1359,10 @@ mod tests {
         p2.vector = PointVector::Single(vec![0.1, 0.3]);
         let mut p3 = p1.clone();
         p3.payload.insert("text".into(), JsonValue::from("world"));
-        assert_eq!(point_fingerprint(&p1), point_fingerprint(&p1.clone()));
-        assert_ne!(point_fingerprint(&p1), point_fingerprint(&p2));
-        assert_ne!(point_fingerprint(&p1), point_fingerprint(&p3));
+        let fp = |point: &Point| point_fingerprint(point).unwrap();
+        assert_eq!(fp(&p1), fp(&p1.clone()));
+        assert_ne!(fp(&p1), fp(&p2));
+        assert_ne!(fp(&p1), fp(&p3));
     }
 
     #[test]
@@ -1566,6 +1601,9 @@ mod tests {
             payload,
         };
         // A single vector and a one-element multi-vector are distinct points.
-        assert_ne!(point_fingerprint(&single), point_fingerprint(&multi));
+        assert_ne!(
+            point_fingerprint(&single).unwrap(),
+            point_fingerprint(&multi).unwrap()
+        );
     }
 }

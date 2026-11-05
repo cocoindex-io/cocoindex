@@ -1,0 +1,45 @@
+# CocoIndex Agents
+
+**One prompt, many files, kept current.**
+
+Incremental agents over your data, on top of CocoIndex. You describe an outcome
+in a prompt ("turn the invoices under `./invoices` into a table of JSON files in
+`./out`"); an orchestrator agent decides how to split it into subagents over sources and
+targets, following the recipes in its system prompt; CocoIndex makes the whole
+thing incremental, so when the inputs change only the affected subagents,
+reducers and model turns run again.
+
+**Status: design frozen 2026-11-04; implementation driven with a real model.**
+Read [`DESIGN.md`](DESIGN.md) first. The tests drive it with a
+scripted model and assert on inference counts; the sample flows under `flows/`
+drive it with a real model through LiteLLM (`openai/gpt-6.1-terra`) and record
+what they measured: the same decomposition in three drives of each flow, no
+model call on an unchanged rerun, and two or three calls after one edited
+input.
+
+## Layout
+
+- `cocoindex_agents/` — the package (see DESIGN.md §9 for the module map, §8 for
+  what is implemented and tested)
+- `tests/` — scripted-model tests; no API keys needed
+- `flows/` — four sample flows with their data and a runner: one per shape
+  of DESIGN.md §2, and one over PDFs the model reads natively; see
+  [`flows/README.md`](flows/README.md) for how to run them and the measured
+  model calls (`--stats` for cache usage, `--plan` for the plan it chose and
+  what it reused)
+
+## Running the tests
+
+From the repository root, after `uv run maturin develop`:
+
+```sh
+uv run pytest examples/cocoindex_agents/tests
+```
+
+Or as a standalone project:
+
+```sh
+cd examples/cocoindex_agents
+uv sync --group dev
+uv run pytest
+```

@@ -48,6 +48,13 @@ class _MyTuple(NamedTuple):
     z: float
 
 
+@dataclass
+class _UnregisteredModuleLevel:
+    """Module-level (picklable) but not allow-listed for the restricted reader."""
+
+    value: int
+
+
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
 
@@ -384,15 +391,14 @@ class TestStrictPickle:
     """Test 15: strict mode rejects unregistered types."""
 
     def test_strict_rejects_unregistered_via_strict_pickle_dumps(self) -> None:
-        """Enable strict, then pickle an unregistered type -> PicklingError."""
+        """Enable strict, then pickle an unregistered type -> PicklingError.
+
+        Uses a module-level (picklable) class: the strict check pickles it,
+        then the restricted reader rejects the unallow-listed global.
+        """
         enable_strict_serialize()
-
-        class _TempUnregistered:
-            def __init__(self, v: int) -> None:
-                self.v = v
-
         with pytest.raises(pickle.PicklingError, match="not registered"):
-            _strict_pickle_dumps(_TempUnregistered(1))
+            _strict_pickle_dumps(_UnregisteredModuleLevel(1))
 
 
 class TestEncHook:

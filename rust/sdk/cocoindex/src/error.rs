@@ -1,4 +1,9 @@
+use std::any::Any;
+use std::fmt;
 use std::io;
+use std::sync::Arc;
+
+use cocoindex_utils::error::HostError;
 use thiserror::Error;
 
 /// All errors produced by the cocoindex API.
@@ -16,9 +21,16 @@ pub enum Error {
     #[error("serde decode: {0}")]
     SerdeDecode(#[from] rmp_serde::decode::Error),
 
-    /// Engine invariant violated (component path conflict, cycle, etc).
+    /// Engine invariant violated (cycle, contract violation, etc).
     #[error("{0}")]
     Engine(String),
+
+    /// Something was declared a second time within one run, where one
+    /// declaration is final: a target state key, a target state provider
+    /// path, a user-state key, a child component path, an app name. The
+    /// first declaration stands.
+    #[error("{0}")]
+    AlreadyDeclared(String),
 
     /// The active CocoIndex deadline has expired.
     #[error("CocoIndex timeout deadline exceeded")]
@@ -50,11 +62,39 @@ impl Error {
         matches!(self, Error::DeadlineExceeded)
     }
 
+    /// Convert into the core engine's error. The SDK error rides through the
+    /// engine unchanged as a host-language error, so it comes back out of
+    /// [`From<cocoindex_utils::error::Error>`] (and reaches exception
+    /// handlers) as the original value, matchable by variant and downcastable.
     pub(crate) fn into_core(self) -> cocoindex_utils::error::Error {
         match self {
             Error::DeadlineExceeded => cocoindex_utils::error::Error::deadline_exceeded(),
-            other => cocoindex_utils::error::Error::internal_msg(other.to_string()),
+            other => cocoindex_utils::error::Error::host(SdkHostError(Arc::new(other))),
         }
+    }
+}
+
+/// An SDK error carried through the core engine. Shared rather than owned so
+/// the engine can hand one failure to several awaiters
+/// ([`HostError::try_clone`]) without flattening it to text.
+#[derive(Debug)]
+struct SdkHostError(Arc<Error>);
+
+impl fmt::Display for SdkHostError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for SdkHostError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
+impl HostError for SdkHostError {
+    fn try_clone(&self) -> Option<Box<dyn HostError>> {
+        Some(Box::new(SdkHostError(self.0.clone())))
     }
 }
 
@@ -64,6 +104,22 @@ impl From<cocoindex_utils::error::Error> for Error {
         if e.is_deadline_exceeded() {
             return Error::DeadlineExceeded;
         }
-        Error::Engine(format!("{e}"))
+        match e {
+            cocoindex_utils::error::Error::HostLang(host) => {
+                let message = host.to_string();
+                let host: Box<dyn Any + Send + Sync> = host;
+                match host.downcast::<SdkHostError>() {
+                    // The original error, unless another awaiter still shares it.
+                    Ok(sdk) => Arc::try_unwrap(sdk.0).unwrap_or(Error::Engine(message)),
+                    Err(_) => Error::Engine(message),
+                }
+            }
+            other => match other.client_kind() {
+                Some(cocoindex_utils::error::ClientErrorKind::AlreadyDeclared) => {
+                    Error::AlreadyDeclared(format!("{other}"))
+                }
+                _ => Error::Engine(format!("{other}")),
+            },
+        }
     }
 }

@@ -1,0 +1,407 @@
+"""Source handles. v1: a local directory. Other connectors follow the same shape.
+
+A source handle exposes stable observations (widened ``stats``, hash-stable
+``sample``), per-item reads, and — for planners only — the volatile ``keys``.
+A source's contents are not an argument of anyone, so every read through it is
+**recorded** as a data dependency of the session that made it
+(``coco.use_data_dep``, DESIGN.md §7): the session is skipped next run only
+while every recorded read validates. Two kinds of record:
+
+- ``OBSERVATION`` — ``stats``, ``sample``, ``keys`` and the ``listing`` a
+  ``for_each`` walks. Keyed by the source and the call; the state is a digest
+  of what came back. Validated by observing again and comparing, so a change
+  that leaves the observation byte-identical (a new file inside the same
+  widened bucket, a sample that did not move) keeps the session skippable.
+- ``FILE_READ`` — ``read(key)``. Keyed by the file's path; the state is its
+  mtime and content digest, or ``None`` when it did not exist. An unchanged
+  mtime validates without reading the file.
+
+A source may only be an input of open sessions: a closed session's memo key
+must cover everything it reads, and ``open_source`` is not ``closed_ok``.
+
+What a read returns is decided by the file's media type (``documents.py``):
+text as text; a document (a PDF) as a reference, with the bytes attached to
+the session for the client to render. ``sample`` shows a document's media
+type and size in place of a text head.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import pathlib
+from dataclasses import dataclass
+from typing import NamedTuple
+
+import cocoindex as coco
+from cocoindex.connectors import localfs
+from cocoindex.resources.file import PatternFilePathMatcher
+
+from ..documents import Document, document_media_type
+from ..errors import ToolError
+from ..handles import MethodSpec, Volatility, int_arg
+from ..spec import Item, Json
+from ..transcript import canonical_json, digest_json, normalize_json
+from . import SessionContext, tool
+from .stats import bottom_k, format_range, widen_count
+
+_SAMPLE_HEAD_CHARS = 400
+
+# What ``for_each`` walks: every file by key with its mtime and size, so an
+# edit, a touch, an addition or a removal all re-run the fan-out's session.
+# Not a model-visible method: ``call`` rejects it.
+_LISTING = "listing"
+
+# mtime and digest of a file that was read; ``None`` when it did not exist.
+FileState = tuple[int, bytes] | None
+
+
+@dataclass(frozen=True)
+class Observation:
+    """The key of an ``OBSERVATION`` record: which source, which call."""
+
+    root: str
+    patterns: tuple[str, ...]
+    method: str
+    args: str  # canonical JSON of the call's arguments
+
+
+def _digest(data: bytes) -> bytes:
+    return hashlib.sha256(data).digest()
+
+
+def _digest_json(value: Json) -> bytes:
+    return _digest(canonical_json(value).encode("utf-8"))
+
+
+async def _validate_observation(key: Observation, prev: bytes) -> coco.MemoStateOutcome:
+    """Observe again; valid iff the result is byte-identical to what was recorded."""
+    src = LocalDirSource(pathlib.Path(key.root), key.patterns)
+    digest = _digest_json(await src.observe(key.method, json.loads(key.args)))
+    return coco.MemoStateOutcome(state=digest, memo_valid=digest == prev)
+
+
+async def _validate_file_read(key: str, prev: FileState) -> coco.MemoStateOutcome:
+    """An unchanged mtime validates without reading; otherwise the digest decides.
+
+    The state handed back on a miss does not matter: the body re-runs and
+    records the read afresh.
+    """
+    path = pathlib.Path(key)
+    mtime = await asyncio.to_thread(_mtime_ns, path)
+    if prev is None or mtime is None:
+        return coco.MemoStateOutcome(
+            state=prev, memo_valid=prev is None and mtime is None
+        )
+    if mtime == prev[0]:
+        return coco.MemoStateOutcome(state=prev, memo_valid=True)
+    try:
+        digest = _digest(await asyncio.to_thread(path.read_bytes))
+    except OSError:  # vanished between the stat and the read
+        return coco.MemoStateOutcome(state=prev)
+    return coco.MemoStateOutcome(state=(mtime, digest), memo_valid=digest == prev[1])
+
+
+OBSERVATION = coco.DataDep(
+    "cocoindex_agents.localfs.observation", validate=_validate_observation
+)
+FILE_READ = coco.DataDep("cocoindex_agents.localfs.file", validate=_validate_file_read)
+
+
+def _mtime_ns(path: pathlib.Path) -> int | None:
+    try:
+        return os.stat(path).st_mtime_ns
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+class Listing(NamedTuple):
+    items: dict[str, Item]
+    digest: str  # of the walk, for the session's trace
+
+
+class LocalDirSource:
+    """A ``src:`` handle over ``localfs.walk_dir``.
+
+    Its memo key is its identity (root and patterns), not its contents: what a
+    session read through it is recorded per call, as the module docstring says.
+    """
+
+    kind = "localfs"
+    closed_input_ok = False
+
+    def __init__(self, root: pathlib.Path, patterns: tuple[str, ...]) -> None:
+        self.root = root
+        self.patterns = patterns
+
+    def __coco_memo_key__(self) -> object:
+        return ("localfs", str(self.root), self.patterns)
+
+    def _matcher(self) -> PatternFilePathMatcher | None:
+        return (
+            PatternFilePathMatcher(included_patterns=list(self.patterns))
+            if self.patterns
+            else None
+        )
+
+    def walker(self) -> localfs.DirWalker:
+        return localfs.walk_dir(self.root, recursive=True, path_matcher=self._matcher())
+
+    async def files(self) -> dict[str, localfs.File]:
+        """One walk: every file by its key, in key order. Records nothing."""
+        found = {key: file async for key, file in self.walker().items()}
+        return dict(sorted(found.items()))
+
+    def methods(self) -> tuple[MethodSpec, ...]:
+        return (
+            MethodSpec(
+                "stats",
+                "Widened file count (a range, not an exact number).",
+                Volatility.STABLE,
+            ),
+            MethodSpec(
+                "sample",
+                "`k` representative files (default 5) with the head of each text file; "
+                "a PDF shows its media type and size instead. The set is hash-stable, "
+                "so it barely changes when files are added.",
+                Volatility.STABLE,
+                args=("k",),
+            ),
+            MethodSpec(
+                "read",
+                "One file by key: its full text, or for a PDF a reference with the "
+                "document attached to your next message.",
+                Volatility.PER_ITEM,
+                args=("key",),
+            ),
+            MethodSpec(
+                "keys",
+                "Every file key (optionally under `prefix`). Volatile: planners only.",
+                Volatility.VOLATILE,
+                args=("prefix",),
+            ),
+        )
+
+    async def call(self, method: str, args: dict[str, Json]) -> Json:
+        """A model-visible method: observe or read, and record what was seen."""
+        if method == "read":
+            return await self.read(args)
+        if method not in {m.name for m in self.methods()}:
+            raise ToolError(f"unknown method {method!r} on a localfs source")
+        return await self._observe_recorded(method, args)
+
+    async def listing(self) -> Listing:
+        """Every file as a ``for_each`` item, recorded as one observation of the walk."""
+        files = await self.files()
+        walk = await self._observe_recorded(_LISTING, {}, files)
+        return Listing(
+            {key: Item(key, file) for key, file in files.items()}, digest_json(walk)
+        )
+
+    async def _observe_recorded(
+        self,
+        method: str,
+        args: dict[str, Json],
+        files: dict[str, localfs.File] | None = None,
+    ) -> Json:
+        result = await self.observe(method, args, files)
+        coco.use_data_dep(
+            OBSERVATION,
+            key=Observation(
+                str(self.root), self.patterns, method, canonical_json(args)
+            ),
+            state=_digest_json(result),
+        )
+        return result
+
+    async def observe(
+        self,
+        method: str,
+        args: dict[str, Json],
+        files: dict[str, localfs.File] | None = None,
+    ) -> Json:
+        """Compute an observation without recording it (the validator's path).
+
+        ``files`` is the walk to observe; a caller that already walked passes it.
+        """
+        if files is None:
+            files = await self.files()
+        if method == "stats":
+            # Target (DESIGN.md §5): hysteresis against the previous bucket, kept in
+            # use_state on the session component. Not implemented yet.
+            return {"files": format_range(widen_count(len(files)))}
+        if method == "sample":
+            return [
+                await _sample_entry(key, files[key])
+                for key in bottom_k(files, int_arg(args, "k", 5))
+            ]
+        if method == "keys":
+            prefix = str(args.get("prefix", ""))
+            return [k for k in files if k.startswith(prefix)]
+        if method == _LISTING:
+            return await _listing(files)
+        raise ValueError(f"not an observation: {method!r}")  # call() screens the model
+
+    async def read(self, args: dict[str, Json]) -> str | Document:
+        """One file, recorded as a read of that file alone: its text, or a document.
+
+        Resolved from the key directly rather than through a walk, so the
+        record covers this file and not the listing: an edit elsewhere under
+        the root does not touch the session. A document is returned as is;
+        the ``call`` tool attaches it to the session and returns its
+        reference.
+        """
+        file_key = args.get("key")
+        if not isinstance(file_key, str):
+            raise ToolError("read needs a string `key`")
+        path = self._path_of(file_key)
+        # Stat before reading, so the recorded mtime is never newer than the bytes.
+        mtime = await asyncio.to_thread(_mtime_ns, path)
+        file = localfs.File(localfs.FilePath(path))
+        state: FileState = None
+        data = b""
+        if mtime is not None:
+            try:
+                data = await file.read()
+                state = (mtime, _digest(data))
+            except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+                state = None  # vanished, or the key names a directory
+        coco.use_data_dep(FILE_READ, key=str(path), state=state)
+        if state is None:
+            raise ToolError(f"no file {file_key!r} under {self.root}")
+        media_type = document_media_type(file_key)
+        if media_type is None:
+            return await file.read_text()  # decodes the bytes read above
+        return Document.of(file_key, media_type, data)
+
+    def _path_of(self, file_key: str) -> pathlib.Path:
+        """The path a walk key denotes; a key outside the root or the patterns is the model's error."""
+        root = self.root.resolve()
+        path = (root / file_key).resolve()
+        relative = pathlib.PurePosixPath(file_key)
+        matcher = self._matcher()
+        if (
+            not path.is_relative_to(root)
+            or path == root
+            or (matcher is not None and not matcher.is_file_included(relative))
+        ):
+            raise ToolError(f"no file {file_key!r} under {self.root}")
+        return path
+
+
+async def _sample_entry(key: str, file: localfs.File) -> dict[str, Json]:
+    """A text file's head; a document's media type and size (its content is not text)."""
+    media_type = document_media_type(key)
+    if media_type is None:
+        return {"key": key, "head": (await file.read_text())[:_SAMPLE_HEAD_CHARS]}
+    return {"key": key, "media_type": media_type, "bytes": await file.size()}
+
+
+async def _listing(files: dict[str, localfs.File]) -> list[tuple[str, int, int]]:
+    def stat_all() -> list[tuple[str, int, int]]:
+        out: list[tuple[str, int, int]] = []
+        for key, file in files.items():
+            st = os.stat(file.file_path.path)
+            out.append((key, st.st_mtime_ns, st.st_size))
+        return out
+
+    return await asyncio.to_thread(stat_all)
+
+
+@tool(
+    "open_source",
+    "Open a data source and get a handle (src:<name>) plus a card of its methods. "
+    "Kinds: localfs (args: path, patterns?).",
+    {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": ["localfs"]},
+            "name": {"type": "string"},
+            "path": {"type": "string"},
+            "patterns": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["kind", "name", "path"],
+    },
+)
+async def open_source(ctx: SessionContext, args: dict[str, Json]) -> Json:
+    src = LocalDirSource(pathlib.Path(args["path"]), tuple(args.get("patterns", ())))
+    handle = ctx.handles.register("src", args["name"], src)
+    stats = await src.call("stats", {})
+    ctx.trace.note_read(f"stats of {handle}", digest_json(stats))
+    return ctx.handles.card(
+        handle, root=str(src.root), patterns=list(src.patterns), **stats
+    )
+
+
+@tool(
+    "call",
+    "Call a method on an opened handle (see the handle's card for methods).",
+    {
+        "type": "object",
+        "properties": {
+            "handle": {"type": "string"},
+            "method": {"type": "string"},
+            "args": {"type": "object"},
+        },
+        "required": ["handle", "method"],
+    },
+    closed_ok=True,  # only ever reaches seeded handles in a closed session
+)
+async def call_method(ctx: SessionContext, args: dict[str, Json]) -> Json:
+    """Dispatch to the handle's method after checking it against the handle's card.
+
+    The name, the volatility gate and the argument names are all checked here,
+    for every handle kind, so an object's ``call`` only ever sees a method it
+    advertises with arguments it takes.
+    """
+    obj = ctx.handles.get(args["handle"])
+    method: str = args["method"]
+    spec = next((m for m in obj.methods() if m.name == method), None)
+    if spec is None:
+        raise ToolError(f"unknown method {method!r} on a {obj.kind} handle")
+    if spec.volatility is Volatility.VOLATILE and not ctx.spec.role.volatile_ok:
+        raise ToolError(
+            f"{method!r} is volatile and only available to planner roles; "
+            "use stats/sample, or ask a planner with observe()"
+        )
+    call_args = dict(args.get("args", {}))
+    unknown = sorted(set(call_args) - set(spec.args))
+    if unknown:
+        raise ToolError(
+            f"{method} does not take {unknown}; it takes "
+            f"{list(spec.args) if spec.args else 'no arguments'}"
+        )
+    result = await obj.call(method, call_args)
+    if isinstance(result, Document):
+        # The bytes stay with the session; the transcript gets the reference.
+        result = ctx.documents.attach(result)
+    if not obj.closed_input_ok:
+        # A read beyond the session's arguments: noted so the next run can
+        # name it when it is the read that changed.
+        key = call_args.get("key")
+        what = f"{method} of {args['handle']}" + (
+            f" {key}" if isinstance(key, str) else ""
+        )
+        ctx.trace.note_read(what, digest_json(normalize_json(result)))
+    return result
+
+
+@tool(
+    "read_input",
+    "Read this session's input: for a text file, {key, text}; for a PDF, a reference "
+    "{key, media_type, bytes, digest} with the document attached to your next message; "
+    "for a reduce, the list of partial results.",
+    closed_ok=True,
+)
+async def read_input(ctx: SessionContext, args: dict[str, Json]) -> Json:
+    if ctx.input is None:
+        raise ToolError("this session has no input; it is an open session")
+    if isinstance(ctx.input, Item):
+        media_type = document_media_type(ctx.input.key)
+        if media_type is None:
+            return {"key": ctx.input.key, "text": await ctx.input.file.read_text()}
+        data = await ctx.input.file.read()
+        return ctx.documents.attach(Document.of(ctx.input.key, media_type, data))
+    return list(ctx.input)

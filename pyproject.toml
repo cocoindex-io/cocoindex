@@ -69,7 +69,7 @@ profile = "release"      # wheel / normal builds
 editable-profile = "dev" # local editable builds
 
 [project.optional-dependencies]
-litellm = ["litellm>=1.81.0"]
+litellm = ["litellm>=1.81.0,!=1.107.0"]
 sentence_transformers = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.34.0", "pyarrow>=23.0.0"]
@@ -91,7 +91,7 @@ google_drive = [
 amazon_s3 = ["aiobotocore>=2.0.0"]
 azure_blob = ["azure-identity>=1.15.0", "azure-storage-blob>=12.19.0"]
 doris = ["aiohttp>=3.9.0", "pymysql>=1.1.0", "aiomysql>=0.2.0"]
-falkordb = ["falkordb>=1.1.0"]
+falkordb = ["falkordb>=1.6.0"]
 neo4j = ["neo4j>=5.18.0"]
 kafka = ["confluent_kafka>=2.6"]
 iggy = ["apache-iggy>=0.8.0"]
@@ -100,11 +100,11 @@ entity_resolution = ["faiss-cpu>=1.7"]
 entity_resolution_llm = [
     "faiss-cpu>=1.7",
     "instructor>=1.0",
-    "litellm>=1.81.0",
+    "litellm>=1.81.0,!=1.107.0",
 ]
 
 all = [
-    "litellm>=1.81.0",
+    "litellm>=1.81.0,!=1.107.0",
     "sentence-transformers>=3.3.1",
     "colpali-engine",
     "lancedb>=0.34.0",
@@ -128,7 +128,7 @@ all = [
     "aiohttp>=3.9.0",
     "pymysql>=1.1.0",
     "aiomysql>=0.2.0",
-    "falkordb>=1.1.0",
+    "falkordb>=1.6.0",
     "neo4j>=5.18.0",
     "confluent_kafka>=2.6",
     "apache-iggy>=0.8.0",
@@ -150,7 +150,6 @@ build-test = [
     "aiomoto[s3]>=0.3.0",
     "testcontainers[postgres,neo4j]>=4.0.0; sys_platform != 'win32'",
 ]
-format = ["ruff"]
 type-stubs = ["types-psutil", "asyncpg-stubs"]
 ci-enabled-optional-deps = ["pydantic>=2.11.9", "asyncpg>=0.31.0", "neo4j>=5.18.0", "pymysql>=1.1.0", "aiohttp>=3.9.0", "valkey-glide>=2.5.2; sys_platform != 'win32'"]
 examples = ["sentence-transformers>=3.0.0", "numpy"]

@@ -23,6 +23,7 @@ from cocoindex._internal.typing import StableKey as StableKey
 ########################################################
 
 class DeadlineExceededError(TimeoutError): ...
+class AlreadyDeclaredError(ValueError): ...
 
 class DeadlineContext:
     def with_timeout(self, seconds: float) -> DeadlineContext: ...
@@ -84,6 +85,7 @@ class ComponentProcessor(Generic[T_co]):
         processor_info: ComponentProcessorInfo,
         memo_key_fingerprint: Fingerprint | None = None,
         state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
+        collects_initial_states: bool = True,
     ) -> ComponentProcessor[T_co]: ...
     @staticmethod
     def new_async(
@@ -91,6 +93,7 @@ class ComponentProcessor(Generic[T_co]):
         processor_info: ComponentProcessorInfo,
         memo_key_fingerprint: Fingerprint | None = None,
         state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
+        collects_initial_states: bool = True,
     ) -> ComponentProcessor[T_co]: ...
 
 # --- ComponentProcessorContext ---
@@ -122,9 +125,15 @@ class ComponentProcessorContext:
 class FnCallContext:
     def __new__(cls, *, propagate_children_fn_logic: bool = True) -> FnCallContext: ...
     def join_child(self, child_fn_ctx: FnCallContext) -> None: ...
+    def join_tunneled_child(
+        self, child_fn_ctx: FnCallContext, owner: FnCallContext
+    ) -> None: ...
     def join_child_memo(self, memo_fp: Fingerprint) -> None: ...
+    @property
+    def closed(self) -> bool: ...
     def add_fn_logic_dep(self, fp: Fingerprint) -> None: ...
     def add_context_change_dep(self, fp: Fingerprint) -> None: ...
+    def add_data_dep(self, kind_fp: Fingerprint, key: Any, state: Any) -> None: ...
     def initial_context_memo_states(
         self, env: "Environment"
     ) -> dict[Fingerprint, list[StoredValue]]: ...
@@ -145,14 +154,21 @@ class FnCallMemoGuard:
     def cached_context_memo_states(
         self,
     ) -> dict[Fingerprint, list[StoredValue]] | None: ...
+    @property
+    def cached_data_deps(
+        self,
+    ) -> list[tuple[Fingerprint, Fingerprint, StoredValue, StoredValue]] | None: ...
     def update_memo_states(
         self,
         memo_states: list[Any] | None = None,
         context_memo_states: dict[Fingerprint, list[Any]] | None = None,
+        data_deps: list[tuple[Fingerprint, Fingerprint, Any, Any]] | None = None,
     ) -> None: ...
+    def join_cached_data_deps(self, fn_ctx: FnCallContext) -> None: ...
     def join_cached_target_provider_deps(
         self, parent_fn_ctx: FnCallContext
     ) -> None: ...
+    def join_cached_logic_deps(self, fn_ctx: FnCallContext) -> None: ...
     def resolve(
         self,
         fn_ctx: FnCallContext,
@@ -181,6 +197,7 @@ class AsyncContext:
 # --- Environment ---
 class Environment:
     def __new__(cls, settings: Any, async_context: AsyncContext) -> "Environment": ...
+    def close(self) -> None: ...
     def register_logic(self, fp: Fingerprint) -> None: ...
     def unregister_logic(self, fp: Fingerprint) -> None: ...
     def register_context_initial_states(
@@ -388,11 +405,15 @@ def mount_live_async(
 class TargetActionSink:
     @staticmethod
     def new_sync(
-        callback: Callable[..., Any], with_children: bool
+        callback: Callable[..., Any],
+        with_children: bool,
+        child_handler: Callable[[Any, Any], Any] | None = None,
     ) -> TargetActionSink: ...
     @staticmethod
     def new_async(
-        callback: Callable[..., Coroutine[Any, Any, Any]], with_children: bool
+        callback: Callable[..., Coroutine[Any, Any, Any]],
+        with_children: bool,
+        child_handler: Callable[[Any, Any], Any] | None = None,
     ) -> TargetActionSink: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -420,8 +441,13 @@ def init_runtime(
     lang: str,
     serialize_fn: Callable[[Any], bytes],
     child_slot_wrapper_fn: Callable[[ChildTargetSlot], Any],
+    typed_target_handler_wrapper_fn: Callable[[Any], Any],
     non_existence: Any,
     target_state_codec: ModuleType,
+    validate_data_deps_fn: Callable[
+        [str, list[tuple[Fingerprint, Fingerprint, StoredValue, StoredValue]]],
+        Awaitable[tuple[list[tuple[Fingerprint, Fingerprint, Any, Any]], bool, bool]],
+    ],
 ) -> None: ...
 def shutdown_tokio_runtime() -> None: ...
 def cancel_all() -> None: ...
@@ -683,8 +709,22 @@ class BatchingOptions:
     """Options for batching behavior."""
 
     max_batch_size: int | None
+    max_in_flight: int | None
+    """Upper bound on batches of the shared queue running at once (the inline
+    first call counts); positive when set. None keeps the idle-queue rule: a
+    full batch starts when it fills, the next partial batch once every running
+    batch has finished. Batchers sharing a queue should agree on it."""
 
-    def __new__(cls, max_batch_size: int | None = None) -> "BatchingOptions": ...
+    def __new__(
+        cls,
+        max_batch_size: int | None = None,
+        max_in_flight: int | None = None,
+        rate_limiter: "RateLimiter | None" = None,
+    ) -> "BatchingOptions":
+        """``rate_limiter`` gates every batch: no call runs inline, and a pump
+        runs the oldest pending batch once a ``max_in_flight`` slot and one
+        token are available, so calls arriving during the wait ride the next
+        token. Batchers sharing a queue should agree on it."""
 
 # --- BatchQueue ---
 class BatchQueue:
@@ -749,10 +789,8 @@ class RateLimiter:
 
 class GPUPool:
     def __init__(self, num_gpus: int) -> None: ...
-
     @property
     def num_gpus(self) -> int: ...
-
     async def acquire(self, fraction: float) -> int:
         """
         Acquires a fraction of a GPU and returns the GPU ID.

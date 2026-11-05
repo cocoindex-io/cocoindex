@@ -14,8 +14,18 @@ env:
   TESTCONTAINERS_RYUK_DISABLED: "true"
 
 jobs:
+    # Everything whose result depends on the Python interpreter: the
+    # extension build, the workspace tests (the `rust/py` crate links
+    # libpython), and the Python test suite. Runs on every (platform, Python)
+    # pair. Hooks that don't depend on the interpreter run once in
+    # `rust-checks` below, concurrently with this job.
     build-test:
         strategy:
+            # A failing leg cancels the rest on a PR or in the merge queue,
+            # to stop a broken change early. On a push there is nothing to
+            # stop, and a cancelled leg skips its Rust cache save, so the
+            # next push starts it cold.
+            fail-fast: ${{ contains(fromJSON('["pull_request", "merge_group"]'), github.event_name) }}
             matrix:
                 platform:
                   # Standard builds (Python 3.11)
@@ -34,35 +44,12 @@ jobs:
         # GitHub's 6-hour limit while reporting nothing.
         timeout-minutes: 60
         env:
-          SCCACHE_GHA_ENABLED: "true"
           RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: "sccache"
 
         steps:
-        # GitHub guarantees only ~14 GB free on Linux runners, and a push to a
-        # release branch runs `prek --all-files` -- every hook, including the
-        # `cargo check` over the external example/benchmark workspaces -- so the
-        # combined `target/` trees crowd the root volume. `CARGO_INCREMENTAL=0`
-        # and `-C debuginfo=0` below already keep `target/` as small as it gets,
-        # so the remaining headroom has to come from the runner image itself.
-        # Reclaiming the preinstalled runtimes we never use buys ~20 GB.
-        #
-        # `large-packages` is the apt-get path: it dominates this action's
-        # runtime for a comparatively small win, so it stays off. `tool-cache`
-        # (default false) must stay off too -- it deletes $AGENT_TOOLSDIRECTORY,
-        # which is where the sccache/protoc/Python/prek steps below live.
-        - name: Free disk space
-          if: runner.os == 'Linux'
-          uses: jlumbroso/free-disk-space@v2.0.0
-          with:
-            android: true
-            dotnet: true
-            haskell: true
-            docker-images: true
-            large-packages: false
-            tool-cache: false
-
+        # Before checkout, which writes the files with the line endings this sets.
         - name: Disable Git autocrlf on Windows
           if: runner.os == 'Windows'
           shell: bash
@@ -72,114 +59,75 @@ jobs:
           with:
             fetch-depth: 1
 
-        - name: Setup sccache
-          uses: mozilla-actions/sccache-action@v0.0.11
-          with:
-            # Latest version doesn't work well because of https://github.com/mozilla/sccache/issues/2554
-            version: "v0.12.0"
-
-        - run: rustup toolchain install stable --profile minimal
-
-        # `protoc` is needed to build the Rust examples that enable the LanceDB
-        # (`lance-encoding`) and Qdrant (`qdrant-client`) features, which compile
-        # protobufs via `prost-build`. Cross-platform across the test matrix.
-        - name: Install protoc
-          uses: arduino/setup-protoc@v3
-          with:
-            repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-        - uses: actions/setup-python@v7
-          id: setup_python
+        - uses: ./.github/actions/setup-ci
           with:
             python-version: ${{ matrix.platform.python-version }}
-            freethreaded: ${{ matrix.platform.free-threaded }}
-            # Python cache is huge and saves little time, so disabled for now, until we have higher cache size limits
-            # cache: 'pip'
-
-        - name: Verify free-threaded interpreter
-          if: matrix.platform.free-threaded
-          run: |
-            python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
-
-        - name: Setup Rust Cache
-          uses: Swatinem/rust-cache@v2
-          with:
-            key: rust-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-${{ matrix.platform.free-threaded }}
-            cache-targets: 'true'
-            cache-all-crates: 'false'
-            cache-workspace-crates: 'false'
-
-        - name: Install uv
-          uses: astral-sh/setup-uv@v7
-
-        - name: Sync Python dependencies
-          shell: bash
-          run: |
-            uv sync \
-              --python "$(python -c 'import sys; print(sys.executable)')" \
-              --no-dev \
-              --group ci \
-              --no-install-project
-
-        - name: Install prek
-          uses: j178/prek-action@v2
-          with:
-            install-only: true
+            free-threaded: ${{ matrix.platform.free-threaded }}
+            rust-cache-key: rust-${{ matrix.platform.runner }}
+            rust-cache-per-python: true
+            # Peak use on a 14 GiB runner: about 10 GiB, plus 0.7 GiB when
+            # it saves a missed Rust cache.
+            min-free-disk-gib: 20
+            uv-cache-suffix: ${{ matrix.platform.runner }}-${{ matrix.platform.python-version }}${{ matrix.platform.free-threaded && 't' || '' }}
 
         - name: Run build-test hooks
+          uses: ./.github/actions/run-prek
           env:
             UV_NO_SYNC: "1"
-            # Skip mypy-check - it runs in e2e_type_check workflow
-            PREK_SKIP: mypy-check
-          shell: bash
-          run: |
-            set +e
+          with:
+            # mypy-check runs in the e2e_type_check workflow, and
+            # update-rust-extern-locks in the fast_check one. cargo-clippy and
+            # cargo-tree-sdk-no-pyo3 run in `rust-checks`. The rest are the
+            # Rust SDK hooks, which `_rust_sdk.yml` runs.
+            skip: mypy-check,update-rust-extern-locks,cargo-clippy,cargo-tree-sdk-no-pyo3,cargo-test-sdk,cargo-clippy-sdk,cargo-test-rust-externs
 
-            # prek renders a project's hook results only once the whole run
-            # finishes when stdout is not a TTY, so a hook that hangs leaves
-            # this step's log empty with no hint of which hook is stuck. No
-            # flag changes that, but prek always writes a trace log; tail its
-            # hook start/finish events into the step log. RUNNER_TEMP is
-            # backslash-separated on Windows, which bash would mangle, and
-            # prek refuses to start at all if it cannot open the log, so
-            # make sure the directory exists before pointing prek at it.
-            prek_log_dir="${RUNNER_TEMP:-/tmp}"
-            prek_log="${prek_log_dir//\\//}/prek.log"
-            mkdir -p "${prek_log%/*}"
-            : > "$prek_log"
-            tail -n +1 -F "$prek_log" 2>/dev/null \
-              > >(grep --line-buffered -E 'Running priority group|run\{hook_id=[^}]*\}: close time') &
-            tail_pid=$!
+        # Last, so it sees every object the job's hooks compiled.
+        - name: Save sccache's local cache
+          if: ${{ !cancelled() }}
+          uses: ./.github/actions/save-sccache
 
-            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-              echo "Running prek on PR diff against target branch: ${{ github.base_ref }}"
-              # Fetch both diff endpoints: origin/<base> and the to-ref commit.
-              # The shallow checkout only guarantees the to-ref's tree, not the
-              # commit as a named object; without fetching <sha> explicitly,
-              # prek's `git diff origin/<base>..<sha>` can fail with "bad
-              # revision" (e.g. when the PR merges while this run is in flight).
-              git fetch --no-tags --prune --depth=1 origin \
-                "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}" \
-                "${{ github.sha }}"
+    # Hooks whose result doesn't depend on the Python interpreter, run once
+    # instead of on every `build-test` leg: clippy, and the check that the
+    # Rust SDK doesn't depend on pyo3. Linux x86_64 covers every platform for
+    # both: the lints are the same on every platform bar a few
+    # `cfg(not(unix))` lines, and the pyo3 check reads the dependencies of
+    # every platform. The Rust SDK's own hooks run in `_rust_sdk.yml`.
+    rust-checks:
+        runs-on: ubuntu-latest
+        timeout-minutes: 60
+        env:
+          RUSTFLAGS: "-C debuginfo=0"
+          CARGO_INCREMENTAL: "0"
+          RUSTC_WRAPPER: "sccache"
 
-              prek --log-file "$prek_log" run \
-                --from-ref "origin/${{ github.base_ref }}" \
-                --to-ref "${{ github.sha }}" \
-                --show-diff-on-failure
-              status=$?
-            else
-              echo "Running prek on all files (event: ${{ github.event_name }})"
-              prek --log-file "$prek_log" run --all-files --show-diff-on-failure
-              status=$?
-            fi
+        steps:
+        - uses: actions/checkout@v7
+          with:
+            fetch-depth: 1
 
-            kill "$tail_pid" 2>/dev/null
-            wait "$tail_pid" 2>/dev/null
+        # Clippy lints `rust/py`, which links libpython, and it runs through
+        # `uv run`, so the venv has to exist.
+        - uses: ./.github/actions/setup-ci
+          with:
+            python-version: "3.11"
+            rust-cache-key: rust-checks
+            # Less than `build-test` uses: clippy compiles the same crates,
+            # without codegen.
+            min-free-disk-gib: 20
+            uv-cache-suffix: rust-checks
+            clippy: true
 
-            if [ $status -ne 0 ]; then
-              echo "::error::Build-test checks failed. Please run 'prek run --all-files' locally."
-              exit $status
-            fi
+        - name: Run rust-checks hooks
+          uses: ./.github/actions/run-prek
+          env:
+            UV_NO_SYNC: "1"
+          with:
+            hooks: cargo-clippy cargo-tree-sdk-no-pyo3
+
+        # Last, so it sees every object the job's hooks compiled.
+        - name: Save sccache's local cache
+          if: ${{ !cancelled() }}
+          uses: ./.github/actions/save-sccache
 
     validate-3p-notices:
         runs-on: ubuntu-latest

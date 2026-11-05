@@ -150,7 +150,7 @@ impl GPUPool {
             1,
             "Expected one GPU for fraction {}, but got: {:?}",
             fraction,
-            &acquired_gpus
+            acquired_gpus
         );
         Ok(acquired_gpus[0])
     }
@@ -303,7 +303,7 @@ impl GPUPool {
     /// 4. Default to ``1``.
     ///
     fn detect_num_gpus() -> Result<usize> {
-        if let Some(env_num) = std::env::var("COCOINDEX_NUM_GPUS").ok() {
+        if let Ok(env_num) = std::env::var("COCOINDEX_NUM_GPUS") {
             return Ok(env_num
                 .trim()
                 .parse::<usize>()

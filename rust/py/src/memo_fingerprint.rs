@@ -33,7 +33,7 @@ fn write_int(fp: &mut Fingerprinter, obj: Borrowed<'_, '_, PyAny>) -> PyResult<(
     let is_neg = obj.call_method1("__lt__", (0,))?.extract::<bool>()?;
     let abs_obj = obj.call_method0("__abs__")?;
     let nbits = abs_obj.call_method0("bit_length")?.extract::<usize>()?;
-    let nbytes = std::cmp::max(1, (nbits + 7) / 8);
+    let nbytes = std::cmp::max(1, nbits.div_ceil(8));
     let mag: Bound<'_, PyBytes> = abs_obj
         .call_method1("to_bytes", (nbytes, "little"))?
         .extract()?;
@@ -233,7 +233,7 @@ fn write_plain_map(
 /// Returns `false`, leaving `fp` in an unspecified state, when it is not: a type
 /// other than exactly `None` / `bool` / `int` / `float` / `str` / `bytes` /
 /// `list` / `tuple` / `dict`, a `dict` key that is not a `str`, a container
-/// reached twice (the canonical form encodes those as ordinal back-references),
+/// reached twice (left to the Python canonicalizer, which tells a cycle from a shared container),
 /// or nesting deeper than `MAX_PLAIN_DEPTH`.
 fn write_plain(
     fp: &mut Fingerprinter,

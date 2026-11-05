@@ -58,7 +58,7 @@ See [references/setup_project.md](references/setup_project.md) for complete exam
 ### Run the Pipeline
 
 ```bash
-uv run cocoindex update main.py   # or: pip install -e . && cocoindex update main.py
+uv run cocoindex update main.py   # installs dependencies, then runs
 ```
 
 ## Core Concepts
@@ -177,7 +177,7 @@ for chunk in chunks:
 
 By default, `app.update()` runs in **catch-up mode**: it scans all sources, processes what changed since the last run (memoized components are skipped), syncs target states, and returns. Each call still has to scan sources to discover changes.
 
-**Live mode** keeps the app running after catch-up and lets components stream changes continuously from their sources (e.g., file watcher, Kafka consumer), applying them with very low latency.
+**Live mode** keeps the app running after catch-up and lets components stream changes continuously from their sources (e.g., file watcher, Kafka consumer), applying them with low latency.
 
 ```python
 # Enable live mode
@@ -196,7 +196,7 @@ files = localfs.walk_dir(sourcedir, live=True, ...)
 await coco.mount_each(process_file, files.items(), target)
 
 # Kafka -- inherently live
-items = kafka.topic_as_map(consumer, ["my-topic"])
+items = kafka.topic_as_map(consumer, "my-topic")
 await coco.mount_each(process_message, items, target)
 ```
 
@@ -387,7 +387,7 @@ cocoindex ls [main.py]                 # List apps
 cocoindex show main.py [--tree]        # Show component paths
 ```
 
-## Best Practices
+## Pipeline design guidelines
 
 ### 1. Use `@coco.fn` on All Processing Functions
 

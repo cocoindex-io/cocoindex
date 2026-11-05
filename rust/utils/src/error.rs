@@ -57,16 +57,40 @@ impl HostError for CancelledError {
     }
 }
 
+/// What a client error means, beyond "the request was invalid". A host
+/// language maps each kind to its own exception type, so a caller can branch
+/// on the kind instead of on message text. Every client error that no kind
+/// below describes is `Generic`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClientErrorKind {
+    #[default]
+    Generic,
+    /// Something was declared a second time within one run, where one
+    /// declaration is final: a target state key, a target state provider
+    /// path, a `use_state` key, a child component path, an app name. The
+    /// first declaration stands; the second is refused.
+    AlreadyDeclared,
+}
+
 pub enum Error {
-    Context { msg: String, source: Box<SError> },
+    Context {
+        msg: String,
+        source: Box<SError>,
+    },
     HostLang(Box<dyn HostError>),
     // `bt` follows the same sharing model as `Client`: replicas preserve the
     // original cold-path capture site instead of re-capturing at fan-out.
-    DeadlineExceeded { bt: Arc<Backtrace> },
+    DeadlineExceeded {
+        bt: Arc<Backtrace>,
+    },
     // `bt` is shared via `Arc` so `Error::replica` can clone a `Client` error
     // while keeping the original capture site (capturing afresh would point
     // at the replica call instead).
-    Client { msg: String, bt: Arc<Backtrace> },
+    Client {
+        kind: ClientErrorKind,
+        msg: String,
+        bt: Arc<Backtrace>,
+    },
     Internal(anyhow::Error),
 }
 
@@ -77,7 +101,12 @@ impl Display for Error {
             Error::HostLang(e) => write!(f, "{}", e),
             Error::DeadlineExceeded { .. } => f.write_str("CocoIndex timeout deadline exceeded"),
             Error::Client { msg, .. } => write!(f, "Invalid Request: {}", msg),
-            Error::Internal(e) => write!(f, "{}", e),
+            // The whole cause chain, not just the outermost message: a wrapped
+            // library error often says nothing on its own (tokio-postgres
+            // renders every server error as "db error" and keeps the
+            // server's message in its source), and so does an `anyhow`
+            // context layered over the cause.
+            Error::Internal(e) => write!(f, "{e:#}"),
         }
     }
 }
@@ -89,7 +118,7 @@ impl Debug for Error {
             Error::DeadlineExceeded { bt } => {
                 write!(f, "CocoIndex timeout deadline exceeded\n\n{bt}\n")
             }
-            Error::Client { msg, bt } => {
+            Error::Client { msg, bt, .. } => {
                 write!(f, "Invalid Request: {msg}\n\n{bt}\n")
             }
             Error::Internal(e) => write!(f, "{e:?}"),
@@ -109,9 +138,28 @@ impl Error {
     }
 
     pub fn client(msg: impl Into<String>) -> Self {
+        Self::client_of_kind(ClientErrorKind::Generic, msg)
+    }
+
+    pub fn client_of_kind(kind: ClientErrorKind, msg: impl Into<String>) -> Self {
         Self::Client {
+            kind,
             msg: msg.into(),
             bt: Arc::new(Backtrace::capture()),
+        }
+    }
+
+    /// A client error of kind [`ClientErrorKind::AlreadyDeclared`].
+    pub fn already_declared(msg: impl Into<String>) -> Self {
+        Self::client_of_kind(ClientErrorKind::AlreadyDeclared, msg)
+    }
+
+    /// The kind of this client error, through any context layers; `None` for
+    /// an error that is not a client error.
+    pub fn client_kind(&self) -> Option<ClientErrorKind> {
+        match self.without_contexts() {
+            Error::Client { kind, .. } => Some(*kind),
+            _ => None,
         }
     }
 
@@ -199,7 +247,8 @@ impl Error {
                 None => Error::internal(ResidualError::new(self)),
             },
             Error::DeadlineExceeded { bt } => Error::DeadlineExceeded { bt: bt.clone() },
-            Error::Client { msg, bt } => Error::Client {
+            Error::Client { kind, msg, bt } => Error::Client {
+                kind: *kind,
                 msg: msg.clone(),
                 // Share the original capture site rather than re-capturing here.
                 bt: bt.clone(),
@@ -242,7 +291,7 @@ impl Error {
             write!(f, "\nContext:\n")?;
             let mut next_id = 1;
             while let Error::Context { msg, source } = current {
-                write!(f, "  {next_id}: {msg}\n")?;
+                writeln!(f, "  {next_id}: {msg}")?;
                 current = source.inner();
                 next_id += 1;
             }
@@ -321,6 +370,15 @@ macro_rules! client_bail {
 macro_rules! client_error {
     ( $fmt:literal $(, $($arg:tt)*)?) => {
         $crate::error::Error::client(format!($fmt $(, $($arg)*)?))
+    };
+}
+
+/// `client_bail!` for a second declaration of something within one run
+/// ([`ClientErrorKind::AlreadyDeclared`]).
+#[macro_export]
+macro_rules! already_declared_bail {
+    ( $fmt:literal $(, $($arg:tt)*)?) => {
+        return Err($crate::error::Error::already_declared(format!($fmt $(, $($arg)*)?)))
     };
 }
 
@@ -631,6 +689,34 @@ mod tests {
         let err = Error::internal_msg("something went wrong");
         assert!(matches!(err, Error::Internal { .. }));
         assert_eq!(err.to_string(), "something went wrong");
+    }
+
+    /// A wrapped error's message alone can be useless ("db error"); the
+    /// Display text carries its whole cause chain.
+    #[test]
+    fn internal_error_displays_its_cause_chain() {
+        #[derive(Debug)]
+        struct Opaque(io::Error);
+        impl Display for Opaque {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("db error")
+            }
+        }
+        impl StdError for Opaque {
+            fn source(&self) -> Option<&(dyn StdError + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let cause = io::Error::other("ERROR: deadlock detected");
+        let err = Error::internal(Opaque(cause));
+        assert_eq!(err.to_string(), "db error: ERROR: deadlock detected");
+
+        let err = Error::internal(
+            anyhow::Error::new(io::Error::new(io::ErrorKind::NotFound, "file not found"))
+                .context("opening the index"),
+        );
+        assert_eq!(err.to_string(), "opening the index: file not found");
     }
 
     #[test]

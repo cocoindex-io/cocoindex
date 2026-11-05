@@ -17,9 +17,9 @@ import pickle
 import threading
 import multiprocessing as mp
 from abc import ABC, abstractmethod
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from contextvars import ContextVar
+from contextvars import Context, ContextVar
 from typing import Any, Callable, Coroutine, TypeVar, ParamSpec
 
 from . import core
@@ -342,6 +342,20 @@ def configure_gpu_pool(num_gpus: int) -> None:
 # ============================================================================
 
 
+class EmptyContextThreadPoolExecutor(ThreadPoolExecutor):
+    """A thread pool whose worker threads start in an empty context.
+
+    Where threads inherit the starter's context (free-threaded 3.14+), a worker
+    started while a component runs would otherwise keep that component's context,
+    and with it the environment, alive as long as the pool lives.
+    """
+
+    def submit(
+        self, fn: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs
+    ) -> Future[R]:
+        return Context().run(super().submit, fn, *args, **kwargs)
+
+
 class GPURunner(Runner):
     """Runner for GPU workloads with fractional allocation support.
 
@@ -383,7 +397,9 @@ class GPURunner(Runner):
     def _get_gpu_executor(self) -> ThreadPoolExecutor:
         """Get or create the dedicated GPU thread pool."""
         if self._gpu_executor is None:
-            self._gpu_executor = ThreadPoolExecutor(thread_name_prefix="gpu")
+            self._gpu_executor = EmptyContextThreadPoolExecutor(
+                thread_name_prefix="gpu"
+            )
         return self._gpu_executor
 
     async def _acquire_gpu(self) -> int:

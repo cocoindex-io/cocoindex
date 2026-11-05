@@ -5,7 +5,6 @@ Utilities to dump/load objects (for configs, specs).
 from __future__ import annotations
 
 import datetime
-import base64
 from enum import Enum
 from typing import Any
 

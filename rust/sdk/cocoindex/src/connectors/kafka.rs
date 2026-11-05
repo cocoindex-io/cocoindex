@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use cocoindex_utils::fingerprint::Fingerprint;
-use rskafka::client::partition::{Compression, PartitionClient, UnknownTopicHandling};
+use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
 use rskafka::client::{Client, ClientBuilder};
 use rskafka::record::Record;
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,7 @@ use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard};
 use crate::target_state::{
-    StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
+    SinkCache, StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
     TargetStateProvider, declare_target_state, register_root_target_states_provider,
 };
 
@@ -214,6 +214,7 @@ struct MessageHandler {
     client: Arc<Client>,
     topic: String,
     deletion_value_fn: Option<DeletionValueFn>,
+    sink: SinkCache<MessageAction>,
 }
 
 impl MessageHandler {
@@ -222,6 +223,7 @@ impl MessageHandler {
             client,
             topic,
             deletion_value_fn,
+            sink: SinkCache::default(),
         }
     }
 }
@@ -261,7 +263,7 @@ impl TargetHandler<Vec<u8>> for MessageHandler {
         };
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(action),
-            sink: self.message_sink(),
+            sink: self.sink.get(|| self.message_sink()),
             tracking_record: decision.tracking,
             child_invalidation: None,
         }))
@@ -270,50 +272,117 @@ impl TargetHandler<Vec<u8>> for MessageHandler {
 
 impl MessageHandler {
     fn message_sink(&self) -> TargetActionSink<MessageAction> {
-        let client = self.client.clone();
-        let topic = self.topic.clone();
-        // One PartitionClient per sink, opened lazily on first apply.
-        let partition: Arc<OnceCell<Arc<PartitionClient>>> = Arc::new(OnceCell::new());
+        let partitions = Arc::new(TopicPartitions::new(
+            self.client.clone(),
+            self.topic.clone(),
+        ));
         TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<MessageAction>>| {
-            let client = client.clone();
-            let topic = topic.clone();
-            let partition = partition.clone();
+            let partitions = partitions.clone();
             async move {
-                if actions.is_empty() {
-                    return Ok(());
-                }
-                let pc = partition
-                    .get_or_try_init(|| async {
-                        client
-                            .partition_client(topic.clone(), 0, UnknownTopicHandling::Retry)
-                            .await
-                            .map(Arc::new)
-                    })
-                    .await
-                    .map_err(|e| Error::engine(format!("kafka partition_client: {e}")))?;
-
                 let timestamp = current_timestamp();
-                let mut records = Vec::with_capacity(actions.len());
+                let mut by_partition: BTreeMap<i32, Vec<Record>> = BTreeMap::new();
                 for action in actions {
                     let msg = match action {
                         TargetAction::Create(m)
                         | TargetAction::Update(m)
                         | TargetAction::Delete(m) => m,
                     };
-                    records.push(Record {
+                    let partition = partitions.partition_for_key(msg.key.as_bytes()).await?;
+                    by_partition.entry(partition).or_default().push(Record {
                         key: Some(msg.key.into_bytes()),
                         value: msg.value,
                         headers: BTreeMap::new(),
                         timestamp,
                     });
                 }
-                pc.produce(records, Compression::NoCompression)
-                    .await
-                    .map_err(|e| Error::engine(format!("kafka produce: {e}")))?;
+                for (partition, records) in by_partition {
+                    partitions
+                        .client(partition)
+                        .await?
+                        .produce(records, Compression::NoCompression)
+                        .await
+                        .map_err(|e| Error::engine(format!("kafka produce: {e}")))?;
+                }
                 Ok(())
             }
         })
     }
+}
+
+/// A topic's partitions and their clients, loaded lazily on first produce.
+struct TopicPartitions {
+    client: Arc<Client>,
+    topic: String,
+    /// Partition ids, sorted.
+    ids: OnceCell<Vec<i32>>,
+    clients: tokio::sync::Mutex<BTreeMap<i32, Arc<PartitionClient>>>,
+}
+
+impl TopicPartitions {
+    fn new(client: Arc<Client>, topic: String) -> Self {
+        Self {
+            client,
+            topic,
+            ids: OnceCell::new(),
+            clients: tokio::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    async fn partition_for_key(&self, key: &[u8]) -> Result<i32> {
+        let ids = self
+            .ids
+            .get_or_try_init(|| async {
+                let topics = self
+                    .client
+                    .list_topics()
+                    .await
+                    .map_err(|e| Error::engine(format!("kafka list_topics: {e}")))?;
+                let ids: Vec<i32> = topics
+                    .into_iter()
+                    .find(|topic| topic.name == self.topic)
+                    .map(|topic| topic.partitions.into_iter().collect())
+                    .unwrap_or_default();
+                if ids.is_empty() {
+                    return Err(Error::engine(format!(
+                        "kafka topic `{}` does not exist or has no partitions",
+                        self.topic
+                    )));
+                }
+                Ok(ids)
+            })
+            .await?;
+        Ok(ids[partition_index(key, ids.len())])
+    }
+
+    async fn client(&self, partition: i32) -> Result<Arc<PartitionClient>> {
+        let mut clients = self.clients.lock().await;
+        if let Some(client) = clients.get(&partition) {
+            return Ok(client.clone());
+        }
+        let client = Arc::new(
+            self.client
+                .partition_client(self.topic.clone(), partition, UnknownTopicHandling::Retry)
+                .await
+                .map_err(|e| Error::engine(format!("kafka partition_client: {e}")))?,
+        );
+        clients.insert(partition, client.clone());
+        Ok(client)
+    }
+}
+
+/// The offset of a partition's earliest retained record.
+async fn earliest_offset(pc: &PartitionClient) -> Result<i64> {
+    pc.get_offset(OffsetAt::Earliest)
+        .await
+        .map_err(|e| Error::engine(format!("kafka get_offset: {e}")))
+}
+
+/// The partition index for a record key: librdkafka's default
+/// `consistent_random` partitioner (CRC32 of the key modulo the partition
+/// count), so the Rust and Python connectors place a key in the same
+/// partition and log compaction sees one history per key.
+fn partition_index(key: &[u8], num_partitions: usize) -> usize {
+    crc32fast::hash(key) as usize % num_partitions
 }
 
 // ---------------------------------------------------------------------------
@@ -528,7 +597,13 @@ impl LiveMapFeed<String, Vec<u8>> for KafkaTopicMap {
         let ids = self.partition_ids().await?;
         let mut clients = Vec::with_capacity(ids.len());
         for id in &ids {
-            clients.push((*id, self.partition_client(*id).await?));
+            let pc = self.partition_client(*id).await?;
+            // A partition without a scan snapshot starts at its earliest
+            // retained record, not offset 0, which retention may have removed.
+            if !offsets.contains_key(id) {
+                offsets.insert(*id, earliest_offset(&pc).await?);
+            }
+            clients.push((*id, pc));
         }
         // Round-robin all partitions on one loop (one subscriber, used
         // sequentially). Each partition fetch uses a short max-wait so the
@@ -536,7 +611,9 @@ impl LiveMapFeed<String, Vec<u8>> for KafkaTopicMap {
         loop {
             let mut got_any = false;
             for (id, pc) in &clients {
-                let offset = *offsets.get(id).unwrap_or(&0);
+                let Some(&offset) = offsets.get(id) else {
+                    continue;
+                };
                 let (records, _hwm) = pc
                     .fetch_records(offset, 1..1_000_000, 250)
                     .await
@@ -568,7 +645,7 @@ impl LiveMapView<String, Vec<u8>> for KafkaTopicMap {
         let mut ends: BTreeMap<i32, i64> = BTreeMap::new();
         for id in ids {
             let pc = self.partition_client(id).await?;
-            let mut offset = 0i64;
+            let mut offset = earliest_offset(&pc).await?;
             loop {
                 let (records, hwm) = pc
                     .fetch_records(offset, 1..1_000_000, 500)
@@ -674,7 +751,7 @@ impl LiveMapView<String, Vec<u8>> for KafkaTopicStream {
         let mut ends: BTreeMap<i32, i64> = BTreeMap::new();
         for id in ids {
             let pc = self.partition_client(id).await?;
-            let mut offset = 0i64;
+            let mut offset = earliest_offset(&pc).await?;
             loop {
                 let (records, hwm) = pc
                     .fetch_records(offset, 1..1_000_000, 500)
@@ -705,12 +782,20 @@ impl LiveMapFeed<String, Vec<u8>> for KafkaTopicStream {
         let ids = self.partition_ids().await?;
         let mut clients = Vec::with_capacity(ids.len());
         for id in &ids {
-            clients.push((*id, self.partition_client(*id).await?));
+            let pc = self.partition_client(*id).await?;
+            // A partition without a scan snapshot starts at its earliest
+            // retained record, not offset 0, which retention may have removed.
+            if !offsets.contains_key(id) {
+                offsets.insert(*id, earliest_offset(&pc).await?);
+            }
+            clients.push((*id, pc));
         }
         loop {
             let mut got_any = false;
             for (id, pc) in &clients {
-                let offset = *offsets.get(id).unwrap_or(&0);
+                let Some(&offset) = offsets.get(id) else {
+                    continue;
+                };
                 let (records, _hwm) = pc
                     .fetch_records(offset, 1..1_000_000, 250)
                     .await
@@ -735,6 +820,15 @@ impl LiveMapFeed<String, Vec<u8>> for KafkaTopicStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partition_index_matches_librdkafka_consistent_partitioner() {
+        // CRC32 (IEEE) check value of "123456789" is 0xCBF43926.
+        assert_eq!(partition_index(b"123456789", usize::MAX), 0xCBF4_3926);
+        assert_eq!(partition_index(b"123456789", 7), 0xCBF4_3926 % 7);
+        // A single-partition topic always maps to partition index 0.
+        assert_eq!(partition_index(b"any key", 1), 0);
+    }
 
     fn fp(bytes: &[u8]) -> Fingerprint {
         Fingerprint::from(&bytes.to_vec()).unwrap()

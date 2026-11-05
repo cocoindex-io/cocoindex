@@ -67,8 +67,7 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
         move |ctx| {
             let label = label.clone();
             async move {
-                let g = ctx.get_key(&G)?;
-                let table = neo4j::mount_table_target(&ctx, g, label, schema()?).await?;
+                let table = neo4j::mount_table_target(&ctx, &G, label, schema()?).await?;
                 table.declare_vector_index(&ctx, "embedding", 3, VectorMetric::Cosine)?;
                 table.declare_node_index(&ctx, &["name"])?;
                 table.declare_record(
@@ -89,8 +88,7 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
         move |ctx| {
             let label = label.clone();
             async move {
-                let g = ctx.get_key(&G)?;
-                let table = neo4j::mount_table_target(&ctx, g, label, schema()?).await?;
+                let table = neo4j::mount_table_target(&ctx, &G, label, schema()?).await?;
                 table.declare_record(
                     &ctx,
                     1_i64,
@@ -102,6 +100,11 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
     })
     .await
     .expect("dropping the orphaned Neo4j vector index should be accepted");
+
+    // Remove the table's key constraint so the test leaves nothing behind.
+    app.drop_state()
+        .await
+        .expect("dropping the Neo4j app state should be accepted");
 }
 
 #[cfg(feature = "falkordb")]
@@ -151,8 +154,7 @@ async fn falkordb_vector_index_create_then_drop_when_available() {
 
     // Run 1: create the table + a vector index + one node.
     app.run(move |ctx| async move {
-        let g = ctx.get_key(&G)?;
-        let table = falkordb::mount_table_target(&ctx, g, "Doc", schema()?).await?;
+        let table = falkordb::mount_table_target(&ctx, &G, "Doc", schema()?).await?;
         table.declare_vector_index(&ctx, "embedding", 3, VectorMetric::Cosine)?;
         table.declare_node_index(&ctx, &["name"])?;
         table.declare_record(
@@ -167,8 +169,7 @@ async fn falkordb_vector_index_create_then_drop_when_available() {
 
     // Run 2: keep the table + node, stop declaring the index → it is dropped.
     app.run(move |ctx| async move {
-        let g = ctx.get_key(&G)?;
-        let table = falkordb::mount_table_target(&ctx, g, "Doc", schema()?).await?;
+        let table = falkordb::mount_table_target(&ctx, &G, "Doc", schema()?).await?;
         table.declare_record(
             &ctx,
             1_i64,
@@ -178,4 +179,9 @@ async fn falkordb_vector_index_create_then_drop_when_available() {
     })
     .await
     .expect("dropping the orphaned FalkorDB vector index should be accepted");
+
+    // Remove the table's key constraint so the test leaves nothing behind.
+    app.drop_state()
+        .await
+        .expect("dropping the FalkorDB app state should be accepted");
 }

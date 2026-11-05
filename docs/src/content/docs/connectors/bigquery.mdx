@@ -93,13 +93,17 @@ def declare_table_target(
 - `table_name` - Name of the table.
 - `table_schema` - Schema definition including columns and primary key.
 - `dataset` - BigQuery dataset name.
-- `project` - Optional project that owns the target table. If omitted, BigQuery uses the client project.
+- `project` - Optional project that owns the target table. If omitted, BigQuery uses the client project. Omitting `project` and naming the client project explicitly are two different keys for the same table (see the caution below).
 - `managed_by` - Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
 
 When `managed_by="system"`, CocoIndex creates the dataset and table if needed. Table changes use BigQuery DDL, and row changes use BigQuery `MERGE` for upserts.
 
 :::note
 BigQuery primary key constraints are not enforced by BigQuery. CocoIndex still uses the primary key list to reconcile rows and generate `MERGE` and `DELETE` statements.
+:::
+
+:::caution[One table, one key]
+CocoIndex identifies a table by its key: the `db` key, `project`, `dataset` and `table_name`. `project=None` and `project="<client project>"` reach the same table through two different keys. Declare each table through one form only. Switching a table from one form to the other changes its key: CocoIndex then cleans up the table it tracked under the old key, which is the same table. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity).
 :::
 
 ### Rows

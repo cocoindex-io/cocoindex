@@ -25,9 +25,9 @@ use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
 };
 use crate::target_state::{
-    ChildSlot, ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    declare_target_state_with_child, mount_target, register_root_target_states_provider,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 #[derive(Clone)]
@@ -247,8 +247,8 @@ pub struct TableTarget {
     table_schema: TableSchema,
     #[serde(skip)]
     managed_by: ManagedBy,
-    #[serde(skip)]
-    table_provider: TargetStateProvider<TableSpec>,
+    /// The table's row provider; also carries its attachments (vector
+    /// indexes, SQL commands).
     #[serde(skip)]
     rows: TargetStateProvider<RowState>,
 }
@@ -289,22 +289,16 @@ pub fn table_target_with_options(
     if let Some(schema) = pg_schema_name {
         validate_ident(schema, "schema name")?;
     }
-    let provider = register_root_target_states_provider(
-        ctx,
+    let provider = TABLE_PROVIDER.get(ctx)?;
+    Ok(provider.target_state(
         // Stable connection identity = the ContextKey's name (`db_key`); the pool
         // is resolved at apply time from the host context (design_connectors §5.5).
-        format!(
-            "cocoindex/postgres/table/{}/{}/{}",
-            db.name(),
-            pg_schema_name.unwrap_or("public"),
-            table_name
-        ),
-        TableHandler {
+        TableKey {
             db_key: db.name().to_string(),
-        },
-    )?;
-    Ok(provider.target_state(
-        "default",
+            pg_schema_name: pg_schema_name.unwrap_or("public").to_string(),
+            table_name: table_name.clone(),
+        }
+        .stable_key(),
         TableSpec {
             pg_schema_name: pg_schema_name.map(str::to_string),
             table_name,
@@ -316,7 +310,8 @@ pub fn table_target_with_options(
 
 /// Declare a Postgres table target in the **current** component and return a
 /// pending handle. The row child provider resolves when this component commits;
-/// use [`mount_table_target`] when rows must be declared immediately.
+/// use [`mount_table_target`] when rows or attachments must be declared
+/// immediately.
 pub fn declare_table_target(
     ctx: &Ctx,
     db: &ContextKey<Database>,
@@ -326,9 +321,8 @@ pub fn declare_table_target(
 ) -> Result<TableTarget> {
     let ts = table_target(ctx, db, table_name, table_schema, pg_schema_name)?;
     let spec = ts.value().clone();
-    let table_provider = ts.provider().clone();
     let rows = declare_target_state_with_child::<TableSpec, RowState>(ctx, ts)?;
-    Ok(table_target_handle(spec, table_provider, rows))
+    Ok(table_target_handle(spec, rows))
 }
 
 /// Mount a Postgres table target **foreground** (rows can be declared
@@ -362,22 +356,16 @@ pub async fn mount_table_target_with_options(
 ) -> Result<TableTarget> {
     let ts = table_target_with_options(ctx, db, table_name, table_schema, pg_schema_name, options)?;
     let spec = ts.value().clone();
-    let table_provider = ts.provider().clone();
     let rows = mount_target::<TableSpec, RowState>(ctx, ts).await?;
-    Ok(table_target_handle(spec, table_provider, rows))
+    Ok(table_target_handle(spec, rows))
 }
 
-fn table_target_handle(
-    spec: TableSpec,
-    table_provider: TargetStateProvider<TableSpec>,
-    rows: TargetStateProvider<RowState>,
-) -> TableTarget {
+fn table_target_handle(spec: TableSpec, rows: TargetStateProvider<RowState>) -> TableTarget {
     TableTarget {
         pg_schema_name: spec.pg_schema_name.map(Arc::from),
         table_name: Arc::from(spec.table_name),
         table_schema: spec.table_schema,
         managed_by: spec.managed_by,
-        table_provider,
         rows,
     }
 }
@@ -411,7 +399,7 @@ impl TableTarget {
         let name = options.name.unwrap_or_else(|| column.to_string());
         validate_ident(&name, "vector index name")?;
         let provider: TargetStateProvider<VectorIndexSpec> =
-            self.table_provider.attachment(ctx, "vector_index")?;
+            self.rows.attachment(ctx, "vector_index")?;
         let spec = VectorIndexSpec {
             pg_schema_name: self.pg_schema_name.as_deref().map(str::to_string),
             table_name: self.table_name.to_string(),
@@ -442,9 +430,8 @@ impl TableTarget {
         setup_sql: impl Into<String>,
         teardown_sql: Option<String>,
     ) -> Result<()> {
-        let provider: TargetStateProvider<SqlCommandSpec> = self
-            .table_provider
-            .attachment(ctx, "sql_command_attachment")?;
+        let provider: TargetStateProvider<SqlCommandSpec> =
+            self.rows.attachment(ctx, "sql_command_attachment")?;
         let spec = SqlCommandSpec {
             setup_sql: setup_sql.into(),
             teardown_sql,
@@ -528,6 +515,8 @@ struct DropTarget {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TableAction {
+    /// The `ContextKey` name of the database the table lives in.
+    db_key: String,
     /// `Some` for a define (create/update), carrying the desired spec.
     spec: Option<TableSpec>,
     /// `Some` for a drop (orphaned table).
@@ -570,12 +559,55 @@ pub struct VectorIndexSpec {
 }
 
 // ---------------------------------------------------------------------------
-// Table container handler (root) + sink yielding row children + vector-index
-// attachment
+// Table container handler (root) + sink yielding row children
 // ---------------------------------------------------------------------------
 
-struct TableHandler {
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static TABLE_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<TableSpec, TableHandler>("cocoindex/postgres/table");
+
+/// A table target state's key: the database's `ContextKey` name plus the
+/// qualified table name.
+struct TableKey {
     db_key: String,
+    pg_schema_name: String,
+    table_name: String,
+}
+
+impl TableKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.db_key)),
+            StableKey::Str(Arc::from(self.pg_schema_name)),
+            StableKey::Str(Arc::from(self.table_name)),
+        ]))
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [
+                StableKey::Str(db_key),
+                StableKey::Str(pg_schema_name),
+                StableKey::Str(table_name),
+            ] = &parts[..]
+        {
+            return Ok(Self {
+                db_key: db_key.to_string(),
+                pg_schema_name: pg_schema_name.to_string(),
+                table_name: table_name.to_string(),
+            });
+        }
+        Err(Error::engine(format!(
+            "unexpected postgres table target key: {key:?}"
+        )))
+    }
+}
+
+/// Root handler for every Postgres table target: stateless, the database is
+/// named by each target state's [`TableKey`].
+#[derive(Default)]
+struct TableHandler {
+    sink: SinkCache<TableAction>,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
@@ -584,13 +616,14 @@ impl TargetHandler<TableSpec> for TableHandler {
 
     fn reconcile(
         &self,
-        _key: StableKey,
+        key: StableKey,
         desired: Option<TableSpec>,
         prev: Vec<MutualTrackingRecord<TableSpec>>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<TableAction, MutualTrackingRecord<TableSpec>>>> {
+        let db_key = TableKey::from_stable_key(&key)?.db_key;
         match desired {
-            // Always emit when declared so the sink fulfills the row child.
+            // Always emit when declared so the sink builds the row child.
             Some(spec) => {
                 let tracking = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
                 // The previous system-managed spec (if any) drives the schema-
@@ -644,12 +677,13 @@ impl TargetHandler<TableSpec> for TableHandler {
 
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
+                        db_key,
                         spec: Some(spec),
                         drop: None,
                         recreate,
                         retype_cols,
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(table_sink),
                     tracking_record: Some(tracking),
                     child_invalidation,
                 }))
@@ -668,6 +702,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                 };
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(TableAction {
+                        db_key,
                         spec: None,
                         drop: Some(DropTarget {
                             pg_schema_name: prev_spec.pg_schema_name,
@@ -676,88 +711,67 @@ impl TargetHandler<TableSpec> for TableHandler {
                         recreate: false,
                         retype_cols: Vec::new(),
                     }),
-                    sink: self.table_sink(),
+                    sink: self.sink.get(table_sink),
                     tracking_record: None,
                     child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
             }
         }
     }
-
-    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
-        Ok(vec![
-            (
-                "vector_index".to_string(),
-                ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
-                    db_key: self.db_key.clone(),
-                }),
-            ),
-            (
-                "sql_command_attachment".to_string(),
-                ChildTargetDef::new::<SqlCommandSpec, _>(SqlCommandHandler {
-                    db_key: self.db_key.clone(),
-                }),
-            ),
-        ])
-    }
 }
 
-impl TableHandler {
-    fn table_sink(&self) -> TargetActionSink<TableAction> {
-        let db_key = self.db_key.clone();
-        TargetActionSink::from_async_fn_with_children_ctx(
-            move |host_ctx, actions: Vec<(TargetAction<TableAction>, Option<ChildSlot>)>| {
-                let db_key = db_key.clone();
-                async move {
-                    let db = resolve_db(&host_ctx, &db_key)?;
-                    for (action, child_slot) in actions {
-                        match action {
-                            TargetAction::Create(a) | TargetAction::Update(a) => {
-                                let spec = a.spec.ok_or_else(|| {
-                                    Error::engine("Postgres table action missing spec")
-                                })?;
-                                // A PK-signature change can't be applied in place;
-                                // drop and recreate the table (rows are replayed via
-                                // the Destructive child invalidation set at reconcile).
-                                if a.recreate && spec.managed_by.is_system() {
-                                    drop_table(
-                                        &db,
-                                        spec.pg_schema_name.as_deref(),
-                                        &spec.table_name,
-                                    )
-                                    .await?;
-                                }
-                                define_table(&db, &spec).await?;
-                                if !a.retype_cols.is_empty() {
-                                    apply_retypes(&db, &spec, &a.retype_cols).await?;
-                                }
-                                if let Some(slot) = child_slot {
-                                    slot.fulfill(ChildTargetDef::new::<RowState, _>(RowHandler {
-                                        db_key: db_key.clone(),
-                                        spec,
-                                    }))?;
-                                }
-                            }
-                            TargetAction::Delete(a) => {
-                                if let Some(d) = a.drop {
-                                    drop_table(&db, d.pg_schema_name.as_deref(), &d.table_name)
-                                        .await?;
-                                }
-                            }
+fn table_sink() -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_child_handler_ctx(
+        move |host_ctx, actions: Vec<TargetAction<TableAction>>| async move {
+            for action in actions {
+                match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) => {
+                        let db = resolve_db(&host_ctx, &a.db_key)?;
+                        let spec = a
+                            .spec
+                            .ok_or_else(|| Error::engine("Postgres table action missing spec"))?;
+                        // A PK-signature change can't be applied in place;
+                        // drop and recreate the table (rows are replayed via
+                        // the Destructive child invalidation set at reconcile).
+                        if a.recreate && spec.managed_by.is_system() {
+                            drop_table(&db, spec.pg_schema_name.as_deref(), &spec.table_name)
+                                .await?;
+                        }
+                        define_table(&db, &spec).await?;
+                        if !a.retype_cols.is_empty() {
+                            apply_retypes(&db, &spec, &a.retype_cols).await?;
                         }
                     }
-                    Ok(())
+                    TargetAction::Delete(a) => {
+                        if let Some(d) = a.drop {
+                            let db = resolve_db(&host_ctx, &a.db_key)?;
+                            drop_table(&db, d.pg_schema_name.as_deref(), &d.table_name).await?;
+                        }
+                    }
                 }
-            },
-        )
-    }
+            }
+            Ok(())
+        },
+        |a: &TableAction| {
+            let spec = a
+                .spec
+                .clone()
+                .ok_or_else(|| Error::engine("Postgres table action missing spec"))?;
+            Ok(ChildTargetDef::new::<RowState, _>(RowHandler {
+                sink: SinkCache::default(),
+                db_key: a.db_key.clone(),
+                spec,
+            }))
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
-// Row handler (child) + sink
+// Row handler (child) + sink + vector-index / SQL-command attachments
 // ---------------------------------------------------------------------------
 
 struct RowHandler {
+    sink: SinkCache<RowAction>,
     db_key: String,
     spec: TableSpec,
 }
@@ -765,6 +779,25 @@ struct RowHandler {
 impl TargetHandler<RowState> for RowHandler {
     type TrackingRecord = Fingerprint;
     type Action = RowAction;
+
+    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
+        Ok(vec![
+            (
+                "vector_index".to_string(),
+                ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                    sink: SinkCache::default(),
+                    db_key: self.db_key.clone(),
+                }),
+            ),
+            (
+                "sql_command_attachment".to_string(),
+                ChildTargetDef::new::<SqlCommandSpec, _>(SqlCommandHandler {
+                    sink: SinkCache::default(),
+                    db_key: self.db_key.clone(),
+                }),
+            ),
+        ])
+    }
 
     fn reconcile(
         &self,
@@ -791,7 +824,7 @@ impl TargetHandler<RowState> for RowHandler {
         }
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(RowAction { pk, state: desired }),
-            sink: self.row_sink(),
+            sink: self.sink.get(|| self.row_sink()),
             tracking_record: desired_fp,
             child_invalidation: None,
         }))
@@ -840,6 +873,7 @@ impl RowHandler {
 // ---------------------------------------------------------------------------
 
 struct VectorIndexHandler {
+    sink: SinkCache<VectorIndexAction>,
     db_key: String,
 }
 
@@ -854,32 +888,28 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
         prev: Vec<VectorIndexSpec>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<VectorIndexAction, VectorIndexSpec>>> {
-        let prev_spec = prev.into_iter().next();
         let prev_same = desired
             .as_ref()
-            .is_some_and(|d| prev_spec.as_ref() == Some(d));
+            .is_some_and(|d| !prev.is_empty() && prev.iter().all(|p| p == d));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
-        if desired.is_none() && prev_spec.is_none() && !prev_may_be_missing {
-            return Ok(None);
-        }
+        let prev_spec = prev.into_iter().next();
         match desired {
             Some(spec) => Ok(Some(TargetReconcileOutput {
                 action: TargetAction::Update(VectorIndexAction { spec: spec.clone() }),
-                sink: self.vector_index_sink(),
+                sink: self.sink.get(|| self.vector_index_sink()),
                 tracking_record: Some(spec),
                 child_invalidation: None,
             })),
-            None => {
-                let spec = prev_spec.expect("delete path implies a previous index spec");
-                Ok(Some(TargetReconcileOutput {
-                    action: TargetAction::Delete(VectorIndexAction { spec }),
-                    sink: self.vector_index_sink(),
-                    tracking_record: None,
-                    child_invalidation: None,
-                }))
-            }
+            // No recorded spec means nothing is known to exist (for example a
+            // drop that was applied before its commit was interrupted).
+            None => Ok(prev_spec.map(|spec| TargetReconcileOutput {
+                action: TargetAction::Delete(VectorIndexAction { spec }),
+                sink: self.sink.get(|| self.vector_index_sink()),
+                tracking_record: None,
+                child_invalidation: None,
+            })),
         }
     }
 }
@@ -946,6 +976,7 @@ fn collect_teardown_sql(prev: &[SqlCommandSpec]) -> Option<String> {
 }
 
 struct SqlCommandHandler {
+    sink: SinkCache<SqlCommandAction>,
     db_key: String,
 }
 
@@ -971,7 +1002,7 @@ impl TargetHandler<SqlCommandSpec> for SqlCommandHandler {
                         spec: None,
                         prev_teardown_sql,
                     }),
-                    sink: self.sql_command_sink(),
+                    sink: self.sink.get(|| self.sql_command_sink()),
                     tracking_record: None,
                     child_invalidation: None,
                 }))
@@ -987,7 +1018,7 @@ impl TargetHandler<SqlCommandSpec> for SqlCommandHandler {
                         spec: Some(spec.clone()),
                         prev_teardown_sql,
                     }),
-                    sink: self.sql_command_sink(),
+                    sink: self.sink.get(|| self.sql_command_sink()),
                     tracking_record: Some(spec),
                     child_invalidation: None,
                 }))
@@ -1323,11 +1354,15 @@ fn delete_sql(spec: &TableSpec, pk: &[JsonValue]) -> Result<String> {
     }
     let mut predicates = Vec::with_capacity(pk.len());
     for (idx, name) in spec.table_schema.primary_key().iter().enumerate() {
-        let col = spec.table_schema.columns().get(name).expect("pk column");
+        let col = spec.table_schema.columns().get(name).ok_or_else(|| {
+            Error::engine(format!(
+                "primary key column {name:?} is not in the table schema"
+            ))
+        })?;
         predicates.push(format!(
             "{} = {}",
             quote_ident(name),
-            sql_literal(&pk[idx], col)?
+            sql_literal(&key_part_value(&pk[idx], col), col)?
         ));
     }
     Ok(format!(
@@ -1387,6 +1422,22 @@ fn stable_key_to_json(key: &StableKey) -> Result<JsonValue> {
             "unsupported Postgres row key: {other:?}"
         ))),
     }
+}
+
+/// A row key stores a boolean key part as the string `"true"`/`"false"` (see
+/// [`json_scalar_to_stable_key`]); turn it back into a boolean for a column
+/// that holds booleans, so a row with a boolean key can be deleted.
+fn key_part_value(value: &JsonValue, col: &ColumnDef) -> JsonValue {
+    if let JsonValue::String(s) = value
+        && let Ok(b) = s.parse::<bool>()
+        && matches!(
+            col.pg_type.to_ascii_lowercase().as_str(),
+            "boolean" | "bool"
+        )
+    {
+        return JsonValue::Bool(b);
+    }
+    value.clone()
 }
 
 fn json_scalar_to_stable_key(value: &JsonValue) -> Result<StableKey> {
@@ -1728,6 +1779,20 @@ fn pg_err(e: sqlx::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vector_index_orphan_delete_without_recorded_spec_is_a_no_op() {
+        let handler = VectorIndexHandler {
+            sink: SinkCache::default(),
+            db_key: "db".to_string(),
+        };
+        // What the engine sends after a drop was applied but its commit was
+        // interrupted: no live previous state, and the sink may be missing.
+        let output = handler
+            .reconcile(StableKey::Str("idx".into()), None, Vec::new(), true)
+            .unwrap();
+        assert!(output.is_none());
+    }
     use serde::Serialize;
 
     #[derive(Serialize)]
@@ -1805,6 +1870,33 @@ mod tests {
         assert_eq!(
             sql,
             "DELETE FROM \"coco_examples\".\"code_embeddings\" WHERE \"id\" = 42"
+        );
+    }
+
+    #[test]
+    fn row_with_boolean_primary_key_can_be_deleted() {
+        let spec = TableSpec {
+            pg_schema_name: None,
+            table_name: "flags".to_string(),
+            table_schema: TableSchema::new(
+                [
+                    ("tenant", ColumnDef::new("text")),
+                    ("active", ColumnDef::new("boolean")),
+                ],
+                ["tenant", "active"],
+            )
+            .unwrap(),
+            managed_by: ManagedBy::System,
+        };
+        let key = StableKey::Array(Arc::from([
+            json_scalar_to_stable_key(&JsonValue::from("true")).unwrap(),
+            json_scalar_to_stable_key(&JsonValue::Bool(true)).unwrap(),
+        ]));
+        let sql = delete_sql(&spec, &stable_key_to_pk(&key).unwrap()).unwrap();
+        // A text key part spelled "true" stays a string.
+        assert_eq!(
+            sql,
+            "DELETE FROM \"flags\" WHERE \"tenant\" = 'true' AND \"active\" = TRUE"
         );
     }
 

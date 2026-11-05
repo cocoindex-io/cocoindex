@@ -384,7 +384,7 @@ impl AppStore {
     /// writes if the callback returns `None` (PendingRetry; the batched
     /// WTxn still commits whatever other bodies wrote).
     ///
-    /// Routes through [`crate::state_store::Storage::run_txn`] so
+    /// Routes through [`AppStore::run_txn`] so
     /// concurrent precommits coalesce into one WTxn → one fsync (per
     /// AGENTS.md "LMDB write paths"). LMDB has no savepoints — to
     /// "abort" on PendingRetry, the body contributes no writes.
@@ -395,12 +395,12 @@ impl AppStore {
     /// write batch fails, keeping only the last run's output. So the
     /// callback must be side-effect-free on its captures: clone what the
     /// body consumes inside the closure (typically a few `Arc::clone`s)
-    /// rather than moving it out. A result handed out through a captured
-    /// slot rather than the return value (as the preview path does) must
-    /// overwrite the slot on each run, never accumulate into it.
+    /// rather than moving it out.
     ///
     /// A callback error fails only this call: none of its writes commit,
-    /// while the other bodies of the batch commit without it.
+    /// while the other bodies of the batch commit without it. On a handle
+    /// from [`AppStore::discarding_writes`] the writes stay in the run's
+    /// overlay: a preview plans its actions through here like a real submit.
     pub async fn precommit<T, F>(
         &self,
         component_path: &StablePath,
@@ -420,47 +420,46 @@ impl AppStore {
         let component_path_outer = component_path.clone();
         let callback = Arc::new(callback);
 
-        self.storage
-            .run_txn(move |wtxn: &mut WriteTxn<'_>| {
-                let app_store = app_store.clone();
-                let component_path = component_path_outer.clone();
-                let callback = Arc::clone(&callback);
-                Box::pin(async move {
-                    let mut session = PrecommitSession::new(app_store.clone());
-                    let cb_result = callback(wtxn, &mut session).await?;
-                    match cb_result {
-                        Some((plan, output)) => {
-                            // Apply __target claims (the work deferred from
-                            // `precommit_claim_targets`).
-                            if let Some(paths) = session.paths_to_claim.take() {
-                                for path in paths {
-                                    app_store
-                                        .upsert_target_state_owner(wtxn, &path, &component_path)
-                                        .await?;
-                                }
-                            }
-                            if let Some(bytes) = plan.new_tracking_info.as_ref() {
+        self.run_txn(move |wtxn: &mut WriteTxn<'_>| {
+            let app_store = app_store.clone();
+            let component_path = component_path_outer.clone();
+            let callback = Arc::clone(&callback);
+            Box::pin(async move {
+                let mut session = PrecommitSession::new(app_store.clone());
+                let cb_result = callback(wtxn, &mut session).await?;
+                match cb_result {
+                    Some((plan, output)) => {
+                        // Apply __target claims (the work deferred from
+                        // `precommit_claim_targets`).
+                        if let Some(paths) = session.paths_to_claim.take() {
+                            for path in paths {
                                 app_store
-                                    .write_tracking_info_raw(wtxn, &plan.self_path, bytes)
+                                    .upsert_target_state_owner(wtxn, &path, &component_path)
                                     .await?;
                             }
-                            for (owner_path, bytes) in plan.preempted_owner_updates {
-                                app_store
-                                    .write_tracking_info_raw(wtxn, &owner_path, &bytes)
-                                    .await?;
-                            }
-                            for (fp, segment_key) in &plan.segment_names {
-                                app_store
-                                    .write_target_segment_name_if_missing(wtxn, *fp, segment_key)
-                                    .await?;
-                            }
-                            Ok(Some(output))
                         }
-                        None => Ok(None),
+                        if let Some(bytes) = plan.new_tracking_info.as_ref() {
+                            app_store
+                                .write_tracking_info_raw(wtxn, &plan.self_path, bytes)
+                                .await?;
+                        }
+                        for (owner_path, bytes) in plan.preempted_owner_updates {
+                            app_store
+                                .write_tracking_info_raw(wtxn, &owner_path, &bytes)
+                                .await?;
+                        }
+                        for (fp, segment_key) in &plan.segment_names {
+                            app_store
+                                .write_target_segment_name_if_missing(wtxn, *fp, segment_key)
+                                .await?;
+                        }
+                        Ok(Some(output))
                     }
-                })
+                    None => Ok(None),
+                }
             })
-            .await
+        })
+        .await
     }
 
     /// Phase 4 success: open commit txn, apply finalized writes, invoke
@@ -482,80 +481,79 @@ impl AppStore {
         // the body, so `Arc`-sharing is safe.
         let plan = Arc::new(plan);
         let existence_reconciler = Arc::new(existence_reconciler);
-        self.storage
-            .run_txn(move |wtxn: &mut WriteTxn<'_>| {
-                let app_store = app_store.clone();
-                let component_path = component_path.clone();
-                let plan = Arc::clone(&plan);
-                let existence_reconciler = Arc::clone(&existence_reconciler);
-                Box::pin(async move {
-                    if let Some(bytes) = plan.new_tracking_info.as_ref() {
+        self.run_txn(move |wtxn: &mut WriteTxn<'_>| {
+            let app_store = app_store.clone();
+            let component_path = component_path.clone();
+            let plan = Arc::clone(&plan);
+            let existence_reconciler = Arc::clone(&existence_reconciler);
+            Box::pin(async move {
+                if let Some(bytes) = plan.new_tracking_info.as_ref() {
+                    app_store
+                        .write_tracking_info_raw(wtxn, &component_path, bytes)
+                        .await?;
+                } else {
+                    app_store
+                        .delete_tracking_info(wtxn, &component_path)
+                        .await?;
+                }
+                for (target_path, owner_path) in &plan.target_owners_to_upsert {
+                    app_store
+                        .upsert_target_state_owner(wtxn, target_path, owner_path)
+                        .await?;
+                }
+                for target_path in &plan.target_owners_to_delete {
+                    // Only drop the owner row if it still points at us. A
+                    // component that preempted this path between our last
+                    // run and this delete has already upserted itself as
+                    // owner; deleting unconditionally would orphan it.
+                    let still_ours = app_store
+                        .read_target_state_owner_in_txn(wtxn, target_path)
+                        .await?
+                        .is_some_and(|info| info.component_path == component_path);
+                    if still_ours {
                         app_store
-                            .write_tracking_info_raw(wtxn, &component_path, bytes)
-                            .await?;
-                    } else {
-                        app_store
-                            .delete_tracking_info(wtxn, &component_path)
-                            .await?;
-                    }
-                    for (target_path, owner_path) in &plan.target_owners_to_upsert {
-                        app_store
-                            .upsert_target_state_owner(wtxn, target_path, owner_path)
-                            .await?;
-                    }
-                    for target_path in &plan.target_owners_to_delete {
-                        // Only drop the owner row if it still points at us. A
-                        // component that preempted this path between our last
-                        // run and this delete has already upserted itself as
-                        // owner; deleting unconditionally would orphan it.
-                        let still_ours = app_store
-                            .read_target_state_owner_in_txn(wtxn, target_path)
-                            .await?
-                            .is_some_and(|info| info.component_path == component_path);
-                        if still_ours {
-                            app_store
-                                .delete_target_state_owner(wtxn, target_path)
-                                .await?;
-                        }
-                    }
-                    if plan.fn_memo_clear_all_first {
-                        app_store.delete_all_fn_memos(wtxn, &component_path).await?;
-                    }
-                    for fp in &plan.fn_memo_deletes {
-                        app_store.delete_fn_memo(wtxn, &component_path, *fp).await?;
-                    }
-                    for (fp, bytes) in &plan.fn_memo_writes {
-                        app_store
-                            .write_fn_memo_raw(wtxn, &component_path, *fp, bytes)
+                            .delete_target_state_owner(wtxn, target_path)
                             .await?;
                     }
-                    if plan.user_state_clear_all_first {
-                        app_store
-                            .delete_user_states_of_kind(wtxn, &component_path, StateKind::Regular)
-                            .await?;
-                    }
-                    if plan.user_state_clear_live {
-                        app_store
-                            .delete_user_states_of_kind(wtxn, &component_path, StateKind::Live)
-                            .await?;
-                    }
-                    for key in &plan.user_state_deletes {
-                        app_store
-                            .delete_user_state(wtxn, &component_path, StateKind::Regular, key)
-                            .await?;
-                    }
-                    for (key, bytes) in &plan.user_state_writes {
-                        app_store
-                            .write_user_state(wtxn, &component_path, StateKind::Regular, key, bytes)
-                            .await?;
-                    }
-                    if let Some(reconcile) = existence_reconciler.as_ref() {
-                        reconcile(wtxn).await?;
-                    }
-                    Ok(())
-                })
+                }
+                if plan.fn_memo_clear_all_first {
+                    app_store.delete_all_fn_memos(wtxn, &component_path).await?;
+                }
+                for fp in &plan.fn_memo_deletes {
+                    app_store.delete_fn_memo(wtxn, &component_path, *fp).await?;
+                }
+                for (fp, bytes) in &plan.fn_memo_writes {
+                    app_store
+                        .write_fn_memo_raw(wtxn, &component_path, *fp, bytes)
+                        .await?;
+                }
+                if plan.user_state_clear_all_first {
+                    app_store
+                        .delete_user_states_of_kind(wtxn, &component_path, StateKind::Regular)
+                        .await?;
+                }
+                if plan.user_state_clear_live {
+                    app_store
+                        .delete_user_states_of_kind(wtxn, &component_path, StateKind::Live)
+                        .await?;
+                }
+                for key in &plan.user_state_deletes {
+                    app_store
+                        .delete_user_state(wtxn, &component_path, StateKind::Regular, key)
+                        .await?;
+                }
+                for (key, bytes) in &plan.user_state_writes {
+                    app_store
+                        .write_user_state(wtxn, &component_path, StateKind::Regular, key, bytes)
+                        .await?;
+                }
+                if let Some(reconcile) = existence_reconciler.as_ref() {
+                    reconcile(wtxn).await?;
+                }
+                Ok(())
             })
-            .await
+        })
+        .await
     }
 
     /// Phase 4 failure: clear the stage marker so a subsequent

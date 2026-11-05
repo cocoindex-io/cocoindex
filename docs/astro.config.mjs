@@ -2,15 +2,18 @@
 import { defineConfig } from 'astro/config';
 import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
+import { unified } from '@astrojs/markdown-remark';
+import bamlGrammar from './scripts/vendor/baml.tmLanguage.json' with { type: 'json' };
 import remarkDirective from 'remark-directive';
 import remarkAdmonitions from './scripts/remark-admonitions.mjs';
 import remarkCodeTitles from './scripts/remark-code-titles.mjs';
+import remarkExampleImages from './scripts/remark-example-images.mjs';
 import remarkMermaid from '@cocoindex/brand/remark-mermaid';
 import remarkLinkChecker from './scripts/remark-link-checker.mjs';
 import { redirects } from './src/data/redirects.ts';
 // One shared Shiki theme (the readability-tuned --code-* palette) so docs and
 // blog highlight code identically — single source of truth (GUIDELINE §5.5).
-import { cocoindexCodeTheme } from '@cocoindex/brand/code-theme';
+import { docsCodeTheme } from './scripts/code-theme.mjs';
 
 // V1 docs are served from https://cocoindex.io/docs/, matching the
 // Docusaurus URLs on the v1 branch (`baseUrl: '/docs/'` in
@@ -20,7 +23,7 @@ const BASE = '/docs';
 // `build.format: 'directory'` (the default), source-relative `./foo` links
 // resolve incorrectly in the browser (a page at `/programming_guide/x/`
 // makes `./foo` mean `/programming_guide/x/foo`). The plugin emits absolute
-// hrefs (`/docs/<slug>`) so links work regardless of trailing-slash quirks.
+// hrefs (`/docs/<slug>/`) so links work regardless of trailing-slash quirks.
 // `[plugin, options]` tuples need an explicit type — TypeScript otherwise
 // widens the array literal to `(Plugin | Options)[]` and Astro rejects it.
 /** @type {any[]} */
@@ -29,6 +32,7 @@ const remarkPlugins = [
   remarkAdmonitions,
   remarkMermaid,
   remarkCodeTitles,
+  remarkExampleImages,
   [remarkLinkChecker, { base: BASE }],
 ];
 
@@ -37,25 +41,22 @@ export default defineConfig({
   base: BASE,
   // `trailingSlash: 'always'` matches `build.format: 'directory'`: every
   // page lives at `<slug>/index.html` and is canonical at `<slug>/`. In
-  // dev, requests without the trailing slash 404 — that strictness is the
-  // point: the link-checker plugin catches no-slash hrefs in markdown/MDX,
-  // and `'always'` catches no-slash hrefs in `.astro` components (sidebar,
-  // breadcrumb, pager, future pieces) before they ship. External / legacy
-  // links without the slash still resolve in production via GitHub Pages's
-  // own 301 redirect, so this doesn't break inbound traffic.
+  // dev, requests without the trailing slash 404, so every href must carry
+  // it: the remark plugin rewrites relative markdown/MDX links that way,
+  // and scripts/check-agent-output.mjs fails the build on any root-relative
+  // link in the output that lacks it, from markdown or from `.astro`
+  // components (sidebar, breadcrumb, pager, future pieces). External /
+  // legacy links without the slash still resolve in production via GitHub
+  // Pages's own 301 redirect, so this doesn't break inbound traffic.
   trailingSlash: 'always',
   integrations: [
-    mdx({
-      // MDX's own remark pipeline doesn't inherit `markdown.remarkPlugins`
-      // reliably across Astro versions — wire admonitions + code titles
-      // explicitly so .mdx content collection pages get them for sure.
-      remarkPlugins,
-    }),
+    mdx(),
     sitemap(),
   ],
   markdown: {
-    remarkPlugins,
-    shikiConfig: { theme: cocoindexCodeTheme, wrap: false },
+    // Astro 7 and MDX share this processor and its plugin pipeline.
+    processor: unified({ remarkPlugins }),
+    shikiConfig: { theme: docsCodeTheme, wrap: false, langs: [bamlGrammar] },
   },
   redirects,
   // Vite's default envPrefix is `VITE_`; Astro adds `PUBLIC_`. We also

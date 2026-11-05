@@ -282,8 +282,8 @@ async fn run_live_until(
     }
     let _ = app.drop_state().await;
     let _ = tokio::time::timeout(Duration::from_secs(10), handle.result()).await;
-    let out = processed.lock().unwrap().clone();
-    out
+
+    processed.lock().unwrap().clone()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

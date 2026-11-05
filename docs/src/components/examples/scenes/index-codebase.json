@@ -1,0 +1,10 @@
+{
+  "alt": "CocoIndex and Tree-sitter logos beside syntax-highlighted Python code.",
+  "needs": ["Docker (for Postgres with pgvector)", "Python 3.11+"],
+  "run": [
+    { "note": "Start Postgres with pgvector", "cmd": "docker compose -f ../../dev/postgres.yaml up -d" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Index the repo (add -L to keep watching for edits)", "cmd": "cocoindex update main" },
+    { "note": "Search it", "cmd": "python main.py \"where do we embed chunks?\"" }
+  ]
+}

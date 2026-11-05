@@ -27,12 +27,12 @@ impl LanguageHooks for JavaHooks {
             let mut cursor = node.walk();
             if cursor.goto_first_child() {
                 loop {
-                    if cursor.field_name() == Some("declarator") {
-                        if let Some(name_node) = cursor.node().child_by_field_name("name") {
-                            let name = name_node.utf8_text(source).unwrap_or("").to_string();
-                            if !name.is_empty() {
-                                names.push((name, name_node.start_byte(), name_node.end_byte()));
-                            }
+                    if cursor.field_name() == Some("declarator")
+                        && let Some(name_node) = cursor.node().child_by_field_name("name")
+                    {
+                        let name = name_node.utf8_text(source).unwrap_or("").to_string();
+                        if !name.is_empty() {
+                            names.push((name, name_node.start_byte(), name_node.end_byte()));
                         }
                     }
                     if !cursor.goto_next_sibling() {

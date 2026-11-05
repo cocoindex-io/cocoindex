@@ -27,7 +27,6 @@ from typing import (
     Generic,
     Iterator,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
 )
@@ -874,27 +873,37 @@ def _apply_column_actions(
             continue
 
 
+def _row_handler(
+    context_provider: ContextProvider, action: _TableAction, /
+) -> _RowHandler:
+    """The row handler for a created or updated table's rows."""
+    key = action.key
+    assert not coco.is_non_existence(action.spec)
+    return _RowHandler(
+        managed_conn=context_provider.get(key.db_key, ManagedConnection),
+        table_name=key.table_name,
+        table_schema=action.spec.table_schema,
+        is_virtual_table=(action.spec.virtual_table_def is not None),
+    )
+
+
 def _apply_table_actions(
     context_provider: ContextProvider,
     actions: Sequence[_TableAction],
-    child_slots: Mapping[int, coco.ChildSlot[_RowHandler]],
     /,
 ) -> None:
-    """Apply table actions (DDL) and fulfill the child row handlers."""
+    """Apply table actions (DDL)."""
     # Group actions by table key so we can apply all DDL for the same table
-    by_key: dict[_TableKey, list[int]] = {}
-    for i, action in enumerate(actions):
-        by_key.setdefault(action.key, []).append(i)
+    by_key: dict[_TableKey, list[_TableAction]] = {}
+    for action in actions:
+        by_key.setdefault(action.key, []).append(action)
 
-    for key, idxs in by_key.items():
+    for key, key_actions in by_key.items():
         managed_conn = context_provider.get(key.db_key, ManagedConnection)
         has_vec = _VEC_EXTENSION in managed_conn.loaded_extensions
 
         with managed_conn.transaction() as conn:
-            for i in idxs:
-                action = actions[i]
-                assert action.key == key
-
+            for action in key_actions:
                 # Check if this is a virtual table (for special handling)
                 is_virtual = (
                     not coco.is_non_existence(action.spec)
@@ -922,14 +931,6 @@ def _apply_table_actions(
                     continue
 
                 spec = action.spec
-                child_slots[i].fulfill(
-                    _RowHandler(
-                        managed_conn=managed_conn,
-                        table_name=key.table_name,
-                        table_schema=spec.table_schema,
-                        is_virtual_table=(spec.virtual_table_def is not None),
-                    )
-                )
 
                 if action.main_action in ("insert", "upsert", "replace"):
                     # Route to virtual or regular table creation
@@ -968,8 +969,8 @@ def _apply_table_actions(
 
 
 # Shared action sink for table-level actions
-_table_action_sink = coco.TargetActionSink[_TableAction].from_fn_with_children(
-    _apply_table_actions
+_table_action_sink = coco.TargetActionSink[_TableAction].from_fn(
+    _apply_table_actions, child_handler=_row_handler
 )
 
 

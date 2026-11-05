@@ -18,7 +18,7 @@ Reference points used throughout:
 
 ## WS1 — `#[cocoindex::function(batching)]` and `(memo, batching)`
 
-**Problem.** Python: `@coco.fn(batching=True)` and done. Rust today: write a ctx-free batch fn,
+**Problem.** Python: `@coco.fn.as_async(batching=True)` and done. Rust today: write a ctx-free batch fn,
 then hand-wire `static EMBED: LazyLock<Batched<String, Vec<f32>>> =
 LazyLock::new(|| Batched::new(embed_batch, __COCO_FN_HASH_EMBED_BATCH))` and call
 `EMBED.call(&ctx, item)` (`rust/sdk/cocoindex/src/batched.rs`). `SHOWCASE.md` documents the

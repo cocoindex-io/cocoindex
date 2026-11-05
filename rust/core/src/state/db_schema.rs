@@ -267,6 +267,24 @@ pub enum MemoizedValue<'a> {
     Inlined(#[serde_as(as = "Bytes")] Cow<'a, [u8]>),
 }
 
+/// One data dependency a body recorded while it ran (`use_data_dep`): what it
+/// read (`key`) and what it observed (`state`), both as the serialized
+/// snapshot taken at the call, with the fingerprints of those bytes. Validated
+/// on the next probe by the kind registered under `kind_fp`.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DataDepEntry<'a> {
+    #[serde(rename = "K")]
+    pub kind_fp: Fingerprint,
+    #[serde(rename = "KF")]
+    pub key_fp: Fingerprint,
+    #[serde(rename = "SF")]
+    pub state_fp: Fingerprint,
+    #[serde(rename = "KV", borrow)]
+    pub key: MemoizedValue<'a>,
+    #[serde(rename = "SV", borrow)]
+    pub state: MemoizedValue<'a>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ComponentMemoizationInfo<'a> {
     #[serde(rename = "F")]
@@ -289,6 +307,28 @@ pub struct ComponentMemoizationInfo<'a> {
     /// at validation time.
     #[serde(rename = "CS", default, skip_serializing_if = "Vec::is_empty", borrow)]
     pub context_memo_states: Vec<(Fingerprint, Vec<MemoizedValue<'a>>)>,
+    /// Data dependencies the component's own run recorded, sorted by
+    /// `(kind_fp, key_fp)`. Never those of its descendants: see
+    /// `has_open_descendants`.
+    #[serde(rename = "DD", default, skip_serializing_if = "Vec::is_empty", borrow)]
+    pub data_deps: Vec<DataDepEntry<'a>>,
+    /// A descendant component recorded data dependencies when this memo was
+    /// stored. A reuse of this memo carries the descendant over, so it is
+    /// allowed only once the descendant's own records have been validated from
+    /// its row, reached through `open_children`; a flagged memo whose list is
+    /// empty (one written before the list existed) is never reused.
+    #[serde(rename = "OD", default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_open_descendants: bool,
+    /// The direct children (paths relative to this component) that reported
+    /// data dependencies in their subtree when this memo was stored, sorted.
+    /// They are the entry points of the transitive validation a probe runs
+    /// before reusing a flagged memo: each one's row is read, its own records
+    /// validated, and its list followed in turn. A child with no row (a
+    /// non-memoized one, or one whose run observed a key in two states) makes
+    /// the probe a miss. Closed children are not listed: a reuse carries them
+    /// over unvalidated, as it always has.
+    #[serde(rename = "OC", default, skip_serializing_if = "Vec::is_empty")]
+    pub open_children: Vec<StablePath>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -319,6 +359,10 @@ pub struct FunctionMemoizationEntry<'a> {
     /// See `ComponentMemoizationInfo::context_memo_states`.
     #[serde(rename = "CS", default, skip_serializing_if = "Vec::is_empty", borrow)]
     pub context_memo_states: Vec<(Fingerprint, Vec<MemoizedValue<'a>>)>,
+    /// Data dependencies the call recorded (its own and its callees'), sorted
+    /// by `(kind_fp, key_fp)`. See `ComponentMemoizationInfo::data_deps`.
+    #[serde(rename = "DD", default, skip_serializing_if = "Vec::is_empty", borrow)]
+    pub data_deps: Vec<DataDepEntry<'a>>,
 }
 
 #[serde_as]
@@ -425,7 +469,7 @@ pub struct TargetStateOwnerInfo {
     pub component_path: StablePath,
 }
 
-pub const UNKNOWN_PROCESSOR_NAME: &'static str = "<unknown>";
+pub const UNKNOWN_PROCESSOR_NAME: &str = "<unknown>";
 
 fn unknown_processor_name() -> Cow<'static, str> {
     Cow::Borrowed(UNKNOWN_PROCESSOR_NAME)
@@ -699,6 +743,45 @@ mod tests {
             state_bytes.len() > prefix_bytes.len(),
             "UserState key bytes should be strictly longer than prefix bytes"
         );
+    }
+
+    /// A component memo flagged `has_open_descendants` before `open_children`
+    /// existed decodes with an empty list (the engine then never reuses it),
+    /// and a memo that lists its open children round-trips.
+    #[test]
+    fn component_memo_open_children_roundtrip_and_legacy_flag() {
+        let fp = utils::fingerprint::Fingerprint([0x11; 16]);
+        let child = StablePath(Arc::from(vec![
+            StableKey::Str(Arc::from("child")),
+            StableKey::Str(Arc::from("plan")),
+        ]));
+        let info = ComponentMemoizationInfo {
+            processor_fp: fp,
+            return_value: MemoizedValue::Inlined(Cow::Borrowed(b"ret")),
+            logic_deps: vec![],
+            target_provider_deps: vec![],
+            memo_states: vec![],
+            context_memo_states: vec![],
+            data_deps: vec![],
+            has_open_descendants: true,
+            open_children: vec![child.clone()],
+        };
+        let bytes = rmp_serde::to_vec_named(&info).expect("encode");
+        let decoded: ComponentMemoizationInfo<'_> =
+            cocoindex_utils::deser::from_msgpack_slice(&bytes).expect("decode");
+        assert!(decoded.has_open_descendants);
+        assert_eq!(decoded.open_children, vec![child]);
+
+        // The same row as written before the list existed: only the flag.
+        let legacy = rmp_serde::to_vec_named(&ComponentMemoizationInfo {
+            open_children: vec![],
+            ..info
+        })
+        .expect("encode");
+        let decoded: ComponentMemoizationInfo<'_> =
+            cocoindex_utils::deser::from_msgpack_slice(&legacy).expect("decode");
+        assert!(decoded.has_open_descendants);
+        assert!(decoded.open_children.is_empty());
     }
 
     /// `TargetSegmentName` roundtrips and never matches the `TargetState`

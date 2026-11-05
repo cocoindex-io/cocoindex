@@ -315,6 +315,10 @@ fn parse_fn_params(func: &ItemFn) -> syn::Result<(syn::Ident, Vec<ParamInfo>)> {
     Ok((ctx_ident, params))
 }
 
+fn is_slice_ref(ty: &Type) -> bool {
+    matches!(ty, Type::Reference(TypeReference { elem, .. }) if matches!(elem.as_ref(), Type::Slice(_)))
+}
+
 fn is_ref_to(ty: &Type, name: &str) -> bool {
     if let Type::Reference(TypeReference { elem, .. }) = ty
         && let Type::Path(type_path) = elem.as_ref()
@@ -336,6 +340,9 @@ fn gen_clones(params: &[ParamInfo]) -> Vec<TokenStream2> {
             let ident = &p.ident;
             if p.is_str_ref {
                 quote! { let #ident = #ident.to_string(); }
+            } else if is_slice_ref(&p.ty) {
+                // `&[T]` has no owned `Clone`; its owned form is `Vec<T>`.
+                quote! { let #ident = ::std::borrow::ToOwned::to_owned(#ident); }
             } else if p.is_ref {
                 // For &T params, Clone::clone(param) gives T (owned)
                 quote! { let #ident = ::core::clone::Clone::clone(#ident); }
@@ -641,9 +648,10 @@ fn gen_memo_wrapper_block(
     ctx_ident: &Ident,
     params: &[ParamInfo],
     overrides: &[MemoKeyOverride],
-    propagate_children_fn_logic: bool,
+    logic_tracking: LogicTracking,
     body_closure: TokenStream2,
 ) -> syn::Result<TokenStream2> {
+    let propagate_children_fn_logic = logic_tracking == LogicTracking::Full;
     validate_memo_key_overrides(
         overrides,
         params.iter().map(|param| param.ident.to_string()),
@@ -669,13 +677,28 @@ fn gen_memo_wrapper_block(
     let state_clone_stmts = gen_clones(&state_params);
     let body_clone_stmts = gen_clones(params);
     let memo_key = gen_function_memo_key(fn_name, hash_const_name, &key_writes);
+    // `logic_tracking = "none"` is never registered in the logic set, so its
+    // fingerprint must not reach a caller's memo entry.
+    let logic_fp = if logic_tracking != LogicTracking::None {
+        quote! {
+            ::core::option::Option::Some(::cocoindex::memo::fn_logic_fingerprint(
+                ::core::module_path!(),
+                ::core::stringify!(#fn_name),
+                #hash_const_name,
+            )?)
+        }
+    } else {
+        quote! { ::core::option::Option::None }
+    };
 
     Ok(quote! {{
         let __coco_key = #memo_key;
+        let __coco_logic_fp = #logic_fp;
 
         ::cocoindex::memo::cached_by_fingerprint_with_state(
             #ctx_ident,
             __coco_key,
+            __coco_logic_fp,
             #propagate_children_fn_logic,
             {
                 #(#state_clone_stmts)*
@@ -948,7 +971,7 @@ fn expand_batching_function(
             ctx_ident,
             &key_params,
             &args.memo_key,
-            propagate_children_fn_logic,
+            args.logic_tracking,
             quote! {
                 move |__coco_scoped_ctx| async move {
                     #schedule_call
@@ -1154,8 +1177,15 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
             &ctx_ident,
             &params,
             &args.memo_key,
-            propagate_children_fn_logic,
-            quote! { move |#ctx_ident| async move #body },
+            args.logic_tracking,
+            // Bind the scoped context as `&Ctx`, matching the signature (and
+            // the non-memo wrapper), so the body reads the same either way.
+            quote! {
+                move |__coco_scoped_ctx| async move {
+                    let #ctx_ident = &__coco_scoped_ctx;
+                    #body
+                }
+            },
         ) {
             Ok(wrapper) => wrapper,
             Err(err) => return TokenStream::from(err.to_compile_error()),
@@ -1335,25 +1365,28 @@ pub fn use_mount(input: TokenStream) -> TokenStream {
         .iter()
         .zip(data_args)
         .map(|(id, expr)| quote! { let #id = #expr; });
-    let fp_refs = arg_idents.iter().map(|id| quote! { & #id });
+    let fp_parts = arg_idents
+        .iter()
+        .map(|id| component_arg_part(quote! { & #id }));
     let key_tokens = match key_expr {
         Some(key) => quote! { ::std::string::ToString::to_string(&(#key)) },
         None => quote! { ::std::string::ToString::to_string(::core::stringify!(#fn_ident)) },
     };
 
     quote! {{
+        use ::cocoindex::mount::{ComponentArgViaMemoInput as _, ComponentArgViaSerialize as _};
         let __coco_parent = &(#ctx_arg);
         #(#arg_binds)*
-        let __coco_memo_fp = ::cocoindex::mount::component_memo_fp(
+        let __coco_memo = ::cocoindex::mount::component_memo(
             ::core::module_path!(),
             ::core::stringify!(#fn_ident),
             #hash_path,
-            &( #(#fp_refs,)* ),
+            ::std::vec![ #(#fp_parts),* ],
         )?;
         let __coco_key: ::std::string::String = #key_tokens;
         __coco_parent.__use_mount_fp(
             __coco_key,
-            ::core::option::Option::Some(__coco_memo_fp),
+            ::core::option::Option::Some(__coco_memo),
             move |__coco_child| async move {
                 #path(&__coco_child, #(#arg_idents),*).await
             },
@@ -1428,12 +1461,12 @@ pub fn mount_each(input: TokenStream) -> TokenStream {
             continue;
         }
         if expr_is_ident(arg, &item_ident) {
-            fp_elems.push(quote! { __coco_value });
+            fp_elems.push(component_arg_part(quote! { __coco_value }));
             body_args.push(quote! { __coco_value });
         } else {
             let id = format_ident!("__coco_extra{}", extra_idents.len());
             extra_binds.push(quote! { let #id = #arg; });
-            fp_elems.push(quote! { & #id });
+            fp_elems.push(component_arg_part(quote! { & #id }));
             body_args.push(quote! { #id });
             extra_idents.push(id);
         }
@@ -1444,28 +1477,48 @@ pub fn mount_each(input: TokenStream) -> TokenStream {
         None => quote! { ::core::option::Option::Some(::core::stringify!(#fn_ident)) },
     };
 
+    // The memo and body closures are passed inline so their parameter types
+    // are inferred from `items` before their bodies are checked: the memo
+    // closure resolves `__coco_component_arg` by method lookup on the item's
+    // concrete type.
     quote! {{
+        use ::cocoindex::mount::{ComponentArgViaMemoInput as _, ComponentArgViaSerialize as _};
         #(#extra_binds)*
-        let __coco_memo_of = {
-            #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
-            move |__coco_value: &_| ::cocoindex::mount::component_memo_fp(
-                ::core::module_path!(),
-                ::core::stringify!(#fn_ident),
-                #hash_path,
-                &( #(#fp_elems,)* ),
-            )
-            .map(::core::option::Option::Some)
-        };
-        let __coco_body = {
-            #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
-            move |__coco_child: ::cocoindex::Ctx, __coco_value| {
+        (#ctx_arg).__mount_each_fp(
+            #items_expr,
+            #prefix_tokens,
+            {
                 #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
-                async move { #path(#(#body_args),*).await }
-            }
-        };
-        (#ctx_arg).__mount_each_fp(#items_expr, #prefix_tokens, __coco_memo_of, __coco_body)
+                move |__coco_value| -> ::cocoindex::Result<
+                    ::core::option::Option<::cocoindex::mount::ComponentMemo>
+                > {
+                    ::cocoindex::mount::component_memo(
+                        ::core::module_path!(),
+                        ::core::stringify!(#fn_ident),
+                        #hash_path,
+                        ::std::vec![ #(#fp_elems),* ],
+                    )
+                    .map(::core::option::Option::Some)
+                }
+            },
+            {
+                #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
+                move |__coco_child: ::cocoindex::Ctx, __coco_value| {
+                    #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
+                    async move { #path(#(#body_args),*).await }
+                }
+            },
+        )
     }}
     .into()
+}
+
+/// One mount argument's memo part, chosen by autoref specialization: the
+/// `MemoInput` path when the argument's type supports it, else `Serialize`.
+fn component_arg_part(arg_ref: TokenStream2) -> TokenStream2 {
+    quote! {
+        (&&::cocoindex::mount::ComponentArg(#arg_ref)).__coco_component_arg()?
+    }
 }
 
 /// Whether `expr` is exactly the identifier `ident` (a bare path with one
@@ -1496,10 +1549,12 @@ struct SchemaFieldAttr {
 
 fn parse_schema_field_attr(attrs: &[syn::Attribute]) -> syn::Result<SchemaFieldAttr> {
     let mut out = SchemaFieldAttr::default();
+    let mut coco_attr = None;
     for attr in attrs {
         if !attr.path().is_ident("coco") {
             continue;
         }
+        coco_attr = Some(attr);
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("rename") {
                 let v: syn::LitStr = meta.value()?.parse()?;
@@ -1526,6 +1581,24 @@ fn parse_schema_field_attr(attrs: &[syn::Attribute]) -> syn::Result<SchemaFieldA
             }
             Ok(())
         })?;
+    }
+    if let Some(attr) = coco_attr {
+        let conflict = if out.vector_half && out.vector_dim.is_none() {
+            Some("`half` applies only to a `vector` column; add `vector`")
+        } else if out.custom_type.is_some()
+            && (out.vector_dim.is_some() || out.vector_half || out.force_json)
+        {
+            Some(
+                "`type` sets the column type itself; it cannot be combined with `vector`, `half` or `json`",
+            )
+        } else if out.force_json && out.vector_dim.is_some() {
+            Some("a column cannot be both `json` and `vector`")
+        } else {
+            None
+        };
+        if let Some(message) = conflict {
+            return Err(SynError::new_spanned(attr, message));
+        }
     }
     Ok(out)
 }
@@ -1612,6 +1685,11 @@ fn logical_type_tokens(ty: &Type, attr: &SchemaFieldAttr) -> TokenStream2 {
 /// dimension is available only at runtime, or `#[coco(vector = N)]` when it is
 /// a compile-time constant. See [`cocoindex::row_schema`] for the other field
 /// attributes.
+///
+/// Unsigned integers map to the next signed width, so `u64` and `usize` map to
+/// a 64-bit integer column and a value above `i64::MAX` is rejected when the
+/// row is written. Use `#[coco(type = "numeric")]` (or the connector's
+/// equivalent) for the full unsigned range.
 #[proc_macro_derive(SchemaFields, attributes(coco))]
 pub fn derive_schema_fields(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);

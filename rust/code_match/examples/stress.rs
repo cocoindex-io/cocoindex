@@ -215,20 +215,19 @@ fn collect_files(root: &Path, max_per_lang: usize) -> Vec<(&'static str, LangCon
             let Ok(ft) = entry.file_type() else { continue };
             if ft.is_dir() {
                 stack.push(p);
-            } else if ft.is_file() {
-                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                    if let Some((langname, cfg)) = lang_for_ext(ext) {
-                        let c = counts.entry(langname).or_default();
-                        if *c < max_per_lang {
-                            // skip very large files (keep the run bounded)
-                            if std::fs::metadata(&p)
-                                .map(|m| m.len() < 200_000)
-                                .unwrap_or(false)
-                            {
-                                *c += 1;
-                                out.push((langname, cfg, p));
-                            }
-                        }
+            } else if ft.is_file()
+                && let Some(ext) = p.extension().and_then(|e| e.to_str())
+                && let Some((langname, cfg)) = lang_for_ext(ext)
+            {
+                let c = counts.entry(langname).or_default();
+                if *c < max_per_lang {
+                    // skip very large files (keep the run bounded)
+                    if std::fs::metadata(&p)
+                        .map(|m| m.len() < 200_000)
+                        .unwrap_or(false)
+                    {
+                        *c += 1;
+                        out.push((langname, cfg, p));
                     }
                 }
             }

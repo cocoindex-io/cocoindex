@@ -5,58 +5,59 @@ description: >
   only the data that actually changed is reprocessed, lineage is observable end to end,
   and the schema is known up front.
 ---
-CocoIndex is an ultra-performant framework for building data processing pipelines for AI workloads, with built-in incremental processing.
+CocoIndex is a framework for building data processing pipelines for AI workloads, with built-in incremental processing.
 
 ## Programming model
 
 CocoIndex uses a *declarative*, state-driven programming model. You specify *what* your target should look like as a function of your source data — not *how* to incrementally update it. CocoIndex handles change detection and applies only the necessary updates automatically.
 
-If you’ve used React, spreadsheets, or materialized views, this will feel familiar:
+If you've used React, spreadsheets, or materialized views, this will feel familiar:
 - **React**: declare UI as a function of state → React re-renders what changed
 - **Spreadsheets**: declare formulas → cells recompute when inputs change
 - **CocoIndex**: declare [target states](../programming_guide/target_state) as a function of source → CocoIndex syncs what changed
 
 ## CocoIndex features
 
-### High-performance Rust 🦀 engine
-CocoIndex executes pipelines on a high-performance Rust engine, delivering resilient and scalable data processing.
+### Rust engine
+CocoIndex executes pipelines with a Rust engine and a Python API.
 
-### Easy to code
-- Write simple transformations in Python without learning new DSLs
-- Write batch-style code without worrying about deltas — CocoIndex runs it incrementally in both batch and live mode, continuously updating results. No separate DAGs, operators, or orchestration logic required.
+### Python transformations
+Write transformations in Python with your existing libraries.
+Write batch-style code; CocoIndex tracks dependencies and applies incremental updates in batch and live mode.
 
-### Incremental & low-latency
-CocoIndex tracks fine-grained dependencies and only recomputes what changed in the input data or the code. End-to-end updates drop from hours/days to seconds while keeping full correctness.
+### Incremental processing
+CocoIndex tracks fine-grained dependencies and recomputes work affected by changes to source data or processing code.
 
-### Full lineage & explainability
-Every processing step, intermediate result, and execution path is inspectable. This helps it remain compliant with the EU AI Act for transparency, and satisfies enterprise auditability/traceability requirements.
+### Lineage
+Inspect processing steps, intermediate results, and execution paths to trace how the pipeline produced its output.
 
 ### Open integration model
-Sources and targets plug in through a standard, open interface (no vendor lock-in). Leverage the full Python ecosystem for models, functions, and libraries.
+Sources and targets use a standard, open interface.
+Use Python models, functions, and libraries in your transformations.
 
-### High throughput + controlled concurrency
-Pipelines automatically parallelize with managed concurrency and request batching — reducing GPU cost, RPC fanout, and end-to-end latency.
+### Controlled concurrency
+Pipelines run work concurrently with configurable limits and batch requests to external services and models.
 
-### Fault-tolerant runtime
-The engine gracefully retries transient failures and resumes from previous progress after interruptions — eliminating manual backfills and replays.
+### Recovery
+The engine retries transient failures and resumes from previous progress after interruptions.
 
-### Low operational overhead
-CocoIndex removes the need for elaborate plumbing: refreshing datasets, maintaining state, handling backfills, ensuring correctness, coordinating GPUs, scaling workers, and managing infra are all handled by the engine.
+### Managed state
+CocoIndex manages change detection, cached results, target state reconciliation, execution concurrency, and backfills.
 
 ## Incremental data processing
 
-CocoIndex continuously maintains and tracks state while processing only new or changed data. It is designed to support incremental processing from day zero.
+CocoIndex stores state across runs to identify new or changed data.
 
 What incremental processing means:
 - Avoid unnecessarily recomputing work, based on multi-level change detection:
   - **Component level**: only reprocess source items with changes
-  - **Function level**: within an item’s processing, memoize expensive function calls and reuse when possible
+  - **Function level**: within an item's processing, memoize expensive function calls and reuse when possible
   - **Target level**: apply minimum necessary changes (insertions, updates, deletions) to the target
 - Support multiple mechanisms to capture source changes (CDC, poll-based) out of the box
 
-You write simple batch-style code — no delta logic, no state handling. CocoIndex automatically runs your pipeline incrementally and keeps the output up to date for serving, training, or feature computation.
+Use the updated output for serving, training, or feature computation.
 
 ## Next steps
 
-- [Install CocoIndex](./installation) and follow the [Quickstart](./quickstart) to build your first pipeline in 5 minutes
+- [Install CocoIndex](./installation) and follow the [Quickstart](./quickstart) to build your first pipeline
 - Read [Core Concepts](../programming_guide/core_concepts) for the mental model behind CocoIndex

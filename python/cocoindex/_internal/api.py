@@ -16,6 +16,7 @@ from typing import (
 )
 
 from . import core, environment
+from .core import AlreadyDeclaredError
 from .app import App, AppConfig, DropHandle, UpdateHandle, show_progress
 from .deadline import (
     DeadlineExceededError,
@@ -44,6 +45,9 @@ from .component_ctx import (
 
 from .stable_path import StableKey
 from .batching import RetryWithSmallerBatch
+from .logic_propagated_to_callers import logic_propagated_to_callers, logic_tracked
+from .logic_dep import LogicDep, use_logic_dep
+from .data_dep import DataDep, use_data_dep
 from .function import (
     AnyCallable,
     AsyncCallable,
@@ -463,11 +467,17 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
             live component instance is created per item (the item value is passed
             as the first constructor argument, mirroring the plain-function shape).
         items: A keyed iterable of (key, value) pairs, or a LiveMapFeed/LiveMapView for live mode.
+            Each key is the item's component key under *subpath*, so keys must be
+            unique within one call.
         *args: Additional arguments passed to fn after the item value.
         **kwargs: Additional keyword arguments passed to fn.
 
     Returns:
         A handle that can be used to wait until all processing units are ready.
+
+    Raises:
+        AlreadyDeclaredError: If a keyed iterable yields the same key more than
+            once (a ``ValueError`` subclass).
     """
     check_cancellation()
     check_not_in_process_live("coco.mount_each")
@@ -875,9 +885,13 @@ def use_state(
         # initial_value passed unserialized; engine core drops it if a value is
         # already stored on the previous run for this key.
         stored = ctx._core_processor_ctx.use_state(key, initial_value)
+    except AlreadyDeclaredError:
+        # A second use_state() of one key in one component run: typed, so a
+        # caller can branch on it as on any other repeated declaration.
+        raise
     except ValueError as e:
-        # Rust client errors surface as ValueError; normalize to RuntimeError so
-        # all use_state usage errors have a consistent type for callers.
+        # Other Rust client errors surface as ValueError; normalize to
+        # RuntimeError so use_state usage errors have a consistent type.
         raise RuntimeError(str(e)) from None
     if type_hint is not None:
         deserializer = get_deserialize_fn(
@@ -909,9 +923,16 @@ __all__ = [
     # .function
     "fn",
     "LogicTracking",
+    "logic_propagated_to_callers",
+    "logic_tracked",
+    "LogicDep",
+    "use_logic_dep",
+    "DataDep",
+    "use_data_dep",
     "timeout",
     "check_cancellation",
     "DeadlineExceededError",
+    "AlreadyDeclaredError",
     # .batching
     "RetryWithSmallerBatch",
     # .context_keys

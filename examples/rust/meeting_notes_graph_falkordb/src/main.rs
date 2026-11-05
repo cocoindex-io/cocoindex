@@ -3,9 +3,13 @@ use std::path::PathBuf;
 
 use chrono::NaiveDate;
 use cocoindex::connectors::falkordb::{self, ColumnDef, TableSchema};
-use cocoindex::resources::fs;
 use cocoindex::prelude::*;
+use cocoindex::resources::fs;
 use serde::{Deserialize, Serialize};
+
+// The graph connection, provided to the environment in `main`. Its name is the
+// graph's stable identity in the target states.
+cocoindex::context_key!(static GRAPH: falkordb::Graph);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Meeting {
@@ -153,10 +157,10 @@ fn canonical_person(name: &str) -> String {
     }
 }
 
-async fn build_graph(ctx: &Ctx, graph: &falkordb::Graph, input_dir: &str) -> Result<()> {
+async fn build_graph(ctx: &Ctx, input_dir: &str) -> Result<()> {
     let meeting_table = falkordb::mount_table_target(
         ctx,
-        graph,
+        &GRAPH,
         "Meeting",
         schema(
             &[
@@ -169,23 +173,28 @@ async fn build_graph(ctx: &Ctx, graph: &falkordb::Graph, input_dir: &str) -> Res
         )?,
     )
     .await?;
-    let person_table =
-        falkordb::mount_table_target(ctx, graph, "Person", schema(&[("name", "string")], "name")?)
-            .await?;
+    let person_table = falkordb::mount_table_target(
+        ctx,
+        &GRAPH,
+        "Person",
+        schema(&[("name", "string")], "name")?,
+    )
+    .await?;
     let task_table = falkordb::mount_table_target(
         ctx,
-        graph,
+        &GRAPH,
         "Task",
         schema(&[("description", "string")], "description")?,
     )
     .await?;
     let attended_rel =
-        falkordb::mount_relation_target(ctx, graph, "ATTENDED", &person_table, &meeting_table)
+        falkordb::mount_relation_target(ctx, &GRAPH, "ATTENDED", &person_table, &meeting_table)
             .await?;
     let decided_rel =
-        falkordb::mount_relation_target(ctx, graph, "DECIDED", &meeting_table, &task_table).await?;
+        falkordb::mount_relation_target(ctx, &GRAPH, "DECIDED", &meeting_table, &task_table)
+            .await?;
     let assigned_rel =
-        falkordb::mount_relation_target(ctx, graph, "ASSIGNED_TO", &person_table, &task_table)
+        falkordb::mount_relation_target(ctx, &GRAPH, "ASSIGNED_TO", &person_table, &task_table)
             .await?;
 
     let files = fs::walk(input_dir, &["**/*.md"])?;
@@ -290,14 +299,16 @@ async fn main() -> Result<()> {
     let graph_name =
         std::env::var("FALKORDB_GRAPH").unwrap_or_else(|_| "meeting_notes".to_string());
     let graph = falkordb::Graph::connect(&uri, &graph_name).await?;
-    let app = App::builder("meeting_notes_graph_falkordb")
+    let app = Environment::builder()
         .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&GRAPH, graph)
         .build()
+        .await?
+        .app("meeting_notes_graph_falkordb")
         .await?;
     app.update(move |ctx| {
-        let graph = graph.clone();
         let input_dir = input_dir.clone();
-        async move { build_graph(&ctx, &graph, &input_dir).await }
+        async move { build_graph(&ctx, &input_dir).await }
     })
     .await?;
     Ok(())

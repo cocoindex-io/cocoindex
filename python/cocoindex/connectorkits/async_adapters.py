@@ -21,6 +21,18 @@ _T = _TypeVar("_T")
 DEFAULT_QUEUE_SIZE = 1024
 
 
+def _put_until_stopped(
+    q: _queue.Queue[_T], item: _T, stop_event: _threading.Event
+) -> bool:
+    while not stop_event.is_set():
+        try:
+            q.put(item, timeout=0.1)
+            return True
+        except _queue.Full:
+            pass
+    return False
+
+
 async def sync_to_async_iter(
     sync_iter_fn: Callable[[], Iterator[_T]],
     *,
@@ -61,15 +73,15 @@ async def sync_to_async_iter(
     stop_event = _threading.Event()
 
     def producer() -> None:
+        end: tuple[bool, _T | Exception] = (True, StopIteration())
         try:
             for item in sync_iter_fn():
-                if stop_event.is_set():
+                if not _put_until_stopped(q, (False, item), stop_event):
                     break
-                q.put((False, item))
         except Exception as e:  # pylint: disable=broad-except
-            q.put((True, e))
+            end = (True, e)
         finally:
-            q.put((True, StopIteration()))
+            _put_until_stopped(q, end, stop_event)
 
     _ctx = _contextvars.copy_context()
     loop = _asyncio.get_running_loop()
@@ -93,6 +105,13 @@ async def sync_to_async_iter(
             while True:
                 q.get_nowait()
         except _queue.Empty:
+            pass
+        # Cancelling the await does not cancel the executor's blocking q.get().
+        # Leave a terminal item so that worker can exit, even if the source is
+        # still blocked in I/O and cannot send its own completion marker.
+        try:
+            q.put_nowait((True, StopIteration()))
+        except _queue.Full:
             pass
         # Joining directly would block the event loop while the producer exits.
         await loop.run_in_executor(None, thread.join, 1.0)
@@ -145,15 +164,15 @@ def async_to_sync_iter(
 
     def producer() -> None:
         async def run_async() -> None:
+            end: tuple[bool, _T | Exception] = (True, StopIteration())
             try:
                 async for item in async_iter_fn():
-                    if stop_event.is_set():
+                    if not _put_until_stopped(q, (False, item), stop_event):
                         break
-                    q.put((False, item))
             except Exception as e:  # pylint: disable=broad-except
-                q.put((True, e))
+                end = (True, e)
             finally:
-                q.put((True, StopIteration()))
+                _put_until_stopped(q, end, stop_event)
 
         _asyncio.run(run_async())
 

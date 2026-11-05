@@ -127,6 +127,10 @@ def declare_table_target(
 
 **Returns:** A pending `TableTarget`. Use the convenience wrapper `await sqlite.mount_table_target(SQLITE_DB, table_name, table_schema)` to resolve.
 
+:::caution[One table, one key]
+CocoIndex identifies a table by its key: the `db` key and `table_name`. SQLite ignores case in table names, so two names that differ only in case (`Docs` and `docs`) are two keys for one table. Declare each table through one name only. Changing a table name's case changes its key: CocoIndex then cleans up the table it tracked under the old name, which is the same table. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity).
+:::
+
 #### Rows (child states)
 
 Once a `TableTarget` is resolved, declare rows to be upserted:

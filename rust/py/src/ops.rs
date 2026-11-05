@@ -185,8 +185,8 @@ impl PyRecursiveSplitter {
                 .collect(),
         };
 
-        let chunker = RecursiveChunker::new(config)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        let chunker =
+            RecursiveChunker::new(config).map_err(pyo3::exceptions::PyValueError::new_err)?;
 
         Ok(Self { chunker })
     }

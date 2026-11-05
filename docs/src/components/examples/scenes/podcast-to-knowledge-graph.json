@@ -1,0 +1,10 @@
+{
+  "alt": "YouTube URLs in input/sample.txt are fetched with yt-dlp and transcribed by AssemblyAI with speaker labels; one LLM pass maps (Speaker A) to Lex Fridman and a second extracts the statement \"Scaling laws suggest that larger models will continue to improve.\" with its speaker and the person it mentions; SurrealDB links person, session and statement nodes through person_session, person_statement, session_statement and statement_mentions edges, entity resolution collapses \"GPT-4\", \"GPT4\" and \"OpenAI's GPT-4\" into one tech node, and a SurrealQL query lists each statement with its speaker; adding a URL processes only that episode.",
+  "needs": ["Docker (for SurrealDB)", "Python 3.11+", "FFmpeg", "ASSEMBLYAI_API_KEY", "OPENAI_API_KEY"],
+  "run": [
+    { "note": "Start SurrealDB", "cmd": "docker run -d --name surrealdb --user root -p 8787:8000 -v surrealdb-data:/data surrealdb/surrealdb:latest start --user root --pass root surrealkv:/data/database" },
+    { "note": "Configure (ASSEMBLYAI_API_KEY, OPENAI_API_KEY) and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Build the graph from the URLs in input/sample.txt", "cmd": "cocoindex update conv_knowledge.app" },
+    { "note": "Browse it in Surrealist: ws://localhost:8787, namespace cocoindex, database yt_conversations", "cmd": "open https://surrealdb.com/surrealist" }
+  ]
+}

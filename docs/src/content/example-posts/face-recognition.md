@@ -10,25 +10,25 @@ tags: [multimodal, face-recognition]
 
 We'll take a folder of photos and make them searchable *by face* — the core of "find every photo of this person." For each image we detect every face, crop it, embed it into a 128-d vector with [`face_recognition`](https://github.com/ageitgey/face_recognition) (dlib), and index the faces in [Qdrant](https://qdrant.tech/). Then a query face finds the nearest indexed faces — the same person across different photos lands close together.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](https://cocoindex.io/docs/programming_guide/core_concepts/), change tracking, the managed Qdrant collection — runs in a Rust engine underneath, so adding a photo only re-detects that photo, and the slow detection/embedding steps run on a [GPU runner](https://cocoindex.io/docs/programming_guide/function/) instead of blocking the event loop.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and the Qdrant collection. As a result, adding a photo only re-detects that photo, and the slow detection/embedding steps run on a [GPU runner](/docs/programming_guide/function/) instead of blocking the event loop.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/face_recognition)
 
 ## Flow overview
 
-![CocoIndex face recognition flow: walk a folder of images, detect every face, embed each into a 128-d vector, and index one Qdrant point per face](https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/flow-v1.svg)
+![CocoIndex face recognition flow: walk a folder of images, detect every face, embed each into a 128-d vector, and index one Qdrant point per face](https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/flow-v1-dark.svg)
 
 Unlike a one-embedding-per-image index, an image here fans out to **many** faces — so the shape is *image → N faces → N points*:
 
 1. Read image files from a local directory (live).
 2. Detect every face in each image and crop it.
-3. Embed each face into a 128-d vector and store one Qdrant [point](https://cocoindex.io/docs/connectors/qdrant/) per face, with the source filename and bounding box.
+3. Embed each face into a 128-d vector and store one Qdrant [point](/docs/connectors/qdrant/) per face, with the source filename and bounding box.
 
-You [declare the transformation logic](https://cocoindex.io/docs/programming_guide/core_concepts/) with native Python; CocoIndex works out what to insert, update, and delete. Think: **target_state = transformation(source_state)**.
+You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python; CocoIndex works out what to insert, update, and delete. Think: **target_state = transformation(source_state)**.
 
 ## Detect and embed faces
 
-Face detection and embedding are synchronous, CPU/GPU-heavy dlib calls, so each is wrapped with [`@coco.fn.as_async(runner=coco.GPU)`](https://cocoindex.io/docs/programming_guide/function/) to run on a dedicated [GPU runner](https://cocoindex.io/docs/programming_guide/function/) without blocking the async loop. `extract_faces` returns one `Face` (bounding box + cropped PNG) per detected face:
+Face detection and embedding are synchronous, CPU/GPU-heavy dlib calls, so each is wrapped with [`@coco.fn.as_async(runner=coco.GPU)`](/docs/programming_guide/function/) to run on a dedicated [GPU runner](/docs/programming_guide/function/) without blocking the async loop. `extract_faces` returns one `Face` (bounding box + cropped PNG) per detected face:
 
 ```python title="main.py"
 @dataclass
@@ -85,9 +85,9 @@ async def process_file(file: FileLike, target: qdrant.CollectionTarget) -> None:
     await coco.map(process_face, faces, str(file.file_path.path), target)
 ```
 
-![One process_file component per image, fanned out with mount_each: each image is detected, every face embedded, and one Qdrant point declared per face](https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/stage-file-process.svg)
+![One process_file component per image, fanned out with mount_each: each image is detected, every face embedded, and one Qdrant point declared per face](https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/stage-file-process-dark.svg)
 
-[`@coco.fn(memo=True)`](https://cocoindex.io/docs/programming_guide/function/) makes it [incremental](https://cocoindex.io/docs/advanced_topics/memoization_keys/): an unchanged photo is never re-detected. Each image is its own [processing component](https://cocoindex.io/docs/programming_guide/processing_component/), so deleting a photo removes all its faces from Qdrant automatically. [`coco.map`](https://cocoindex.io/docs/programming_guide/app/) fans out one `process_face` per detected face — the multi-face equivalent of chunking a document.
+[`@coco.fn(memo=True)`](/docs/programming_guide/function/) makes it [incremental](/docs/advanced_topics/memoization_keys/): an unchanged photo is never re-detected. Each image is its own [processing component](/docs/programming_guide/processing_component/), so deleting a photo removes all its faces from Qdrant automatically. [`coco.map`](/docs/programming_guide/app/) fans out one `process_face` per detected face — the multi-face equivalent of chunking a document.
 
 ## Define the main function
 
@@ -133,7 +133,7 @@ The example ships a handful of famous group photos in `images/` (the 1927 Solvay
 cocoindex update main        # or: cocoindex update -L main   (keep watching the folder)
 ```
 
-On the sample set this indexes **36 faces** — 29 from the Solvay conference alone — each as a Qdrant point keyed by `(filename, bounding box)`.
+On the sample set this indexes **36 faces** (29 from the Solvay conference alone) each as a Qdrant point keyed by `(filename, bounding box)`.
 
 ## Search by face
 
@@ -167,5 +167,3 @@ The expensive part (CNN detection + embedding) is fully memoized, so iterating o
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/face_recognition](https://github.com/cocoindex-io/cocoindex/tree/main/examples/face_recognition). For text-driven image search instead of face matching, see [Search Images by Text](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search) (CLIP) — same Qdrant target, a different encoder.
-
-Got a photo library you want to make searchable by face? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

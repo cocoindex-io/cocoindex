@@ -14,6 +14,7 @@ __all__ = [
 ]
 
 import asyncio as _asyncio
+import base64 as _base64
 import contextlib as _contextlib
 import io as _io
 import logging as _logging
@@ -21,6 +22,7 @@ from contextlib import AbstractAsyncContextManager as _AbstractAsyncContextManag
 from datetime import timedelta as _timedelta
 from collections.abc import Awaitable as _Awaitable
 from collections.abc import Callable as _Callable
+from collections.abc import Mapping as _Mapping
 from typing import Any as _Any
 from typing import TypeVar as _TypeVar
 from typing import cast as _cast
@@ -109,6 +111,10 @@ _RETRYABLE_LITELLM_EXCEPTION_CLASSES = _litellm_exception_classes(
 
 _TIMEOUT_LITELLM_EXCEPTION_CLASSES = _litellm_exception_classes("Timeout")
 
+# litellm's catch-all wrapper: its `status_code` is a constant 500 whether or
+# not an HTTP exchange happened (see `_is_local_request_failure`).
+_API_CONNECTION_ERROR_CLASSES = _litellm_exception_classes("APIConnectionError")
+
 # Errors about who we are or what we asked for (credentials, permissions,
 # unknown model, exhausted budget) — batch composition can't affect them, so
 # splitting the batch can't help.
@@ -178,11 +184,39 @@ def _is_transport_error(error: BaseException) -> bool:
     )
 
 
+def _is_local_request_failure(error: BaseException) -> bool:
+    """litellm failed to build the request and never sent one.
+
+    litellm wraps a ``ValueError`` or ``TypeError`` raised by its own request
+    transformation — an input the provider path refuses, an argument it
+    cannot shape — in ``APIConnectionError``, whose ``status_code`` is a
+    constant 500 whether or not any HTTP exchange happened. Read as a
+    status, that 500 would retry a failure no retry can change, for the
+    whole time budget. The failure has to surface at once instead, so that
+    batch splitting can isolate the input responsible. The wrapped exception
+    rides ``__cause__`` when litellm chains it explicitly and ``__context__``
+    when it re-raises inside an ``except`` block, the usual path.
+
+    An ``ImportError`` gets the same wrapper and the same treatment: litellm
+    imports some of its own dependencies at call time (a ``litellm``
+    installed without ``mcp`` fails this way on every completion call), and
+    a missing module is not going to appear while the retry loop waits.
+    """
+    if not isinstance(error, _API_CONNECTION_ERROR_CLASSES):
+        return False
+    wrapped = error.__cause__ or error.__context__
+    return isinstance(wrapped, (ValueError, TypeError, ImportError))
+
+
 def _is_retryable_litellm_error(error: BaseException) -> bool:
     # Timeouts first, ahead of every other rule: each one below would
     # otherwise let a timeout back in — `litellm.Timeout` reports HTTP 408,
     # and both it and the httpx timeouts descend from retryable parents.
     if _is_timeout_error(error):
+        return False
+    # Then local failures, ahead of the status rule that would misread
+    # their constant 500.
+    if _is_local_request_failure(error):
         return False
     if _message_indicates_non_retryable_credentials_error(str(error)):
         return False
@@ -236,6 +270,36 @@ async def _retry_litellm_call(
     )
 
 
+# Prefixes litellm's Gemini embedding path reads as a media reference rather
+# than text to embed: a Cloud Storage object and an uploaded-file name. The
+# third, an inline data URL, also needs a base64 payload — see below.
+_MEDIA_REFERENCE_PREFIXES = ("gs://", "files/")
+
+
+def _escape_media_reference(text: str) -> str:
+    """Keep litellm from reading ``text`` as a file to embed.
+
+    litellm's Gemini embedding path treats a string that starts with
+    ``data:`` and contains ``;base64,``, or that starts with ``gs://`` or
+    ``files/``, as an inline file, a Cloud Storage object, or an uploaded
+    file — its multimodal input convention. Corpus text hits all three: a
+    glTF file's buffer, an HTML page's inline image, a path list beginning
+    ``files/``. The request then fails before it is sent (an unsupported
+    MIME type, an unresolved file reference) or silently embeds an image.
+    A leading space defeats each of those prefix checks and moves the
+    embedding negligibly, so it is added to exactly the texts litellm would
+    misread, for every provider: the check is on the input rather than the
+    model, because the detection is litellm's and may spread. litellm has no
+    way to send such a string as text (BerriAI/litellm#46719); the escape
+    can go once it does.
+    """
+    if text.startswith(_MEDIA_REFERENCE_PREFIXES) or (
+        text.startswith("data:") and ";base64," in text
+    ):
+        return " " + text
+    return text
+
+
 def _aligned_embeddings(data: list[_Any], n: int) -> list[_NDArray[_np.float32]]:
     """Map embedding response items back to the ``n`` inputs they embed.
 
@@ -264,7 +328,16 @@ def _aligned_embeddings(data: list[_Any], n: int) -> list[_NDArray[_np.float32]]
                 "litellm embedding response indices are not a permutation of "
                 f"0..{n - 1}: got {[item.get('index') for item in data]}"
             )
-        out[index] = _np.array(item["embedding"], dtype=_np.float32)
+        # `Embedding.embedding` is typed `list[float] | str`, where the `str`
+        # form is the base64 payload `encoding_format="base64"` returns.
+        # Pinning that format also disables the OpenAI SDK's own base64
+        # auto-decode, so the payload arrives here still encoded.
+        emb = item["embedding"]
+        if isinstance(emb, str):
+            emb = _np.frombuffer(
+                _base64.b64decode(emb, validate=True), dtype=_np.float32
+            )
+        out[index] = _np.array(emb, dtype=_np.float32)
     return _cast(list[_NDArray[_np.float32]], out)
 
 
@@ -273,6 +346,12 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
 
     This class provides an async interface to LiteLLM's embedding API
     and automatically provides vector schema information for CocoIndex connectors.
+
+    A text litellm would read as a media reference rather than text — one
+    starting ``data:`` with a base64 payload, ``gs://``, or ``files/`` — is
+    sent with a leading space so it embeds as text (see
+    :func:`_escape_media_reference`). A request litellm refuses to build is
+    not retried; in a batch, the input responsible fails alone.
 
     Args:
         model: LiteLLM model name (e.g., ``"text-embedding-ada-002"``,
@@ -320,6 +399,36 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
                 "max_inflight_requests must be a positive int or None, got "
                 f"{max_inflight_requests!r}"
             )
+        # litellm sweeps unrecognized top-level kwargs into `extra_body`, so
+        # both spellings reach the provider. Which one wins when both are set
+        # differs per key, so read either rather than guessing.
+        extra_body = kwargs.get("extra_body")
+        nested = extra_body if isinstance(extra_body, _Mapping) else {}
+        allowed_options: dict[str, set[str]] = {}
+        if "base64" in (
+            kwargs.get("encoding_format"),
+            nested.get("encoding_format"),
+        ):
+            # The decode reads base64 with `np.float32`, i.e. little-endian on
+            # every platform we ship. vLLM's `embed_dtype` (float16, bfloat16,
+            # fp8) and Voyage's `output_dtype` (int8, uint8, binary, ubinary)
+            # change the payload's dtype, and read as float32 it is a shorter
+            # vector of meaningless values. vLLM's `endianness` changes the
+            # byte order instead: "big" keeps the length and byte-swaps every
+            # value. "native" is the server's order, accepted on the same
+            # little-endian assumption.
+            allowed_options["embed_dtype"] = {"float32"}
+            allowed_options["output_dtype"] = {"float"}
+            allowed_options["endianness"] = {"native", "little"}
+        for name, allowed in allowed_options.items():
+            for source in (kwargs, nested):
+                value = source.get(name)
+                if value is not None and value not in allowed:
+                    choices = " or ".join(repr(a) for a in sorted(allowed))
+                    raise ValueError(
+                        "base64 embeddings are decoded as native float32; "
+                        f"got {name}={value!r}. Drop {name} or set it to {choices}."
+                    )
         self._model = model
         self._timeout = _resolve_timeout(timeout)
         self._kwargs = kwargs
@@ -373,6 +482,8 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         return kwargs
 
     async def _aembedding_with_retry(self, texts: list[str], **extra: _Any) -> _Any:
+        inputs = [_escape_media_reference(text) for text in texts]
+
         async def _call() -> _Any:
             # The permit is scoped to one backend request, deliberately as
             # tight as possible around it:
@@ -392,7 +503,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             async with self._inflight_permit():
                 return await litellm.aembedding(
                     model=self._model,
-                    input=texts,
+                    input=inputs,
                     **self._build_call_kwargs(**extra),
                 )
 
@@ -410,8 +521,10 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             if self._dim is not None:
                 return self._dim
             response = await self._aembedding_with_retry(["hello"])
-            embedding = response.data[0]["embedding"]
-            self._dim = len(embedding)
+            # Decode through the same path as the batch body: a base64
+            # payload's `len()` is the encoded string's length, not the
+            # vector's dimension.
+            self._dim = len(_aligned_embeddings(response.data, 1)[0])
             return self._dim
 
     @coco.fn.as_async(batching=True, max_batch_size=64)  # type: ignore[arg-type]
@@ -479,7 +592,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         result: _NDArray[_np.float32] = await self._embed(text, input_type)  # type: ignore[arg-type]
         return result
 
-    @coco.fn(memo=True)
+    @coco.fn(memo=True, version=1)
     async def __coco_vector_schema__(self) -> _schema.VectorSchema:
         """Return vector schema information for this model.
 

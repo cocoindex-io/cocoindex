@@ -81,7 +81,7 @@ async fn process_product(ctx: &Ctx, product: SourceProduct) -> Result<OutputProd
     let total_value = product.price * product.amount as f64;
     let embedding = ctx
         .get_key(&EMBEDDER)?
-        .embed(&ctx, &full_description)
+        .embed(ctx, &full_description)
         .await?;
     Ok(OutputProduct {
         product_category: product.product_category.clone(),

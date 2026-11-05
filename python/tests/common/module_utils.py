@@ -4,6 +4,37 @@ import importlib.util
 import sys
 from types import ModuleType
 
+from cocoindex._internal import core
+from cocoindex._internal.function import AsyncFunction, SyncFunction
+
+
+def release_logic_fp(obj: object) -> None:
+    """Release a coco function's logic fingerprint registration now.
+
+    Clears ``_logic_fp`` so the object's ``__del__`` doesn't release it a second
+    time once the stale module is collected — that would drop the registration
+    held by an unchanged function in the next module version.
+    """
+    if isinstance(obj, (SyncFunction, AsyncFunction)) and obj._logic_fp is not None:
+        core.unregister_logic_fingerprint(obj._logic_fp)
+        obj._logic_fp = None
+
+
+def unload_module_functions(mod: ModuleType) -> None:
+    """Unregister logic fingerprints for all coco functions in a module.
+
+    Simulates editing a module in place: call it on the old version before
+    loading the new one under the same name, so fingerprints of edited
+    functions leave the current logic set.
+    """
+    for attr_name in dir(mod):
+        obj = getattr(mod, attr_name)
+        release_logic_fp(obj)
+        # Also scan class attributes for @coco.fn decorated methods.
+        if isinstance(obj, type):
+            for cls_attr_name in dir(obj):
+                release_logic_fp(getattr(obj, cls_attr_name, None))
+
 
 def load_module_as(source_path: str, fake_module_name: str) -> ModuleType:
     """

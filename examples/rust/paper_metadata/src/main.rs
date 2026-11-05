@@ -266,9 +266,9 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
     let mut embeddings = Vec::new();
 
     // Title embedding (one row).
-    let title_vec = embedder.embed(&ctx, &metadata.title).await?;
+    let title_vec = embedder.embed(ctx, &metadata.title).await?;
     let title_id = uuid_gen
-        .next_uuid(&ctx, &("title", &metadata.title))
+        .next_uuid(ctx, &("title", &metadata.title))
         .await?
         .to_string();
     embeddings.push(MetadataEmbeddingRow {
@@ -298,7 +298,7 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
         let vecs = embedder.embed_batch(chunk_texts.clone()).await?;
         for (text, embedding) in chunk_texts.into_iter().zip(vecs) {
             let id = uuid_gen
-                .next_uuid(&ctx, &("abstract", &text))
+                .next_uuid(ctx, &("abstract", &text))
                 .await?
                 .to_string();
             embeddings.push(MetadataEmbeddingRow {

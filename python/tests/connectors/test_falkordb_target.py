@@ -12,6 +12,7 @@ and the env vars below:
 from __future__ import annotations
 
 import os
+import warnings
 import uuid as uuid_mod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -55,10 +56,12 @@ if HAS_FALKORDB:
     from cocoindex.connectors import falkordb as falkor  # type: ignore[attr-defined]
     from cocoindex.connectors.falkordb._cypher import (  # type: ignore[import-untyped]
         build_node_delete,
+        build_node_delete_all,
         build_node_index_create,
         build_node_index_drop,
         build_node_upsert,
         build_relationship_delete,
+        build_relationship_delete_all,
         build_relationship_index_create,
         build_relationship_index_drop,
         build_relationship_upsert,
@@ -168,15 +171,26 @@ class TestNodeDeleteCypher:
             == "MATCH (n:`Document` {`filename`: $key_0}) DETACH DELETE n"
         )
 
+    def test_delete_all_detaches_whole_label(self) -> None:
+        # Table teardown: every node carrying the label, with its relationships.
+        assert build_node_delete_all("Document") == (
+            "MATCH (n:`Document`) DETACH DELETE n"
+        )
+
 
 @requires_falkordb
 class TestRelationshipUpsertCypher:
-    def test_three_merges_with_props(self) -> None:
+    def test_merges_after_deleting_a_moved_edge(self) -> None:
         assert build_relationship_upsert(
-            "REL", "Entity", ["value"], "Entity", ["value"], ["id"], True
+            "REL", "Entity", ["value"], "Entity", ["value"], ["id"], True, False
         ) == (
             "MERGE (s:`Entity` {`value`: $from_key_0}) "
             "MERGE (t:`Entity` {`value`: $to_key_0}) "
+            "WITH s, t "
+            "OPTIONAL MATCH (a)-[o:`REL` {`id`: $rel_key_0}]->(b) "
+            "WHERE a <> s OR b <> t "
+            "DELETE o "
+            "WITH DISTINCT s, t "
             "MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t) "
             "SET r += $props"
         )
@@ -184,20 +198,31 @@ class TestRelationshipUpsertCypher:
     def test_no_set_on_endpoints(self) -> None:
         # Critical: SET only on the relationship, not on s or t. Endpoint
         # properties are owned by their table's own _RecordHandler.
-        cypher = build_relationship_upsert("REL", "A", ["x"], "B", ["y"], ["id"], True)
+        cypher = build_relationship_upsert(
+            "REL", "A", ["x"], "B", ["y"], ["id"], True, False
+        )
         # Three SET-able sites: s, t, r. Only r should have SET applied.
         assert "SET s" not in cypher
         assert "SET t" not in cypher
         assert "SET r += $props" in cypher
 
     def test_no_props(self) -> None:
-        assert build_relationship_upsert(
-            "REL", "A", ["x"], "B", ["y"], ["id"], False
-        ) == (
-            "MERGE (s:`A` {`x`: $from_key_0}) "
-            "MERGE (t:`B` {`y`: $to_key_0}) "
-            "MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t)"
+        cypher = build_relationship_upsert(
+            "REL", "A", ["x"], "B", ["y"], ["id"], False, False
         )
+        assert cypher.endswith("MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t)")
+
+    def test_legacy_key_deletes_the_edge_between_the_endpoints(self) -> None:
+        cypher = build_relationship_upsert(
+            "REL", "A", ["x"], "B", ["y"], ["id"], False, True
+        )
+        assert (
+            "WITH DISTINCT s, t "
+            "OPTIONAL MATCH (s)-[l:`REL` {`id`: $legacy_key_0}]->(t) "
+            "DELETE l "
+            "WITH DISTINCT s, t "
+            "MERGE (s)-[r:`REL` {`id`: $rel_key_0}]->(t)"
+        ) in cypher
 
 
 @requires_falkordb
@@ -209,6 +234,11 @@ class TestRelationshipDeleteCypher:
         assert cypher == "MATCH ()-[r:`REL` {`id`: $key_0}]->() DELETE r"
         assert "DELETE s" not in cypher
         assert "DELETE t" not in cypher
+
+    def test_delete_all_keeps_endpoints(self) -> None:
+        cypher = build_relationship_delete_all("REL")
+        assert cypher == "MATCH ()-[r:`REL`]->() DELETE r"
+        assert "DETACH" not in cypher
 
 
 @requires_falkordb
@@ -384,6 +414,7 @@ class TestTableReconcile:
         assert out_reproc is not None
         assert out_reproc.action.main_action == "upsert"
         assert out_reproc.action.column_actions == {
+            "field:id": "upsert",
             "field:a": "upsert",
             "field:b": "delete",
             "field:c": "insert",
@@ -460,10 +491,107 @@ class TestTableReconcile:
         assert out_reproc is not None
         assert out_reproc.action.main_action == "upsert"
         assert out_reproc.action.column_actions == {
+            "field:id": "upsert",
             "field:a": "upsert",
             "field:b": "insert",
         }
         assert out_reproc.child_invalidation == "lossy"
+
+    def test_only_identity_changes_rebuild_the_table(self) -> None:
+        """A rebuild deletes every node of the label, so only changes the
+        per-record reconcile can't absorb may trigger one: the primary key
+        field (and the node/relation kind or endpoints). Attaching a schema
+        or changing a property type re-upserts records at most."""
+        from cocoindex.connectorkits import statediff, target
+        from cocoindex.connectors.falkordb import _target as falkor_target
+
+        def spec(
+            columns: dict[str, falkor.ColumnDef] | None, primary_key: str
+        ) -> falkor_target._TableSpec:
+            schema = (
+                falkor.TableSchema(columns=columns, primary_key=primary_key)
+                if columns is not None
+                else None
+            )
+            return falkor_target._TableSpec(
+                table_schema=schema,
+                primary_key=primary_key,
+                is_relation=False,
+                from_label=None,
+                from_pk_field=None,
+                to_label=None,
+                to_pk_field=None,
+                managed_by=target.ManagedBy.SYSTEM,
+            )
+
+        handler = falkor_target._TableHandler()
+        key = falkor_target._TableKey("db", "Doc")
+
+        out = handler.reconcile(key, spec(None, "id"), [], False)
+        assert out is not None and out.action.main_action is None
+        schemaless = out.tracking_record
+        assert isinstance(schemaless, statediff.MutualTrackingRecord)
+
+        # Schemaless -> schema: the new fields show up, nothing is rebuilt.
+        with_schema = spec(
+            {"id": falkor.ColumnDef("string"), "a": falkor.ColumnDef("string")},
+            "id",
+        )
+        out = handler.reconcile(key, with_schema, [schemaless], False)
+        assert out is not None
+        assert out.action.main_action is None
+        assert out.action.column_actions == {
+            "field:id": "insert",
+            "field:a": "insert",
+        }
+        assert out.child_invalidation is None
+        with_schema_tracking = out.tracking_record
+        assert isinstance(with_schema_tracking, statediff.MutualTrackingRecord)
+
+        # Primary key type change: lossy (records re-upsert), not a rebuild.
+        int_pk = spec(
+            {"id": falkor.ColumnDef("integer"), "a": falkor.ColumnDef("string")},
+            "id",
+        )
+        out_int = handler.reconcile(key, int_pk, [with_schema_tracking], False)
+        assert out_int is not None
+        assert out_int.action.main_action is None
+        assert out_int.action.column_actions == {"field:id": "replace"}
+        assert out_int.child_invalidation == "lossy"
+
+        # Primary key field change: the table is rebuilt from scratch.
+        new_pk = spec(
+            {"id": falkor.ColumnDef("string"), "a": falkor.ColumnDef("string")},
+            "a",
+        )
+        out_pk = handler.reconcile(key, new_pk, [with_schema_tracking], False)
+        assert out_pk is not None
+        assert out_pk.action.main_action == "replace"
+        assert out_pk.child_invalidation == "destructive"
+        assert out_pk.action.prev_pk_field == "id"
+
+
+@requires_falkordb
+def test_record_sinks_shared_per_connection_factory() -> None:
+    """Every table's record handler of one database — node and relation tables
+    alike — reconciles to one record sink (and one vector index sink), so a
+    batch can order node writes around relation writes. Another factory gets
+    its own sinks."""
+    from cocoindex.connectors.falkordb import _target as falkor_target
+
+    factory = falkor.ConnectionFactory(uri=_FALKORDB_URI)
+    node = falkor_target._RecordHandler("A", False, "id", None, False, factory)
+    relation = falkor_target._RecordHandler("R", True, "id", None, True, factory)
+    other = falkor_target._RecordHandler(
+        "A", False, "id", None, False, falkor.ConnectionFactory(uri=_FALKORDB_URI)
+    )
+
+    assert node._sink._core == relation._sink._core
+    assert node._sink._core != other._sink._core
+    assert (
+        node.attachments()["vector_index"]._sink._core
+        == relation.attachments()["vector_index"]._sink._core
+    )
 
 
 # =============================================================================
@@ -500,6 +628,24 @@ async def _read_nodes(graph_name: str, label: str) -> list[dict[str, Any]]:
     return rows
 
 
+async def _count(graph_name: str, cypher: str) -> int:
+    """Run ``cypher`` (which must return a single count) and return it."""
+    client = AsyncFalkorDB.from_url(_FALKORDB_URI)
+    g = client.select_graph(graph_name)
+    res = await g.query(cypher)
+    await client.aclose()
+    return int(res.result_set[0][0])
+
+
+async def _indexed_labels(graph_name: str) -> set[str]:
+    """Labels and relationship types that still carry an index."""
+    client = AsyncFalkorDB.from_url(_FALKORDB_URI)
+    g = client.select_graph(graph_name)
+    res = await g.query("CALL db.indexes() YIELD label RETURN label")
+    await client.aclose()
+    return {r[0] for r in res.result_set}
+
+
 async def _read_relationships(
     graph_name: str, rel_type: str
 ) -> list[tuple[Any, Any, dict[str, Any]]]:
@@ -520,6 +666,9 @@ async def _read_relationships(
 _current_graph: str = ""
 _node_rows: list[Any] = []
 _rel_pairs: list[tuple[Any, Any]] = []
+_doc_pk: str = "filename"
+_tables_declared: bool = True
+_entity_with_schema: bool = True
 
 
 @dataclass
@@ -544,7 +693,7 @@ async def _declare_documents_only() -> None:
     schema = await falkor.TableSchema.from_class(Document, primary_key="filename")
     table: Any = await coco.use_mount(  # type: ignore[call-overload]
         coco.component_subpath("setup", "doc_table"),
-        falkor.mount_table_target,  # type: ignore[arg-type]
+        falkor.mount_node_target,  # type: ignore[arg-type]
         KG_DB,
         "Document",
         schema,
@@ -554,12 +703,32 @@ async def _declare_documents_only() -> None:
         table.declare_record(row=row)
 
 
+async def _declare_documents_keyed_by_doc_pk() -> None:
+    schema = await falkor.TableSchema.from_class(Document, primary_key=_doc_pk)
+    table: Any = await coco.use_mount(  # type: ignore[call-overload]
+        coco.component_subpath("setup", "doc_table"),
+        falkor.mount_node_target,  # type: ignore[arg-type]
+        KG_DB,
+        "Document",
+        schema,
+        primary_key=_doc_pk,
+    )
+    for row in _node_rows:
+        table.declare_record(row=row)
+
+
 async def _declare_entities_and_relationships() -> None:
-    entity_schema = await falkor.TableSchema.from_class(Entity, primary_key="value")
+    if not _tables_declared:
+        return
+    entity_schema = (
+        await falkor.TableSchema.from_class(Entity, primary_key="value")
+        if _entity_with_schema
+        else None
+    )
     rel_schema = await falkor.TableSchema.from_class(RelRow, primary_key="id")
     entity_table: Any = await coco.use_mount(  # type: ignore[call-overload]
         coco.component_subpath("setup", "entity_table"),
-        falkor.mount_table_target,
+        falkor.mount_node_target,
         KG_DB,
         "Entity",
         entity_schema,
@@ -567,7 +736,7 @@ async def _declare_entities_and_relationships() -> None:
     )
     rel_table: Any = await coco.use_mount(  # type: ignore[call-overload]
         coco.component_subpath("setup", "rel_table"),
-        falkor.mount_relation_target,
+        falkor.mount_relationship_target,
         KG_DB,
         "REL",
         entity_table,
@@ -582,7 +751,7 @@ async def _declare_entities_and_relationships() -> None:
             if v not in seen_entities:
                 entity_table.declare_record(row=Entity(value=v))
                 seen_entities.add(v)
-        rel_table.declare_relation(
+        rel_table.declare_relationship(
             from_id=from_id,
             to_id=to_id,
             record=RelRow(id=f"{from_id}->{to_id}", predicate="connects"),
@@ -689,6 +858,128 @@ async def test_delete_removes_node(falkor_graph_name: str) -> None:
 
 @requires_falkordb_server
 @pytest.mark.asyncio
+async def test_drop_destroys_tables_with_their_contents(
+    falkor_graph_name: str,
+) -> None:
+    """App.drop() destroys the system-managed tables: the nodes, the
+    relationships, and the indexes the connector created."""
+    global _current_graph, _rel_pairs, _tables_declared, _entity_with_schema
+    _current_graph = falkor_graph_name
+    _rel_pairs = [("alice", "bob"), ("bob", "carol")]
+    _tables_declared = True
+    _entity_with_schema = True
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_drop", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+    await app.update()
+    assert len(await _read_nodes(falkor_graph_name, "Entity")) == 3
+    assert len(await _read_relationships(falkor_graph_name, "REL")) == 2
+    assert await _indexed_labels(falkor_graph_name) == {"Entity", "REL"}
+
+    await app.drop()
+
+    assert await _count(falkor_graph_name, "MATCH (n) RETURN count(n)") == 0
+    assert await _count(falkor_graph_name, "MATCH ()-[r]->() RETURN count(r)") == 0
+    assert await _indexed_labels(falkor_graph_name) == set()
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_undeclared_tables_are_destroyed(falkor_graph_name: str) -> None:
+    """Tables that are no longer declared go the same way as on drop."""
+    global _current_graph, _rel_pairs, _tables_declared, _entity_with_schema
+    _current_graph = falkor_graph_name
+    _rel_pairs = [("alice", "bob")]
+    _tables_declared = True
+    _entity_with_schema = True
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_undeclare", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+    await app.update()
+    assert await _count(falkor_graph_name, "MATCH (n) RETURN count(n)") == 2
+
+    _tables_declared = False
+    await app.update()
+    assert await _count(falkor_graph_name, "MATCH (n) RETURN count(n)") == 0
+    assert await _indexed_labels(falkor_graph_name) == set()
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_primary_key_change_rebuilds_table(falkor_graph_name: str) -> None:
+    """Changing the primary key field rebuilds the table: nodes keyed by the
+    old field are deleted rather than left behind as untracked stragglers."""
+    global _current_graph, _node_rows, _doc_pk
+    _current_graph = falkor_graph_name
+    _node_rows = [
+        Document(filename="a.md", title="A", summary="alpha"),
+        Document(filename="b.md", title="B", summary="beta"),
+    ]
+    _doc_pk = "filename"
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_pk_change", environment=coco_env),
+        _declare_documents_keyed_by_doc_pk,
+    )
+    await app.update()
+    assert len(await _read_nodes(falkor_graph_name, "Document")) == 2
+
+    # Re-key by title, with new titles: the old nodes match neither key.
+    _doc_pk = "title"
+    _node_rows = [
+        Document(filename="a.md", title="A2", summary="alpha"),
+        Document(filename="b.md", title="B2", summary="beta"),
+    ]
+    await app.update()
+    assert {r["title"] for r in await _read_nodes(falkor_graph_name, "Document")} == {
+        "A2",
+        "B2",
+    }
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_attaching_a_schema_keeps_nodes_and_relationships(
+    falkor_graph_name: str,
+) -> None:
+    """Attaching a schema to a schemaless table is not a rebuild: the nodes
+    stay, and so do the relationships of other tables attached to them."""
+    global _current_graph, _rel_pairs, _tables_declared, _entity_with_schema
+    _current_graph = falkor_graph_name
+    _rel_pairs = [("alice", "bob"), ("bob", "carol")]
+    _tables_declared = True
+    _entity_with_schema = False
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_schema_attach", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+    try:
+        await app.update()
+        assert len(await _read_relationships(falkor_graph_name, "REL")) == 2
+
+        _entity_with_schema = True
+        await app.update()
+        assert len(await _read_nodes(falkor_graph_name, "Entity")) == 3
+        assert len(await _read_relationships(falkor_graph_name, "REL")) == 2
+    finally:
+        _entity_with_schema = True
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
 async def test_relationship_upsert_with_endpoint_merge(
     falkor_graph_name: str,
 ) -> None:
@@ -717,6 +1008,234 @@ async def test_relationship_upsert_with_endpoint_merge(
         assert rel["predicate"] == "connects"
 
 
+async def _graph_exists(graph_name: str) -> bool:
+    client = AsyncFalkorDB.from_url(_FALKORDB_URI)
+    try:
+        return graph_name in await client.list_graphs()
+    finally:
+        await client.aclose()
+
+
+def _planned(actions: list[Any]) -> tuple[dict[str, Any], dict[tuple[str, Any], Any]]:
+    """Split preview actions into table actions by table name and record
+    actions by ``(table name, record id)``."""
+    from cocoindex.connectors.falkordb import _target as falkor_target
+
+    tables = {
+        a.key.table_name: a
+        for a in actions
+        if isinstance(a, falkor_target._TableAction)
+    }
+    records = {
+        (a.table_name, a.record_id): a
+        for a in actions
+        if isinstance(a, falkor_target._RecordAction)
+    }
+    assert len(actions) == len(tables) + len(records)
+    return tables, records
+
+
+if HAS_FALKORDB:
+
+    class _FakeGraph:
+        """Records every ``query(cypher, params)``; has no ``execute_command``,
+        so the best-effort constraint DDL is skipped."""
+
+        def __init__(self) -> None:
+            self.queries: list[tuple[str, dict[str, Any]]] = []
+
+        async def query(
+            self, cypher: str, params: dict[str, Any] | None = None
+        ) -> None:
+            self.queries.append((cypher, params or {}))
+
+    class _FakeConnectionFactory(falkor.ConnectionFactory):
+        """A ``ConnectionFactory`` whose ``acquire()`` returns a ``_FakeGraph``
+        and counts its calls, with no server."""
+
+        def __init__(self) -> None:
+            super().__init__(uri=_FALKORDB_URI)
+            self.fake_graph = _FakeGraph()
+            self.num_acquires = 0
+
+        async def acquire(self) -> Any:
+            self.num_acquires += 1
+            return self.fake_graph
+
+
+def _record_writes(graph: Any) -> list[tuple[str, Any]]:
+    """The record writes ``graph`` received, in order, as ``(kind, record id)``
+    for the ``Entity`` / ``REL`` tables of ``_declare_entities_and_relationships``."""
+    kinds = {
+        build_node_upsert("Entity", ["value"], has_value_fields=False): "node_upsert",
+        **{
+            build_relationship_upsert(
+                "REL", "Entity", ["value"], "Entity", ["value"], ["id"], True, legacy
+            ): "relation_upsert"
+            for legacy in (False, True)
+        },
+        build_relationship_delete("REL", ["id"]): "relation_delete",
+        build_node_delete("Entity", ["value"]): "node_delete",
+    }
+    return [
+        (kinds[cypher], params.get("key_0", params.get("rel_key_0")))
+        for cypher, params in graph.queries
+        if cypher in kinds
+    ]
+
+
+@requires_falkordb
+@pytest.mark.asyncio
+async def test_record_sink_orders_writes_across_tables() -> None:
+    """The node and relation records of one graph land in one batch of the
+    shared record sink, applied as node upserts → relation upserts → relation
+    deletes → node deletes."""
+    global _rel_pairs, _tables_declared, _entity_with_schema
+    _tables_declared = True
+    _entity_with_schema = True
+    factory = _FakeConnectionFactory()
+    coco_env.context_provider.provide(KG_DB, factory)
+    app = coco.App(
+        coco.AppConfig(name="test_record_sink_order", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+
+    _rel_pairs = [("a", "b")]
+    await app.update()
+    writes = _record_writes(factory.fake_graph)
+    # Kinds are in order; within a kind, the order is unspecified.
+    assert [kind for kind, _ in writes] == [
+        "node_upsert",
+        "node_upsert",
+        "relation_upsert",
+    ]
+    assert set(writes) == {
+        ("node_upsert", "a"),
+        ("node_upsert", "b"),
+        ("relation_upsert", "a->b"),
+    }
+
+    factory.fake_graph.queries.clear()
+    _rel_pairs = [("c", "d")]
+    await app.update()
+    writes = _record_writes(factory.fake_graph)
+    assert [kind for kind, _ in writes] == [
+        "node_upsert",
+        "node_upsert",
+        "relation_upsert",
+        "relation_delete",
+        "node_delete",
+        "node_delete",
+    ]
+    assert set(writes) == {
+        ("node_upsert", "c"),
+        ("node_upsert", "d"),
+        ("relation_upsert", "c->d"),
+        ("relation_delete", "a->b"),
+        ("node_delete", "a"),
+        ("node_delete", "b"),
+    }
+
+
+@requires_falkordb
+@pytest.mark.asyncio
+async def test_preview_never_acquires_a_connection() -> None:
+    """A preview plans tables and records without ``acquire()`` — before the
+    first update and against the applied state alike."""
+    global _rel_pairs, _tables_declared, _entity_with_schema
+    _tables_declared = True
+    _entity_with_schema = True
+    factory = _FakeConnectionFactory()
+    coco_env.context_provider.provide(KG_DB, factory)
+    app = coco.App(
+        coco.AppConfig(name="test_preview_no_acquire", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+
+    _rel_pairs = [("a", "b")]
+    tables, records = _planned(await app.update(preview=True))
+    assert set(tables) == {"Entity", "REL"}
+    assert set(records) == {("Entity", "a"), ("Entity", "b"), ("REL", "a->b")}
+    assert factory.num_acquires == 0
+
+    await app.update()
+    num_acquires = factory.num_acquires
+    assert num_acquires > 0
+
+    _rel_pairs = [("a", "c")]
+    tables, records = _planned(await app.update(preview=True))
+    assert {k: a.value is None for k, a in records.items()} == {
+        ("Entity", "b"): True,
+        ("Entity", "c"): False,
+        ("REL", "a->b"): True,
+        ("REL", "a->c"): False,
+    }
+    assert factory.num_acquires == num_acquires
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_preview_plans_tables_and_records(falkor_graph_name: str) -> None:
+    """Preview plans the tables and their records without touching the graph;
+    a real update then applies them."""
+    global _current_graph, _rel_pairs, _tables_declared, _entity_with_schema
+    _current_graph = falkor_graph_name
+    _rel_pairs = [("alice", "bob")]
+    _tables_declared = True
+    _entity_with_schema = True
+    factory = falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    coco_env.context_provider.provide(KG_DB, factory)
+    app = coco.App(
+        coco.AppConfig(name="test_preview", environment=coco_env),
+        _declare_entities_and_relationships,
+    )
+
+    tables, records = _planned(await app.update(preview=True))
+    # Building the record handlers opened no connection.
+    assert not factory._connections._entries
+    assert {name: a.main_action for name, a in tables.items()} == {
+        "Entity": "insert",
+        "REL": "insert",
+    }
+    assert {k: a.value for k, a in records.items()} == {
+        ("Entity", "alice"): {"value": "alice"},
+        ("Entity", "bob"): {"value": "bob"},
+        ("REL", "alice->bob"): {"predicate": "connects"},
+    }
+    rel = records[("REL", "alice->bob")]
+    assert (rel.from_label, rel.from_id, rel.to_label, rel.to_id) == (
+        "Entity",
+        "alice",
+        "Entity",
+        "bob",
+    )
+    # Nothing is written: the graph does not even exist yet.
+    assert not await _graph_exists(falkor_graph_name)
+
+    await app.update()
+    assert {n["value"] for n in await _read_nodes(falkor_graph_name, "Entity")} == {
+        "alice",
+        "bob",
+    }
+    assert len(await _read_relationships(falkor_graph_name, "REL")) == 1
+
+    # Against the applied state: the container actions are retained, alongside the new edge and its new
+    # endpoint; the unchanged records are not planned. Nothing is applied.
+    _rel_pairs = [("alice", "bob"), ("bob", "carol")]
+    tables, records = _planned(await app.update(preview=True))
+    assert {name: action.main_action for name, action in tables.items()} == {
+        "Entity": None,
+        "REL": None,
+    }
+    assert set(records) == {("Entity", "carol"), ("REL", "bob->carol")}
+    assert len(await _read_nodes(falkor_graph_name, "Entity")) == 2
+    assert len(await _read_relationships(falkor_graph_name, "REL")) == 1
+
+    await app.update()
+    assert len(await _read_nodes(falkor_graph_name, "Entity")) == 3
+    assert len(await _read_relationships(falkor_graph_name, "REL")) == 2
+
+
 @requires_falkordb_server
 @pytest.mark.asyncio
 async def test_vector_index_attached(falkor_graph_name: str) -> None:
@@ -737,7 +1256,7 @@ async def test_vector_index_attached(falkor_graph_name: str) -> None:
         )
         table: Any = await coco.use_mount(  # type: ignore[call-overload]
             coco.component_subpath("setup", "doc_table"),
-            falkor.mount_table_target,
+            falkor.mount_node_target,
             KG_DB,
             "VecDoc",
             schema,
@@ -798,7 +1317,7 @@ async def test_falkordb_table_schema_evolution_under_full_reprocess(
         schema = await falkor.TableSchema.from_class(doc_type, primary_key="filename")
         table: Any = await coco.use_mount(
             coco.component_subpath("setup", "doc_table"),
-            falkor.mount_table_target,
+            falkor.mount_node_target,
             KG_DB,
             "DocEvolve",
             schema,
@@ -834,3 +1353,572 @@ async def test_falkordb_table_schema_evolution_under_full_reprocess(
     by_fn2 = {r["filename"]: r for r in nodes_v2}
     assert by_fn2["doc1.md"]["summary"] == "summary 1"
     assert by_fn2["doc2.md"]["summary"] == "summary 2"
+
+
+# =============================================================================
+# Node and relationship APIs vs the deprecated table and relation APIs
+# =============================================================================
+
+
+async def _indexes(graph_name: str) -> set[tuple[str, str, str, str]]:
+    """``(entity type, label or relationship type, field, index type)`` of
+    every index."""
+    client = AsyncFalkorDB.from_url(_FALKORDB_URI)
+    g = client.select_graph(graph_name)
+    res = await g.query(
+        "CALL db.indexes() YIELD entitytype, label, types "
+        "RETURN entitytype, label, types"
+    )
+    await client.aclose()
+    return {
+        (entity_type, label, field, index_type)
+        for entity_type, label, types in res.result_set
+        for field, index_types in types.items()
+        for index_type in index_types
+    }
+
+
+@requires_falkordb
+class TestVectorIndexApplier:
+    """Several declared names can reach one FalkorDB index, which FalkorDB
+    identifies by its label and field."""
+
+    @staticmethod
+    def _applier(queries: list[str]) -> Any:
+        from cocoindex.connectors.falkordb import _target as falkor_target
+
+        class _FakeGraph:
+            async def query(self, cypher: str, params: Any = None) -> Any:
+                queries.append(cypher)
+
+        class _FakeFactory(falkor_target.ConnectionFactory):
+            async def acquire(self) -> Any:
+                return _FakeGraph()
+
+        return falkor_target._VectorIndexApplier(_FakeFactory(uri=_FALKORDB_URI))
+
+    @staticmethod
+    def _action(name: str, field: str, *, create: bool) -> Any:
+        from cocoindex.connectors.falkordb import _target as falkor_target
+
+        spec = falkor_target._VectorIndexSpec(field=field, metric="cosine", dimension=4)
+        return falkor_target._VectorIndexAction(
+            name=name, table_name="Doc", field=field, spec=spec if create else None
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_rename_keeps_the_index(self) -> None:
+        queries: list[str] = []
+        await self._applier(queries)(
+            None,
+            [
+                self._action("new", "emb", create=True),
+                self._action("old", "emb", create=False),
+                self._action("gone", "other", create=False),
+            ],
+        )
+        assert queries == [
+            build_vector_index_drop("Doc", "emb"),
+            build_vector_index_create("Doc", "emb", 4, "cosine"),
+            build_vector_index_drop("Doc", "other"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_two_names_for_one_index_fail(self) -> None:
+        queries: list[str] = []
+        with pytest.raises(ValueError, match="both index Doc.emb"):
+            await self._applier(queries)(
+                None,
+                [
+                    self._action("a", "emb", create=True),
+                    self._action("b", "emb", create=True),
+                ],
+            )
+        assert queries == []
+
+
+@requires_falkordb
+@pytest.mark.asyncio
+async def test_deprecated_apis_warn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each deprecated entry point warns once per call; the node and
+    relationship APIs don't. A preview run needs no server.
+
+    The calls run in components, on an engine thread. With context-aware
+    warnings (free-threaded Python), a ``catch_warnings`` here doesn't see
+    warnings raised there, so they are recorded at ``warnings.warn``, which
+    every thread calls."""
+    caught: list[str] = []
+
+    def record(message: Any, category: Any = None, *args: Any, **kwargs: Any) -> None:
+        if category is DeprecationWarning and str(message).startswith("falkordb."):
+            caught.append(str(message).split(" is deprecated")[0])
+
+    async def declare() -> None:
+        old_node: Any = await coco.use_mount(
+            coco.component_subpath("old_node"), falkor.mount_table_target, KG_DB, "Old"
+        )
+        falkor.declare_table_target(KG_DB, "OldToo")
+        old_rel: Any = await coco.use_mount(
+            coco.component_subpath("old_rel"),
+            falkor.mount_relation_target,
+            KG_DB,
+            "OLD_REL",
+            old_node,
+            old_node,
+        )
+        falkor.declare_relation_target(KG_DB, "OLD_REL_TOO", old_node, old_node)
+        old_rel.declare_relation(from_id="a", to_id="b")
+
+        new_node: Any = await coco.use_mount(
+            coco.component_subpath("new_node"), falkor.mount_node_target, KG_DB, "New"
+        )
+        falkor.declare_node_target(KG_DB, "NewToo")
+        new_rel: Any = await coco.use_mount(
+            coco.component_subpath("new_rel"),
+            falkor.mount_relationship_target,
+            KG_DB,
+            "NEW_REL",
+            new_node,
+            old_node,
+        )
+        falkor.declare_relationship_target(KG_DB, "NEW_REL_TOO", old_node, new_node)
+        new_rel.declare_relationship(from_id="a", to_id="b")
+
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri="falkor://localhost:1", graph="unused")
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_falkordb_deprecations", environment=coco_env),
+        declare,
+    )
+    monkeypatch.setattr(warnings, "warn", record)
+    await app.update(preview=True)
+    assert sorted(caught) == [
+        "falkordb.RelationTarget.declare_relation",
+        "falkordb.declare_relation_target",
+        "falkordb.declare_table_target",
+        "falkordb.mount_relation_target",
+        "falkordb.mount_table_target",
+    ]
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_label_and_relationship_type_of_one_name(
+    falkor_graph_name: str,
+) -> None:
+    """Node tables and relationship tables have keys of their own: a label
+    and a relationship type may share a name, and dropping one leaves the
+    other."""
+    with_relationships = True
+
+    async def declare() -> None:
+        things: Any = await coco.use_mount(
+            coco.component_subpath("node"), falkor.mount_node_target, KG_DB, "Thing"
+        )
+        things.declare_record(row={"id": "a"})
+        things.declare_record(row={"id": "b"})
+        if with_relationships:
+            rels: Any = await coco.use_mount(
+                coco.component_subpath("rel"),
+                falkor.mount_relationship_target,
+                KG_DB,
+                "Thing",
+                things,
+                things,
+            )
+            rels.declare_relationship(from_id="a", to_id="b")
+
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_falkordb_shared_name", environment=coco_env),
+        declare,
+    )
+    await app.update()
+    assert len(await _read_nodes(falkor_graph_name, "Thing")) == 2
+    assert len(await _read_relationships(falkor_graph_name, "Thing")) == 1
+    assert await _indexes(falkor_graph_name) == {
+        ("NODE", "Thing", "id", "RANGE"),
+        ("RELATIONSHIP", "Thing", "id", "RANGE"),
+    }
+
+    with_relationships = False
+    await app.update()
+    assert len(await _read_nodes(falkor_graph_name, "Thing")) == 2
+    assert await _read_relationships(falkor_graph_name, "Thing") == []
+    assert await _indexes(falkor_graph_name) == {("NODE", "Thing", "id", "RANGE")}
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_derived_relationship_ids_are_unambiguous(
+    falkor_graph_name: str,
+) -> None:
+    """Endpoints the deprecated relation API maps to one id (``1`` vs
+    ``"1"``, ``"a_N_b", "c"`` vs ``"a", "b_N_c"``) get edges of their own."""
+    pairs: list[tuple[Any, Any]] = [
+        (1, "1"),
+        ("1", 1),
+        ("a_N_b", "c"),
+        ("a", "b_N_c"),
+    ]
+
+    async def declare() -> None:
+        nodes: Any = await coco.use_mount(
+            coco.component_subpath("node"), falkor.mount_node_target, KG_DB, "N"
+        )
+        for node_id in {v for pair in pairs for v in pair}:
+            nodes.declare_record(row={"id": node_id})
+        rels: Any = await coco.use_mount(
+            coco.component_subpath("rel"),
+            falkor.mount_relationship_target,
+            KG_DB,
+            "R",
+            nodes,
+            nodes,
+        )
+        for from_id, to_id in pairs:
+            rels.declare_relationship(from_id=from_id, to_id=to_id)
+
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_falkordb_unambiguous_ids", environment=coco_env),
+        declare,
+    )
+    await app.update()
+    edges = await _read_relationships(falkor_graph_name, "R")
+    assert sorted((repr(s["id"]), repr(t["id"])) for s, t, _ in edges) == sorted(
+        (repr(a), repr(b)) for a, b in pairs
+    )
+    assert len({r["id"] for _, _, r in edges}) == 4
+
+
+@requires_falkordb_server
+@pytest.mark.parametrize("api", ["relationship", "relation"])
+@pytest.mark.asyncio
+async def test_moved_relationship_leaves_no_duplicate(
+    falkor_graph_name: str, api: str
+) -> None:
+    """An edge with an explicit id whose endpoints change is moved, not
+    copied: the edge between the old endpoints goes. A duplicate left by an
+    earlier version goes on a full reprocess."""
+    to_id = "bob"
+
+    async def declare() -> None:
+        mount_node: Any = (
+            falkor.mount_node_target
+            if api == "relationship"
+            else falkor.mount_table_target
+        )
+        mount_rel: Any = (
+            falkor.mount_relationship_target
+            if api == "relationship"
+            else falkor.mount_relation_target
+        )
+        people: Any = await coco.use_mount(
+            coco.component_subpath("node"), mount_node, KG_DB, "Person"
+        )
+        for name in ("alice", "bob", "carol"):
+            people.declare_record(row={"id": name})
+        knows: Any = await coco.use_mount(
+            coco.component_subpath("rel"), mount_rel, KG_DB, "KNOWS", people, people
+        )
+        declare_edge = (
+            knows.declare_relationship
+            if api == "relationship"
+            else knows.declare_relation
+        )
+        declare_edge(from_id="alice", to_id=to_id, record={"id": "k1", "since": 1})
+
+    async def knows_edges() -> list[tuple[str, str, str]]:
+        return sorted(
+            (s["id"], t["id"], r["id"])
+            for s, t, r in await _read_relationships(falkor_graph_name, "KNOWS")
+        )
+
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name=f"test_falkordb_moved_rel_{api}", environment=coco_env),
+        declare,
+    )
+    await app.update()
+    assert await knows_edges() == [("alice", "bob", "k1")]
+
+    to_id = "carol"
+    await app.update()
+    assert await knows_edges() == [("alice", "carol", "k1")]
+
+    # A duplicate an earlier version left behind when the edge moved, where
+    # the best-effort uniqueness constraint on the id was not created.
+    client = AsyncFalkorDB.from_url(_FALKORDB_URI)
+    await client.connection.execute_command(
+        "GRAPH.CONSTRAINT",
+        "DROP",
+        falkor_graph_name,
+        "UNIQUE",
+        "RELATIONSHIP",
+        "KNOWS",
+        "PROPERTIES",
+        "1",
+        "id",
+    )
+    await client.select_graph(falkor_graph_name).query(
+        "MATCH (s:Person {id: 'alice'}), (t:Person {id: 'bob'}) "
+        "CREATE (s)-[:KNOWS {id: 'k1', since: 1}]->(t)"
+    )
+    await client.aclose()
+    await app.update(full_reprocess=True)
+    assert await knows_edges() == [("alice", "carol", "k1")]
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_renamed_vector_index_is_kept(falkor_graph_name: str) -> None:
+    """FalkorDB identifies a vector index by its label and field, not the
+    declared name: renaming it keeps it. Two declared names on one field
+    fail."""
+    index_names = ["idx_a"]
+
+    async def declare() -> None:
+        docs: Any = await coco.use_mount(
+            coco.component_subpath("node"), falkor.mount_node_target, KG_DB, "VecDoc"
+        )
+        docs.declare_record(row={"id": "d1", "summary": "s"})
+        for name in index_names:
+            docs.declare_vector_index(name=name, field="summary", dimension=4)
+
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_falkordb_vec_rename", environment=coco_env),
+        declare,
+    )
+    vector_index = ("NODE", "VecDoc", "summary", "VECTOR")
+    await app.update()
+    assert vector_index in await _indexes(falkor_graph_name)
+
+    index_names = ["idx_b"]
+    await app.update()
+    assert vector_index in await _indexes(falkor_graph_name)
+
+    # A second name for the same field fails where it is declared.
+    index_names = ["idx_b", "idx_c"]
+    with pytest.raises(Exception, match="both index VecDoc.summary"):
+        await app.update()
+
+
+@requires_falkordb_server
+@pytest.mark.parametrize("api", ["node", "table"])
+@pytest.mark.parametrize("removal", ["undeclare", "drop"])
+@pytest.mark.asyncio
+async def test_destroyed_node_table_drops_its_vector_indexes(
+    falkor_graph_name: str, api: str, removal: str
+) -> None:
+    """A node table's vector indexes are pruned with it, so destroying the
+    table drops them. A rebuild creates them again. The indexes of tables
+    still declared stay."""
+    docs_declared = True
+    docs_pk = "id"
+
+    async def declare() -> None:
+        if docs_declared:
+            mount: Any = (
+                falkor.mount_node_target if api == "node" else falkor.mount_table_target
+            )
+            docs: Any = await coco.use_mount(
+                coco.component_subpath("docs"),
+                mount,
+                KG_DB,
+                "VecDoc",
+                primary_key=docs_pk,
+            )
+            docs.declare_record(
+                row={"id": "d1", "title": "t1", "summary": "s", "body": "b"}
+            )
+            docs.declare_vector_index(field="summary", dimension=4)
+            docs.declare_vector_index(field="body", dimension=4)
+        notes: Any = await coco.use_mount(
+            coco.component_subpath("notes"),
+            falkor.mount_node_target,
+            KG_DB,
+            "VecNote",
+        )
+        notes.declare_record(row={"id": "n1", "summary": "s"})
+        notes.declare_vector_index(field="summary", dimension=4)
+
+    async def vector_indexes() -> set[tuple[str, str]]:
+        return {
+            (label, field)
+            for _, label, field, index_type in await _indexes(falkor_graph_name)
+            if index_type == "VECTOR"
+        }
+
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(
+            name=f"test_falkordb_vec_drop_{api}_{removal}", environment=coco_env
+        ),
+        declare,
+    )
+    await app.update()
+    all_indexes = {("VecDoc", "summary"), ("VecDoc", "body"), ("VecNote", "summary")}
+    assert await vector_indexes() == all_indexes
+
+    # A new primary key rebuilds the table, vector indexes included.
+    docs_pk = "title"
+    await app.update()
+    assert await _read_nodes(falkor_graph_name, "VecDoc") == [
+        {"id": "d1", "title": "t1", "summary": "s", "body": "b"}
+    ]
+    assert await vector_indexes() == all_indexes
+
+    if removal == "undeclare":
+        docs_declared = False
+        await app.update()
+        assert await vector_indexes() == {("VecNote", "summary")}
+    else:
+        await app.drop()
+        assert await vector_indexes() == set()
+    assert await _read_nodes(falkor_graph_name, "VecDoc") == []
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_switching_from_the_table_and_relation_apis(
+    falkor_graph_name: str,
+) -> None:
+    """The documented switch: mark the old declarations ``managed_by="user"``
+    and update once, then declare the same tables with the node and
+    relationship APIs. Nodes and indexes stay; an edge with a derived id is
+    replaced by one with the new id, never duplicated."""
+    api = "old"
+    managed_by = "system"
+
+    @dataclass
+    class _Person:
+        name: str
+        summary: str
+
+    @dataclass
+    class _Knows:
+        id: str
+        since: int
+
+    names = ["alice", "bob", "carol"]
+    likes = [("alice", "bob"), ("bob", "carol")]
+
+    async def declare() -> None:
+        person_schema = await falkor.TableSchema.from_class(_Person, primary_key="name")
+        knows_schema = await falkor.TableSchema.from_class(_Knows, primary_key="id")
+        old = api == "old"
+        options: dict[str, Any] = {"managed_by": managed_by} if old else {}
+        mount_node: Any = falkor.mount_table_target if old else falkor.mount_node_target
+        person: Any = await coco.use_mount(
+            coco.component_subpath("person"),
+            mount_node,
+            KG_DB,
+            "Person",
+            person_schema,
+            primary_key="name",
+            **options,
+        )
+        mount_rel: Any = (
+            falkor.mount_relation_target if old else falkor.mount_relationship_target
+        )
+        likes_rel: Any = await coco.use_mount(
+            coco.component_subpath("likes"),
+            mount_rel,
+            KG_DB,
+            "LIKES",
+            person,
+            person,
+            **options,
+        )
+        knows_rel: Any = await coco.use_mount(
+            coco.component_subpath("knows"),
+            mount_rel,
+            KG_DB,
+            "KNOWS",
+            person,
+            person,
+            knows_schema,
+            primary_key="id",
+            **options,
+        )
+        for name in names:
+            person.declare_record(row=_Person(name=name, summary=f"{name}!"))
+        person.declare_vector_index(field="summary", dimension=4)
+        for from_id, to_id in likes:
+            if old:
+                likes_rel.declare_relation(from_id=from_id, to_id=to_id)
+            else:
+                likes_rel.declare_relationship(from_id=from_id, to_id=to_id)
+        knows = _Knows(id="k1", since=2020)
+        if old:
+            knows_rel.declare_relation(from_id="alice", to_id="carol", record=knows)
+        else:
+            knows_rel.declare_relationship(from_id="alice", to_id="carol", record=knows)
+
+    async def edges(rel_type: str) -> list[tuple[str, str, str]]:
+        return sorted(
+            (s["name"], t["name"], r["id"])
+            for s, t, r in await _read_relationships(falkor_graph_name, rel_type)
+        )
+
+    async def assert_graph(likes_ids: list[str]) -> None:
+        assert (
+            sorted(n["name"] for n in await _read_nodes(falkor_graph_name, "Person"))
+            == names
+        )
+        assert await edges("LIKES") == [
+            (a, b, rel_id) for (a, b), rel_id in zip(likes, likes_ids)
+        ]
+        assert await edges("KNOWS") == [("alice", "carol", "k1")]
+        assert await _indexes(falkor_graph_name) == {
+            ("NODE", "Person", "name", "RANGE"),
+            ("NODE", "Person", "summary", "VECTOR"),
+            ("RELATIONSHIP", "LIKES", "id", "RANGE"),
+            ("RELATIONSHIP", "KNOWS", "id", "RANGE"),
+        }
+
+    legacy_ids = ["Person_alice_Person_bob", "Person_bob_Person_carol"]
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_falkordb_switch_apis", environment=coco_env),
+        declare,
+    )
+    await app.update()
+    await assert_graph(legacy_ids)
+
+    # Step 1: hand the tables to the user. Nothing in the graph changes.
+    managed_by = "user"
+    await app.update()
+    await assert_graph(legacy_ids)
+
+    # Step 2: declare them with the node and relationship APIs.
+    api = "new"
+    await app.update()
+    new_ids = [
+        "6:Person;5:alice;6:Person;3:bob;",
+        "6:Person;3:bob;6:Person;5:carol;",
+    ]
+    await assert_graph(new_ids)
+
+    # The new tables own the graph from here on.
+    await app.update()
+    await assert_graph(new_ids)
+    await app.drop()
+    assert await _count(falkor_graph_name, "MATCH (n) RETURN count(n)") == 0
+    assert await _count(falkor_graph_name, "MATCH ()-[r]->() RETURN count(r)") == 0
+    assert await _indexes(falkor_graph_name) == set()

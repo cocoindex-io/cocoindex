@@ -1,10 +1,12 @@
 ---
-// Per-example detail page at /docs/examples/<slug>. Hero metadata is
-// driven by src/data/examples.ts; the body is the MDX entry in the
-// `examplePosts` content collection. Add a new example by dropping a
-// markdown file into src/content/example-posts and a card into
-// examples.ts — the slugs must match.
+// Per-example walkthrough at /docs/examples/<slug>. The head (title, lede,
+// the "What you'll build" figure) comes from src/data/examples.ts; the body
+// is the matching entry in the `examplePosts` content collection. The page
+// uses the docs shell (.layout / aside.side / main.content / .prose), so a
+// walkthrough reads like any other docs page, with the examples tree in the
+// left rail instead of the docs tree.
 import '../../styles/globals.css';
+import '../../styles/examples.css';
 import Topbar from '../../components/Topbar.astro';
 import Toc from '../../components/Toc.astro';
 import MobileSheet from '../../components/MobileSheet.astro';
@@ -12,36 +14,14 @@ import MermaidRenderer from '@cocoindex/brand/MermaidRenderer.astro';
 import Analytics from '../../components/Analytics.astro';
 import ScarfPixel from '../../components/ScarfPixel.astro';
 import Foot from '../../components/Foot.astro';
-import { THEME_COLOR, SITE_URL, titleMarkup, titleText, SCARF_PIXEL_ID, OG_IMAGE_EXAMPLES, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_EXAMPLES_ALT } from '../../consts';
-import { examples, findExample, CATEGORY_META, type Category } from '../../data/examples';
+import Scene from '../../components/examples/Scene.astro';
+import RunIt from '../../components/examples/RunIt.astro';
+import { sceneMeta } from '../../components/examples/scenes/meta';
+import { THEME_COLOR, SITE_URL, GITHUB_REPO, DOCS_EDIT_BASE, titleText, SCARF_PIXEL_ID, OG_IMAGE_EXAMPLES, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_EXAMPLES_ALT } from '../../consts';
+import { examples, findExample, byCategory, CATEGORY_META, timeOf, levelOf, type Category } from '../../data/examples';
 import { reviewedDate } from '../../data/review-meta';
-import { getEntry, render } from 'astro:content';
-
-// Group examples by category for the left sidebar, in the same order as
-// the listing page. Featured examples stay in their home category — we're
-// showing them in a flat nav here, not as a separate "star" bucket.
-const CAT_ORDER: Category[] = ['search', 'ingest', 'llm', 'agents', 'image'];
-const grouped = CAT_ORDER.map((c) => ({
-  cat: c,
-  meta: CATEGORY_META[c],
-  items: examples.filter((e) => e.category === c),
-}));
-
-// Same tree, reshaped for the phone drawer (MobileSheet.SidebarItem[]).
-// The aside.ex-side rail is hidden on phones — without this, readers
-// would lose the cross-example browse nav entirely on small screens.
 import type { SidebarItem } from '../../data/docs-sidebar';
-const examplesSidebar: SidebarItem[] = grouped
-  .filter((g) => g.items.length > 0)
-  .map((g) => ({
-    type: 'category',
-    label: `${titleText(g.meta.label)}${g.meta.em ?? ''}`,
-    items: g.items.map((it) => ({
-      type: 'doc',
-      slug: `examples/${it.slug}`,
-      label: titleText(it.title),
-    })),
-  }));
+import { getEntry, render } from 'astro:content';
 
 export async function getStaticPaths() {
   return examples.map((e) => ({ params: { slug: e.slug } }));
@@ -52,20 +32,26 @@ const ex = findExample(slug!);
 if (!ex) throw new Error(`Unknown example slug: ${slug}`);
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '';
+const examplesHref = `${base}/examples/`;
+
+// Left rail and phone drawer: every example, grouped as on the catalog.
+const CAT_ORDER: Category[] = ['search', 'image', 'llm', 'agents', 'ingest'];
+const grouped = CAT_ORDER.map((c) => ({ cat: c, label: CATEGORY_META[c].label, items: byCategory(c) })).filter((g) => g.items.length > 0);
+const examplesSidebar: SidebarItem[] = grouped.map((g) => ({
+  type: 'category',
+  label: g.label,
+  items: g.items.map((it) => ({ type: 'doc', slug: `examples/${it.slug}`, label: titleText(it.title) })),
+}));
+
 const plainTitle = titleText(ex.title);
 const fullTitle = `${plainTitle} · CocoIndex Examples`;
-// trailingSlash: 'always' — canonical must carry the slash to match the served URL.
 const canonical = new URL(`${base}/examples/${slug}/`, SITE_URL).toString();
-const examplesHome = new URL(`${base}/examples/`, SITE_URL).toString();
+const examplesHome = new URL(examplesHref, SITE_URL).toString();
 const docsHome = new URL(`${base}/`, SITE_URL).toString();
 const ogImage = OG_IMAGE_EXAMPLES;
-// The repo directory usually matches the slug; override via sourceSlug when
-// it doesn't (e.g. listing slug `code_index` vs repo dir `code_embedding`).
-const sourceUrl = `https://github.com/cocoindex-io/cocoindex/tree/main/examples/${ex.sourceSlug ?? slug}`;
+// The repo directory usually matches the slug; sourceSlug overrides it.
+const sourceUrl = `${GITHUB_REPO}/tree/main/examples/${ex.sourceSlug ?? slug}`;
 
-// Structured data: a TechArticle for the example plus a BreadcrumbList
-// (Docs › Examples › <example>), mirroring DocsLayout so agents and search
-// engines understand the page and its place in the hierarchy.
 const articleLd = {
   '@context': 'https://schema.org',
   '@type': 'TechArticle',
@@ -86,40 +72,28 @@ const breadcrumbLd = {
   ],
 };
 
-// Pull the ported markdown body. Every listed example should have a
-// matching entry, but we tolerate a missing one so we can ship the
-// listing + design even before a walkthrough lands.
+// The walkthrough body. A listed example without one still gets its head and
+// a pointer to the source, so the catalog can lead a write-up.
 const entry = await getEntry('examplePosts', slug!);
 const rendered = entry ? await render(entry) : null;
 const Content = rendered?.Content;
+const headings = rendered?.headings ?? [];
 
-// Intro-meta strip under the hero — mirrors the docs-page layout
-// (DocsLayout.astro), so example pages carry the same typographic rhythm.
-const tagOf = (kind: 'src' | 'tgt' | 'llm' | 'ops') =>
-  ex.tags.find((t) => t.kind === kind)?.label ?? null;
 const lastReviewed = reviewedDate(`examples/${slug}`);
-const introItems = [
-  { k: 'Time',          v: ex.footMeta.split('·')[0].trim(),                       reviewed: false },
-  { k: 'Source',        v: tagOf('src'),                                           reviewed: false },
-  { k: 'Target',        v: tagOf('tgt'),                                           reviewed: false },
-  { k: 'LLM',           v: tagOf('llm'),                                           reviewed: false },
-  { k: 'Mode',          v: tagOf('ops'),                                           reviewed: false },
-  { k: 'Category',      v: `${titleText(CATEGORY_META[ex.category].label)}${CATEGORY_META[ex.category].em ?? ''}`, reviewed: false },
-  { k: 'Last reviewed', v: lastReviewed,                                           reviewed: true  },
-].filter((m) => m.v);
+const facts = [timeOf(ex), levelOf(ex), lastReviewed ? `Reviewed ${lastReviewed}` : null].filter((f): f is string => !!f);
+const runnable = (sceneMeta(ex.slug)?.run?.length ?? 0) > 0;
 ---
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content={THEME_COLOR} />
     <title>{fullTitle}</title>
     <meta name="description" content={ex.description} />
     <link rel="canonical" href={canonical} />
 
-    <!-- Open Graph / Twitter — link previews on social, Slack, iMessage, etc. -->
     <meta property="og:type" content="article" />
     <meta property="og:site_name" content="CocoIndex Docs" />
     <meta property="og:title" content={fullTitle} />
@@ -134,125 +108,102 @@ const introItems = [
     <meta name="twitter:description" content={ex.description} />
     <meta name="twitter:image" content={ogImage} />
 
-    <!-- Structured data for search engines and agents. -->
     <script type="application/ld+json" set:html={JSON.stringify(articleLd)} />
     <script type="application/ld+json" set:html={JSON.stringify(breadcrumbLd)} />
 
     <link rel="icon" href={`${base}/img/favicon.ico`} />
-    <!-- Fonts self-hosted via @fontsource in src/styles/globals.css (GUIDELINE §5.2). -->
   </head>
   <body class="ex-detail">
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <Topbar mobileSheetId="mobileSheet" />
-    <MobileSheet
-      currentSlug={`examples/${slug}`}
-      headings={rendered?.headings ?? []}
-      sidebarItems={examplesSidebar}
-    />
+    <MobileSheet currentSlug={`examples/${slug}`} headings={headings} sidebarItems={examplesSidebar} />
     <MermaidRenderer />
 
-    <div class="ex-layout">
-      <!-- ─────────── LEFT: EXAMPLE NAV ─────────── -->
-      <aside class="ex-side" aria-label="All examples">
-        <div class="side-head">
-          <a href={`${base}/examples`}>← All examples</a>
-          <span class="ct">{examples.length}</span>
+    <div class="layout">
+      <aside class="side" aria-label="All examples">
+        <div class="side-group side-back">
+          <ul><li><a href={examplesHref}>All examples <span class="ct">{examples.length}</span></a></li></ul>
         </div>
         {grouped.map((g) => (
           <div class="side-group">
-            <h6 data-cat={g.cat}>
-              <span class="cat-dot"></span>
-              {g.meta.label}{g.meta.em ?? ''}
-            </h6>
-            <ol>
+            <h5><span>{g.label}</span></h5>
+            <ul>
               {g.items.map((it) => (
-                <li class={it.slug === slug ? 'on' : ''}>
-                  <a href={`${base}/examples/${it.slug}`}>
-                    <span class="n">{it.index.split(' ')[0]}</span>
-                    <span class="ttl">{titleText(it.title)}</span>
+                <li>
+                  <a href={`${base}/examples/${it.slug}/`} class={it.slug === slug ? 'on' : ''} data-current={it.slug === slug || null} aria-current={it.slug === slug ? 'page' : null}>
+                    {titleText(it.title)}
                   </a>
                 </li>
               ))}
-            </ol>
+            </ul>
           </div>
         ))}
       </aside>
 
-      <main class="ex-main">
-      <!-- Local breadcrumb sits just below the sticky Topbar. -->
-      <nav class="ex-crumb" aria-label="Breadcrumb">
-        <a href={`${base}/examples`}>Examples</a>
-        <span class="sep">/</span>
-        <span class="cur">{plainTitle}</span>
-      </nav>
-
-      <!-- ─────────── HERO ─────────── Mirrors DocsLayout so example pages
-           carry the same rhythm as the rest of the docs: display h1 with a
-           coral accent, a `.lede` description, then an intro-meta
-           strip under a hairline rule. -->
-      <section class="hero">
-        <div class="pill-row">
-          {ex.tags.slice(0, 4).map((t) => <span class="t-pill t-pill-lg"><span class="dt"></span>{t.label}</span>)}
-          <span class="t-status t-status-dark"><span class="dt"></span>Production ready</span>
+      <main class="content" id="main-content" tabindex="-1">
+        <div class="page-head">
+          <nav class="breadcrumb" aria-label="Breadcrumb">
+            <a href={`${base}/`}>Docs</a>
+            <span class="sep" aria-hidden="true">/</span>
+            <a href={examplesHref}>Examples</a>
+            <span class="sep" aria-hidden="true">/</span>
+            <span class="now" aria-current="page">{plainTitle}</span>
+          </nav>
         </div>
 
-        <h1 class="hero-h" set:html={titleMarkup(ex.title)} />
-        <p class="lede">{ex.description}</p>
-        <dl class="intro-meta">
-          {introItems.map((m) => (
-            <div class={`m${m.reviewed ? ' m-reviewed' : ''}`}>
-              <dt class="k">{m.k}</dt>
-              <dd class="v">
-                {m.reviewed && (
-                  <svg class="check" width="14" height="14" viewBox="0 0 16 16" aria-hidden>
-                    <circle cx="8" cy="8" r="7" fill="var(--palm)" />
-                    <path d="M4.5 8.3l2.3 2.2L11.5 5.8"
-                          fill="none" stroke="var(--maroon-ink)"
-                          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                )}
-                <span>{m.v}</span>
-              </dd>
+        <header class="ex-head">
+          <h1 class="ex-h1">{plainTitle}</h1>
+          <p class="ex-lede">{ex.description}</p>
+
+          <div class="ex-cta">
+            <a class="btn btn-primary" href={sourceUrl}>View source
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3.5 8.5l5-5M4.5 3.5h4v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </a>
+            {runnable && <a class="btn btn-outline-muted" href="#run">Run it locally</a>}
+            <p class="ex-facts">{facts.map((f, i) => <>{i > 0 && <span class="sep" aria-hidden="true">·</span>}<span>{f}</span></>)}</p>
+          </div>
+
+          <div class="ex-scene">
+            <Scene slug={ex.slug} size="hero" />
+          </div>
+
+          <RunIt slug={ex.slug} />
+        </header>
+
+        <article class="prose ex-prose" id="walkthrough">
+
+          {Content ? (
+            <Content />
+          ) : (
+            <div class="ex-missing">
+              <h2>Write-up in progress</h2>
+              <p>The step-by-step walkthrough for this example is not published yet. The code is complete on GitHub: open the source above, clone it, and run it today.</p>
             </div>
-          ))}
-        </dl>
-        <div class="hero-cta">
-          <a class="btn btn-coral" href={sourceUrl}>View source
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2 6h8m-3-3 3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </a>
-        </div>
-      </section>
-
-      <!-- ─────────── CONTENT ─────────── -->
-      {Content ? (
-        <article class="ex-prose">
-          <Content />
+          )}
         </article>
-      ) : (
-        <section class="blk">
-          <div class="sec-head">
-            <div class="sec-idx"><span class="n">00</span> · Overview</div>
-            <h2 set:html={titleMarkup('Write-up *on the way.*')} />
-            <p class="sec-lead">
-              The step-by-step walkthrough for this example is still being written. The code itself is live on GitHub — clone it to try it today.
-            </p>
-          </div>
-          <div class="ex-callout" style="max-width:780px;">
-            <div class="hd tip"><span class="dt"></span>What this example shows</div>
-            <p>{ex.description}</p>
-          </div>
-        </section>
-      )}
+
+        <div class="doc-foot">
+          <span>CocoIndex Examples</span>
+          <span style="display:flex; gap:8px;">
+            {entry && <a href={`${DOCS_EDIT_BASE}/src/content/example-posts/${slug}.md`} target="_blank" rel="noopener">Edit this page</a>}
+            <a href={`${GITHUB_REPO}/issues/new`} target="_blank" rel="noopener">Report issue</a>
+          </span>
+        </div>
       </main>
 
-      <!-- ─────────── RIGHT: ON THIS PAGE ─────────── Reuses the shared
-           Toc component so scroll-spy + visual styling match the regular
-           docs pages (globals.css `aside.toc`). -->
-      <Toc headings={rendered?.headings ?? []} lastReviewed={lastReviewed} />
+      <Toc headings={headings} lastReviewed={lastReviewed} />
     </div>
 
-    <style is:global>
-      @import '@cocoindex/brand/example-detail.css';
-    </style>
+    <script>
+      // Centre the active example in the rail. Scroll the rail itself, never
+      // the window (scrollIntoView would move the page past its head).
+      const rail = document.querySelector<HTMLElement>('aside.side');
+      const current = rail?.querySelector<HTMLAnchorElement>('a[data-current]');
+      if (rail && current && rail.scrollHeight > rail.clientHeight) {
+        rail.scrollTop = current.offsetTop - rail.offsetTop - rail.clientHeight / 2 + current.offsetHeight / 2;
+      }
+    </script>
+
     <Foot />
     <Analytics />
     <ScarfPixel pxid={SCARF_PIXEL_ID} />

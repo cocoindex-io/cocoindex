@@ -47,19 +47,16 @@ Split text by regex separators.
 ```python
 from cocoindex.ops.text import SeparatorSplitter
 
-splitter = SeparatorSplitter()
+splitter = SeparatorSplitter([r"\.\s+"], keep_separator="left")
 
 text = "First sentence. Second sentence. Third sentence."
-chunks = splitter.split(
-    text,
-    chunk_size=100,
-    chunk_overlap=20,
-    separators=[r"\.\s+"]  # Split on periods followed by whitespace
-)
+chunks = splitter.split(text)
 
 for chunk in chunks:
     print(chunk.text)
 ```
+
+Use `RecursiveSplitter` below to configure chunk size and overlap.
 
 ### `RecursiveSplitter`
 
@@ -157,6 +154,7 @@ Languages with syntax-aware (tree-sitter) splitting — splits at logical bounda
 | Kotlin | `"kotlin"` | `.kt`, `.kts`, `.ktm` |
 | Lua | `"lua"` | `.lua`, `.nse`, `.p8`, `.pd_lua`, `.rbxs`, `.rockspec`, `.wlua` |
 | Markdown | `"markdown"` | `.md`, `.markdown`, `.mdx` |
+| Nix | `"nix"` | `.nix` |
 | Pascal / Delphi | `"pascal"` | `.pas`, `.dpr`, `.lpr`, `.dfm` |
 | PHP | `"php"` | `.php` |
 | Python | `"python"` | `.py`, `.pyi`, `.pyw`, `.pyx`, `.pxd` |
