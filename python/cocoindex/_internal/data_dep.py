@@ -12,9 +12,11 @@ run that recorded it survives in memory.
 
 Records stay in the entry of the function or component that recorded them.
 They are never copied into ancestor components' entries; a component reports
-one bit upward instead (see the engine's ``ComponentRunOutcome``), so a
-memoized ancestor of a component that recorded a data dependency re-runs its
-body instead of reusing its memo. Spec: cocoindex-specs ``data_deps/spec.md``.
+one bit upward instead (see the engine's ``ComponentRunOutcome``), and the
+parent's entry lists the children that reported it. A memoized ancestor's
+probe then validates those descendants' records from their own entries
+(``validate_stored_data_deps`` below) and reuses the ancestor when they all
+hold. Spec: cocoindex-specs ``data_deps/spec.md``.
 """
 
 from __future__ import annotations
@@ -334,3 +336,22 @@ async def validate_data_deps_async(
         for i, value in zip(awaitable_indices, resolved):
             outcomes[i] = value
     return _fold_outcomes(decoded, outcomes)
+
+
+async def validate_stored_data_deps(
+    path: str, stored: list[StoredDataDep]
+) -> tuple[list[RefreshedDataDep], bool, bool]:
+    """The engine's processor-free entry (``EngineProfile::validate_data_deps``).
+
+    A memoized ancestor's probe validates the open descendants its memo lists
+    from their stored rows before reusing it, while none of them is mounted:
+    there is no processor, no state handler and no component context for the
+    row at ``path``, only its records. Same two phases as a component's own
+    probe: decode (a failure is a logged miss, no validator called), then the
+    validators, whose exceptions propagate. Registered at ``init_runtime``.
+    """
+    decoded = decode_stored_data_deps(stored, where=f"component {path}")
+    if decoded is None:
+        return [], False, False
+    validation = await validate_data_deps_async(decoded)
+    return validation.refreshed, validation.can_reuse, validation.states_changed

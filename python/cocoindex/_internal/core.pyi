@@ -444,6 +444,10 @@ def init_runtime(
     typed_target_handler_wrapper_fn: Callable[[Any], Any],
     non_existence: Any,
     target_state_codec: ModuleType,
+    validate_data_deps_fn: Callable[
+        [str, list[tuple[Fingerprint, Fingerprint, StoredValue, StoredValue]]],
+        Awaitable[tuple[list[tuple[Fingerprint, Fingerprint, Any, Any]], bool, bool]],
+    ],
 ) -> None: ...
 def shutdown_tokio_runtime() -> None: ...
 def cancel_all() -> None: ...

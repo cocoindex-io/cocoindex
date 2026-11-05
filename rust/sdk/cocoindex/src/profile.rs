@@ -7,13 +7,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cocoindex_core::engine::component::{ComponentProcessor, ComponentProcessorInfo};
-use cocoindex_core::engine::context::{ComponentProcessorContext, MemoStatesPayload};
-use cocoindex_core::engine::profile::{EngineProfile, Persist};
+use cocoindex_core::engine::context::{
+    ComponentProcessorContext, DataDepRecord, MemoStatesPayload,
+};
+use cocoindex_core::engine::profile::{DataDepsValidation, EngineProfile, Persist};
 use cocoindex_core::engine::target_state::{
     ChildHandling, TargetActionSink, TargetActionWithChildSlot, TargetHandler,
     TargetReconcileOutput,
 };
-use cocoindex_core::state::stable_path::StableKey;
+use cocoindex_core::state::stable_path::{StableKey, StablePath};
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +43,28 @@ impl EngineProfile for RustProfile {
     type TargetAction = Action;
     type TargetActionSink = BoxedSink;
     type TargetStateValue = Value;
+
+    /// The SDK records no data dependencies (`use_data_dep` has no Rust API
+    /// yet), so a row with records was written by another host and nothing
+    /// here can validate it: the ancestor's probe is a miss.
+    fn validate_data_deps(
+        _host_runtime_ctx: &(),
+        path: &StablePath,
+        records: Vec<DataDepRecord>,
+    ) -> cocoindex_utils::error::Result<
+        impl Future<Output = cocoindex_utils::error::Result<DataDepsValidation>> + Send + 'static,
+    > {
+        tracing::debug!(
+            "memo of {path} holds data dependencies, which the Rust SDK cannot validate"
+        );
+        Ok(async move {
+            Ok(DataDepsValidation {
+                records,
+                can_reuse: false,
+                states_changed: false,
+            })
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------

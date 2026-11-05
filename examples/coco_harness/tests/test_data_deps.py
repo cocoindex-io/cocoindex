@@ -5,9 +5,10 @@ session's body ran at all): a skipped session executes no tool and calls no
 model. A source read is recorded when it happens, so a session is skipped
 while every file it read, and every observation it made, is unchanged; a
 change to something it read re-runs its body, and only the changed read
-diverges. A child that read something flags its parent (the parent's body
-re-runs, the child is skipped on its own entry), and a session that absorbed
-an environment failure re-runs until a run absorbs none.
+diverges. A parent whose child read something is skipped too while the
+child's reads validate (the engine validates them from the child's stored
+entry), and a session that absorbed an environment failure re-runs until a
+run absorbs none.
 """
 
 from __future__ import annotations
@@ -28,10 +29,10 @@ from coco_harness import (
 )
 from coco_harness.hints import RunHints
 from coco_harness.spec import SessionSpec
-from coco_harness.testing import ScriptedModel
+from coco_harness.testing import CountingRegistry, ScriptedModel
 from coco_harness.tools import agents, sources, targets
 from coco_harness.transcript import ModelOutput, ToolCall, Transcript
-from helpers import CountingRegistry, explode_tool
+from helpers import explode_tool
 
 ORCHESTRATOR = RoleSpec(
     "orchestrator",
@@ -303,24 +304,27 @@ def _delegating_script(docs: pathlib.Path, role: str) -> ScriptedModel:
     return ScriptedModel(script)
 
 
-def test_a_child_that_read_flags_its_parent_while_being_skipped_itself(
+def test_a_parent_is_skipped_while_its_childs_reads_validate(
     coco_env: coco.Environment, tmp_path: pathlib.Path
 ) -> None:
     f = setup(coco_env, tmp_path, _delegating_script(tmp_path / "docs", "reader"))
     f.run()
     assert f.model.calls_for("reader") == 2
 
-    # The child recorded a read; the parent did not record it and cannot tell,
-    # so the parent's body re-runs (its tools execute, its turns hit) while the
-    # child is skipped on its own entry: its `call` never runs.
+    # The child recorded a read the parent did not. The engine validates it
+    # from the child's stored entry when it probes the parent (transitive
+    # validation by path), so the parent is skipped whole: no tool runs, no
+    # turn is probed, the child is never mounted.
     f.run()
-    assert f.model.calls == 0
-    assert f.executed() == {"open_source": 1, "call_agent": 1}
+    assert f.model.calls == 0 and f.executed() == {}
 
-    # The child's read changed: the child re-runs; the parent sees the same
-    # result card (a handle and a widened size) and still needs no inference.
+    # The child's read changed: the parent's probe finds it invalid, so the
+    # parent's body re-runs (its tools execute, its turns hit) and the child
+    # re-runs; the parent sees the same result card (a handle and a widened
+    # size) and still needs no inference.
     f.write("1.md", "doc 1*")
     f.run()
+    assert f.executed() == {"open_source": 1, "call_agent": 1, "call": 1}
     assert f.model.calls_for("reader") == 1
     assert f.model.calls_for("orchestrator") == 0
 

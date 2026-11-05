@@ -96,6 +96,8 @@ pub(crate) struct RestoredComponentMemo<Prof: EngineProfile> {
     pub row_fp: Fingerprint,
     /// See `db_schema::ComponentMemoizationInfo::has_open_descendants`.
     pub has_open_descendants: bool,
+    /// See `db_schema::ComponentMemoizationInfo::open_children`.
+    pub open_children: Vec<StablePath>,
 }
 
 pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
@@ -145,6 +147,7 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
                         target_provider_deps: memo_info.target_provider_deps.into_iter().collect(),
                         row_fp,
                         has_open_descendants: memo_info.has_open_descendants,
+                        open_children: memo_info.open_children,
                     }));
                 }
                 Err(e) => {
@@ -186,9 +189,12 @@ pub(crate) async fn delete_component_memo<Prof: EngineProfile>(
 ///
 /// Used when memo state validation indicates `can_reuse=true` but states have changed
 /// (e.g. mtime changed but content fingerprint is unchanged). Reads the existing entry,
-/// replaces the `memo_states` / `context_memo_states` fields, and writes it back —
-/// preserving `processor_fp`, `return_value`, `logic_deps`, and
-/// `target_provider_deps`. In a preview the write stays in the run's handle.
+/// replaces the `memo_states` / `context_memo_states` / `data_deps` fields, and writes
+/// it back — preserving `processor_fp`, `return_value`, `logic_deps`,
+/// `target_provider_deps` and the open-descendant fields. In a preview the write
+/// stays in the run's handle. `path` is the component the entry belongs to: its
+/// own probe's, or an open descendant's reached through an ancestor's probe
+/// (`validate_open_descendants`).
 ///
 /// The states were validated against the row whose bytes fingerprint to
 /// `validated_row_fp`. The probe runs before the build permit, so another run
@@ -197,12 +203,13 @@ pub(crate) async fn delete_component_memo<Prof: EngineProfile>(
 /// validated, not the replacement, so the refresh is dropped when the row has
 /// changed. The replacing run stored a complete entry of its own.
 pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
-    comp_ctx: &ComponentProcessorContext<Prof>,
+    app_store: &AppStore,
+    path: &StablePath,
     new_states: &MemoStatesPayload<Prof>,
     validated_row_fp: Fingerprint,
 ) -> Result<()> {
-    let app_store = comp_ctx.app_store().clone();
-    let path = comp_ctx.stable_path().clone();
+    let app_store = app_store.clone();
+    let path = path.clone();
 
     // Serialize new states once outside the (potentially retried) txn.
     // `MemoizedValue<'static>` holds `Cow::Owned(Vec<u8>)`, so deep-
@@ -251,6 +258,7 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
                         context_memo_states: context_memo_states_borrowed,
                         data_deps: encode_data_deps(&data_deps),
                         has_open_descendants: existing.has_open_descendants,
+                        open_children: existing.open_children,
                     };
                     rmp_serde::to_vec_named(&new_info)?
                 };
@@ -260,6 +268,109 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
             })
         })
         .await?;
+    Ok(())
+}
+
+/// Validate the open descendants of a flagged component memo from their stored
+/// rows, so the memo can be reused without mounting them.
+///
+/// `open_children` is the flagged memo's list (relative to `comp_ctx`'s
+/// component). Each listed row is read through the run's store handle (a
+/// preview reads its own overlay), its data-dependency records are validated
+/// through the host with no processor (`EngineProfile::validate_data_deps`), a
+/// changed-but-valid record set is refreshed in place against the row
+/// fingerprint it was validated from, and the row's own list is followed in
+/// turn. The walk visits open descendants only: closed children are carried
+/// over by the reuse unvalidated, as they always were.
+///
+/// `Valid` when every record validates. `NotReusable` names why the memo must
+/// not be reused; the body then re-runs and probes its children itself. That
+/// is the verdict for a listed child with no row (a non-memoized open child,
+/// whose records were dropped, or one whose last run observed a key in two
+/// states and stored nothing), a row that fails to decode, a record the host
+/// could not decode or whose kind is no longer registered, a validator
+/// answering invalid, and a flagged row with no list (written before the list
+/// existed). A validator's own error propagates, as it does from a probe.
+pub(crate) async fn validate_open_descendants<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    open_children: &[StablePath],
+) -> Result<OpenDescendantsVerdict> {
+    let app_store = comp_ctx.app_store();
+    let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
+    let mut pending: Vec<StablePath> = Vec::new();
+    if let Err(reason) = follow_open_children(comp_ctx.stable_path(), open_children, &mut pending) {
+        return Ok(OpenDescendantsVerdict::NotReusable(reason));
+    }
+    while let Some(path) = pending.pop() {
+        let Some(memo_bytes) = app_store.read_component_memo(&path).await? else {
+            return Ok(OpenDescendantsVerdict::NotReusable(format!(
+                "open descendant {path} has no memo (not memoized, or its last run observed a data dependency in two states)"
+            )));
+        };
+        let row_fp = Fingerprint::from_bytes(&memo_bytes);
+        let memo_info: db_schema::ComponentMemoizationInfo<'_> =
+            match from_msgpack_slice(&memo_bytes) {
+                Ok(info) => info,
+                Err(err) => {
+                    return Ok(OpenDescendantsVerdict::NotReusable(format!(
+                        "memo of open descendant {path} failed to decode: {err:?}"
+                    )));
+                }
+            };
+        if !memo_info.data_deps.is_empty() {
+            let records = decode_data_deps(memo_info.data_deps);
+            let validation = Prof::validate_data_deps(host_runtime_ctx, &path, records)?.await?;
+            if !validation.can_reuse {
+                return Ok(OpenDescendantsVerdict::NotReusable(format!(
+                    "a data dependency of open descendant {path} no longer validates"
+                )));
+            }
+            if validation.states_changed {
+                let refreshed = MemoStatesPayload::<Prof> {
+                    positional: deserialize_memo_values::<Prof>(&memo_info.memo_states)?,
+                    by_context_fp: deserialize_context_memo_states::<Prof>(
+                        &memo_info.context_memo_states,
+                    )?,
+                    data_deps: validation.records,
+                };
+                update_component_memo_states(app_store, &path, &refreshed, row_fp).await?;
+            }
+        }
+        if memo_info.has_open_descendants
+            && let Err(reason) = follow_open_children(&path, &memo_info.open_children, &mut pending)
+        {
+            return Ok(OpenDescendantsVerdict::NotReusable(reason));
+        }
+    }
+    Ok(OpenDescendantsVerdict::Valid)
+}
+
+/// What `validate_open_descendants` found.
+pub(crate) enum OpenDescendantsVerdict {
+    /// Every open descendant's records validate; the flagged memo is reusable.
+    Valid,
+    /// The memo must not be reused, and why (for the probe's debug log).
+    NotReusable(String),
+}
+
+/// Queue a flagged row's open children for `validate_open_descendants`. A
+/// flagged row that lists none was written before the list existed and
+/// cannot be validated: the `Err` is the reason it is not reusable.
+fn follow_open_children(
+    parent: &StablePath,
+    open_children: &[StablePath],
+    pending: &mut Vec<StablePath>,
+) -> std::result::Result<(), String> {
+    if open_children.is_empty() {
+        return Err(format!(
+            "{parent} was flagged as having open descendants without listing them (a memo stored before the list existed)"
+        ));
+    }
+    pending.extend(
+        open_children
+            .iter()
+            .map(|relative| parent.concat(relative.as_ref())),
+    );
     Ok(())
 }
 
@@ -1953,7 +2064,7 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     logic_deps: &HashSet<Fingerprint>,
     target_provider_deps: &TargetProviderDeps,
     data_deps: &[DataDepRecord],
-    has_open_descendants: bool,
+    open_children: &[StablePath],
 ) -> Result<()> {
     let Some((fp, ret, memo_states)) = comp_memo else {
         return Ok(());
@@ -1979,7 +2090,8 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
         memo_states: memo_states_serialized,
         context_memo_states: context_memo_states_serialized,
         data_deps: encode_data_deps(data_deps),
-        has_open_descendants,
+        has_open_descendants: !open_children.is_empty(),
+        open_children: open_children.to_vec(),
     };
     let encoded = rmp_serde::to_vec_named(&memo_info)?;
 
