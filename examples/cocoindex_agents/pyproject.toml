@@ -1,0 +1,19 @@
+[project]
+name = "cocoindex-agents"
+version = "0.1.0"
+description = "CocoIndex example: incremental agents over your data — subagents as components, model turns as memoized functions."
+requires-python = ">=3.11"
+# use_state, memo_key on components and the APIs this example builds on: v1.1.0 and later.
+dependencies = ["cocoindex>=1.1.0"]
+
+[project.optional-dependencies]
+llm = ["litellm!=1.107.0"]
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.setuptools]
+packages = ["cocoindex_agents", "cocoindex_agents.tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
