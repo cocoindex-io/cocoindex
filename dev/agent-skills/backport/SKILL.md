@@ -160,8 +160,20 @@ gh pr checks <backport-pr> --watch --fail-fast --interval 30
 
 Open it as a draft and mark it ready once the local checks pass (drafts run
 no CI). A release branch has no merge queue, so the pull request's own run is
-the full tier, and it takes as long as a merge-group run does. When `ci-gate`
-is green:
+the full tier, and it takes as long as a merge-group run does.
+
+If the branch's workflows changed after you cut the backport branch (the
+first backports on a new release branch, cut before the process change that
+gave them their `release/**` triggers), a pull request marked ready ran no
+CI; rebased onto the branch's tip, it did. So rebase before marking it
+ready:
+
+```bash
+git fetch origin release/<X.Y> && git rebase origin/release/<X.Y>
+git push --force-with-lease origin backport/<X.Y>/<pr>
+```
+
+When `ci-gate` is green:
 
 ```bash
 gh pr merge <backport-pr> --squash --delete-branch
