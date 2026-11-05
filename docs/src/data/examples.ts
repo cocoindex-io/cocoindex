@@ -709,6 +709,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
     title: 'Multimodal',
     blurb: 'Images and audio — same declarative flow, different encoder.',
     entries: [
+      { dir: 'pdf_elements_embedding', title: 'PDF Elements Embedding', description: 'Split PDF pages into text and images, embed text with SentenceTransformers and images with CLIP, and store both in Qdrant; one query searches both collections.', run: RUN_MAIN },
       { dir: 'image_search_colpali', docs: 'image-search-colpali', title: 'Image Search (ColPali)', description: 'Image search using the ColPali multi-vector model with Qdrant MaxSim; natural-language queries via FastAPI.', run: 'python -m uvicorn api:app --reload --host 0.0.0.0 --port 8000' },
       { dir: 'face_recognition', docs: 'face-recognition', title: 'Build Your Own Face Search', description: 'Detect faces in a folder of photos, embed each with face_recognition (dlib), and index them in Qdrant for face search; query demo.', run: RUN_MAIN },
       { dir: 'audio_to_text', docs: 'audio-to-text', title: 'Audio → Text', description: 'Transcribe local audio files with LiteLLM and store one row per file in Postgres, keyed by filename.', run: RUN_MAIN_PY },
