@@ -170,7 +170,9 @@ def run_shape(shape: str, files: int) -> None:
             env.close()
 
 
-def _run_cases(env: coco.Environment, docs: pathlib.Path, shape: str, files: int) -> None:
+def _run_cases(
+    env: coco.Environment, docs: pathlib.Path, shape: str, files: int
+) -> None:
     model = _script(docs, shape)
     tools = CountingRegistry(
         [

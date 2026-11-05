@@ -47,6 +47,9 @@ impl PythonObjects {
 
 static PY_OBJECTS: OnceLock<std::mem::ManuallyDrop<PythonObjects>> = OnceLock::new();
 
+// One call at import, with keyword arguments from Python; a struct for them
+// would be a pyclass with a single use.
+#[allow(clippy::too_many_arguments)]
 #[pyfunction]
 pub fn init_runtime(
     package_id: String,

@@ -543,7 +543,9 @@ def test_several_open_children_are_all_validated_through_the_walk() -> None:
         _write(b, "B1")
         _reads["open"] = [a]
         _reads["open2"] = [b]
-        app = _app("test_dd_tree_two", _tree_main, "gp", "p", ["open", "open2", "closed"])
+        app = _app(
+            "test_dd_tree_two", _tree_main, "gp", "p", ["open", "open2", "closed"]
+        )
         app.update_blocking()
         _metrics.clear()
 
