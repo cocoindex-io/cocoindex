@@ -141,7 +141,11 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         // Writing the row here means both installer paths (`coco.mount`
         // from `process()` and `operator.update` from `process_live`)
         // produce the same on-disk state at mount, and the parent's
-        // commit sees `Component` → `Component` (a no-op).
+        // commit sees `Component` → `Component` (a no-op). It comes
+        // before the readiness guard (step 3) on purpose: a parent waits
+        // for its children's readiness even when its own `process()`
+        // failed, so a failed write must leave no guard outstanding.
+        // Failing here returns with nothing installed.
         parent_ctx
             .app_store()
             .ensure_existence_chain(child.stable_path(), parent_ctx.stable_path())
