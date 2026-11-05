@@ -2,11 +2,11 @@
 title: "*Google Drive* connector"
 toc_max_heading_level: 4
 description: >
-  Read files recursively from shared Google Drive folders via a service account.
-  Supports MIME-type filtering and auto-exports Google Docs, Sheets, and Slides
-  to text or CSV.
+  Read files recursively from Google Drive folders, via a service account or a
+  personal account signed in with OAuth. Supports MIME-type filtering and
+  auto-exports Google Docs, Sheets, and Slides to text or CSV.
 ---
-The `google_drive` connector provides utilities for reading files from Google Drive using a service account.
+The `google_drive` connector provides utilities for reading files from Google Drive, authenticated with a service account or with a personal Google account signed in through OAuth.
 
 ```python
 from cocoindex.connectors import google_drive
@@ -28,7 +28,10 @@ The connector provides two ways to read from Google Drive:
 - `GoogleDriveSource` — high-level source class with async iteration
 - `list_files()` — lower-level function returning a sync iterator
 
-Both require a Google service account with access to the target Drive folders.
+Both authenticate with one of:
+
+- a **service account** with access to the target Drive folders (`service_account_credential_path`), the fit for a shared or automated setup;
+- a **personal Google account** signed in once through OAuth (`user_account`, experimental), the fit for your own Drive: see [Signing in with a personal account](#signing-in-with-a-personal-account).
 
 ### Setting up a service account
 
@@ -55,16 +58,18 @@ The primary source class for iterating over Google Drive files.
 ```python
 class GoogleDriveSource(
     *,
-    service_account_credential_path: str,
     root_folder_ids: Sequence[str],
+    service_account_credential_path: str | None = None,
+    user_account: UserAccount | None = None,
     mime_types: Sequence[str] | None = None,
 )
 ```
 
 **Parameters:**
 
-- `service_account_credential_path` — Path to the service account JSON credential file.
 - `root_folder_ids` — List of Google Drive folder IDs to scan. Subfolders are traversed recursively.
+- `service_account_credential_path` — Path to the service account JSON credential file.
+- `user_account` — A [`UserAccount`](#useraccount) signed in through OAuth (experimental). Exactly one of `service_account_credential_path` and `user_account` is given.
 - `mime_types` — Optional list of MIME types to include. If `None`, all file types are included.
 
 ### Iterating files
@@ -129,9 +134,78 @@ def list_files(spec: GoogleDriveSourceSpec) -> Iterator[DriveFile]
 
 `DriveFile` implements [`FileLike`](../common_resources/data_types#filelike) with Google Drive-specific behavior:
 
+- `info` — The `DriveFileInfo` the listing returned: file ID, name, MIME type, size, modified time and MD5 checksum (binary files only).
+- `info` — The `DriveFileInfo` the listing returned: file ID, name, MIME type, size, modified time and MD5 checksum (binary files only).
 - `file_path` — A `DriveFilePath` containing the path relative to the configured root folder; `resolve()` returns the Google Drive file ID. If roots overlap or a file is reachable more than once, it is emitted once using the first path encountered in breadth-first traversal. Each folder's children are visited in order of name, then ID, so the same path is kept on every run.
-- `read()` / `read_text()` — Downloads file content via the Google Drive API. Partial reads (`size` parameter) are not supported.
+- `read()` / `read_text()` — Downloads file content via the Google Drive API. Partial reads (`size` parameter) are not supported. Requests Google refuses for rate limits (HTTP 429, or 403 with a rate-limit reason) are retried with backoff.
 - Change detection uses the Drive MD5 checksum of binary files, so an unchanged file is not downloaded again. Google Docs, Sheets and Slides have no checksum; their exported content is hashed instead.
+
+## Signing in with a personal account
+
+:::caution[Experimental]
+`UserAccount` and the `cocoindex google-drive` commands are experimental. Experimental APIs are outside CocoIndex's compatibility promise: a later release, including a minor one, may change their API or semantics, or remove them.
+:::
+
+A service account only sees folders shared with it. To read your own Drive, sign in with your Google account instead. The sign-in is a one-time interactive step, run from the shell, outside any CocoIndex run; it uses the OAuth flow Google recommends for command-line applications (an authorization code with PKCE, redirected to a listener on this machine's loopback interface), from an OAuth client you create in your own Google Cloud project. CocoIndex asks for read-only access to Drive (`drive.readonly`) and nothing else.
+
+### Setting up the OAuth client
+
+Once per Google Cloud project:
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/), create a project (or pick one) and enable the **Google Drive API** under *APIs & Services > Library*.
+2. Under *APIs & Services > OAuth consent screen* (called *Google Auth Platform* in newer consoles), configure the consent screen: external user type, any app name, your email as the contact. Leave the publishing status at **Testing** and add your own Google account under **Test users**.
+3. Under *APIs & Services > Credentials*, create an **OAuth client ID** of type **Desktop app** and download its JSON file.
+
+What to expect from a client you own, as Google documents it:
+
+- `drive.readonly` is a *restricted* scope, so Google would require app verification (and a security assessment) before the public could use the client. Neither applies to a client in **Testing** status used by its listed test users, which is the setup for reading your own Drive.
+- In Testing status, Google expires the consent **seven days** after it was given: a run then fails with `SignInRequiredError` and you sign in again. Publishing the client to *In production* without verification removes the seven-day limit; the consent screen then shows an "unverified app" warning you pass through *Advanced*, and the client is limited to 100 users over its lifetime.
+- The downloaded JSON contains a client secret. For a Desktop app Google treats it as not confidential, but keep the file out of git all the same; CocoIndex copies what it needs into the token file and never writes either into the state database, a memo key or a log.
+
+### Signing in
+
+```bash
+cocoindex google-drive sign-in ~/Downloads/client_secret_XXXX.json
+```
+
+The command opens the consent page in your browser. Approve the request, including the Google Drive permission; the browser lands on a page that says the sign-in completed, and the terminal prints the signed-in address.
+
+On a machine with no browser (over SSH, or with no display), the command prints the link instead. Open it in a browser on another machine and sign in; the browser then lands on `http://127.0.0.1:<port>/?code=...&state=...` and fails to load, since that address is the other machine. Copy the whole address from the address bar and paste it into the terminal. (If you forward the port with `ssh -L <port>:127.0.0.1:<port> <host>` in a second session, the page loads instead and nothing is left to paste.)
+
+The tokens are stored in a file readable by your user only (`0600`), at `~/.config/cocoindex/google_drive_token.json` on Linux and macOS (under `$XDG_CONFIG_HOME` when set) and under `%APPDATA%\cocoindex` on Windows; `--token-path` picks another location. The connector refuses a token file that other users can read.
+
+```bash
+cocoindex google-drive sign-out      # revokes the sign-in at Google and deletes the token file
+```
+
+The same two steps are available in Python as `UserAccount().sign_in(client_secrets_path)` and `UserAccount().sign_out()`.
+
+### UserAccount
+
+```python
+class UserAccount(token_path: str | os.PathLike[str] | None = None)
+```
+
+The handle a run passes to `GoogleDriveSource`. It reads the token file at `token_path` (default: the path `sign-in` writes to) when the source is first used:
+
+- the access token is refreshed with the stored refresh token as it expires, and the refreshed token is written back to the file;
+- `email` is the signed-in account's address, and the memo key of a `UserAccount` is that address: a refreshed token does not invalidate memoized work, a different account does;
+- when no sign-in is stored, or Google refuses the stored one (the consent expired or was revoked, or the OAuth client was deleted, disabled or given a new secret), the run raises `SignInRequiredError` (a `SignInError`), whose message says which and to sign in again. The message never contains a token.
+
+```python
+import cocoindex as coco
+from cocoindex.connectors import google_drive
+
+@coco.fn
+async def app_main(folder_ids: list[str]) -> None:
+    source = google_drive.GoogleDriveSource(
+        root_folder_ids=folder_ids,
+        user_account=google_drive.UserAccount(),
+    )
+    with coco.component_subpath("file"):
+        async for key, file in source.items():
+            await coco.mount(coco.component_subpath(key), process_file, file)
+```
 
 ### Example
 

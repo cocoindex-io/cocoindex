@@ -251,7 +251,7 @@ class _FakeRequest:
     def __init__(self, response: dict[str, object]) -> None:
         self._response = response
 
-    def execute(self) -> dict[str, object]:
+    def execute(self, num_retries: int = 0) -> dict[str, object]:
         return self._response
 
 
@@ -405,3 +405,35 @@ async def test_memo_without_md5_skips_read_while_mtime_unchanged(
         assert await app.update() == 7
     assert calls == ["doc-1"]
     assert reads == ["doc-1"]
+
+
+@requires_google_drive
+def test_a_rate_limited_listing_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 429 and a rate-limit 403 are retried with backoff, as Drive's usage-limits guide asks."""
+    import json
+
+    import googleapiclient.http
+    from googleapiclient.discovery import build
+    from googleapiclient.http import HttpMockSequence
+
+    from cocoindex.connectors.google_drive import _source
+
+    rate_limited = {
+        "error": {"code": 403, "errors": [{"reason": "userRateLimitExceeded"}]}
+    }
+    listing = {"files": [_drive_entry("f1", "a.txt", size="1", md5Checksum="abc")]}
+    http = HttpMockSequence(
+        [
+            ({"status": "429"}, "{}"),
+            ({"status": "403"}, json.dumps(rate_limited)),
+            ({"status": "200"}, json.dumps(listing)),
+        ]
+    )
+    service = build("drive", "v3", http=http, static_discovery=True)
+    sleeps: list[float] = []
+    monkeypatch.setattr(googleapiclient.http.time, "sleep", sleeps.append)
+    monkeypatch.setattr(_source, "_build_service", lambda _: service)
+
+    files = list(list_files(GoogleDriveSourceSpec("unused.json", ["root"])))
+    assert [f.file_path.resolve() for f in files] == ["f1"]
+    assert len(sleeps) == 2  # one backoff per refused attempt
