@@ -99,7 +99,13 @@ Avoid acronyms unless very popular and unambiguous for common people even withou
 ```
 
 ```python title="main.py"
-@coco.fn
+@coco.fn(
+    memo=True,
+    deps={
+        "model": LLM_MODEL,
+        "prompt": TopicsResponse.model_fields["topics"].description,
+    },
+)
 async def extract_topics(text: str | None) -> list[str]:
     """Extract topics from text using LLM."""
     if not text or not text.strip():
@@ -121,6 +127,8 @@ async def extract_topics(text: str | None) -> list[str]:
 ```
 
 The prompt in `TopicsResponse` defines topic normalization: it tells the model to normalize phrases into separate topics ("books for autistic kids" → "book", "autistic", "autistic kids"), keep proper nouns canonical ("PostgreSQL", "Claude"), and emit multiple aliases for the same thing ("JFK", "John Kennedy"). That normalization is what makes the trending ranking meaningful later.
+
+`memo=True` caches each call's result by its input text, so a message CocoIndex has already seen does not go to the LLM again. The prompt and the model live outside the function body, so `deps` declares them: change either one and the cached results are invalidated.
 
 [→ Function](/docs/programming_guide/function/)
 
@@ -384,11 +392,11 @@ The real power shows when you run the pipeline again:
 cocoindex update main
 ```
 
-New threads in the feed get processed; threads already in the database reuse their committed rows. Because per-message extraction is tracked, the expensive LLM calls only run for content CocoIndex hasn't seen.
+New threads in the feed get processed; threads already in the database reuse their committed rows. Because `extract_topics` is memoized (`memo=True`), the expensive LLM calls only run for content CocoIndex hasn't seen.
 
 **Change the extraction logic:**
 
-Edit the topic-extraction prompt or switch `LLM_MODEL`, then run `cocoindex update main` again. CocoIndex detects the changed logic and re-extracts, keeping the `hn_topics` table consistent with your new logic — no manual migration.
+Edit the topic-extraction prompt or switch `LLM_MODEL`, then run `cocoindex update main` again. Both values live outside the function body, so `extract_topics` lists them in `deps`; CocoIndex sees the changed logic and re-extracts, keeping the `hn_topics` table consistent with your new logic — no manual migration.
 
 ## Run it
 

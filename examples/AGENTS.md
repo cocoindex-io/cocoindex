@@ -116,6 +116,7 @@ A walkthrough URL means there's a step-by-step guide at
 ### Multimodal
 - `image_search` — CLIP embeddings + Qdrant, queried via FastAPI + React.
 - `image_search_colpali` — ColPali multi-vector model + Qdrant MaxSim.
+- `pdf_elements_embedding` — PDF pages → text chunks (MiniLM) + images (CLIP) → two Qdrant collections; one query searches both.
 - `multi_format_indexing` — PDFs + images as page screenshots → ColPali → Qdrant; no OCR, no chunking. *(walkthrough: multi-format-indexing)*
 - `face_recognition` — detect faces (dlib) → 128-d embeddings → Qdrant face search. *(walkthrough: face-recognition)*
 - `audio_to_text` — transcribe audio with LiteLLM → Postgres.
