@@ -6,8 +6,10 @@
 //! schema DDL.
 //!
 //! Ownership follows the Python connector: [`TableTarget::declare_record`]
-//! writes with `UPSERT … MERGE`, never `CONTENT`, so fields written by other
-//! owners survive and fields a record stops declaring are unset.
+//! writes with `UPSERT … SET`, one assignment per field, never `CONTENT`, so
+//! fields written by other owners survive and fields a record stops declaring
+//! are unset. Each declared field's value is replaced whole, nested objects
+//! included. Field names must be identifiers (ASCII letters, digits and `_`).
 //! [`TableTarget::declare_fields`] lets a component contribute only some fields
 //! of a record that another component owns. Relation records are single-owner
 //! and are replaced whole.
@@ -31,7 +33,7 @@ use serde_json::{Map, Value as JsonValue};
 use surrealdb::Surreal;
 use surrealdb::engine::remote::ws::{Client, Ws};
 use surrealdb::opt::auth::Root;
-use surrealdb::types::RecordId;
+use surrealdb::types::{QueryError, RecordId};
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
@@ -312,9 +314,10 @@ impl TableTarget {
     }
 
     /// Declare a record to be upserted to this table. It is written with
-    /// `UPSERT … MERGE`: fields written by other owners (see
+    /// `UPSERT … SET`, one assignment per field: each field's value is replaced
+    /// whole, fields written by other owners (see
     /// [`declare_fields`](Self::declare_fields)) survive, and fields the row
-    /// stops declaring are unset.
+    /// stops declaring are unset. Field names must be identifiers.
     pub fn declare_record<R: Serialize>(
         &self,
         ctx: &Ctx,
@@ -328,9 +331,9 @@ impl TableTarget {
     /// Declare the fields one owner (`group`) contributes to an existing
     /// record. `fields` is a struct or map of field name to value.
     ///
-    /// It writes `UPDATE … MERGE` with only these fields, so fields written by
+    /// It writes `UPDATE … SET` with only these fields, so fields written by
     /// other owners (or by [`declare_record`](Self::declare_record)) are never
-    /// touched. When the declaration goes away, or a field is dropped from it,
+    /// touched. `fields` cannot name `id`. When the declaration goes away, or a field is dropped from it,
     /// those fields are unset. If the record does not exist, the write fails
     /// and is retried on the next run, so declare the base record in the same
     /// or another component.
@@ -1136,10 +1139,10 @@ struct RecordAction {
 /// What a [`RecordAction`] does to its record.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 enum RecordWrite {
-    /// Record mode: `UPSERT … MERGE`, creating the record when it is missing.
-    Upsert(MergeContent),
-    /// Fields mode: `UPDATE … MERGE` onto a record that must exist.
-    SetFields(MergeContent),
+    /// Record mode: `UPSERT … SET`, creating the record when it is missing.
+    Upsert(FieldChanges),
+    /// Fields mode: `UPDATE … SET` on a record that must exist.
+    SetFields(FieldChanges),
     /// Fields mode, group removed: unset the fields it owned. A missing record
     /// is fine.
     UnsetFields(Vec<String>),
@@ -1151,24 +1154,26 @@ enum RecordWrite {
     Delete,
 }
 
-/// The body of a `MERGE`: fields to set, and fields owned before but no longer
-/// declared, which become `NONE`.
+/// The assignments of a `SET`: fields to set, each replaced whole, and fields
+/// owned before but no longer declared, which become `NONE`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-struct MergeContent {
+struct FieldChanges {
     set: Map<String, JsonValue>,
     unset: Vec<String>,
 }
 
 impl RecordWrite {
-    /// Apply order within one batch: upserts, fields writes, relation upserts,
-    /// deletes. A fields write then finds the record an upsert of the same
-    /// batch creates.
+    /// Apply order within one batch: field unsets, upserts, field sets,
+    /// relation upserts, deletes. A removed group then cannot erase a field
+    /// that the record, or another group, takes over in the same batch, and a
+    /// field set finds the record an upsert of the same batch creates.
     fn rank(&self) -> u8 {
         match self {
-            Self::Upsert(_) => 0,
-            Self::SetFields(_) | Self::UnsetFields(_) => 1,
-            Self::Relate { .. } => 2,
-            Self::Delete => 3,
+            Self::UnsetFields(_) => 0,
+            Self::Upsert(_) => 1,
+            Self::SetFields(_) => 2,
+            Self::Relate { .. } => 3,
+            Self::Delete => 4,
         }
     }
 }
@@ -1216,7 +1221,7 @@ enum RecordTracking {
     /// A relation record: a fingerprint of the whole edge. It is replaced
     /// whole, so it owns no field names.
     Fingerprint(Fingerprint),
-    /// A record or field group written with `MERGE`.
+    /// A record or field group written with `SET`.
     Fields(FieldsTracking),
 }
 
@@ -1505,7 +1510,13 @@ impl TargetHandler<RecordState> for RecordHandler {
             Some(state) => {
                 // Track a cheap fingerprint of the record state (not the full record).
                 let fingerprint = Fingerprint::from(&state).map_err(Error::from)?;
-                let RecordState { fields, relation } = state;
+                let RecordState {
+                    mut fields,
+                    relation,
+                } = state;
+                // The record id is carried by the statement's record reference
+                // (matches Python, which excludes `id` from the content).
+                fields.remove("id");
                 let (tracking, write) = match relation {
                     Some(endpoints) => (
                         RecordTracking::Fingerprint(fingerprint),
@@ -1519,7 +1530,7 @@ impl TargetHandler<RecordState> for RecordHandler {
                             .filter(|name| !fields.contains_key(*name))
                             .map(String::from)
                             .collect();
-                        let content = MergeContent { set: fields, unset };
+                        let content = FieldChanges { set: fields, unset };
                         let write = if in_fields_mode {
                             RecordWrite::SetFields(content)
                         } else {
@@ -1852,14 +1863,38 @@ async fn apply_records(graph: &Graph, spec: &TableSpec, actions: Vec<RecordActio
         define_table(graph, spec).await?;
     }
     let statements = record_statements(spec, actions)?;
-    graph
-        .db
-        .query(statements)
-        .await
-        .map_err(surreal_err)?
-        .check()
-        .map_err(surreal_err)?;
-    Ok(())
+    let mut response = graph.db.query(statements).await.map_err(surreal_err)?;
+    match first_real_error(response.take_errors()) {
+        Some(error) => Err(surreal_err(error)),
+        None => Ok(()),
+    }
+}
+
+/// The error to report for a failed batch. When one statement of a transaction
+/// fails, every other statement reports a "not executed" or "cancelled" echo;
+/// the lowest-index error is then an echo, so skip those (as Python's
+/// `_check_response` does).
+fn first_real_error(
+    errors: std::collections::HashMap<usize, surrealdb::Error>,
+) -> Option<surrealdb::Error> {
+    let mut errors: Vec<(usize, surrealdb::Error)> = errors.into_iter().collect();
+    if errors.is_empty() {
+        return None;
+    }
+    errors.sort_by_key(|(index, _)| *index);
+    // Only echoes: report the first one rather than hide the failure.
+    let real = errors
+        .iter()
+        .position(|(_, error)| !is_echo(error))
+        .unwrap_or(0);
+    Some(errors.swap_remove(real).1)
+}
+
+fn is_echo(error: &surrealdb::Error) -> bool {
+    matches!(
+        error.query_details(),
+        Some(QueryError::NotExecuted | QueryError::Cancelled)
+    )
 }
 
 /// The SurrealQL of one batch of record actions: one transaction, ordered by
@@ -1873,27 +1908,23 @@ fn record_statements(spec: &TableSpec, mut actions: Vec<RecordAction>) -> Result
     for RecordAction { record_id, write } in actions {
         let record_ref = format!("{}:{}", spec.table_name, record_id.surrealql());
         match write {
-            RecordWrite::Upsert(content) => {
-                let content = merge_object(schema, &content.set, &content.unset)?;
-                statements.push_str(&format!(
-                    "UPSERT {record_ref} MERGE {content} RETURN NONE;\n"
-                ));
+            RecordWrite::Upsert(changes) => {
+                let set = set_clause(schema, &changes.set, &changes.unset)?;
+                statements.push_str(&format!("UPSERT {record_ref}{set} RETURN NONE;\n"));
             }
-            RecordWrite::SetFields(content) => {
-                let content = merge_object(schema, &content.set, &content.unset)?;
+            RecordWrite::SetFields(changes) => {
+                let set = set_clause(schema, &changes.set, &changes.unset)?;
                 let missing = json_text(&format!("fields target record missing: {record_ref}"))?;
                 statements.push_str(&format!(
-                    "LET $updated = (UPDATE ONLY {record_ref} MERGE {content} RETURN id);\n\
+                    "LET $updated = (UPDATE ONLY {record_ref}{set} RETURN id);\n\
                      IF $updated = NONE {{ THROW {missing}; }};\n"
                 ));
             }
             RecordWrite::UnsetFields(names) => {
-                // Nothing to unset when no earlier run recorded its field names.
-                if !names.iter().all(|name| name == "id") {
-                    let content = merge_object(schema, &Map::new(), &names)?;
-                    statements.push_str(&format!(
-                        "UPDATE {record_ref} MERGE {content} RETURN NONE;\n"
-                    ));
+                // Nothing to unset when the group owned no fields.
+                if !names.is_empty() {
+                    let set = set_clause(schema, &Map::new(), &names)?;
+                    statements.push_str(&format!("UPDATE {record_ref}{set} RETURN NONE;\n"));
                 }
             }
             RecordWrite::Relate { fields, endpoints } => {
@@ -1902,7 +1933,7 @@ fn record_statements(spec: &TableSpec, mut actions: Vec<RecordAction>) -> Result
                 let from_ref =
                     format!("{}:{}", endpoints.from_table, endpoints.from_id.surrealql());
                 let to_ref = format!("{}:{}", endpoints.to_table, endpoints.to_id.surrealql());
-                let content = merge_object(schema, &fields, &[])?;
+                let content = content_object(schema, &fields)?;
                 statements.push_str(&format!(
                     "DELETE {record_ref}; RELATE {from_ref}->{record_ref}->{to_ref} CONTENT {content};\n"
                 ));
@@ -1921,47 +1952,61 @@ fn json_text<T: Serialize + ?Sized>(value: &T) -> Result<String> {
         .map_err(|e| Error::engine(format!("serialize SurrealDB record: {e}")))
 }
 
-/// A SurrealQL object literal with `set` fields as values and `unset` fields as
-/// `NONE` (in a `MERGE`, `NONE` removes the field). The record id is carried by
-/// the statement's record reference, so an `id` field is left out (matches
-/// Python, which excludes `id` from the content).
-fn merge_object(
+/// A ` SET` clause with one assignment per field: `set` fields take their
+/// value and `unset` fields take `NONE`, which removes them. An assignment
+/// replaces the field's value whole, nested objects included (a `MERGE` would
+/// merge them, and so keep nested keys the row stops declaring). Empty when
+/// there is nothing to assign. Field names are validated identifiers.
+fn set_clause(
     schema: Option<&TableSchema>,
     set: &Map<String, JsonValue>,
     unset: &[String],
 ) -> Result<String> {
     let mut parts = Vec::with_capacity(set.len() + unset.len());
     for name in unset {
-        if name != "id" {
-            parts.push(format!("{}: NONE", json_text(name)?));
-        }
+        validate_ident(name, "field name")?;
+        parts.push(format!("`{name}` = NONE"));
     }
     for (name, value) in set {
-        if name != "id" {
-            let column = schema.and_then(|schema| schema.columns.get(name));
-            parts.push(format!(
-                "{}: {}",
-                json_text(name)?,
-                surql_value(column, value)?
-            ));
-        }
+        validate_ident(name, "field name")?;
+        let column = schema.and_then(|schema| schema.columns.get(name));
+        parts.push(format!("`{name}` = {}", surql_value(name, column, value)?));
+    }
+    if parts.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!(" SET {}", parts.join(", ")))
+}
+
+/// A SurrealQL object literal for a relation's `CONTENT`.
+fn content_object(schema: Option<&TableSchema>, fields: &Map<String, JsonValue>) -> Result<String> {
+    let mut parts = Vec::with_capacity(fields.len());
+    for (name, value) in fields {
+        let column = schema.and_then(|schema| schema.columns.get(name));
+        parts.push(format!(
+            "{}: {}",
+            json_text(name)?,
+            surql_value(name, column, value)?
+        ));
     }
     Ok(format!("{{{}}}", parts.join(", ")))
 }
 
 /// A top-level field value as SurrealQL. `null` is `NONE` (what an `option<T>`
 /// field takes). The value of a `datetime`, `uuid`, `decimal`, `duration` or
-/// `bytes` column is written typed, as Python sends typed parameters; any other
+/// `bytes` column is written as a cast or typed literal, as Python sends typed
+/// parameters, and a value such a column cannot take is an error. Any other
 /// value is its JSON, which SurrealQL reads as native arrays and objects.
-fn surql_value(column: Option<&ColumnDef>, value: &JsonValue) -> Result<String> {
+fn surql_value(name: &str, column: Option<&ColumnDef>, value: &JsonValue) -> Result<String> {
     if value.is_null() {
         return Ok("NONE".to_string());
     }
-    let typed = match (column.map(|c| c.surreal_type.trim()), value) {
+    let surreal_type = column.map(|c| c.surreal_type.trim());
+    let typed = match (surreal_type, value) {
         (Some("datetime"), JsonValue::String(s)) => {
-            Some(format!("d{}", json_text(&datetime_text(s))?))
+            Some(format!("<datetime> {}", json_text(&datetime_text(s))?))
         }
-        (Some("uuid"), JsonValue::String(_)) => Some(format!("u{}", json_text(value)?)),
+        (Some("uuid"), JsonValue::String(_)) => Some(format!("<uuid> {}", json_text(value)?)),
         (Some("decimal"), JsonValue::String(_) | JsonValue::Number(_)) => {
             Some(format!("<decimal> {}", json_text(value)?))
         }
@@ -1974,12 +2019,15 @@ fn surql_value(column: Option<&ColumnDef>, value: &JsonValue) -> Result<String> 
             .map(|item| item.as_u64().and_then(|byte| u8::try_from(byte).ok()))
             .collect::<Option<Vec<u8>>>()
             .map(|bytes| format!("encoding::base64::decode(\"{}\")", base64_text(&bytes))),
-        _ => None,
+        (Some("datetime" | "uuid" | "decimal" | "duration" | "bytes"), _) => None,
+        _ => return json_text(value),
     };
-    match typed {
-        Some(text) => Ok(text),
-        None => json_text(value),
-    }
+    typed.ok_or_else(|| {
+        Error::engine(format!(
+            "SurrealDB field {name:?} has type {}, which cannot take the value {value}",
+            surreal_type.unwrap_or_default()
+        ))
+    })
 }
 
 /// An RFC 3339 datetime from a serialized `chrono` value: a date gets midnight
@@ -2008,7 +2056,8 @@ fn duration_literal(value: &JsonValue) -> Option<String> {
     })
 }
 
-/// Standard base64 with padding.
+/// Standard-alphabet base64 without padding; `encoding::base64::decode`
+/// accepts it in every SurrealDB version, while padding is rejected by some.
 fn base64_text(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -2016,14 +2065,10 @@ fn base64_text(bytes: &[u8]) -> String {
         let group = chunk.iter().enumerate().fold(0u32, |acc, (i, byte)| {
             acc | (u32::from(*byte) << (16 - 8 * i))
         });
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(char::from(
-                    ALPHABET[((group >> (18 - 6 * i)) & 0x3f) as usize],
-                ));
-            } else {
-                out.push('=');
-            }
+        for i in 0..=chunk.len() {
+            out.push(char::from(
+                ALPHABET[((group >> (18 - 6 * i)) & 0x3f) as usize],
+            ));
         }
     }
     out
@@ -2048,6 +2093,10 @@ fn record_state<R: Serialize>(row: &R) -> Result<RecordState> {
             map
         }
     };
+    // Field names are interpolated into the write statement.
+    for name in fields.keys() {
+        validate_ident(name, "field name")?;
+    }
     Ok(RecordState {
         fields,
         relation: None,
@@ -2067,6 +2116,11 @@ fn fields_state<R: Serialize>(fields: &R) -> Result<RecordState> {
         ));
     };
     for name in fields.keys() {
+        if name == "id" {
+            return Err(Error::engine(
+                "declare_fields cannot set `id`: the record id is the `id` argument",
+            ));
+        }
         validate_ident(name, "field name")?;
     }
     Ok(RecordState {
@@ -2113,7 +2167,7 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_upserts_records_before_it_sets_their_fields() {
+    fn a_batch_unsets_then_upserts_then_sets_fields() {
         let spec = TableSpec::table("person".to_string(), None, ManagedBy::System);
         let actions = vec![
             RecordAction {
@@ -2121,52 +2175,116 @@ mod tests {
                 write: RecordWrite::Delete,
             },
             RecordAction {
-                record_id: string_id("old"),
-                write: RecordWrite::UnsetFields(vec!["score".to_string()]),
-            },
-            RecordAction {
                 record_id: string_id("ann"),
-                write: RecordWrite::SetFields(MergeContent {
+                write: RecordWrite::SetFields(FieldChanges {
                     set: fields(serde_json::json!({ "score": 7 })),
                     unset: vec!["rank".to_string()],
                 }),
             },
             RecordAction {
                 record_id: string_id("ann"),
-                write: RecordWrite::Upsert(MergeContent {
-                    set: fields(serde_json::json!({ "id": "ann", "name": "Ann", "nick": null })),
-                    unset: vec![],
+                write: RecordWrite::Upsert(FieldChanges {
+                    set: fields(serde_json::json!({
+                        "name": "Ann",
+                        "nick": null,
+                        "meta": { "en": 1 },
+                    })),
+                    unset: vec!["age".to_string()],
                 }),
+            },
+            RecordAction {
+                record_id: string_id("old"),
+                write: RecordWrite::UnsetFields(vec!["score".to_string()]),
             },
         ];
         assert_eq!(
             record_statements(&spec, actions).unwrap(),
             "BEGIN TRANSACTION;\n\
-             UPSERT person:`ann` MERGE {\"name\": \"Ann\", \"nick\": NONE} RETURN NONE;\n\
-             UPDATE person:`old` MERGE {\"score\": NONE} RETURN NONE;\n\
-             LET $updated = (UPDATE ONLY person:`ann` MERGE {\"rank\": NONE, \"score\": 7} RETURN id);\n\
+             UPDATE person:`old` SET `score` = NONE RETURN NONE;\n\
+             UPSERT person:`ann` SET `age` = NONE, `meta` = {\"en\":1}, `name` = \"Ann\", `nick` = NONE RETURN NONE;\n\
+             LET $updated = (UPDATE ONLY person:`ann` SET `rank` = NONE, `score` = 7 RETURN id);\n\
              IF $updated = NONE { THROW \"fields target record missing: person:`ann`\"; };\n\
              DELETE person:`gone`;\n\
              COMMIT TRANSACTION;\n"
         );
     }
 
+    /// The record takes over `score` in the batch that removes the group which
+    /// owned it: the unset must run first, or it would erase the new value.
     #[test]
-    fn a_removed_group_with_no_recorded_fields_writes_nothing() {
+    fn a_removed_group_does_not_erase_a_field_the_record_takes_over() {
         let spec = TableSpec::table("person".to_string(), None, ManagedBy::System);
-        let actions = vec![RecordAction {
-            record_id: string_id("ann"),
-            write: RecordWrite::UnsetFields(vec![]),
-        }];
+        let actions = vec![
+            RecordAction {
+                record_id: string_id("ann"),
+                write: RecordWrite::Upsert(FieldChanges {
+                    set: fields(serde_json::json!({ "score": 9 })),
+                    unset: vec![],
+                }),
+            },
+            RecordAction {
+                record_id: string_id("ann"),
+                write: RecordWrite::UnsetFields(vec!["score".to_string()]),
+            },
+        ];
         assert_eq!(
             record_statements(&spec, actions).unwrap(),
-            "BEGIN TRANSACTION;\nCOMMIT TRANSACTION;\n"
+            "BEGIN TRANSACTION;\n\
+             UPDATE person:`ann` SET `score` = NONE RETURN NONE;\n\
+             UPSERT person:`ann` SET `score` = 9 RETURN NONE;\n\
+             COMMIT TRANSACTION;\n"
         );
     }
 
     #[test]
-    fn typed_columns_are_written_as_typed_values() {
-        let schema = TableSchema::new([
+    fn a_write_with_no_fields_has_no_set_clause() {
+        let spec = TableSpec::table("person".to_string(), None, ManagedBy::System);
+        let no_changes = || FieldChanges {
+            set: Map::new(),
+            unset: vec![],
+        };
+        let actions = vec![
+            RecordAction {
+                record_id: string_id("ann"),
+                write: RecordWrite::UnsetFields(vec![]),
+            },
+            RecordAction {
+                record_id: string_id("ann"),
+                write: RecordWrite::Upsert(no_changes()),
+            },
+            RecordAction {
+                record_id: string_id("ann"),
+                write: RecordWrite::SetFields(no_changes()),
+            },
+        ];
+        assert_eq!(
+            record_statements(&spec, actions).unwrap(),
+            "BEGIN TRANSACTION;\n\
+             UPSERT person:`ann` RETURN NONE;\n\
+             LET $updated = (UPDATE ONLY person:`ann` RETURN id);\n\
+             IF $updated = NONE { THROW \"fields target record missing: person:`ann`\"; };\n\
+             COMMIT TRANSACTION;\n"
+        );
+    }
+
+    #[test]
+    fn field_names_must_be_identifiers() {
+        let message = record_state(&serde_json::json!({ "a` = 1, `b": 2 }))
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("field name"), "{message}");
+
+        let message = fields_state(&serde_json::json!({ "id": "bob" }))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("declare_fields cannot set `id`"),
+            "{message}"
+        );
+    }
+
+    fn typed_schema() -> TableSchema {
+        TableSchema::new([
             ("at", ColumnDef::new("datetime")),
             ("day", ColumnDef::new("datetime")),
             ("naive", ColumnDef::new("datetime")),
@@ -2176,7 +2294,11 @@ mod tests {
             ("blob", ColumnDef::new("bytes")),
             ("tags", ColumnDef::new("array<string>")),
         ])
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn typed_columns_are_written_as_typed_values() {
         let set = fields(serde_json::json!({
             "at": "2024-05-01T10:00:00+02:00",
             "day": "2024-05-01",
@@ -2189,26 +2311,56 @@ mod tests {
             "untyped": "2024-05-01",
         }));
         assert_eq!(
-            merge_object(Some(&schema), &set, &[]).unwrap(),
-            "{\"at\": d\"2024-05-01T10:00:00+02:00\", \
-             \"blob\": encoding::base64::decode(\"aGk=\"), \
-             \"day\": d\"2024-05-01T00:00:00Z\", \
-             \"naive\": d\"2024-05-01T10:00:00Z\", \
-             \"price\": <decimal> \"12.50\", \
-             \"tags\": [\"a\",\"b\"], \
-             \"took\": 5s250ns, \
-             \"uid\": u\"67e55044-10b1-426f-9247-bb680e5fe0c8\", \
-             \"untyped\": \"2024-05-01\"}"
+            set_clause(Some(&typed_schema()), &set, &[]).unwrap(),
+            " SET `at` = <datetime> \"2024-05-01T10:00:00+02:00\", \
+             `blob` = encoding::base64::decode(\"aGk\"), \
+             `day` = <datetime> \"2024-05-01T00:00:00Z\", \
+             `naive` = <datetime> \"2024-05-01T10:00:00Z\", \
+             `price` = <decimal> \"12.50\", \
+             `tags` = [\"a\",\"b\"], \
+             `took` = 5s250ns, \
+             `uid` = <uuid> \"67e55044-10b1-426f-9247-bb680e5fe0c8\", \
+             `untyped` = \"2024-05-01\""
         );
     }
 
     #[test]
-    fn base64_pads_every_remainder() {
+    fn a_typed_column_rejects_a_value_it_cannot_encode() {
+        let schema = typed_schema();
+        for (name, value) in [
+            ("at", serde_json::json!(1714557600)),
+            ("uid", serde_json::json!(7)),
+            ("price", serde_json::json!(true)),
+            ("took", serde_json::json!({ "secs": 5 })),
+            ("blob", serde_json::json!([104, 300])),
+            ("blob", serde_json::json!("aGk")),
+        ] {
+            let set = fields(serde_json::json!({ name: value }));
+            let message = set_clause(Some(&schema), &set, &[])
+                .unwrap_err()
+                .to_string();
+            assert!(message.contains(&format!("{name:?}")), "{message}");
+            assert!(message.contains("cannot take the value"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_typed_string_is_a_cast_over_an_escaped_string() {
+        let schema = typed_schema();
+        let set = fields(serde_json::json!({ "uid": "x\"; DELETE person; \"" }));
+        assert_eq!(
+            set_clause(Some(&schema), &set, &[]).unwrap(),
+            " SET `uid` = <uuid> \"x\\\"; DELETE person; \\\"\""
+        );
+    }
+
+    #[test]
+    fn base64_is_unpadded() {
         assert_eq!(base64_text(b""), "");
-        assert_eq!(base64_text(b"f"), "Zg==");
-        assert_eq!(base64_text(b"fo"), "Zm8=");
+        assert_eq!(base64_text(b"f"), "Zg");
+        assert_eq!(base64_text(b"fo"), "Zm8");
         assert_eq!(base64_text(b"foo"), "Zm9v");
-        assert_eq!(base64_text(&[0xfb, 0xff]), "+/8=");
+        assert_eq!(base64_text(&[0xfb, 0xff]), "+/8");
     }
 
     #[test]

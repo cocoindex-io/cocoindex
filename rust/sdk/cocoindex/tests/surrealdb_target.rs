@@ -519,8 +519,8 @@ struct Article {
     tags: Vec<String>,
     #[coco(vector = 3)]
     embedding: Vec<f32>,
-    #[coco(type = "record<person>")]
-    author: String,
+    #[coco(type = "string")]
+    slug: String,
 }
 
 #[test]
@@ -539,7 +539,7 @@ fn surrealdb_from_row_matches_the_hand_written_schema() {
         ("cover", ColumnDef::new("bytes")),
         ("tags", ColumnDef::new("any")),
         ("embedding", ColumnDef::new("array<float, 3>")),
-        ("author", ColumnDef::new("record<person>")),
+        ("slug", ColumnDef::new("string")),
     ])
     .unwrap();
     assert_eq!(derived, by_hand);
@@ -572,8 +572,6 @@ async fn surrealdb_from_row_schema_stores_typed_values_when_available() {
     let (app, _dir) = temp_app(&graph, "surrealdb_from_row").await;
 
     app.run(|ctx| async move {
-        let people = surrealdb::mount_table_target(&ctx, &GRAPH, "person").await?;
-        people.declare_record(&ctx, "ann", &serde_json::json!({ "name": "Ann" }))?;
         let articles = surrealdb::mount_table_target_with_schema(
             &ctx,
             &GRAPH,
@@ -597,7 +595,7 @@ async fn surrealdb_from_row_schema_stores_typed_values_when_available() {
                 cover: b"hi".to_vec(),
                 tags: vec!["a".to_string(), "b".to_string()],
                 embedding: vec![1.0, 0.0, 0.5],
-                author: "person:ann".to_string(),
+                slug: "hello".to_string(),
             },
         )?;
         Ok(())
@@ -607,7 +605,7 @@ async fn surrealdb_from_row_schema_stores_typed_values_when_available() {
 
     // The table is SCHEMAFULL with one field per struct field.
     let fields = graph.field_names("article").await.unwrap();
-    for name in ["title", "subtitle", "posted_at", "embedding", "author"] {
+    for name in ["title", "subtitle", "posted_at", "embedding", "slug"] {
         assert!(fields.contains(&name.to_string()), "fields={fields:?}");
     }
     let record = graph.record("article", "a1").await.unwrap().unwrap();
@@ -615,6 +613,16 @@ async fn surrealdb_from_row_schema_stores_typed_values_when_available() {
     assert_eq!(record["views"], 3);
     assert_eq!(record["tags"], serde_json::json!(["a", "b"]));
     assert_eq!(record["embedding"], serde_json::json!([1.0, 0.0, 0.5]));
+    // Typed columns hold typed values: each reads back in its type's form.
+    assert_eq!(record["posted_at"], "2024-05-01T10:00:00Z");
+    assert_eq!(record["uid"], "67e55044-10b1-426f-9247-bb680e5fe0c8");
+    let price: rust_decimal::Decimal = record["price"].as_str().unwrap().parse().unwrap();
+    assert_eq!(price, "12.5".parse().unwrap());
+    assert_eq!(record["read_time"], "1m30s");
+    assert_eq!(record["cover"], serde_json::json!([104, 105]));
+    assert_eq!(record["rating"], 4.5);
+    assert_eq!(record["published"], true);
+    assert_eq!(record["slug"], "hello");
     // `None` is stored as an absent field, not as a null.
     assert!(
         record
@@ -729,7 +737,11 @@ async fn surrealdb_declare_fields_on_a_missing_record_fails_when_available() {
             players.declare_fields(&ctx, "nobody", "stats", &serde_json::json!({ "score": 1 }))
         })
         .await;
-    assert!(result.is_err(), "a fields write needs an existing record");
+    let message = result.unwrap_err().to_string();
+    assert!(
+        message.contains("fields target record missing"),
+        "{message}"
+    );
     assert!(graph.record("player", "nobody").await.unwrap().is_none());
 }
 
@@ -752,4 +764,49 @@ async fn surrealdb_declare_fields_takes_only_named_fields() {
         .await;
     let message = result.unwrap_err().to_string();
     assert!(message.contains("declare_fields"), "{message}");
+}
+
+// ---------------------------------------------------------------------------
+// declare_record replaces each field whole: a nested map shrinks
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn surrealdb_declare_record_replaces_nested_values_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_nested_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB nested-value test; no local SurrealDB connection");
+        return;
+    };
+    let (app, _dir) = temp_app(&graph, "surrealdb_nested").await;
+
+    async fn run(app: &App, row: serde_json::Value) {
+        app.run(move |ctx| async move {
+            let pages = surrealdb::mount_table_target(&ctx, &GRAPH, "page").await?;
+            pages.declare_record(&ctx, "p1", &row)
+        })
+        .await
+        .unwrap();
+    }
+    let page = || async { graph.record("page", "p1").await.unwrap().unwrap() };
+
+    let full = serde_json::json!({ "title": "T", "meta": { "en": 1, "fr": 2 }, "tags": ["a"] });
+    run(&app, full.clone()).await;
+    assert_eq!(page().await, full);
+
+    // A nested key and a top-level field go away; nothing of them is left.
+    let shrunk = serde_json::json!({ "title": "T", "meta": { "en": 1 } });
+    run(&app, shrunk.clone()).await;
+    assert_eq!(page().await, shrunk);
+
+    // An empty map replaces the nested object, and a record can lose all fields.
+    let emptied = serde_json::json!({ "meta": {} });
+    run(&app, emptied.clone()).await;
+    assert_eq!(page().await, emptied);
+    run(&app, serde_json::json!({})).await;
+    assert_eq!(page().await, serde_json::json!({}));
+    assert_eq!(graph.count("page").await.unwrap(), 1);
 }

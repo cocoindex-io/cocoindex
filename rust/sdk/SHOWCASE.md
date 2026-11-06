@@ -562,8 +562,9 @@ let sessions = surrealdb::mount_table_target_with_schema(
 sessions.declare_record(ctx, session_id, &session)?;
 ```
 
-A record is written with `UPSERT … MERGE`, so several components can own
-different fields of one record. `declare_fields` contributes one named group of
+A record is written with `UPSERT … SET`, one assignment per field. Each field
+is replaced whole, and fields of other owners are left alone, so several
+components can own different fields of one record. `declare_fields` contributes one named group of
 fields to a record that another component declares. When the group goes away,
 or drops a field, only its own fields are unset:
 
