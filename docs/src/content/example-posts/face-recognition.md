@@ -153,7 +153,7 @@ def query(image_path: str, *, top_k: int = 5) -> None:
 python main.py query images/einplanck3.jpg
 ```
 
-Because Einstein appears in *both* the Einstein–Planck photo and the Solvay conference, the query pulls his Solvay face back as a close match — a Euclidean distance around `0.46`, comfortably under dlib's ~0.6 same-person threshold. That's face recognition across photos, with no labels or tags: the bounding box in the payload even tells you *where* in the source image the match is.
+The query encodes the first face it detects in `einplanck3.jpg`, which is Max Planck. The closest hit is that photo's own stored crop of his face (about `0.23`, not 0, because the query encodes the face inside the whole photo while the index stores the tight crop). Planck's face in the Solvay conference comes back third, at about `0.47`, under dlib's ~0.6 same-person threshold, just behind another attendee at `0.46`. Faces about 80 pixels wide in a 1927 scan sit close together, so treat the ranked hits as candidates and use the bounding box in the payload, which tells you *where* in the source image each match is, to confirm. That is face search across photos, with no labels or tags.
 
 ## Incremental updates
 
