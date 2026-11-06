@@ -46,8 +46,10 @@ const CLIENT_APP_ID: &str = "CocoIndexRust";
 /// Snowflake answers these result codes while a statement is still running.
 const QUERY_IN_PROGRESS_CODES: [&str; 2] = ["333333", "333334"];
 const RESULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
-/// Rows per `MERGE` / keys per `DELETE` statement.
-const BATCH_SIZE: usize = 500;
+/// Bindings per statement. Snowflake caps a statement's bindings (16,384 in
+/// the official connectors); a `MERGE` binds one per column per row, so rows
+/// are batched to stay under this.
+const MAX_BINDINGS_PER_STATEMENT: usize = 4_000;
 
 // ---------------------------------------------------------------------------
 // Connection
@@ -1272,13 +1274,15 @@ async fn apply_rows(
     }
     let table = spec.key.qualified_table_name();
     let schema = &spec.table_schema;
+    let rows_per_merge = (MAX_BINDINGS_PER_STATEMENT / schema.columns().len()).max(1);
+    let keys_per_delete = (MAX_BINDINGS_PER_STATEMENT / schema.primary_key().len()).max(1);
     let mut session = conn.login().await?;
     let result = async {
-        for chunk in upserts.chunks(BATCH_SIZE) {
+        for chunk in upserts.chunks(rows_per_merge) {
             let (sql, bindings) = merge_statement(&table, schema, chunk)?;
             session.execute(&sql, &bindings).await?;
         }
-        for chunk in deletes.chunks(BATCH_SIZE) {
+        for chunk in deletes.chunks(keys_per_delete) {
             let (sql, bindings) = delete_statement(&table, schema, chunk)?;
             session.execute(&sql, &bindings).await?;
         }

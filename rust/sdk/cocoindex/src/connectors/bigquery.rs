@@ -57,9 +57,11 @@ const METADATA_TOKEN_URL: &str =
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
 const BIGQUERY_SCOPE: &str = "https://www.googleapis.com/auth/bigquery";
 /// How long one `jobs.query` / `getQueryResults` call waits for the job.
-const QUERY_TIMEOUT_MS: u64 = 60_000;
-/// Rows per `MERGE` / keys per `DELETE` statement.
-const BATCH_SIZE: usize = 500;
+const QUERY_TIMEOUT: Duration = Duration::from_secs(60);
+/// Query parameters per statement. BigQuery caps a query at 10,000 parameters;
+/// a `MERGE` binds one per column per row, so rows are batched to stay under
+/// this.
+const MAX_PARAMETERS_PER_STATEMENT: usize = 2_000;
 
 // ---------------------------------------------------------------------------
 // Connection
@@ -266,7 +268,15 @@ impl BigQueryConnection {
             Auth::Static(_) => unreachable!("handled above"),
         };
         let response = response
-            .map_err(|e| Error::engine(format!("bigquery token request: {e}")))?
+            .map_err(|e| match &inner.auth {
+                Auth::Metadata => Error::engine(format!(
+                    "bigquery: no credentials file was found (set \
+                     BigQueryConfig.credentials_path or GOOGLE_APPLICATION_CREDENTIALS, or run \
+                     `gcloud auth application-default login`) and the GCE metadata server is \
+                     unreachable: {e}"
+                )),
+                _ => Error::engine(format!("bigquery token request: {e}")),
+            })?
             .error_for_status()
             .map_err(|e| Error::engine(format!("bigquery token request failed: {e}")))?;
         let token: TokenResponse = response
@@ -292,7 +302,7 @@ impl BigQueryConnection {
         let mut body = json!({
             "query": sql,
             "useLegacySql": false,
-            "timeoutMs": QUERY_TIMEOUT_MS,
+            "timeoutMs": QUERY_TIMEOUT.as_millis() as u64,
         });
         if !params.is_empty() {
             body["queryParameters"] =
@@ -350,7 +360,8 @@ impl BigQueryConnection {
             "{}/projects/{}/queries/{job_id}",
             inner.base_url, inner.project
         );
-        let mut query: Vec<(&str, String)> = vec![("timeoutMs", QUERY_TIMEOUT_MS.to_string())];
+        let mut query: Vec<(&str, String)> =
+            vec![("timeoutMs", (QUERY_TIMEOUT.as_millis() as u64).to_string())];
         if let Some(location) = job.get("location").and_then(JsonValue::as_str) {
             query.push(("location", location.to_string()));
         }
@@ -1433,11 +1444,13 @@ async fn apply_rows(
     }
     let table = spec.key.qualified_table_name();
     let schema = &spec.table_schema;
-    for chunk in upserts.chunks(BATCH_SIZE) {
+    let rows_per_merge = (MAX_PARAMETERS_PER_STATEMENT / schema.columns().len()).max(1);
+    for chunk in upserts.chunks(rows_per_merge) {
         let (sql, params) = merge_statement(&table, schema, chunk)?;
         conn.run_query(&sql, &params).await?;
     }
-    for chunk in deletes.chunks(BATCH_SIZE) {
+    let keys_per_delete = (MAX_PARAMETERS_PER_STATEMENT / schema.primary_key().len()).max(1);
+    for chunk in deletes.chunks(keys_per_delete) {
         let (sql, params) = delete_statement(&table, schema, chunk)?;
         conn.run_query(&sql, &params).await?;
     }
