@@ -1,4 +1,6 @@
-//! Kafka topic target connector.
+//! Kafka connector: a topic target and topic sources.
+//!
+//! # Target
 //!
 //! Topics are user-managed: CocoIndex never creates or drops them during target
 //! reconciliation. Messages declared with
@@ -10,39 +12,215 @@
 //!   record, or a custom deletion value via
 //!   [`KafkaTopicOptions::deletion_value_fn`].
 //!
-//! Use [`declare_kafka_topic_target`] / [`mount_kafka_topic_target`] to get a
+//! The producer is provided under a [`ContextKey`] (as every connection in the
+//! Rust SDK is) and resolved when the target's actions apply. Use
+//! [`declare_kafka_topic_target`] / [`mount_kafka_topic_target`] to get a
 //! handle for declaring messages. [`KafkaProducer::ensure_topic`] is an
 //! explicit, idempotent topic-creation helper outside reconciliation.
 //!
-//! Uses [`rskafka`] — a pure-Rust, async Kafka client with no `librdkafka`/C
-//! dependency.
+//! # Sources
+//!
+//! [`topic_as_map`] reads one topic as a keyed map (the latest value per message
+//! key; a tombstone removes the key) and [`topic_as_stream`] reads one or more
+//! topics as an append-only stream of every record. Both yield the full
+//! [`KafkaMessage`] (key, value, headers, partition, offset, timestamp), and both
+//! read every partition.
+//!
+//! A [`KafkaConsumer`] built with a
+//! [`consumer_group`](KafkaConsumerOptions::consumer_group) keeps its position:
+//! the offsets of the records a live run has processed are committed, per
+//! partition, to the app's state database under that group name once their
+//! child components have synced, and the next live run resumes from them instead
+//! of re-reading the topic from the beginning. A consumer without a group
+//! re-reads the topic on every run.
+//!
+//! # Client
+//!
+//! Uses [`rskafka`], a pure-Rust async Kafka client with no `librdkafka`/C
+//! dependency. SASL (PLAIN, SCRAM) and TLS are configured with
+//! [`KafkaConnectOptions`]. `rskafka` does not speak the consumer-group
+//! protocol, so a consumer group here is CocoIndex's own durable cursor, not a
+//! broker-side group: the broker does not see its lag, and two processes with
+//! the same group name do not share partitions between them.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use cocoindex_utils::fingerprint::Fingerprint;
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
-use rskafka::client::{Client, ClientBuilder};
-use rskafka::record::Record;
+use rskafka::client::{Client, ClientBuilder, Credentials, SaslConfig};
+use rskafka::record::{Record, RecordAndOffset};
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
-use crate::ctx::Ctx;
+use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
-use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard};
+use crate::live_component::{
+    LiveComponentOperator, LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard,
+};
 use crate::target_state::{
     SinkCache, StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
     TargetStateProvider, declare_target_state, register_root_target_states_provider,
 };
 
 // ---------------------------------------------------------------------------
+// Connection options (shared by the producer and the consumer)
+// ---------------------------------------------------------------------------
+
+/// SASL authentication for a Kafka connection.
+#[derive(Clone)]
+pub enum KafkaSasl {
+    /// `SASL/PLAIN` (RFC 4616). Use it over TLS only.
+    Plain { username: String, password: String },
+    /// `SASL/SCRAM-SHA-256` (RFC 7677).
+    ScramSha256 { username: String, password: String },
+    /// `SASL/SCRAM-SHA-512`.
+    ScramSha512 { username: String, password: String },
+}
+
+impl std::fmt::Debug for KafkaSasl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (mechanism, username) = match self {
+            Self::Plain { username, .. } => ("PLAIN", username),
+            Self::ScramSha256 { username, .. } => ("SCRAM-SHA-256", username),
+            Self::ScramSha512 { username, .. } => ("SCRAM-SHA-512", username),
+        };
+        f.debug_struct("KafkaSasl")
+            .field("mechanism", &mechanism)
+            .field("username", username)
+            .finish_non_exhaustive()
+    }
+}
+
+impl KafkaSasl {
+    fn into_rskafka(self) -> SaslConfig {
+        match self {
+            Self::Plain { username, password } => {
+                SaslConfig::Plain(Credentials::new(username, password))
+            }
+            Self::ScramSha256 { username, password } => {
+                SaslConfig::ScramSha256(Credentials::new(username, password))
+            }
+            Self::ScramSha512 { username, password } => {
+                SaslConfig::ScramSha512(Credentials::new(username, password))
+            }
+        }
+    }
+}
+
+/// TLS for a Kafka connection. `KafkaTls::default()` trusts the Mozilla root
+/// certificates (as `webpki-roots` ships them); the fields add a private CA
+/// and a client certificate for mutual TLS.
+#[derive(Clone, Debug, Default)]
+pub struct KafkaTls {
+    /// A PEM file of CA certificates to trust in addition to the public roots.
+    pub ca_cert_pem: Option<PathBuf>,
+    /// A PEM file with the client certificate chain, for mutual TLS. Requires
+    /// `client_key_pem`.
+    pub client_cert_pem: Option<PathBuf>,
+    /// A PEM file with the client's private key (PKCS#8, PKCS#1 or SEC1).
+    pub client_key_pem: Option<PathBuf>,
+}
+
+impl KafkaTls {
+    fn into_rustls(self) -> Result<Arc<rustls::ClientConfig>> {
+        use rustls_pki_types::pem::PemObject;
+        use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+
+        let mut roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        if let Some(path) = &self.ca_cert_pem {
+            for cert in CertificateDer::pem_file_iter(path)
+                .map_err(|e| Error::engine(format!("kafka tls: read {}: {e}", path.display())))?
+            {
+                let cert = cert.map_err(|e| {
+                    Error::engine(format!("kafka tls: parse {}: {e}", path.display()))
+                })?;
+                roots.add(cert).map_err(|e| {
+                    Error::engine(format!("kafka tls: CA certificate in {}: {e}", path.display()))
+                })?;
+            }
+        }
+        let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| Error::engine(format!("kafka tls: {e}")))?
+        .with_root_certificates(roots);
+        let config = match (&self.client_cert_pem, &self.client_key_pem) {
+            (None, None) => builder.with_no_client_auth(),
+            (Some(cert_path), Some(key_path)) => {
+                let certs = CertificateDer::pem_file_iter(cert_path)
+                    .map_err(|e| {
+                        Error::engine(format!("kafka tls: read {}: {e}", cert_path.display()))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|e| {
+                        Error::engine(format!("kafka tls: parse {}: {e}", cert_path.display()))
+                    })?;
+                let key = PrivateKeyDer::from_pem_file(key_path).map_err(|e| {
+                    Error::engine(format!("kafka tls: read {}: {e}", key_path.display()))
+                })?;
+                builder
+                    .with_client_auth_cert(certs, key)
+                    .map_err(|e| Error::engine(format!("kafka tls: client certificate: {e}")))?
+            }
+            _ => {
+                return Err(Error::engine(
+                    "kafka tls: client_cert_pem and client_key_pem must be set together",
+                ));
+            }
+        };
+        Ok(Arc::new(config))
+    }
+}
+
+/// How to reach and authenticate with the cluster. The default is a plaintext
+/// connection without authentication, as for a local development broker.
+#[derive(Clone, Debug, Default)]
+pub struct KafkaConnectOptions {
+    /// SASL authentication, or `None` for an unauthenticated connection.
+    pub sasl: Option<KafkaSasl>,
+    /// TLS, or `None` for a plaintext connection.
+    pub tls: Option<KafkaTls>,
+}
+
+/// Build an `rskafka` client for `bootstrap_servers`; returns it with the
+/// stable identity (the bootstrap-server list) handles use in state keys.
+async fn build_client(
+    bootstrap_servers: &[&str],
+    options: KafkaConnectOptions,
+) -> Result<(Arc<Client>, Arc<str>)> {
+    let boot: Vec<String> = bootstrap_servers.iter().map(|s| s.to_string()).collect();
+    if boot.is_empty() {
+        return Err(Error::engine(
+            "kafka: at least one bootstrap server is required",
+        ));
+    }
+    let state_id = boot.join(",");
+    let mut builder = ClientBuilder::new(boot);
+    if let Some(sasl) = options.sasl {
+        builder = builder.sasl_config(sasl.into_rskafka());
+    }
+    if let Some(tls) = options.tls {
+        builder = builder.tls_config(tls.into_rustls()?);
+    }
+    let client = builder
+        .build()
+        .await
+        .map_err(|e| Error::engine(format!("kafka connect: {e}")))?;
+    Ok((Arc::new(client), Arc::from(state_id)))
+}
+
+// ---------------------------------------------------------------------------
 // KafkaProducer — connection handle
 // ---------------------------------------------------------------------------
 
-/// A Kafka connection handle. Clone-cheap (the underlying client is shared).
-///
-/// `state_id` (the bootstrap-server list) is used as the *stable identity* for
-/// target-state keys, decoupling target identity from the live connection.
+/// A Kafka connection handle for the topic target. Clone-cheap (the underlying
+/// client is shared). Provide it under a [`ContextKey`] with
+/// `EnvironmentBuilder::provide_key`; the target names the key.
 #[derive(Clone)]
 pub struct KafkaProducer {
     client: Arc<Client>,
@@ -51,26 +229,21 @@ pub struct KafkaProducer {
 
 impl KafkaProducer {
     /// Connect to a Kafka (or Redpanda) cluster given its bootstrap servers,
-    /// e.g. `["localhost:9092"]`.
+    /// e.g. `["localhost:9092"]`, in plaintext without authentication.
     pub async fn connect(bootstrap_servers: &[&str]) -> Result<Self> {
-        let boot: Vec<String> = bootstrap_servers.iter().map(|s| s.to_string()).collect();
-        if boot.is_empty() {
-            return Err(Error::engine(
-                "kafka: at least one bootstrap server is required",
-            ));
-        }
-        let state_id = boot.join(",");
-        let client = ClientBuilder::new(boot)
-            .build()
-            .await
-            .map_err(|e| Error::engine(format!("kafka connect: {e}")))?;
-        Ok(Self {
-            client: Arc::new(client),
-            state_id: Arc::from(state_id),
-        })
+        Self::connect_with_options(bootstrap_servers, KafkaConnectOptions::default()).await
     }
 
-    /// Stable identity used in target-state keys (the bootstrap-server list).
+    /// [`connect`](Self::connect) with SASL and/or TLS.
+    pub async fn connect_with_options(
+        bootstrap_servers: &[&str],
+        options: KafkaConnectOptions,
+    ) -> Result<Self> {
+        let (client, state_id) = build_client(bootstrap_servers, options).await?;
+        Ok(Self { client, state_id })
+    }
+
+    /// Stable identity (the bootstrap-server list).
     pub fn state_id(&self) -> &str {
         &self.state_id
     }
@@ -143,7 +316,7 @@ pub struct KafkaTopicTarget {
 /// [`mount_kafka_topic_target`].
 pub fn declare_kafka_topic_target(
     ctx: &Ctx,
-    producer: &KafkaProducer,
+    producer: &ContextKey<KafkaProducer>,
     topic: impl Into<String>,
     options: KafkaTopicOptions,
 ) -> Result<KafkaTopicTarget> {
@@ -151,19 +324,22 @@ pub fn declare_kafka_topic_target(
 }
 
 /// Declare a Kafka topic target in the current component and return a handle
-/// for declaring messages.
+/// for declaring messages. `producer` names the [`KafkaProducer`] provided in
+/// the environment; it is resolved when the messages are produced.
 pub fn mount_kafka_topic_target(
     ctx: &Ctx,
-    producer: &KafkaProducer,
+    producer: &ContextKey<KafkaProducer>,
     topic: impl Into<String>,
     options: KafkaTopicOptions,
 ) -> Result<KafkaTopicTarget> {
     let topic = topic.into();
     let messages = register_root_target_states_provider(
         ctx,
-        format!("cocoindex/kafka/topic/{}/{}", producer.state_id(), topic),
+        // Stable connection identity = the ContextKey's name; the client is
+        // resolved at apply time from the host context, as the other targets do.
+        format!("cocoindex/kafka/topic/{}/{}", producer.name(), topic),
         MessageHandler::new(
-            producer.client.clone(),
+            producer.name().to_string(),
             topic.clone(),
             options.deletion_value_fn,
         ),
@@ -211,16 +387,21 @@ struct MessageAction {
 }
 
 struct MessageHandler {
-    client: Arc<Client>,
+    /// The `ContextKey` name the producer was provided under.
+    producer_key: String,
     topic: String,
     deletion_value_fn: Option<DeletionValueFn>,
     sink: SinkCache<MessageAction>,
 }
 
 impl MessageHandler {
-    fn new(client: Arc<Client>, topic: String, deletion_value_fn: Option<DeletionValueFn>) -> Self {
+    fn new(
+        producer_key: String,
+        topic: String,
+        deletion_value_fn: Option<DeletionValueFn>,
+    ) -> Self {
         Self {
-            client,
+            producer_key,
             topic,
             deletion_value_fn,
             sink: SinkCache::default(),
@@ -270,42 +451,67 @@ impl TargetHandler<Vec<u8>> for MessageHandler {
     }
 }
 
+/// Resolve the live [`KafkaProducer`] from the host context by the
+/// `ContextKey` name it was provided under.
+fn resolve_producer(host_ctx: &Arc<ContextStore>, producer_key: &str) -> Result<Arc<KafkaProducer>> {
+    host_ctx.resolve::<KafkaProducer>(producer_key).ok_or_else(|| {
+        Error::engine(format!(
+            "kafka target: producer `{producer_key}` was not provided in the environment \
+             (call Environment::builder().provide_key(&KEY, producer))"
+        ))
+    })
+}
+
 impl MessageHandler {
     fn message_sink(&self) -> TargetActionSink<MessageAction> {
-        let partitions = Arc::new(TopicPartitions::new(
-            self.client.clone(),
-            self.topic.clone(),
-        ));
-        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<MessageAction>>| {
-            let partitions = partitions.clone();
-            async move {
-                let timestamp = current_timestamp();
-                let mut by_partition: BTreeMap<i32, Vec<Record>> = BTreeMap::new();
-                for action in actions {
-                    let msg = match action {
-                        TargetAction::Create(m)
-                        | TargetAction::Update(m)
-                        | TargetAction::Delete(m) => m,
-                    };
-                    let partition = partitions.partition_for_key(msg.key.as_bytes()).await?;
-                    by_partition.entry(partition).or_default().push(Record {
-                        key: Some(msg.key.into_bytes()),
-                        value: msg.value,
-                        headers: BTreeMap::new(),
-                        timestamp,
-                    });
+        let producer_key = self.producer_key.clone();
+        let topic = self.topic.clone();
+        // The topic's partitions, loaded on the first apply from the resolved
+        // producer and kept for the handler's lifetime.
+        let partitions: Arc<OnceCell<Arc<TopicPartitions>>> = Arc::new(OnceCell::new());
+        TargetActionSink::from_async_fn_with_ctx(
+            move |host_ctx, actions: Vec<TargetAction<MessageAction>>| {
+                let producer_key = producer_key.clone();
+                let topic = topic.clone();
+                let partitions = partitions.clone();
+                async move {
+                    let partitions = partitions
+                        .get_or_try_init(|| async {
+                            let producer = resolve_producer(&host_ctx, &producer_key)?;
+                            Ok::<_, Error>(Arc::new(TopicPartitions::new(
+                                producer.client.clone(),
+                                topic,
+                            )))
+                        })
+                        .await?;
+                    let timestamp = current_timestamp();
+                    let mut by_partition: BTreeMap<i32, Vec<Record>> = BTreeMap::new();
+                    for action in actions {
+                        let msg = match action {
+                            TargetAction::Create(m)
+                            | TargetAction::Update(m)
+                            | TargetAction::Delete(m) => m,
+                        };
+                        let partition = partitions.partition_for_key(msg.key.as_bytes()).await?;
+                        by_partition.entry(partition).or_default().push(Record {
+                            key: Some(msg.key.into_bytes()),
+                            value: msg.value,
+                            headers: BTreeMap::new(),
+                            timestamp,
+                        });
+                    }
+                    for (partition, records) in by_partition {
+                        partitions
+                            .client(partition)
+                            .await?
+                            .produce(records, Compression::NoCompression)
+                            .await
+                            .map_err(|e| Error::engine(format!("kafka produce: {e}")))?;
+                    }
+                    Ok(())
                 }
-                for (partition, records) in by_partition {
-                    partitions
-                        .client(partition)
-                        .await?
-                        .produce(records, Compression::NoCompression)
-                        .await
-                        .map_err(|e| Error::engine(format!("kafka produce: {e}")))?;
-                }
-                Ok(())
-            }
-        })
+            },
+        )
     }
 }
 
@@ -331,25 +537,7 @@ impl TopicPartitions {
     async fn partition_for_key(&self, key: &[u8]) -> Result<i32> {
         let ids = self
             .ids
-            .get_or_try_init(|| async {
-                let topics = self
-                    .client
-                    .list_topics()
-                    .await
-                    .map_err(|e| Error::engine(format!("kafka list_topics: {e}")))?;
-                let ids: Vec<i32> = topics
-                    .into_iter()
-                    .find(|topic| topic.name == self.topic)
-                    .map(|topic| topic.partitions.into_iter().collect())
-                    .unwrap_or_default();
-                if ids.is_empty() {
-                    return Err(Error::engine(format!(
-                        "kafka topic `{}` does not exist or has no partitions",
-                        self.topic
-                    )));
-                }
-                Ok(ids)
-            })
+            .get_or_try_init(|| async { topic_partition_ids(&self.client, &self.topic).await })
             .await?;
         Ok(ids[partition_index(key, ids.len())])
     }
@@ -368,6 +556,29 @@ impl TopicPartitions {
         clients.insert(partition, client.clone());
         Ok(client)
     }
+}
+
+/// A topic's partition ids (sorted) from cluster metadata; an error when the
+/// topic does not exist or has no partitions.
+async fn topic_partition_ids(client: &Client, topic: &str) -> Result<Vec<i32>> {
+    let topics = client
+        .list_topics()
+        .await
+        .map_err(|e| Error::engine(format!("kafka list_topics: {e}")))?;
+    let mut ids: Vec<i32> = topics
+        .into_iter()
+        .find(|t| t.name == topic)
+        .ok_or_else(|| Error::engine(format!("kafka topic {topic:?} not found")))?
+        .partitions
+        .into_iter()
+        .collect();
+    if ids.is_empty() {
+        return Err(Error::engine(format!(
+            "kafka topic {topic:?} has no partitions"
+        )));
+    }
+    ids.sort_unstable();
+    Ok(ids)
 }
 
 /// The offset of a partition's earliest retained record.
@@ -454,34 +665,91 @@ fn current_timestamp() -> chrono::DateTime<chrono::Utc> {
 }
 
 // ---------------------------------------------------------------------------
-// Kafka source — a live map feed over a topic (the Rust analogue of Python's
-// `topic_as_map`).
+// Kafka sources
 // ---------------------------------------------------------------------------
+
+/// A consumed Kafka record, as the sources yield it: the Rust analogue of
+/// `confluent_kafka.Message`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KafkaMessage {
+    pub topic: String,
+    pub partition: i32,
+    pub offset: i64,
+    /// The message key; `None` for a keyless record.
+    pub key: Option<Vec<u8>>,
+    /// The message value; `None` for a tombstone.
+    pub value: Option<Vec<u8>>,
+    pub headers: BTreeMap<String, Vec<u8>>,
+    /// The record timestamp the broker or producer stamped it with.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+impl KafkaMessage {
+    fn from_record(topic: &str, partition: i32, record: RecordAndOffset) -> Self {
+        Self {
+            topic: topic.to_string(),
+            partition,
+            offset: record.offset,
+            key: record.record.key,
+            value: record.record.value,
+            headers: record.record.headers,
+            timestamp: record.record.timestamp,
+        }
+    }
+
+    /// The key as text (lossy on invalid UTF-8); `None` for a keyless record.
+    pub fn key_str(&self) -> Option<String> {
+        self.key
+            .as_deref()
+            .map(|k| String::from_utf8_lossy(k).into_owned())
+    }
+
+    /// The value as text (lossy on invalid UTF-8); `None` for a tombstone.
+    pub fn value_str(&self) -> Option<String> {
+        self.value
+            .as_deref()
+            .map(|v| String::from_utf8_lossy(v).into_owned())
+    }
+}
+
+/// Options for [`KafkaConsumer::connect_with_options`].
+#[derive(Clone, Debug, Default)]
+pub struct KafkaConsumerOptions {
+    /// The consumer group: the name the sources commit their per-partition
+    /// offsets under, in the app's state database, and resume from on the next
+    /// live run. `None` re-reads every topic from the beginning on each run.
+    pub consumer_group: Option<String>,
+    pub connect: KafkaConnectOptions,
+}
 
 /// A Kafka consumer handle. Clone-cheap (the underlying client is shared).
 #[derive(Clone)]
 pub struct KafkaConsumer {
     client: Arc<Client>,
     state_id: Arc<str>,
+    consumer_group: Option<Arc<str>>,
 }
 
 impl KafkaConsumer {
-    /// Connect to a Kafka (or Redpanda) cluster given its bootstrap servers.
+    /// Connect to a Kafka (or Redpanda) cluster given its bootstrap servers, in
+    /// plaintext without authentication and without a consumer group.
     pub async fn connect(bootstrap_servers: &[&str]) -> Result<Self> {
-        let boot: Vec<String> = bootstrap_servers.iter().map(|s| s.to_string()).collect();
-        if boot.is_empty() {
-            return Err(Error::engine(
-                "kafka: at least one bootstrap server is required",
-            ));
+        Self::connect_with_options(bootstrap_servers, KafkaConsumerOptions::default()).await
+    }
+
+    /// [`connect`](Self::connect) with a consumer group, SASL and/or TLS.
+    pub async fn connect_with_options(
+        bootstrap_servers: &[&str],
+        options: KafkaConsumerOptions,
+    ) -> Result<Self> {
+        if options.consumer_group.as_deref() == Some("") {
+            return Err(Error::engine("kafka: consumer_group must be non-empty"));
         }
-        let state_id = boot.join(",");
-        let client = ClientBuilder::new(boot)
-            .build()
-            .await
-            .map_err(|e| Error::engine(format!("kafka connect: {e}")))?;
+        let (client, state_id) = build_client(bootstrap_servers, options.connect).await?;
         Ok(Self {
-            client: Arc::new(client),
-            state_id: Arc::from(state_id),
+            client,
+            state_id,
+            consumer_group: options.consumer_group.map(Arc::from),
         })
     }
 
@@ -489,38 +757,219 @@ impl KafkaConsumer {
     pub fn state_id(&self) -> &str {
         &self.state_id
     }
+
+    /// The consumer group, if one was configured.
+    pub fn consumer_group(&self) -> Option<&str> {
+        self.consumer_group.as_deref()
+    }
 }
 
-/// Decides whether a consumed record is a *deletion* for its key. Receives the
-/// key bytes and the value (`None` for a tombstone). The default treats a
-/// `None` value (tombstone) as a deletion.
-pub type IsDeletionFn = Arc<dyn Fn(&[u8], Option<&[u8]>) -> bool + Send + Sync>;
+/// Decides whether a consumed message is a *deletion* for its key. The default
+/// treats a tombstone (`None` value) as a deletion.
+pub type IsDeletionFn = Arc<dyn Fn(&KafkaMessage) -> bool + Send + Sync>;
 
 /// Options for [`topic_as_map_with_options`].
 #[derive(Clone, Default)]
 pub struct KafkaSourceOptions {
     /// Custom deletion predicate; defaults to "value is a tombstone (`None`)".
+    /// A tombstone is a deletion regardless of this predicate.
     pub is_deletion: Option<IsDeletionFn>,
 }
 
+/// A partition's position in the reader's committed-offset state: the key the
+/// next offset to read is committed under.
+fn offset_state_key(group: &str, topic: &str, partition: i32) -> String {
+    format!("cocoindex/kafka/offset/{group}/{topic}/{partition}")
+}
+
+/// How a source delivers one consumed message to its subscriber.
+#[crate::async_trait]
+trait Deliver: Send + Sync {
+    async fn deliver(
+        &self,
+        message: KafkaMessage,
+        subscriber: &LiveMapSubscriber<String, KafkaMessage>,
+    ) -> Result<()>;
+}
+
+/// The partition reading shared by [`KafkaTopicMap`] and [`KafkaTopicStream`]:
+/// a catch-up scan of every partition of every topic up to its high-watermark,
+/// and a tail from where the scan (or the committed cursor) ended.
+struct TopicReader {
+    client: Arc<Client>,
+    topics: Vec<String>,
+    consumer_group: Option<Arc<str>>,
+    /// Per-partition offset `watch` resumes from: where the most recent `scan`
+    /// ended, or the committed cursor when the scan was skipped, so the tail
+    /// neither gaps nor double-reads.
+    watch_start: tokio::sync::Mutex<BTreeMap<(String, i32), i64>>,
+    watch_guard: SingleWatcherGuard,
+}
+
+impl TopicReader {
+    fn new(consumer: &KafkaConsumer, topics: Vec<String>, label: &str) -> Self {
+        Self {
+            client: consumer.client.clone(),
+            topics,
+            consumer_group: consumer.consumer_group.clone(),
+            watch_start: tokio::sync::Mutex::new(BTreeMap::new()),
+            watch_guard: SingleWatcherGuard::new(label),
+        }
+    }
+
+    /// Every `(topic, partition)` of the configured topics.
+    async fn partitions(&self) -> Result<Vec<(String, i32)>> {
+        let mut out = Vec::new();
+        for topic in &self.topics {
+            for id in topic_partition_ids(&self.client, topic).await? {
+                out.push((topic.clone(), id));
+            }
+        }
+        Ok(out)
+    }
+
+    async fn partition_client(&self, topic: &str, id: i32) -> Result<PartitionClient> {
+        self.client
+            .partition_client(topic.to_string(), id, UnknownTopicHandling::Retry)
+            .await
+            .map_err(|e| Error::engine(format!("kafka partition_client {topic}/{id}: {e}")))
+    }
+
+    /// Read every partition from its earliest retained record to its
+    /// high-watermark, passing each record to `f`, and record where each
+    /// partition ended for `watch`.
+    async fn scan(&self, mut f: impl FnMut(KafkaMessage)) -> Result<()> {
+        let mut ends: BTreeMap<(String, i32), i64> = BTreeMap::new();
+        for (topic, id) in self.partitions().await? {
+            let pc = self.partition_client(&topic, id).await?;
+            let mut offset = earliest_offset(&pc).await?;
+            loop {
+                let (records, hwm) = pc
+                    .fetch_records(offset, 1..1_000_000, 500)
+                    .await
+                    .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
+                let got_any = !records.is_empty();
+                for r in records {
+                    offset = r.offset + 1;
+                    f(KafkaMessage::from_record(&topic, id, r));
+                }
+                if !got_any || offset >= hwm {
+                    break;
+                }
+            }
+            ends.insert((topic, id), offset);
+        }
+        *self.watch_start.lock().await = ends;
+        Ok(())
+    }
+
+    /// With a consumer group: resume from the committed cursor when every
+    /// partition has one, skipping the catch-up scan. `watch` then replays the
+    /// records since the cursor.
+    async fn skip_initial_scan(&self, operator: &LiveComponentOperator) -> Result<bool> {
+        let Some(group) = &self.consumer_group else {
+            return Ok(false);
+        };
+        let mut starts: BTreeMap<(String, i32), i64> = BTreeMap::new();
+        for (topic, id) in self.partitions().await? {
+            let committed: Option<i64> = operator
+                .read_committed_state(offset_state_key(group, &topic, id))
+                .await?;
+            let Some(offset) = committed else {
+                // A partition without a cursor (first run, or a partition added
+                // since) needs the scan.
+                return Ok(false);
+            };
+            starts.insert((topic, id), offset);
+        }
+        *self.watch_start.lock().await = starts;
+        Ok(true)
+    }
+
+    /// Tail every partition from `watch_start`, delivering each record through
+    /// `deliver`. With a consumer group, each partition's next offset is
+    /// committed after every fetched batch has been delivered (and so its child
+    /// components synced).
+    async fn watch(
+        &self,
+        deliver: &dyn Deliver,
+        subscriber: &LiveMapSubscriber<String, KafkaMessage>,
+    ) -> Result<()> {
+        let _watch_token = self.watch_guard.enter()?;
+        let mut offsets = self.watch_start.lock().await.clone();
+        let mut clients = Vec::new();
+        for (topic, id) in self.partitions().await? {
+            let pc = self.partition_client(&topic, id).await?;
+            // A partition without a scan snapshot or cursor starts at its
+            // earliest retained record, not offset 0, which retention may have
+            // removed.
+            if !offsets.contains_key(&(topic.clone(), id)) {
+                offsets.insert((topic.clone(), id), earliest_offset(&pc).await?);
+            }
+            clients.push((topic, id, pc));
+        }
+        if let Some(group) = &self.consumer_group {
+            // The scan's end (or the cursor read back) is the position the next
+            // run resumes from if nothing new arrives.
+            for ((topic, id), offset) in &offsets {
+                subscriber
+                    .write_committed_state(offset_state_key(group, topic, *id), offset)
+                    .await?;
+            }
+        }
+        // Round-robin all partitions on one loop (one subscriber, used
+        // sequentially). Each partition fetch uses a short max-wait so the
+        // cycle stays responsive; an empty full cycle backs off briefly.
+        loop {
+            let mut got_any = false;
+            for (topic, id, pc) in &clients {
+                let key = (topic.clone(), *id);
+                let Some(&offset) = offsets.get(&key) else {
+                    continue;
+                };
+                let (records, _hwm) = pc
+                    .fetch_records(offset, 1..1_000_000, 250)
+                    .await
+                    .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
+                if records.is_empty() {
+                    continue;
+                }
+                got_any = true;
+                let mut next = offset;
+                for r in records {
+                    next = r.offset + 1;
+                    deliver
+                        .deliver(KafkaMessage::from_record(topic, *id, r), subscriber)
+                        .await?;
+                }
+                offsets.insert(key, next);
+                if let Some(group) = &self.consumer_group {
+                    subscriber
+                        .write_committed_state(offset_state_key(group, topic, *id), &next)
+                        .await?;
+                }
+            }
+            if !got_any {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        }
+    }
+}
+
 /// A keyed change feed over **all partitions** of a Kafka topic: the latest
-/// value per key, with tombstones (or [`KafkaSourceOptions::is_deletion`])
-/// removing keys. The Rust analogue of Python's `topic_as_map`.
+/// message per key, with tombstones (or [`KafkaSourceOptions::is_deletion`])
+/// removing keys. The Rust analogue of Python's `topic_as_map`. Records with no
+/// key are skipped.
 ///
 /// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads every partition up to
 /// its high-watermark (the catch-up snapshot, compacted per key) and
 /// [`watch`](LiveMapFeed::watch) tails new records across partitions from there.
-/// Feed it to [`Ctx::mount_each_live`](crate::Ctx::mount_each_live). Offsets are
-/// tracked per partition, so readiness reflects every partition being caught up.
+/// With a consumer group (see [`KafkaConsumerOptions`]) a live run resumes from
+/// the committed offsets instead of scanning. Feed it to
+/// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live).
 pub struct KafkaTopicMap {
-    client: Arc<Client>,
-    topic: String,
+    reader: TopicReader,
     is_deletion: Option<IsDeletionFn>,
-    /// Per-partition offset `watch` resumes from — set to each partition's
-    /// high-watermark reached by the most recent `scan`, so the tail neither
-    /// gaps nor double-reads.
-    watch_start: Arc<tokio::sync::Mutex<BTreeMap<i32, i64>>>,
-    watch_guard: SingleWatcherGuard,
 }
 
 /// Build a [`KafkaTopicMap`] over `topic` (tombstone deletes).
@@ -535,285 +984,151 @@ pub fn topic_as_map_with_options(
     options: KafkaSourceOptions,
 ) -> KafkaTopicMap {
     KafkaTopicMap {
-        client: consumer.client.clone(),
-        topic: topic.into(),
+        reader: TopicReader::new(consumer, vec![topic.into()], "KafkaTopicMap"),
         is_deletion: options.is_deletion,
-        watch_start: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
-        watch_guard: SingleWatcherGuard::new("KafkaTopicMap"),
     }
+}
+
+/// Classify a message into `(key, Some(message))` upsert or `(key, None)`
+/// delete. A tombstone is always a delete; `is_deletion` may turn a valued
+/// record into one. Returns `None` for a record with no key (skipped, as in
+/// Python).
+fn classify_message(
+    is_deletion: Option<&IsDeletionFn>,
+    message: KafkaMessage,
+) -> Option<(String, Option<KafkaMessage>)> {
+    let key = message.key_str()?;
+    let is_delete = message.value.is_none() || is_deletion.is_some_and(|f| f(&message));
+    Some((key, if is_delete { None } else { Some(message) }))
 }
 
 impl KafkaTopicMap {
-    /// The topic's partition IDs (from cluster metadata).
-    async fn partition_ids(&self) -> Result<Vec<i32>> {
-        let topics = self
-            .client
-            .list_topics()
-            .await
-            .map_err(|e| Error::engine(format!("kafka list_topics: {e}")))?;
-        let topic = topics
-            .into_iter()
-            .find(|t| t.name == self.topic)
-            .ok_or_else(|| Error::engine(format!("kafka topic {:?} not found", self.topic)))?;
-        let ids: Vec<i32> = topic.partitions.into_iter().collect();
-        if ids.is_empty() {
-            return Err(Error::engine(format!(
-                "kafka topic {:?} has no partitions",
-                self.topic
-            )));
-        }
-        Ok(ids)
+    fn classify(&self, message: KafkaMessage) -> Option<(String, Option<KafkaMessage>)> {
+        classify_message(self.is_deletion.as_ref(), message)
     }
+}
 
-    async fn partition_client(&self, id: i32) -> Result<PartitionClient> {
-        self.client
-            .partition_client(self.topic.clone(), id, UnknownTopicHandling::Retry)
-            .await
-            .map_err(|e| Error::engine(format!("kafka partition_client {}/{id}: {e}", self.topic)))
-    }
-
-    /// Classify a record into `(key, Some(value))` upsert or `(key, None)`
-    /// delete. Returns `None` for a record with no key (skipped, as in Python).
-    fn classify(&self, record: &Record) -> Option<(String, Option<Vec<u8>>)> {
-        let key_bytes = record.key.as_ref()?;
-        let key = String::from_utf8_lossy(key_bytes).into_owned();
-        let is_delete = match &self.is_deletion {
-            Some(f) => f(key_bytes, record.value.as_deref()),
-            None => record.value.is_none(),
+#[crate::async_trait]
+impl Deliver for KafkaTopicMap {
+    async fn deliver(
+        &self,
+        message: KafkaMessage,
+        subscriber: &LiveMapSubscriber<String, KafkaMessage>,
+    ) -> Result<()> {
+        let Some((key, value)) = self.classify(message) else {
+            return Ok(());
         };
-        if is_delete {
-            Some((key, None))
-        } else {
-            Some((key, record.value.clone()))
+        match value {
+            Some(v) => subscriber.update(key, v).await,
+            None => subscriber.delete(key).await,
         }
     }
 }
 
 #[crate::async_trait]
-impl LiveMapFeed<String, Vec<u8>> for KafkaTopicMap {
-    async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
-        let _watch_token = self.watch_guard.enter()?;
-        let mut offsets = self.watch_start.lock().await.clone();
-        let ids = self.partition_ids().await?;
-        let mut clients = Vec::with_capacity(ids.len());
-        for id in &ids {
-            let pc = self.partition_client(*id).await?;
-            // A partition without a scan snapshot starts at its earliest
-            // retained record, not offset 0, which retention may have removed.
-            if !offsets.contains_key(id) {
-                offsets.insert(*id, earliest_offset(&pc).await?);
-            }
-            clients.push((*id, pc));
-        }
-        // Round-robin all partitions on one loop (one subscriber, used
-        // sequentially). Each partition fetch uses a short max-wait so the
-        // cycle stays responsive; an empty full cycle backs off briefly.
-        loop {
-            let mut got_any = false;
-            for (id, pc) in &clients {
-                let Some(&offset) = offsets.get(id) else {
-                    continue;
-                };
-                let (records, _hwm) = pc
-                    .fetch_records(offset, 1..1_000_000, 250)
-                    .await
-                    .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
-                for r in &records {
-                    got_any = true;
-                    offsets.insert(*id, r.offset + 1);
-                    let Some((key, value)) = self.classify(&r.record) else {
-                        continue;
-                    };
+impl LiveMapFeed<String, KafkaMessage> for KafkaTopicMap {
+    async fn skip_initial_scan(&self, operator: &LiveComponentOperator) -> Result<bool> {
+        self.reader.skip_initial_scan(operator).await
+    }
+
+    async fn watch(&self, subscriber: LiveMapSubscriber<String, KafkaMessage>) -> Result<()> {
+        self.reader.watch(self, &subscriber).await
+    }
+}
+
+#[crate::async_trait]
+impl LiveMapView<String, KafkaMessage> for KafkaTopicMap {
+    async fn scan(&self) -> Result<Vec<(String, KafkaMessage)>> {
+        let mut latest: BTreeMap<String, KafkaMessage> = BTreeMap::new();
+        self.reader
+            .scan(|message| {
+                if let Some((key, value)) = self.classify(message) {
                     match value {
-                        Some(v) => subscriber.update(key, v).await?,
-                        None => subscriber.delete(key).await?,
-                    }
-                }
-            }
-            if !got_any {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            }
-        }
-    }
-}
-
-#[crate::async_trait]
-impl LiveMapView<String, Vec<u8>> for KafkaTopicMap {
-    async fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
-        let ids = self.partition_ids().await?;
-        let mut latest: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-        let mut ends: BTreeMap<i32, i64> = BTreeMap::new();
-        for id in ids {
-            let pc = self.partition_client(id).await?;
-            let mut offset = earliest_offset(&pc).await?;
-            loop {
-                let (records, hwm) = pc
-                    .fetch_records(offset, 1..1_000_000, 500)
-                    .await
-                    .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
-                for r in &records {
-                    offset = r.offset + 1;
-                    if let Some((key, value)) = self.classify(&r.record) {
-                        match value {
-                            Some(v) => {
-                                latest.insert(key, v);
-                            }
-                            None => {
-                                latest.remove(&key);
-                            }
+                        Some(v) => {
+                            latest.insert(key, v);
+                        }
+                        None => {
+                            latest.remove(&key);
                         }
                     }
                 }
-                if records.is_empty() || offset >= hwm {
-                    break;
-                }
-            }
-            ends.insert(id, offset);
-        }
-        // `watch` resumes exactly where this per-partition snapshot ended.
-        *self.watch_start.lock().await = ends;
+            })
+            .await?;
         Ok(latest.into_iter().collect())
     }
 }
 
-// ---------------------------------------------------------------------------
-// Keyless payload stream (the Rust analogue of Python's
-// `topic_as_stream(...).payloads()`).
-// ---------------------------------------------------------------------------
-
-/// A **keyless, append-only** payload feed over **all partitions** of a Kafka
-/// topic — the Rust analogue of Python's `topic_as_stream(...).payloads()`.
+/// A **keyless, append-only** feed over **all partitions** of one or more Kafka
+/// topics — the Rust analogue of Python's `topic_as_stream`.
 ///
 /// Unlike [`KafkaTopicMap`], nothing is compacted or deleted: every record is
-/// delivered exactly once, keyed by its `"{partition}:{offset}"` position, so
-/// each message becomes a distinct child under
-/// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live). Records with a `None`
-/// value (tombstones) are skipped, matching Python's payloads view. No message
-/// key or deletion predicate is needed.
+/// delivered exactly once, keyed by its `"{topic}:{partition}:{offset}"`
+/// position, so each message becomes a distinct child under
+/// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live). Tombstones (records
+/// with a `None` value) are delivered too, as Python's message-level stream
+/// does; filter on [`KafkaMessage::value`] for the payloads view.
 ///
 /// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads every partition up to
 /// its high-watermark and [`watch`](LiveMapFeed::watch) tails new records from
-/// there. Re-running is idempotent: the offset keys are stable, so a replayed
-/// catch-up reconciles to no-ops.
+/// there, or from the committed offsets of the consumer group. Re-running is
+/// idempotent: the position keys are stable, so a replayed catch-up reconciles
+/// to no-ops.
 pub struct KafkaTopicStream {
-    client: Arc<Client>,
-    topic: String,
-    /// Per-partition offset `watch` resumes from (the high-watermark `scan`
-    /// reached), mirroring [`KafkaTopicMap`].
-    watch_start: Arc<tokio::sync::Mutex<BTreeMap<i32, i64>>>,
-    watch_guard: SingleWatcherGuard,
+    reader: TopicReader,
 }
 
-/// Build a [`KafkaTopicStream`] over `topic` (keyless payload stream).
-pub fn topic_as_stream(consumer: &KafkaConsumer, topic: impl Into<String>) -> KafkaTopicStream {
+/// Build a [`KafkaTopicStream`] over `topics`.
+pub fn topic_as_stream(
+    consumer: &KafkaConsumer,
+    topics: impl IntoIterator<Item = impl Into<String>>,
+) -> KafkaTopicStream {
     KafkaTopicStream {
-        client: consumer.client.clone(),
-        topic: topic.into(),
-        watch_start: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
-        watch_guard: SingleWatcherGuard::new("KafkaTopicStream"),
+        reader: TopicReader::new(
+            consumer,
+            topics.into_iter().map(Into::into).collect(),
+            "KafkaTopicStream",
+        ),
     }
 }
 
-impl KafkaTopicStream {
-    async fn partition_ids(&self) -> Result<Vec<i32>> {
-        let topics = self
-            .client
-            .list_topics()
-            .await
-            .map_err(|e| Error::engine(format!("kafka list_topics: {e}")))?;
-        let topic = topics
-            .into_iter()
-            .find(|t| t.name == self.topic)
-            .ok_or_else(|| Error::engine(format!("kafka topic {:?} not found", self.topic)))?;
-        let ids: Vec<i32> = topic.partitions.into_iter().collect();
-        if ids.is_empty() {
-            return Err(Error::engine(format!(
-                "kafka topic {:?} has no partitions",
-                self.topic
-            )));
-        }
-        Ok(ids)
-    }
+/// The stream's child key for a message: its position.
+fn position_key(message: &KafkaMessage) -> String {
+    format!(
+        "{}:{}:{}",
+        message.topic, message.partition, message.offset
+    )
+}
 
-    async fn partition_client(&self, id: i32) -> Result<PartitionClient> {
-        self.client
-            .partition_client(self.topic.clone(), id, UnknownTopicHandling::Retry)
-            .await
-            .map_err(|e| Error::engine(format!("kafka partition_client {}/{id}: {e}", self.topic)))
+#[crate::async_trait]
+impl Deliver for KafkaTopicStream {
+    async fn deliver(
+        &self,
+        message: KafkaMessage,
+        subscriber: &LiveMapSubscriber<String, KafkaMessage>,
+    ) -> Result<()> {
+        subscriber.update(position_key(&message), message).await
     }
 }
 
 #[crate::async_trait]
-impl LiveMapView<String, Vec<u8>> for KafkaTopicStream {
-    async fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
-        let ids = self.partition_ids().await?;
-        let mut out: Vec<(String, Vec<u8>)> = Vec::new();
-        let mut ends: BTreeMap<i32, i64> = BTreeMap::new();
-        for id in ids {
-            let pc = self.partition_client(id).await?;
-            let mut offset = earliest_offset(&pc).await?;
-            loop {
-                let (records, hwm) = pc
-                    .fetch_records(offset, 1..1_000_000, 500)
-                    .await
-                    .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
-                for r in &records {
-                    offset = r.offset + 1;
-                    if let Some(v) = &r.record.value {
-                        out.push((format!("{id}:{}", r.offset), v.clone()));
-                    }
-                }
-                if records.is_empty() || offset >= hwm {
-                    break;
-                }
-            }
-            ends.insert(id, offset);
-        }
-        *self.watch_start.lock().await = ends;
+impl LiveMapView<String, KafkaMessage> for KafkaTopicStream {
+    async fn scan(&self) -> Result<Vec<(String, KafkaMessage)>> {
+        let mut out = Vec::new();
+        self.reader
+            .scan(|message| out.push((position_key(&message), message)))
+            .await?;
         Ok(out)
     }
 }
 
 #[crate::async_trait]
-impl LiveMapFeed<String, Vec<u8>> for KafkaTopicStream {
-    async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
-        let _watch_token = self.watch_guard.enter()?;
-        let mut offsets = self.watch_start.lock().await.clone();
-        let ids = self.partition_ids().await?;
-        let mut clients = Vec::with_capacity(ids.len());
-        for id in &ids {
-            let pc = self.partition_client(*id).await?;
-            // A partition without a scan snapshot starts at its earliest
-            // retained record, not offset 0, which retention may have removed.
-            if !offsets.contains_key(id) {
-                offsets.insert(*id, earliest_offset(&pc).await?);
-            }
-            clients.push((*id, pc));
-        }
-        loop {
-            let mut got_any = false;
-            for (id, pc) in &clients {
-                let Some(&offset) = offsets.get(id) else {
-                    continue;
-                };
-                let (records, _hwm) = pc
-                    .fetch_records(offset, 1..1_000_000, 250)
-                    .await
-                    .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
-                for r in &records {
-                    got_any = true;
-                    offsets.insert(*id, r.offset + 1);
-                    if let Some(v) = &r.record.value {
-                        subscriber
-                            .update(format!("{id}:{}", r.offset), v.clone())
-                            .await?;
-                    }
-                }
-            }
-            if !got_any {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            }
-        }
+impl LiveMapFeed<String, KafkaMessage> for KafkaTopicStream {
+    async fn skip_initial_scan(&self, operator: &LiveComponentOperator) -> Result<bool> {
+        self.reader.skip_initial_scan(operator).await
+    }
+
+    async fn watch(&self, subscriber: LiveMapSubscriber<String, KafkaMessage>) -> Result<()> {
+        self.reader.watch(self, &subscriber).await
     }
 }
 
@@ -894,5 +1209,69 @@ mod tests {
     fn delete_no_prev_skips() {
         let d = decide_message("k1", None, &[], false, None).unwrap();
         assert_eq!(d, None);
+    }
+
+    fn message(key: Option<&[u8]>, value: Option<&[u8]>) -> KafkaMessage {
+        KafkaMessage {
+            topic: "t".into(),
+            partition: 0,
+            offset: 7,
+            key: key.map(<[u8]>::to_vec),
+            value: value.map(<[u8]>::to_vec),
+            headers: BTreeMap::new(),
+            timestamp: chrono::DateTime::default(),
+        }
+    }
+
+    // A tombstone deletes its key even with a custom predicate that says no;
+    // a keyless record is skipped; the predicate turns a value into a delete.
+    #[test]
+    fn map_classifies_tombstones_keyless_and_custom_deletes() {
+        let never: IsDeletionFn = Arc::new(|_| false);
+        assert_eq!(
+            classify_message(Some(&never), message(Some(b"k"), None)),
+            Some(("k".into(), None))
+        );
+        assert_eq!(classify_message(None, message(None, Some(b"v"))), None);
+        let on_marker: IsDeletionFn = Arc::new(|m| m.value.as_deref() == Some(b"DEL"));
+        assert_eq!(
+            classify_message(Some(&on_marker), message(Some(b"k"), Some(b"DEL"))),
+            Some(("k".into(), None))
+        );
+        let kept = classify_message(Some(&on_marker), message(Some(b"k"), Some(b"v"))).unwrap();
+        assert_eq!(kept.0, "k");
+        assert_eq!(kept.1.unwrap().value_str().as_deref(), Some("v"));
+    }
+
+    #[test]
+    fn stream_position_key_names_topic_partition_offset() {
+        assert_eq!(position_key(&message(None, None)), "t:0:7");
+    }
+
+    #[test]
+    fn tls_without_files_builds_and_half_client_auth_is_an_error() {
+        assert!(KafkaTls::default().into_rustls().is_ok());
+        let half = KafkaTls {
+            client_cert_pem: Some("/nonexistent/cert.pem".into()),
+            ..KafkaTls::default()
+        };
+        assert!(half.into_rustls().is_err());
+        let missing_ca = KafkaTls {
+            ca_cert_pem: Some("/nonexistent/ca.pem".into()),
+            ..KafkaTls::default()
+        };
+        assert!(missing_ca.into_rustls().is_err());
+    }
+
+    #[test]
+    fn sasl_debug_hides_the_password() {
+        let s = format!(
+            "{:?}",
+            KafkaSasl::Plain {
+                username: "u".into(),
+                password: "hunter2".into(),
+            }
+        );
+        assert!(s.contains("PLAIN") && s.contains("\"u\"") && !s.contains("hunter2"));
     }
 }
