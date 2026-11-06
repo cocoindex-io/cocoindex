@@ -15,8 +15,10 @@
 //! - [`ApiTranscriber`] calls `POST {base_url}/audio/transcriptions` with the
 //!   audio as a multipart upload, reading the bytes from any [`FileLike`].
 //!   `transcribe` is memoized by the file's identity and content.
-//! - [`ApiChatClient`] calls `POST {base_url}/chat/completions`;
-//!   [`LlmPairResolver`] builds on it and memoizes each decision.
+//! - [`ApiChatClient`] calls `POST {base_url}/chat/completions` in JSON mode;
+//!   [`ApiChatClient::extract`] deserializes the answer into a type and
+//!   memoizes it per conversation, and [`LlmPairResolver`] builds on the
+//!   client and memoizes each decision.
 //!
 //! Every request is bounded by the op's `timeout` (10 minutes by default):
 //! fast failures (408/409/425/429/5xx, a refused or reset connection) are
@@ -28,6 +30,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{Mutex, Semaphore};
@@ -546,7 +549,7 @@ struct TranscriptionResponse {
 use crate::entity_resolution::{CanonicalSide, PairDecision, PairResolver};
 
 /// A single chat message (`role` + `content`).
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, crate::MemoInput)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
@@ -619,6 +622,21 @@ impl ApiChatClient {
         self.request_chat_json(None, messages).await
     }
 
+    /// Run a chat completion in JSON mode and deserialize the answer into
+    /// `T`, memoized through the engine by the model, the endpoint and the
+    /// messages: the way to extract structured data with an LLM inside an
+    /// update (Python's `litellm` call with a `response_format` model). The
+    /// prompt has to describe the JSON shape `T` deserializes from.
+    pub async fn extract<T: DeserializeOwned>(
+        &self,
+        ctx: &Ctx,
+        messages: &[ChatMessage],
+    ) -> Result<T> {
+        let content = chat_json_memoized(ctx, self, messages).await?;
+        serde_json::from_str(&content)
+            .map_err(|e| Error::engine(format!("chat response was not the expected JSON: {e}")))
+    }
+
     async fn request_chat_json(
         &self,
         ctx: Option<&Ctx>,
@@ -652,6 +670,20 @@ impl ApiChatClient {
             .map(|c| c.message.content)
             .ok_or_else(|| Error::engine("chat API returned no choices"))
     }
+}
+
+/// The memo identity of a client's answers: the model and the endpoint.
+fn client_identity(client: &ApiChatClient) -> (&str, &str) {
+    (&client.model, &client.endpoint.base_url)
+}
+
+#[crate::function(memo, memo_key(client = client_identity))]
+async fn chat_json_memoized(
+    ctx: &Ctx,
+    client: &ApiChatClient,
+    messages: &[ChatMessage],
+) -> Result<String> {
+    client.request_chat_json(Some(ctx), &messages).await
 }
 
 #[derive(Deserialize)]
