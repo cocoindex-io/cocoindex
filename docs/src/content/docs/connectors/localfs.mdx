@@ -185,9 +185,14 @@ impl DirWalker {
     pub fn items(&self) -> Result<Vec<(String, FileEntry)>>
     pub fn live(self) -> LiveDirWalker   // `fs_live` feature
 }
+
+impl LiveDirWalker {
+    pub fn poll_interval(self, interval: Duration) -> Self
+    pub fn rescan_interval(self, interval: Option<Duration>) -> Self
+}
 ```
 
-The Rust walker is a builder: `walk_dir(path).recursive(true).path_matcher(matcher)`. The `live` flag becomes the `.live()` method, which turns the walker into a `LiveDirWalker` for `ctx.mount_each_live`.
+The Rust walker is a builder: `walk_dir(path).recursive(true).path_matcher(matcher)`. The `live` flag becomes the `.live()` method, which turns the walker into a `LiveDirWalker` for `ctx.mount_each_live`; `rescan_interval` is a method on it. `walk()` and `items()` block on the directory walk (a live feed walks on a blocking thread).
 
 </Fragment>
 </LangTabs>
@@ -354,7 +359,7 @@ ctx.mount_each_live(&"files", files, move |ctx, file: FileEntry| {
 .await
 ```
 
-`.live()` needs the `fs_live` Cargo feature. It returns a `LiveDirWalker`, a `LiveMapView` plus `LiveMapFeed` that re-scans the directory on each filesystem event, through the platform's native watcher. Where the native watcher cannot be set up, it polls instead, every `poll_interval` (default one second). `ctx.mount_each_live(&key, feed, |ctx, file| ...)` mounts one child component per file. See `examples/rust/text_embedding` for the full program.
+`.live()` needs the `fs_live` Cargo feature. It returns a `LiveDirWalker`, a `LiveMapView` plus `LiveMapFeed` that follows the directory through the platform's native watcher: each event updates or removes that file's component alone, and a directory that appears is walked. Where the native watcher cannot be set up, it polls instead, every `poll_interval` (default one second). Every `rescan_interval` (default one hour; `None` disables it) it recreates the watcher and walks the whole directory, as a safety net against events the platform dropped. `ctx.mount_each_live(&key, feed, |ctx, file| ...)` mounts one child component per file. See `examples/rust/text_embedding` for the full program.
 
 </Fragment>
 </LangTabs>

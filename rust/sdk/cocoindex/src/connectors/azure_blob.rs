@@ -189,12 +189,12 @@ impl AzureBlobFile {
     }
 
     /// Read the blob's full content.
-    pub async fn read(&self) -> Result<Vec<u8>> {
+    pub async fn read(&self) -> Result<bytes::Bytes> {
         <Self as FileLike>::read(self).await
     }
 
     /// Read the first `size` bytes of the blob.
-    pub async fn read_size(&self, size: usize) -> Result<Vec<u8>> {
+    pub async fn read_size(&self, size: usize) -> Result<bytes::Bytes> {
         <Self as FileLike>::read_size(self, size).await
     }
 

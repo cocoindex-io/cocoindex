@@ -173,11 +173,10 @@ serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
 # `rt-multi-thread` and `signal` back `#[cocoindex::main]` and the `__coco`
 # protocol child's Ctrl-C handling.
-tokio = { version = "1", features = ["fs", "sync", "rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["fs", "sync", "time", "rt-multi-thread", "signal"] }
 futures = "0.3"
 tracing = "0.1"
 globset = "0.4"
-walkdir = "2"
 encoding_rs = "0.8"
 async-trait = "0.1"
 # Filesystem watcher for live LocalFS sources (feature `fs_live`).

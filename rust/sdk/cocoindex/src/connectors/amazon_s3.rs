@@ -137,11 +137,11 @@ impl S3File {
         &self.file_path
     }
 
-    pub async fn read(&self) -> Result<Vec<u8>> {
+    pub async fn read(&self) -> Result<bytes::Bytes> {
         <Self as FileLike>::read(self).await
     }
 
-    pub async fn read_size(&self, size: usize) -> Result<Vec<u8>> {
+    pub async fn read_size(&self, size: usize) -> Result<bytes::Bytes> {
         <Self as FileLike>::read_size(self, size).await
     }
 

@@ -171,7 +171,7 @@ impl DriveFile {
         DriveFilePath::new(self.path(), self.file_id.clone())
     }
 
-    pub async fn read(&self) -> Result<Vec<u8>> {
+    pub async fn read(&self) -> Result<bytes::Bytes> {
         <Self as FileLike>::read(self).await
     }
 

@@ -1965,7 +1965,6 @@ dependencies = [
  "tracing",
  "ureq",
  "uuid",
- "walkdir",
  "webpki-roots 1.0.9",
  "wiremock",
  "zvec-rust",

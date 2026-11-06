@@ -521,7 +521,6 @@ dependencies = [
  "tracing",
  "ureq",
  "uuid",
- "walkdir",
 ]
 
 [[package]]

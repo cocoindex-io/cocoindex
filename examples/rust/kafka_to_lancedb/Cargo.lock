@@ -806,7 +806,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "walkdir",
  "webpki-roots",
 ]
 

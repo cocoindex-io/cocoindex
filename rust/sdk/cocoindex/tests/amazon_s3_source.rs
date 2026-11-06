@@ -176,7 +176,7 @@ async fn s3_source_lists_reads_and_filters_when_available() -> Result<()> {
     assert_eq!(client.read_text(&a).await?, "# A\nalpha");
     assert_eq!(client.read_range(&a, 3).await?, b"# A"); // ranged read
     assert_eq!(a.read_text().await?, "# A\nalpha");
-    assert_eq!(a.read_size(3).await?, b"# A");
+    assert_eq!(&a.read_size(3).await?[..], b"# A");
     assert_eq!(
         FileLike::content_fingerprint(&a).await?,
         FileLike::content_fingerprint(&a).await?

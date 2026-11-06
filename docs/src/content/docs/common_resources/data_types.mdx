@@ -65,7 +65,7 @@ The Rust trait has the same surface with Rust names:
 |---|---|
 | `file.file_path` | `file.file_path()` returns a `FilePath` |
 | `await file.size()` | `file.metadata().await?.size`; `FileMetadata` also holds `modified` and an optional `content_fingerprint` |
-| `await file.read()` | `file.read().await?` returns `Vec<u8>` |
+| `await file.read()` | `file.read().await?` returns `bytes::Bytes` (the cached content, shared, not copied) |
 | `await file.read(size)` | `file.read_size(size).await?` |
 | `await file.read_text()` | `file.read_text().await?` detects a BOM and decodes with replacement characters |
 | `await file.read_text(encoding="latin1", errors="strict")` | `file.read_text_with(Some("latin1"), DecodeErrors::Strict).await?` |
