@@ -305,14 +305,13 @@ class DiscordApp:
     configuration. ``rate_limiter``, when set, adds a budget on top, for a bot
     whose limits other tools share: one token per request, retries included.
 
-    ``ca_bundle_path``, when set, is a PEM CA-bundle file used to verify
-    Discord's TLS certificate, for a network behind a private or corporate CA.
-    ``None`` (the default) uses the system trust store.
+    Discord's TLS certificate is verified against certifi's CA bundle, as
+    httpx does by default; behind a corporate CA, set ``SSL_CERT_FILE`` to
+    its PEM bundle.
     """
 
     token: str = field(repr=False)
     rate_limiter: RateLimiter | None = None
-    ca_bundle_path: str | None = None
     # Runtime state, so excluded from the dataclass's value identity and
     # constructor.
     _state: _AppState = field(
@@ -443,10 +442,6 @@ class _ApiContext:
         self._client = httpx.AsyncClient(
             base_url=_BASE_URL,
             timeout=httpx.Timeout(60.0, connect=30.0),
-            # httpx 0.28 deprecates passing the CA bundle's path as `verify`.
-            verify=ssl.create_default_context(cafile=app.ca_bundle_path)
-            if app.ca_bundle_path is not None
-            else True,
             headers={
                 "Authorization": f"Bot {app.token}",
                 # The form Discord requires of a bot's User-Agent.

@@ -33,7 +33,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple, cast
 from urllib.parse import quote
 
-import certifi
 import httpx
 import pytest
 
@@ -589,9 +588,8 @@ class TestDiscordAppLifecycle:
 
 class TestDiscordAppRepr:
     def test_token_not_in_repr(self) -> None:
-        app = discord.DiscordApp(token="secret-token", ca_bundle_path="/etc/ca.pem")
+        app = discord.DiscordApp(token="secret-token")
         assert "secret-token" not in repr(app)
-        assert "/etc/ca.pem" in repr(app)
 
 
 class TestHttpClient:
@@ -620,16 +618,8 @@ class TestHttpClient:
             ),
         }
         assert captured["timeout"] == httpx.Timeout(60.0, connect=30.0)
-
-    def test_ca_bundle_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured = self._capture_client(monkeypatch)
-        _source._ApiContext(
-            discord.DiscordApp(token="t", ca_bundle_path=certifi.where())
-        )
-        with_bundle = captured["verify"]
-        _source._ApiContext(discord.DiscordApp(token="t"))
-        assert isinstance(with_bundle, ssl.SSLContext)
-        assert captured["verify"] is True
+        # httpx's default, which reads SSL_CERT_FILE and SSL_CERT_DIR.
+        assert "verify" not in captured
 
 
 # ---------------------------------------------------------------------------

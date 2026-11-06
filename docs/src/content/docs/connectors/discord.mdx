@@ -100,7 +100,6 @@ The bot's token, plus the authenticated HTTP connection it opens.
 class DiscordApp:
     token: str
     rate_limiter: RateLimiter | None = None
-    ca_bundle_path: str | None = None
 
     async def list_channels(self, guild_id: str) -> list[DiscordChannelInfo]: ...
     async def aclose(self) -> None: ...
@@ -112,9 +111,8 @@ class DiscordApp:
 
 - `token` — the bot token. It's left out of the App's `repr`, so a printed or logged App doesn't show it.
 - `rate_limiter` — optional [`RateLimiter`](../common_resources/rate_limiting) adding a budget on top of the connector's own pacing. See [Rate limiting](#rate-limiting).
-- `ca_bundle_path` — path to a PEM CA bundle used to verify Discord's TLS certificate, for networks behind a corporate CA. `None` uses the system trust store.
 
-**Lifecycle.** The App owns the underlying `httpx` client. Use it as an async context manager, or call `aclose()`, so connections are released. A request after `aclose()` opens a new client.
+**Lifecycle.** The App owns the underlying `httpx` client. Use it as an async context manager, or call `aclose()`, so connections are released. A request after `aclose()` opens a new client. Discord's TLS certificate is verified against [certifi](https://pypi.org/project/certifi/)'s CA bundle, as `httpx` does by default; on a network behind a corporate CA, set the `SSL_CERT_FILE` environment variable to its PEM bundle.
 
 The HTTP client, the rate-limit state and the record of a rejected token are shared by **object identity**. Use one `DiscordApp` per bot token, for every `DiscordChannel`: two Apps with the same token pace their requests separately, so together they can exceed Discord's limits.
 
