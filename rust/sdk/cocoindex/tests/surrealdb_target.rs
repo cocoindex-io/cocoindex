@@ -499,3 +499,257 @@ async fn surrealdb_schema_evolution_drops_field_when_available() {
     );
     assert!(fields.contains(&"name".to_string()));
 }
+
+// ---------------------------------------------------------------------------
+// TableSchema::from_row: derive the schema from a row struct
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize, cocoindex::SchemaFields)]
+struct Article {
+    title: String,
+    subtitle: Option<String>,
+    views: i64,
+    rating: f64,
+    published: bool,
+    posted_at: chrono::DateTime<chrono::Utc>,
+    uid: uuid::Uuid,
+    price: rust_decimal::Decimal,
+    read_time: std::time::Duration,
+    cover: Vec<u8>,
+    tags: Vec<String>,
+    #[coco(vector = 3)]
+    embedding: Vec<f32>,
+    #[coco(type = "record<person>")]
+    author: String,
+}
+
+#[test]
+fn surrealdb_from_row_matches_the_hand_written_schema() {
+    let derived = TableSchema::from_row::<Article>().unwrap();
+    let by_hand = TableSchema::new([
+        ("title", ColumnDef::new("string")),
+        ("subtitle", ColumnDef::new("string").nullable()),
+        ("views", ColumnDef::new("int")),
+        ("rating", ColumnDef::new("float")),
+        ("published", ColumnDef::new("bool")),
+        ("posted_at", ColumnDef::new("datetime")),
+        ("uid", ColumnDef::new("uuid")),
+        ("price", ColumnDef::new("decimal")),
+        ("read_time", ColumnDef::new("duration")),
+        ("cover", ColumnDef::new("bytes")),
+        ("tags", ColumnDef::new("any")),
+        ("embedding", ColumnDef::new("array<float, 3>")),
+        ("author", ColumnDef::new("record<person>")),
+    ])
+    .unwrap();
+    assert_eq!(derived, by_hand);
+}
+
+#[test]
+fn surrealdb_from_row_rejects_a_vector_without_a_dimension() {
+    #[derive(cocoindex::SchemaFields)]
+    #[allow(dead_code)]
+    struct Unsized {
+        #[coco(vector)]
+        embedding: Vec<f32>,
+    }
+    let message = TableSchema::from_row::<Unsized>().unwrap_err().to_string();
+    assert!(message.contains("embedding"), "{message}");
+    assert!(message.contains("#[coco(vector = N)]"), "{message}");
+}
+
+#[tokio::test]
+async fn surrealdb_from_row_schema_stores_typed_values_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_fromrow_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB from_row test; no local SurrealDB connection");
+        return;
+    };
+    let (app, _dir) = temp_app(&graph, "surrealdb_from_row").await;
+
+    app.run(|ctx| async move {
+        let people = surrealdb::mount_table_target(&ctx, &GRAPH, "person").await?;
+        people.declare_record(&ctx, "ann", &serde_json::json!({ "name": "Ann" }))?;
+        let articles = surrealdb::mount_table_target_with_schema(
+            &ctx,
+            &GRAPH,
+            "article",
+            Some(TableSchema::from_row::<Article>()?),
+        )
+        .await?;
+        articles.declare_record(
+            &ctx,
+            "a1",
+            &Article {
+                title: "Hello".to_string(),
+                subtitle: None,
+                views: 3,
+                rating: 4.5,
+                published: true,
+                posted_at: "2024-05-01T10:00:00Z".parse().unwrap(),
+                uid: "67e55044-10b1-426f-9247-bb680e5fe0c8".parse().unwrap(),
+                price: "12.50".parse().unwrap(),
+                read_time: std::time::Duration::from_secs(90),
+                cover: b"hi".to_vec(),
+                tags: vec!["a".to_string(), "b".to_string()],
+                embedding: vec![1.0, 0.0, 0.5],
+                author: "person:ann".to_string(),
+            },
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    // The table is SCHEMAFULL with one field per struct field.
+    let fields = graph.field_names("article").await.unwrap();
+    for name in ["title", "subtitle", "posted_at", "embedding", "author"] {
+        assert!(fields.contains(&name.to_string()), "fields={fields:?}");
+    }
+    let record = graph.record("article", "a1").await.unwrap().unwrap();
+    assert_eq!(record["title"], "Hello");
+    assert_eq!(record["views"], 3);
+    assert_eq!(record["tags"], serde_json::json!(["a", "b"]));
+    assert_eq!(record["embedding"], serde_json::json!([1.0, 0.0, 0.5]));
+    // `None` is stored as an absent field, not as a null.
+    assert!(
+        record
+            .get("subtitle")
+            .is_none_or(serde_json::Value::is_null)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// declare_fields: several components own different fields of one record
+// ---------------------------------------------------------------------------
+
+/// One field group: its name and the fields it contributes to `player:ann`.
+type FieldGroup = (&'static str, serde_json::Value);
+
+/// Declare the base record `player:ann` in the root component, and each field
+/// group in a component of its own.
+async fn run_players(app: &App, name: &'static str, groups: Vec<FieldGroup>) -> Result<()> {
+    app.run(move |ctx| async move {
+        let players = surrealdb::mount_table_target(&ctx, &GRAPH, "player").await?;
+        players.declare_record(&ctx, "ann", &serde_json::json!({ "name": name }))?;
+        ctx.mount_each(
+            groups,
+            |(group, _)| group.to_string(),
+            move |ctx, (group, fields)| {
+                let players = players.clone();
+                async move { players.declare_fields(&ctx, "ann", group, &fields) }
+            },
+        )
+        .await?;
+        Ok(())
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn surrealdb_declare_fields_gives_each_group_its_own_fields_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_fields_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB declare_fields test; no local SurrealDB connection");
+        return;
+    };
+    let (app, _dir) = temp_app(&graph, "surrealdb_declare_fields").await;
+    let ann = || async { graph.record("player", "ann").await.unwrap().unwrap() };
+    let stats = |fields| ("stats", fields);
+    let profile = || ("profile", serde_json::json!({ "city": "Oslo" }));
+
+    // The base record exists before any group writes to it.
+    run_players(&app, "Ann", vec![]).await.unwrap();
+    assert_eq!(ann().await, serde_json::json!({ "name": "Ann" }));
+
+    // Two groups add their fields; the base field is untouched.
+    let both = serde_json::json!({ "score": 7, "rank": 1 });
+    run_players(&app, "Ann", vec![stats(both.clone()), profile()])
+        .await
+        .unwrap();
+    assert_eq!(
+        ann().await,
+        serde_json::json!({ "name": "Ann", "score": 7, "rank": 1, "city": "Oslo" })
+    );
+
+    // A group drops one field and changes another: only its own fields move.
+    let score_only = serde_json::json!({ "score": 8 });
+    run_players(&app, "Ann", vec![stats(score_only.clone()), profile()])
+        .await
+        .unwrap();
+    assert_eq!(
+        ann().await,
+        serde_json::json!({ "name": "Ann", "score": 8, "city": "Oslo" })
+    );
+
+    // The record's owner rewrites it: the groups' fields survive.
+    run_players(&app, "Anna", vec![stats(score_only.clone()), profile()])
+        .await
+        .unwrap();
+    assert_eq!(
+        ann().await,
+        serde_json::json!({ "name": "Anna", "score": 8, "city": "Oslo" })
+    );
+
+    // A group goes away: its fields are unset, the other group's stay.
+    run_players(&app, "Anna", vec![stats(score_only)])
+        .await
+        .unwrap();
+    assert_eq!(
+        ann().await,
+        serde_json::json!({ "name": "Anna", "score": 8 })
+    );
+}
+
+#[tokio::test]
+async fn surrealdb_declare_fields_on_a_missing_record_fails_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_fields_missing_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB declare_fields test; no local SurrealDB connection");
+        return;
+    };
+    let (app, _dir) = temp_app(&graph, "surrealdb_declare_fields_missing").await;
+
+    let result = app
+        .run(|ctx| async move {
+            let players = surrealdb::mount_table_target(&ctx, &GRAPH, "player").await?;
+            players.declare_fields(&ctx, "nobody", "stats", &serde_json::json!({ "score": 1 }))
+        })
+        .await;
+    assert!(result.is_err(), "a fields write needs an existing record");
+    assert!(graph.record("player", "nobody").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn surrealdb_declare_fields_takes_only_named_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(dir.path().join("lmdb"))
+        .build()
+        .await
+        .unwrap()
+        .app("surrealdb_declare_fields_shape")
+        .await
+        .unwrap();
+    let result = app
+        .run(|ctx| async move {
+            let players = surrealdb::declare_table_target(&ctx, &GRAPH, "player")?;
+            players.declare_fields(&ctx, "ann", "stats", &[1, 2, 3])
+        })
+        .await;
+    let message = result.unwrap_err().to_string();
+    assert!(message.contains("declare_fields"), "{message}");
+}

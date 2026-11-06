@@ -408,6 +408,11 @@ fn vector_type_str(schema: &VectorSchema) -> Result<String> {
     let suffix = match schema.element_type {
         VectorElementType::Float32 => "f32",
         VectorElementType::Float16 => "f16",
+        VectorElementType::Float64 => {
+            return Err(Error::engine(
+                "turbopuffer vectors only support f32 or f16 elements, got f64",
+            ));
+        }
     };
     Ok(format!("[{}]{suffix}", schema.size))
 }

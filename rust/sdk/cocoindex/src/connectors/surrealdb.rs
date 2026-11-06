@@ -5,6 +5,18 @@
 //! no longer declared are deleted. `managed_by` controls whether CocoIndex owns
 //! schema DDL.
 //!
+//! Ownership follows the Python connector: [`TableTarget::declare_record`]
+//! writes with `UPSERT … MERGE`, never `CONTENT`, so fields written by other
+//! owners survive and fields a record stops declaring are unset.
+//! [`TableTarget::declare_fields`] lets a component contribute only some fields
+//! of a record that another component owns. Relation records are single-owner
+//! and are replaced whole.
+//!
+//! A [`TableSchema`] makes the table `SCHEMAFULL`. Derive it from a row struct
+//! with [`TableSchema::from_row`]. Top-level values of `datetime`, `uuid`,
+//! `decimal`, `duration` and `bytes` columns are written as typed SurrealQL
+//! values, and a top-level `null` is written as `NONE`.
+//!
 //! Use the target constructors ([`table_target`], [`relation_target_many`],
 //! [`relation_target_unconstrained`]) for composition, `declare_*` helpers inside
 //! the current component, or async `mount_*` helpers when records must be
@@ -23,6 +35,7 @@ use surrealdb::types::RecordId;
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
+use crate::row_schema::{LogicalType, SchemaField, SchemaFields};
 use crate::sql_ident::validate_ident;
 use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
@@ -51,6 +64,47 @@ impl ColumnDef {
         self.nullable = true;
         self
     }
+
+    /// The type in a `DEFINE FIELD … TYPE` clause: `option<T>` when nullable.
+    fn type_expr(&self) -> String {
+        if self.nullable {
+            format!("option<{}>", self.surreal_type)
+        } else {
+            self.surreal_type.clone()
+        }
+    }
+}
+
+/// Map a derived row field to its SurrealDB type, as the leaf-type table of
+/// Python's `surrealdb` `from_class` does.
+fn surreal_type(field: &SchemaField) -> Result<String> {
+    let surreal_type = match &field.logical_type {
+        LogicalType::Bool => "bool",
+        LogicalType::Int16 | LogicalType::Int32 | LogicalType::Int64 => "int",
+        LogicalType::Float32 | LogicalType::Float64 => "float",
+        LogicalType::Decimal => "decimal",
+        LogicalType::Text => "string",
+        LogicalType::Bytes => "bytes",
+        LogicalType::Uuid => "uuid",
+        // SurrealDB has no date-only type; a date is stored at midnight UTC.
+        LogicalType::Date | LogicalType::DateTime => "datetime",
+        // SurrealDB has no time-of-day type; stored as an ISO string.
+        LogicalType::Time => "string",
+        LogicalType::Duration => "duration",
+        // Collections, maps and nested structs are sent as native arrays and
+        // objects; the derive does not tell them apart, so no type constraint.
+        LogicalType::Json => "any",
+        LogicalType::Vector { dim: 0, .. } => {
+            return Err(Error::engine(format!(
+                "SurrealDB vector field {:?} has an unresolved dimension; \
+                 use #[coco(vector = N)]",
+                field.name
+            )));
+        }
+        LogicalType::Vector { dim, .. } => return Ok(format!("array<float, {dim}>")),
+        LogicalType::Custom(surreal_type) => return Ok(surreal_type.trim().to_string()),
+    };
+    Ok(surreal_type.to_string())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -67,6 +121,26 @@ impl TableSchema {
             out.insert(name, def);
         }
         Ok(Self { columns: out })
+    }
+
+    /// Derive a schema from a `#[derive(SchemaFields)]` row type (the Rust
+    /// analogue of Python's `TableSchema.from_class`). Each field maps to a
+    /// SurrealDB type via the same leaf-type table as Python; an `Option<T>`
+    /// field becomes `option<T>`. A `#[coco(vector = N)]` field becomes
+    /// `array<float, N>`, and `#[coco(type = "…")]` sets the type verbatim.
+    /// Collections, maps and nested structs get no type constraint (`any`).
+    pub fn from_row<T: SchemaFields>() -> Result<Self> {
+        let columns = T::schema_fields()
+            .into_iter()
+            .map(|field| {
+                let def = ColumnDef {
+                    surreal_type: surreal_type(&field)?,
+                    nullable: field.nullable,
+                };
+                Ok((field.name, def))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Self::new(columns)
     }
 
     pub fn columns(&self) -> &BTreeMap<String, ColumnDef> {
@@ -187,6 +261,20 @@ impl Graph {
         ))
     }
 
+    /// The fields of record `id` of `table`, without its `id`; `None` when the
+    /// record does not exist.
+    pub async fn record(&self, table: &str, id: impl IntoRecordId) -> Result<Option<JsonValue>> {
+        validate_ident(table, "table name")?;
+        let record_ref = format!("{table}:{}", id.to_record_id_value().surrealql());
+        let mut res = self
+            .db
+            .query(format!("SELECT * OMIT id FROM {record_ref}"))
+            .await
+            .map_err(surreal_err)?;
+        let rows: Vec<JsonValue> = res.take(0).map_err(surreal_err)?;
+        Ok(rows.into_iter().next())
+    }
+
     async fn info_for_table(&self, table: &str) -> Result<Option<JsonValue>> {
         validate_ident(table, "table name")?;
         let mut res = self
@@ -223,6 +311,10 @@ impl TableTarget {
         &self.table_name
     }
 
+    /// Declare a record to be upserted to this table. It is written with
+    /// `UPSERT … MERGE`: fields written by other owners (see
+    /// [`declare_fields`](Self::declare_fields)) survive, and fields the row
+    /// stops declaring are unset.
     pub fn declare_record<R: Serialize>(
         &self,
         ctx: &Ctx,
@@ -233,8 +325,32 @@ impl TableTarget {
         declare_target_state(ctx, self.records.target_state(id.to_stable_key(), value))
     }
 
+    /// Declare the fields one owner (`group`) contributes to an existing
+    /// record. `fields` is a struct or map of field name to value.
+    ///
+    /// It writes `UPDATE … MERGE` with only these fields, so fields written by
+    /// other owners (or by [`declare_record`](Self::declare_record)) are never
+    /// touched. When the declaration goes away, or a field is dropped from it,
+    /// those fields are unset. If the record does not exist, the write fails
+    /// and is retried on the next run, so declare the base record in the same
+    /// or another component.
+    pub fn declare_fields<R: Serialize>(
+        &self,
+        ctx: &Ctx,
+        id: impl IntoRecordId,
+        group: &str,
+        fields: &R,
+    ) -> Result<()> {
+        let value = fields_state(fields)?;
+        let key = RecordKey {
+            record_id: id.to_record_id_value(),
+            group: Some(group.to_string()),
+        };
+        declare_target_state(ctx, self.records.target_state(key.stable_key(), value))
+    }
+
     /// Declare a record whose id is taken from the row's own scalar `id` field
-    /// (the analogue of Python's `declare_row`). Use [`declare_record`] to pass
+    /// (the analogue of Python's `declare_row`). Use [`declare_record`](Self::declare_record) to pass
     /// the id separately.
     pub fn declare_row<R: Serialize>(&self, ctx: &Ctx, row: &R) -> Result<()> {
         let value = record_state(row)?;
@@ -1014,7 +1130,113 @@ struct TableAction {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RecordAction {
     record_id: RecordIdValue,
-    state: Option<RecordState>,
+    write: RecordWrite,
+}
+
+/// What a [`RecordAction`] does to its record.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+enum RecordWrite {
+    /// Record mode: `UPSERT … MERGE`, creating the record when it is missing.
+    Upsert(MergeContent),
+    /// Fields mode: `UPDATE … MERGE` onto a record that must exist.
+    SetFields(MergeContent),
+    /// Fields mode, group removed: unset the fields it owned. A missing record
+    /// is fine.
+    UnsetFields(Vec<String>),
+    /// Relation records are single-owner: `DELETE` + `RELATE` replaces the edge.
+    Relate {
+        fields: Map<String, JsonValue>,
+        endpoints: RelationEndpoints,
+    },
+    Delete,
+}
+
+/// The body of a `MERGE`: fields to set, and fields owned before but no longer
+/// declared, which become `NONE`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+struct MergeContent {
+    set: Map<String, JsonValue>,
+    unset: Vec<String>,
+}
+
+impl RecordWrite {
+    /// Apply order within one batch: upserts, fields writes, relation upserts,
+    /// deletes. A fields write then finds the record an upsert of the same
+    /// batch creates.
+    fn rank(&self) -> u8 {
+        match self {
+            Self::Upsert(_) => 0,
+            Self::SetFields(_) | Self::UnsetFields(_) => 1,
+            Self::Relate { .. } => 2,
+            Self::Delete => 3,
+        }
+    }
+}
+
+/// A record target state's key: the record id, plus the field group for a
+/// [`TableTarget::declare_fields`] declaration.
+struct RecordKey {
+    record_id: RecordIdValue,
+    group: Option<String>,
+}
+
+impl RecordKey {
+    fn stable_key(&self) -> StableKey {
+        let id = self.record_id.stable_key();
+        match &self.group {
+            Some(group) => {
+                StableKey::Array(Arc::from([id, StableKey::Str(Arc::from(group.as_str()))]))
+            }
+            None => id,
+        }
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key {
+            if let [id, StableKey::Str(group)] = &parts[..] {
+                return Ok(Self {
+                    record_id: stable_key_to_record_id(id)?,
+                    group: Some(group.to_string()),
+                });
+            }
+            return Err(Error::engine(format!(
+                "unsupported SurrealDB record key: {key:?}"
+            )));
+        }
+        Ok(Self {
+            record_id: stable_key_to_record_id(key)?,
+            group: None,
+        })
+    }
+}
+
+/// Tracking record of a record target state.
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+enum RecordTracking {
+    /// A relation record: a fingerprint of the whole edge. It is replaced
+    /// whole, so it owns no field names.
+    Fingerprint(Fingerprint),
+    /// A record or field group written with `MERGE`.
+    Fields(FieldsTracking),
+}
+
+/// A fingerprint plus the owned field names. The names let a delete, or a
+/// shrunk declaration, unset exactly the fields this owner wrote.
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+struct FieldsTracking {
+    fingerprint: Fingerprint,
+    names: Vec<String>,
+}
+
+/// Field names any previous run may have written.
+fn owned_names(prev: &[RecordTracking]) -> std::collections::BTreeSet<&str> {
+    prev.iter()
+        .filter_map(|tracking| match tracking {
+            RecordTracking::Fields(fields) => Some(fields.names.iter().map(String::as_str)),
+            RecordTracking::Fingerprint(_) => None,
+        })
+        .flatten()
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1244,7 +1466,7 @@ struct RecordHandler {
 }
 
 impl TargetHandler<RecordState> for RecordHandler {
-    type TrackingRecord = Fingerprint;
+    type TrackingRecord = RecordTracking;
     type Action = RecordAction;
 
     fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
@@ -1261,31 +1483,64 @@ impl TargetHandler<RecordState> for RecordHandler {
         &self,
         key: StableKey,
         desired: Option<RecordState>,
-        prev: Vec<Fingerprint>,
+        prev: Vec<RecordTracking>,
         prev_may_be_missing: bool,
-    ) -> Result<Option<TargetReconcileOutput<RecordAction, Fingerprint>>> {
-        let record_id = stable_key_to_record_id(&key)?;
-        // Track a cheap fingerprint of the record state (not the full record).
-        let desired_fp = match &desired {
-            Some(state) => Some(Fingerprint::from(state).map_err(Error::from)?),
-            None => None,
+    ) -> Result<Option<TargetReconcileOutput<RecordAction, RecordTracking>>> {
+        let RecordKey { record_id, group } = RecordKey::from_stable_key(&key)?;
+        let in_fields_mode = group.is_some();
+        let (write, tracking) = match desired {
+            None => {
+                if prev.is_empty() && !prev_may_be_missing {
+                    return Ok(None);
+                }
+                let write = if in_fields_mode {
+                    RecordWrite::UnsetFields(
+                        owned_names(&prev).into_iter().map(String::from).collect(),
+                    )
+                } else {
+                    RecordWrite::Delete
+                };
+                (write, None)
+            }
+            Some(state) => {
+                // Track a cheap fingerprint of the record state (not the full record).
+                let fingerprint = Fingerprint::from(&state).map_err(Error::from)?;
+                let RecordState { fields, relation } = state;
+                let (tracking, write) = match relation {
+                    Some(endpoints) => (
+                        RecordTracking::Fingerprint(fingerprint),
+                        RecordWrite::Relate { fields, endpoints },
+                    ),
+                    None => {
+                        // `fields` is sorted by name (`serde_json::Map`).
+                        let names: Vec<String> = fields.keys().cloned().collect();
+                        let unset = owned_names(&prev)
+                            .into_iter()
+                            .filter(|name| !fields.contains_key(*name))
+                            .map(String::from)
+                            .collect();
+                        let content = MergeContent { set: fields, unset };
+                        let write = if in_fields_mode {
+                            RecordWrite::SetFields(content)
+                        } else {
+                            RecordWrite::Upsert(content)
+                        };
+                        (
+                            RecordTracking::Fields(FieldsTracking { fingerprint, names }),
+                            write,
+                        )
+                    }
+                };
+                if !prev_may_be_missing && !prev.is_empty() && prev.iter().all(|p| *p == tracking) {
+                    return Ok(None);
+                }
+                (write, Some(tracking))
+            }
         };
-        let prev_same = desired_fp
-            .as_ref()
-            .is_some_and(|fp| !prev.is_empty() && prev.iter().all(|p| p == fp));
-        if desired.is_some() && prev_same && !prev_may_be_missing {
-            return Ok(None);
-        }
-        if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
-            return Ok(None);
-        }
         Ok(Some(TargetReconcileOutput {
-            action: TargetAction::Update(RecordAction {
-                record_id,
-                state: desired,
-            }),
+            action: TargetAction::Update(RecordAction { record_id, write }),
             sink: self.sink.get(|| self.record_sink()),
-            tracking_record: desired_fp,
+            tracking_record: tracking,
             child_invalidation: None,
         }))
     }
@@ -1301,16 +1556,15 @@ impl RecordHandler {
                 let spec = spec.clone();
                 async move {
                     let graph = resolve_graph(&host_ctx, &graph_key)?;
-                    let mut mutations = Vec::with_capacity(actions.len());
-                    for action in actions {
-                        let record = match action {
+                    let actions = actions
+                        .into_iter()
+                        .map(|action| match action {
                             TargetAction::Create(r)
                             | TargetAction::Update(r)
                             | TargetAction::Delete(r) => r,
-                        };
-                        mutations.push((record.record_id, record.state));
-                    }
-                    apply_records(&graph, &spec, mutations).await
+                        })
+                        .collect();
+                    apply_records(&graph, &spec, actions).await
                 }
             },
         )
@@ -1515,11 +1769,7 @@ async fn define_table(graph: &Graph, spec: &TableSpec) -> Result<()> {
             if name == "id" {
                 continue;
             }
-            let type_expr = if column.nullable {
-                format!("option<{}>", column.surreal_type)
-            } else {
-                column.surreal_type.clone()
-            };
+            let type_expr = column.type_expr();
             graph
                 .db
                 .query(format!(
@@ -1565,11 +1815,7 @@ async fn apply_field_changes(
     }
     for name in retype_fields {
         if let Some(col) = schema.columns().get(name) {
-            let type_expr = if col.nullable {
-                format!("option<{}>", col.surreal_type)
-            } else {
-                col.surreal_type.clone()
-            };
+            let type_expr = col.type_expr();
             graph
                 .db
                 .query(format!(
@@ -1597,54 +1843,15 @@ async fn remove_table(graph: &Graph, table_name: &str) -> Result<()> {
     Ok(())
 }
 
-async fn apply_records(
-    graph: &Graph,
-    spec: &TableSpec,
-    mutations: Vec<(RecordIdValue, Option<RecordState>)>,
-) -> Result<()> {
-    if mutations.is_empty() {
+async fn apply_records(graph: &Graph, spec: &TableSpec, actions: Vec<RecordAction>) -> Result<()> {
+    if actions.is_empty() {
         return Ok(());
     }
     // Ensure the table exists for system-managed targets (idempotent).
     if spec.managed_by.is_system() {
         define_table(graph, spec).await?;
     }
-    validate_ident(&spec.table_name, "table name")?;
-
-    let mut statements = String::from("BEGIN TRANSACTION;\n");
-    for (record_id, state) in mutations {
-        let record_ref = format!("{}:{}", spec.table_name, record_id.surrealql());
-        match state {
-            Some(state) => {
-                // The record id is carried by `record_ref` (`table:id`); strip any
-                // `id` field from CONTENT so it isn't written into the body (matches
-                // Python, which excludes `id` from the upsert content).
-                let RecordState {
-                    mut fields,
-                    relation,
-                } = state;
-                fields.remove("id");
-                let content = serde_json::to_string(&JsonValue::Object(fields))
-                    .map_err(|e| Error::engine(format!("serialize SurrealDB record: {e}")))?;
-                if let Some(rel) = relation {
-                    validate_ident(&rel.from_table, "relation from table name")?;
-                    validate_ident(&rel.to_table, "relation to table name")?;
-                    let from_ref = format!("{}:{}", rel.from_table, rel.from_id.surrealql());
-                    let to_ref = format!("{}:{}", rel.to_table, rel.to_id.surrealql());
-                    statements.push_str(&format!(
-                        "DELETE {record_ref}; RELATE {from_ref}->{record_ref}->{to_ref} CONTENT {content};\n"
-                    ));
-                } else {
-                    statements.push_str(&format!("UPSERT {record_ref} CONTENT {content};\n"));
-                }
-            }
-            None => {
-                statements.push_str(&format!("DELETE {record_ref};\n"));
-            }
-        }
-    }
-    statements.push_str("COMMIT TRANSACTION;\n");
-
+    let statements = record_statements(spec, actions)?;
     graph
         .db
         .query(statements)
@@ -1653,6 +1860,173 @@ async fn apply_records(
         .check()
         .map_err(surreal_err)?;
     Ok(())
+}
+
+/// The SurrealQL of one batch of record actions: one transaction, ordered by
+/// [`RecordWrite::rank`].
+fn record_statements(spec: &TableSpec, mut actions: Vec<RecordAction>) -> Result<String> {
+    validate_ident(&spec.table_name, "table name")?;
+    actions.sort_by_key(|action| action.write.rank()); // stable
+    let schema = spec.table_schema.as_ref();
+
+    let mut statements = String::from("BEGIN TRANSACTION;\n");
+    for RecordAction { record_id, write } in actions {
+        let record_ref = format!("{}:{}", spec.table_name, record_id.surrealql());
+        match write {
+            RecordWrite::Upsert(content) => {
+                let content = merge_object(schema, &content.set, &content.unset)?;
+                statements.push_str(&format!(
+                    "UPSERT {record_ref} MERGE {content} RETURN NONE;\n"
+                ));
+            }
+            RecordWrite::SetFields(content) => {
+                let content = merge_object(schema, &content.set, &content.unset)?;
+                let missing = json_text(&format!("fields target record missing: {record_ref}"))?;
+                statements.push_str(&format!(
+                    "LET $updated = (UPDATE ONLY {record_ref} MERGE {content} RETURN id);\n\
+                     IF $updated = NONE {{ THROW {missing}; }};\n"
+                ));
+            }
+            RecordWrite::UnsetFields(names) => {
+                // Nothing to unset when no earlier run recorded its field names.
+                if !names.iter().all(|name| name == "id") {
+                    let content = merge_object(schema, &Map::new(), &names)?;
+                    statements.push_str(&format!(
+                        "UPDATE {record_ref} MERGE {content} RETURN NONE;\n"
+                    ));
+                }
+            }
+            RecordWrite::Relate { fields, endpoints } => {
+                validate_ident(&endpoints.from_table, "relation from table name")?;
+                validate_ident(&endpoints.to_table, "relation to table name")?;
+                let from_ref =
+                    format!("{}:{}", endpoints.from_table, endpoints.from_id.surrealql());
+                let to_ref = format!("{}:{}", endpoints.to_table, endpoints.to_id.surrealql());
+                let content = merge_object(schema, &fields, &[])?;
+                statements.push_str(&format!(
+                    "DELETE {record_ref}; RELATE {from_ref}->{record_ref}->{to_ref} CONTENT {content};\n"
+                ));
+            }
+            RecordWrite::Delete => {
+                statements.push_str(&format!("DELETE {record_ref};\n"));
+            }
+        }
+    }
+    statements.push_str("COMMIT TRANSACTION;\n");
+    Ok(statements)
+}
+
+fn json_text<T: Serialize + ?Sized>(value: &T) -> Result<String> {
+    serde_json::to_string(value)
+        .map_err(|e| Error::engine(format!("serialize SurrealDB record: {e}")))
+}
+
+/// A SurrealQL object literal with `set` fields as values and `unset` fields as
+/// `NONE` (in a `MERGE`, `NONE` removes the field). The record id is carried by
+/// the statement's record reference, so an `id` field is left out (matches
+/// Python, which excludes `id` from the content).
+fn merge_object(
+    schema: Option<&TableSchema>,
+    set: &Map<String, JsonValue>,
+    unset: &[String],
+) -> Result<String> {
+    let mut parts = Vec::with_capacity(set.len() + unset.len());
+    for name in unset {
+        if name != "id" {
+            parts.push(format!("{}: NONE", json_text(name)?));
+        }
+    }
+    for (name, value) in set {
+        if name != "id" {
+            let column = schema.and_then(|schema| schema.columns.get(name));
+            parts.push(format!(
+                "{}: {}",
+                json_text(name)?,
+                surql_value(column, value)?
+            ));
+        }
+    }
+    Ok(format!("{{{}}}", parts.join(", ")))
+}
+
+/// A top-level field value as SurrealQL. `null` is `NONE` (what an `option<T>`
+/// field takes). The value of a `datetime`, `uuid`, `decimal`, `duration` or
+/// `bytes` column is written typed, as Python sends typed parameters; any other
+/// value is its JSON, which SurrealQL reads as native arrays and objects.
+fn surql_value(column: Option<&ColumnDef>, value: &JsonValue) -> Result<String> {
+    if value.is_null() {
+        return Ok("NONE".to_string());
+    }
+    let typed = match (column.map(|c| c.surreal_type.trim()), value) {
+        (Some("datetime"), JsonValue::String(s)) => {
+            Some(format!("d{}", json_text(&datetime_text(s))?))
+        }
+        (Some("uuid"), JsonValue::String(_)) => Some(format!("u{}", json_text(value)?)),
+        (Some("decimal"), JsonValue::String(_) | JsonValue::Number(_)) => {
+            Some(format!("<decimal> {}", json_text(value)?))
+        }
+        (Some("duration"), JsonValue::String(_)) => {
+            Some(format!("<duration> {}", json_text(value)?))
+        }
+        (Some("duration"), JsonValue::Object(_)) => duration_literal(value),
+        (Some("bytes"), JsonValue::Array(items)) => items
+            .iter()
+            .map(|item| item.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+            .collect::<Option<Vec<u8>>>()
+            .map(|bytes| format!("encoding::base64::decode(\"{}\")", base64_text(&bytes))),
+        _ => None,
+    };
+    match typed {
+        Some(text) => Ok(text),
+        None => json_text(value),
+    }
+}
+
+/// An RFC 3339 datetime from a serialized `chrono` value: a date gets midnight
+/// UTC, and a datetime without an offset is taken as UTC.
+fn datetime_text(value: &str) -> String {
+    match value.split_once('T') {
+        None => format!("{value}T00:00:00Z"),
+        Some((_, time)) if time.ends_with('Z') || time.contains(['+', '-']) => value.to_string(),
+        Some(_) => format!("{value}Z"),
+    }
+}
+
+/// A duration literal (`5s250ns`) from a serialized `std::time::Duration`
+/// (`{"secs": …, "nanos": …}`).
+fn duration_literal(value: &JsonValue) -> Option<String> {
+    let object = value.as_object()?;
+    if object.len() != 2 {
+        return None;
+    }
+    let secs = object.get("secs")?.as_u64()?;
+    let nanos = object.get("nanos")?.as_u64()?;
+    Some(match (secs, nanos) {
+        (secs, 0) => format!("{secs}s"),
+        (0, nanos) => format!("{nanos}ns"),
+        (secs, nanos) => format!("{secs}s{nanos}ns"),
+    })
+}
+
+/// Standard base64 with padding.
+fn base64_text(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let group = chunk.iter().enumerate().fold(0u32, |acc, (i, byte)| {
+            acc | (u32::from(*byte) << (16 - 8 * i))
+        });
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(
+                    ALPHABET[((group >> (18 - 6 * i)) & 0x3f) as usize],
+                ));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1674,6 +2048,27 @@ fn record_state<R: Serialize>(row: &R) -> Result<RecordState> {
             map
         }
     };
+    Ok(RecordState {
+        fields,
+        relation: None,
+    })
+}
+
+/// The state of a [`TableTarget::declare_fields`] declaration: `fields` must be
+/// a struct or map, since each entry names a field of the record.
+fn fields_state<R: Serialize>(fields: &R) -> Result<RecordState> {
+    crate::finite::ensure_finite(fields)
+        .map_err(|e| Error::engine(format!("SurrealDB target fields have a {e}")))?;
+    let value = serde_json::to_value(fields)
+        .map_err(|e| Error::engine(format!("serialize SurrealDB target fields: {e}")))?;
+    let JsonValue::Object(fields) = value else {
+        return Err(Error::engine(
+            "declare_fields requires `fields` to be a struct or a map of field name to value",
+        ));
+    };
+    for name in fields.keys() {
+        validate_ident(name, "field name")?;
+    }
     Ok(RecordState {
         fields,
         relation: None,
@@ -1707,5 +2102,148 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(first, "2:ab;1:c;");
         assert_eq!(second, "1:a;2:bc;");
+    }
+
+    fn string_id(id: &str) -> RecordIdValue {
+        RecordIdValue::String(id.to_string())
+    }
+
+    fn fields(value: JsonValue) -> Map<String, JsonValue> {
+        value.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn a_batch_upserts_records_before_it_sets_their_fields() {
+        let spec = TableSpec::table("person".to_string(), None, ManagedBy::System);
+        let actions = vec![
+            RecordAction {
+                record_id: string_id("gone"),
+                write: RecordWrite::Delete,
+            },
+            RecordAction {
+                record_id: string_id("old"),
+                write: RecordWrite::UnsetFields(vec!["score".to_string()]),
+            },
+            RecordAction {
+                record_id: string_id("ann"),
+                write: RecordWrite::SetFields(MergeContent {
+                    set: fields(serde_json::json!({ "score": 7 })),
+                    unset: vec!["rank".to_string()],
+                }),
+            },
+            RecordAction {
+                record_id: string_id("ann"),
+                write: RecordWrite::Upsert(MergeContent {
+                    set: fields(serde_json::json!({ "id": "ann", "name": "Ann", "nick": null })),
+                    unset: vec![],
+                }),
+            },
+        ];
+        assert_eq!(
+            record_statements(&spec, actions).unwrap(),
+            "BEGIN TRANSACTION;\n\
+             UPSERT person:`ann` MERGE {\"name\": \"Ann\", \"nick\": NONE} RETURN NONE;\n\
+             UPDATE person:`old` MERGE {\"score\": NONE} RETURN NONE;\n\
+             LET $updated = (UPDATE ONLY person:`ann` MERGE {\"rank\": NONE, \"score\": 7} RETURN id);\n\
+             IF $updated = NONE { THROW \"fields target record missing: person:`ann`\"; };\n\
+             DELETE person:`gone`;\n\
+             COMMIT TRANSACTION;\n"
+        );
+    }
+
+    #[test]
+    fn a_removed_group_with_no_recorded_fields_writes_nothing() {
+        let spec = TableSpec::table("person".to_string(), None, ManagedBy::System);
+        let actions = vec![RecordAction {
+            record_id: string_id("ann"),
+            write: RecordWrite::UnsetFields(vec![]),
+        }];
+        assert_eq!(
+            record_statements(&spec, actions).unwrap(),
+            "BEGIN TRANSACTION;\nCOMMIT TRANSACTION;\n"
+        );
+    }
+
+    #[test]
+    fn typed_columns_are_written_as_typed_values() {
+        let schema = TableSchema::new([
+            ("at", ColumnDef::new("datetime")),
+            ("day", ColumnDef::new("datetime")),
+            ("naive", ColumnDef::new("datetime")),
+            ("uid", ColumnDef::new("uuid")),
+            ("price", ColumnDef::new("decimal")),
+            ("took", ColumnDef::new("duration")),
+            ("blob", ColumnDef::new("bytes")),
+            ("tags", ColumnDef::new("array<string>")),
+        ])
+        .unwrap();
+        let set = fields(serde_json::json!({
+            "at": "2024-05-01T10:00:00+02:00",
+            "day": "2024-05-01",
+            "naive": "2024-05-01T10:00:00",
+            "uid": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+            "price": "12.50",
+            "took": { "secs": 5, "nanos": 250 },
+            "blob": [104, 105],
+            "tags": ["a", "b"],
+            "untyped": "2024-05-01",
+        }));
+        assert_eq!(
+            merge_object(Some(&schema), &set, &[]).unwrap(),
+            "{\"at\": d\"2024-05-01T10:00:00+02:00\", \
+             \"blob\": encoding::base64::decode(\"aGk=\"), \
+             \"day\": d\"2024-05-01T00:00:00Z\", \
+             \"naive\": d\"2024-05-01T10:00:00Z\", \
+             \"price\": <decimal> \"12.50\", \
+             \"tags\": [\"a\",\"b\"], \
+             \"took\": 5s250ns, \
+             \"uid\": u\"67e55044-10b1-426f-9247-bb680e5fe0c8\", \
+             \"untyped\": \"2024-05-01\"}"
+        );
+    }
+
+    #[test]
+    fn base64_pads_every_remainder() {
+        assert_eq!(base64_text(b""), "");
+        assert_eq!(base64_text(b"f"), "Zg==");
+        assert_eq!(base64_text(b"fo"), "Zm8=");
+        assert_eq!(base64_text(b"foo"), "Zm9v");
+        assert_eq!(base64_text(&[0xfb, 0xff]), "+/8=");
+    }
+
+    #[test]
+    fn tracking_records_read_back_from_messagepack() {
+        let fingerprint = Fingerprint::from(&"state").unwrap();
+        let records = [
+            RecordTracking::Fingerprint(fingerprint),
+            RecordTracking::Fields(FieldsTracking {
+                fingerprint,
+                names: vec!["name".to_string(), "score".to_string()],
+            }),
+        ];
+        for record in records {
+            for encoded in [
+                rmp_serde::to_vec(&record).unwrap(),
+                rmp_serde::to_vec_named(&record).unwrap(),
+            ] {
+                assert!(rmp_serde::from_slice::<RecordTracking>(&encoded).unwrap() == record);
+            }
+        }
+    }
+
+    #[test]
+    fn a_field_group_key_carries_the_record_id_and_the_group() {
+        let key = RecordKey {
+            record_id: RecordIdValue::Number("7".to_string()),
+            group: Some("scores".to_string()),
+        }
+        .stable_key();
+        let parsed = RecordKey::from_stable_key(&key).unwrap();
+        assert_eq!(parsed.record_id, RecordIdValue::Number("7".to_string()));
+        assert_eq!(parsed.group.as_deref(), Some("scores"));
+
+        let plain = RecordKey::from_stable_key(&string_id("ann").stable_key()).unwrap();
+        assert_eq!(plain.record_id, string_id("ann"));
+        assert_eq!(plain.group, None);
     }
 }

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use chrono::NaiveDate;
-use cocoindex::connectors::falkordb::{self, ColumnDef, TableSchema};
+use cocoindex::connectors::falkordb::{self, TableSchema};
 use cocoindex::prelude::*;
 use cocoindex::resources::fs;
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 // graph's stable identity in the target states.
 cocoindex::context_key!(static GRAPH: falkordb::Graph);
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::SchemaFields)]
 struct Meeting {
     id: i64,
     note_file: String,
@@ -19,12 +19,12 @@ struct Meeting {
     note: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::SchemaFields)]
 struct Person {
     name: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::SchemaFields)]
 struct Task {
     description: String,
 }
@@ -55,15 +55,6 @@ struct MeetingExtraction {
     organizer: String,
     participants: Vec<String>,
     task_assignees: Vec<(String, Vec<String>)>,
-}
-
-fn schema(columns: &[(&str, &str)], primary_key: &str) -> Result<TableSchema> {
-    TableSchema::new(
-        columns
-            .iter()
-            .map(|(name, ty)| ((*name).to_string(), ColumnDef::new(*ty))),
-        primary_key,
-    )
 }
 
 fn split_meetings(text: &str) -> Vec<String> {
@@ -158,35 +149,29 @@ fn canonical_person(name: &str) -> String {
 }
 
 async fn build_graph(ctx: &Ctx, input_dir: &str) -> Result<()> {
+    // Node table schemas are derived from the row structs.
     let meeting_table = falkordb::mount_table_target(
         ctx,
         &GRAPH,
         "Meeting",
-        schema(
-            &[
-                ("id", "integer"),
-                ("note_file", "string"),
-                ("time", "string"),
-                ("note", "string"),
-            ],
-            "id",
-        )?,
+        TableSchema::from_row::<Meeting>("id")?,
     )
     .await?;
     let person_table = falkordb::mount_table_target(
         ctx,
         &GRAPH,
         "Person",
-        schema(&[("name", "string")], "name")?,
+        TableSchema::from_row::<Person>("name")?,
     )
     .await?;
     let task_table = falkordb::mount_table_target(
         ctx,
         &GRAPH,
         "Task",
-        schema(&[("description", "string")], "description")?,
+        TableSchema::from_row::<Task>("description")?,
     )
     .await?;
+    // Relations are schemaless: their ids are derived from the endpoints.
     let attended_rel =
         falkordb::mount_relation_target(ctx, &GRAPH, "ATTENDED", &person_table, &meeting_table)
             .await?;

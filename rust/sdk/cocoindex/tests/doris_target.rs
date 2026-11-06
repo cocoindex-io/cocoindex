@@ -487,3 +487,100 @@ async fn doris_undeclared_and_dropped_tables_are_removed() -> Result<()> {
     drop_table(&conn, &table).await;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// `build_vector_search_query` (no cluster needed).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn doris_vector_search_query_defaults_to_approximate_l2() -> Result<()> {
+    let query = doris::build_vector_search_query(
+        "docs",
+        "embedding",
+        &[0.1, 2.0, -3.5],
+        &doris::VectorSearchOptions::default(),
+    )?;
+    assert_eq!(
+        query,
+        "SELECT *, l2_distance_approximate(`embedding`, [0.1, 2.0, -3.5]) as _distance\n\
+         FROM `docs`\n\
+         ORDER BY _distance ASC\n\
+         LIMIT 10"
+    );
+    Ok(())
+}
+
+#[test]
+fn doris_vector_search_query_applies_every_option() -> Result<()> {
+    let query = doris::build_vector_search_query(
+        "analytics.docs",
+        "embedding",
+        &[1.0],
+        &doris::VectorSearchOptions {
+            metric: "inner_product".to_string(),
+            limit: 3,
+            select_columns: vec!["id".to_string(), "title".to_string()],
+            where_clause: Some("lang = 'en'".to_string()),
+        },
+    )?;
+    assert_eq!(
+        query,
+        "SELECT `id`, `title`, inner_product_approximate(`embedding`, [1.0]) as _distance\n\
+         FROM `analytics`.`docs`\n\
+         WHERE lang = 'en'\n\
+         ORDER BY _distance DESC\n\
+         LIMIT 3"
+    );
+    Ok(())
+}
+
+#[test]
+fn doris_vector_search_query_orders_other_metrics_by_their_name() -> Result<()> {
+    let with_metric = |metric: &str| {
+        doris::build_vector_search_query(
+            "docs",
+            "embedding",
+            &[1.0],
+            &doris::VectorSearchOptions {
+                metric: metric.to_string(),
+                ..Default::default()
+            },
+        )
+    };
+    // A distance sorts ascending, a similarity descending; neither is rewritten
+    // to an approximate function.
+    let distance = with_metric("cosine_distance")?;
+    assert!(
+        distance.contains("cosine_distance(`embedding`, [1.0])"),
+        "{distance}"
+    );
+    assert!(distance.contains("ORDER BY _distance ASC"), "{distance}");
+    let similarity = with_metric("cosine_similarity")?;
+    assert!(
+        similarity.contains("ORDER BY _distance DESC"),
+        "{similarity}"
+    );
+    Ok(())
+}
+
+#[test]
+fn doris_vector_search_query_rejects_unsafe_names_and_values() {
+    let build = |table: &str, field: &str, vector: &[f32], options: doris::VectorSearchOptions| {
+        doris::build_vector_search_query(table, field, vector, &options)
+    };
+    let defaults = doris::VectorSearchOptions::default;
+    assert!(build("a.b.c", "embedding", &[1.0], defaults()).is_err());
+    assert!(build("docs; DROP", "embedding", &[1.0], defaults()).is_err());
+    assert!(build("docs", "embedding`", &[1.0], defaults()).is_err());
+    assert!(build("docs", "embedding", &[f32::NAN], defaults()).is_err());
+    let bad_metric = doris::VectorSearchOptions {
+        metric: "l2(x)".to_string(),
+        ..Default::default()
+    };
+    assert!(build("docs", "embedding", &[1.0], bad_metric).is_err());
+    let bad_column = doris::VectorSearchOptions {
+        select_columns: vec!["id, secret".to_string()],
+        ..Default::default()
+    };
+    assert!(build("docs", "embedding", &[1.0], bad_column).is_err());
+}

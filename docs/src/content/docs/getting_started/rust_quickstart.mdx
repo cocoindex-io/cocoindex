@@ -154,9 +154,9 @@ Now add the app's main processing function:
 
 ```rust title="src/main.rs"
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let vector_dim = ctx.get_key(&EMBEDDER)?.dimension();
     let schema = postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
-        .with_vector_dim("embedding", vector_dim)?;
+        .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+        .await?;
     let table = postgres::mount_table_target(
         &ctx,
         &DB,

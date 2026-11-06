@@ -1086,3 +1086,87 @@ async fn lancedb_fts_index_survives_destructive_table_replace() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Derived-schema overrides: the embedder supplies the vector schema.
+// ---------------------------------------------------------------------------
+
+cocoindex::context_key!(
+    static EMBEDDER: cocoindex::VectorSchema, key = "lancedb_test_embedder"
+);
+
+#[derive(Clone, Serialize, SchemaFields)]
+struct ProviderRow {
+    id: i64,
+    rank: i64,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+/// `with_vector_schema` takes the dimension and the element type from the
+/// provider held in the context, and `with_column_type` replaces one derived
+/// column type; both reach the created table.
+#[tokio::test]
+async fn lancedb_from_row_resolves_vector_from_context_provider() -> Result<()> {
+    const PROVIDER_TABLE: &str = "provider_docs";
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .provide_key(
+            &EMBEDDER,
+            cocoindex::VectorSchema {
+                element_type: cocoindex::VectorElementType::Float16,
+                size: 3,
+            },
+        )
+        .build()
+        .await?
+        .app("LanceProviderSchemaTest")
+        .await?;
+
+    app.run(move |ctx| async move {
+        let schema = TableSchema::from_row::<ProviderRow>(["id"])?
+            .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+            .await?
+            .with_column_type("rank", ColumnType::Int32)?;
+        let table = lancedb::mount_table_target(&ctx, &DB, PROVIDER_TABLE, schema).await?;
+        table.declare_row(
+            &ctx,
+            &ProviderRow {
+                id: 1,
+                rank: 7,
+                embedding: vec![0.25, 0.5, 0.75],
+            },
+        )?;
+        Ok(())
+    })
+    .await?;
+
+    let table = db
+        .connection()
+        .open_table(PROVIDER_TABLE)
+        .execute()
+        .await
+        .unwrap();
+    let schema = table.schema().await.unwrap();
+    assert_eq!(
+        schema.field_with_name("embedding").unwrap().data_type(),
+        &arrow_schema::DataType::FixedSizeList(
+            std::sync::Arc::new(arrow_schema::Field::new(
+                "item",
+                arrow_schema::DataType::Float16,
+                true,
+            )),
+            3,
+        )
+    );
+    assert_eq!(
+        schema.field_with_name("rank").unwrap().data_type(),
+        &arrow_schema::DataType::Int32
+    );
+    assert_eq!(table.count_rows(None).await.unwrap(), 1);
+    Ok(())
+}
