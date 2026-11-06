@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use cocoindex::{App, LiveMap, LiveMapView, PreviewAction};
+use cocoindex::{App, LiveMap, LiveMapView, PreviewAction, StableKey};
 
 /// Smoke test: `LiveMap::create` mounts its backing container target and
 /// `declare_entry` declares entries that sync (run the entry sink) when the
@@ -77,6 +77,70 @@ async fn live_map_preview_applies_nothing() {
     );
     let lm = created.lock().unwrap().take().unwrap();
     assert!(lm.scan().await.unwrap().is_empty());
+}
+
+/// `K` is any stable key, as Python's `LiveMap[K, V]`: an `i64` key round-trips
+/// through the engine (declare → reconcile → sink) and comes back as an `i64`.
+#[tokio::test]
+async fn live_map_integer_keys_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::open("live_map_int_keys", dir.path().join("lmdb"))
+        .await
+        .unwrap();
+    let created: Arc<Mutex<Option<LiveMap<i64, String>>>> = Arc::new(Mutex::new(None));
+    app.update({
+        let created = created.clone();
+        move |ctx| async move {
+            let lm: LiveMap<i64, String> = LiveMap::create(&ctx).await?;
+            lm.declare_entry(&ctx, 7, "seven".to_string())?;
+            lm.declare_entry(&ctx, -2, "minus two".to_string())?;
+            *created.lock().unwrap() = Some(lm);
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+    let lm = created.lock().unwrap().take().unwrap();
+    let mut entries = lm.scan().await.unwrap();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec![(-2, "minus two".to_string()), (7, "seven".to_string())]
+    );
+}
+
+/// `StableKey` itself is a key type, so composite keys work too.
+#[tokio::test]
+async fn live_map_stable_keys_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::open("live_map_stable_keys", dir.path().join("lmdb"))
+        .await
+        .unwrap();
+    let created: Arc<Mutex<Option<LiveMap<StableKey, i64>>>> = Arc::new(Mutex::new(None));
+    let composite = StableKey::Array(Arc::from([
+        StableKey::Str(Arc::from("doc")),
+        StableKey::Int(3),
+    ]));
+    app.update({
+        let created = created.clone();
+        let composite = composite.clone();
+        move |ctx| async move {
+            let lm: LiveMap<StableKey, i64> = LiveMap::create(&ctx).await?;
+            lm.declare_entry(&ctx, composite, 42)?;
+            lm.declare_entry(&ctx, StableKey::Str(Arc::from("plain")), 1)?;
+            *created.lock().unwrap() = Some(lm);
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+    let lm = created.lock().unwrap().take().unwrap();
+    let mut entries = lm.scan().await.unwrap();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec![(composite, 42), (StableKey::Str(Arc::from("plain")), 1)]
+    );
 }
 
 mod live {

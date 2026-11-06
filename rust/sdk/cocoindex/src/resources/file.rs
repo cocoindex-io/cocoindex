@@ -951,6 +951,105 @@ mod tests {
     }
 
     #[test]
+    fn file_path_parents_is_relative_to_and_matches_follow_pathlib() {
+        let p = FilePath::new("docs/a/report.md");
+        let parents: Vec<String> = p.parents().iter().map(FilePath::as_posix).collect();
+        assert_eq!(parents, vec!["docs/a", "docs"]);
+        assert!(FilePath::new("file.txt").parents().is_empty());
+
+        assert!(p.is_relative_to("docs"));
+        assert!(p.is_relative_to("docs/a"));
+        assert!(p.is_relative_to("docs/a/report.md"));
+        assert!(!p.is_relative_to("doc"));
+        assert!(!p.is_relative_to("other"));
+
+        // A relative pattern matches from the right, one component at a time.
+        assert!(p.matches("*.md"));
+        assert!(p.matches("a/*.md"));
+        assert!(p.matches("docs/a/report.md"));
+        assert!(!p.matches("docs/*.md"));
+        assert!(!p.matches("*.py"));
+        assert!(!p.matches("x/docs/a/report.md"));
+        // An absolute pattern must match the whole path.
+        let abs = FilePath::new("/docs/a/report.md");
+        assert!(abs.matches("/docs/a/*.md"));
+        assert!(!abs.matches("/a/*.md"));
+        assert!(!p.matches("/docs/a/report.md"));
+        // `*` does not cross a separator, and an invalid pattern never matches.
+        assert!(!p.matches("docs/*"));
+        assert!(!p.matches("[invalid"));
+    }
+
+    #[test]
+    fn file_path_with_base_key_preserves_the_key_without_a_directory() {
+        let key = ContextKey::<PathBuf>::new("file/with_base_key_test_dir");
+        let p = FilePath::with_base_key(&key, "a/b.md");
+        assert_eq!(p.base_key(), Some("file/with_base_key_test_dir"));
+        assert_eq!(
+            p.parent().unwrap().base_key(),
+            Some("file/with_base_key_test_dir")
+        );
+        // The memo key is the base-keyed form, the same as a resolved base.
+        let resolved = FilePath::with_base_dir("file/with_base_key_test_dir", "/tmp/x", "a/b.md");
+        assert_eq!(
+            rmp_serde::to_vec(&p.memo_key()).unwrap(),
+            rmp_serde::to_vec(&resolved.memo_key()).unwrap()
+        );
+    }
+
+    #[test]
+    fn decode_bytes_with_explicit_encoding_and_error_modes() {
+        // An explicit encoding wins over detection.
+        assert_eq!(
+            decode_bytes_with(b"caf\xe9", Some("latin1"), DecodeErrors::Replace).unwrap(),
+            "café"
+        );
+        assert_eq!(
+            decode_bytes_with(b"h\0i\0", Some("utf-16le"), DecodeErrors::Replace).unwrap(),
+            "hi"
+        );
+        assert_eq!(
+            decode_bytes_with(b"\xEF\xBB\xBFhi", Some("utf-8-sig"), DecodeErrors::Strict).unwrap(),
+            "hi"
+        );
+        assert_eq!(
+            decode_bytes_with(b"h\0\0\0", Some("utf-32"), DecodeErrors::Strict).unwrap(),
+            "h"
+        );
+        assert!(decode_bytes_with(b"x", Some("no-such-encoding"), DecodeErrors::Replace).is_err());
+
+        // The error modes, Python's `errors=`.
+        assert_eq!(
+            decode_bytes_with(b"a\xFFb", None, DecodeErrors::Replace).unwrap(),
+            "a\u{fffd}b"
+        );
+        assert_eq!(
+            decode_bytes_with(b"a\xFFb", None, DecodeErrors::Ignore).unwrap(),
+            "ab"
+        );
+        assert!(decode_bytes_with(b"a\xFFb", None, DecodeErrors::Strict).is_err());
+        assert_eq!(
+            decode_bytes_with(b"ok", None, DecodeErrors::Strict).unwrap(),
+            "ok"
+        );
+        // A trailing partial UTF-32 unit is an error in strict mode.
+        assert!(decode_bytes_with(b"\xFF\xFE\0\0h\0\0", None, DecodeErrors::Strict).is_err());
+    }
+
+    #[tokio::test]
+    async fn file_like_read_text_with_uses_the_cached_content() {
+        let file = MockFile::new(None);
+        assert_eq!(file.read_text().await.unwrap(), "hello world");
+        assert_eq!(
+            file.read_text_with(Some("ascii"), DecodeErrors::Strict)
+                .await
+                .unwrap(),
+            "hello world"
+        );
+        assert_eq!(file.reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn file_path_surface_preserves_base_key() {
         let p = FilePath::with_base_dir("docs", "/tmp/root", "a/b.md");
         assert_eq!(p.parent().unwrap().base_key(), Some("docs"));
