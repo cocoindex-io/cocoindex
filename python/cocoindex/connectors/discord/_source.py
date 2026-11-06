@@ -645,14 +645,17 @@ class _ApiContext:
         a stripped message from one sent empty."""
         application = await self.get(_ROUTE_APPLICATION, None)
         if not application.get("flags", 0) & _MESSAGE_CONTENT_INTENT_FLAGS:
+            # The next channel then asks up front again, and fails once
+            # rather than in each of its threads.
+            self._intent_ok = False
             raise _DiscordError(_INTENT_HINT)
 
     async def check_message_content_intent_once(self) -> None:
-        """:meth:`check_message_content_intent` until it passes, then never
-        again for the context's life: an early warning before a channel is
-        listed, so that a channel fails once rather than each of its threads.
-        The intent can be turned off later, which :meth:`iter_messages`
-        catches.
+        """:meth:`check_message_content_intent` until it passes, then not
+        again until a later check finds the intent off: an early warning
+        before a channel is listed, so that a channel fails once rather than
+        each of its threads. The intent can be turned off later, which
+        :meth:`iter_messages` catches.
 
         Callers that come while a check is under way share its result,
         failure included, rather than retrying in turn. A failure isn't kept,
@@ -661,6 +664,11 @@ class _ApiContext:
             return
         if self._intent_check is None:
             self._intent_check = asyncio.ensure_future(self._first_intent_check())
+            # If every caller is cancelled, nobody awaits the check: read its
+            # error here, or asyncio logs "Task exception was never retrieved".
+            self._intent_check.add_done_callback(
+                lambda check: check.cancelled() or check.exception()
+            )
         # A caller cancelled while waiting doesn't cancel the others' check.
         await asyncio.shield(self._intent_check)
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import gc
 import os
 import re
 import ssl
@@ -1091,6 +1092,37 @@ class TestIntentCheck:
             # A failure isn't kept: the next check asks again.
             await ctx.check_message_content_intent_once()
         assert fake.count("/applications/@me") == 15
+
+    async def test_cancelled_callers_leave_no_unread_error(
+        self, sleeps: list[float], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Callers cancelled while the shared check is under way, as at a
+        # shutdown, leave nobody to read its error, which asyncio then logs.
+        fake = _FakeDiscord()
+        fake.script["/applications/@me"] = [
+            httpx.Response(502),
+            _discord_error(401, 0),
+        ]
+        app, ctx = await _setup(fake)
+        async with app:
+            callers = [
+                asyncio.create_task(ctx.check_message_content_intent_once())
+                for _ in range(2)
+            ]
+            # Until the check backs off after the 502.
+            while not sleeps:
+                await _real_sleep(0)
+            check = ctx._intent_check
+            assert check is not None
+            for caller in callers:
+                caller.cancel()
+            await asyncio.wait(callers)
+            await asyncio.wait([check])
+            # Reading its error here would read it for the connector.
+            assert check.done() and not check.cancelled()
+            del check
+            gc.collect()
+        assert "never retrieved" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -3314,6 +3346,25 @@ class TestStrippedMessages:
         assert seen == []
         # The first listing's check is kept; the stripped page asked again.
         assert fake.count("/applications/@me") == 2
+
+    async def test_failed_page_check_asks_up_front_again(self) -> None:
+        # A forum's listing reads no message, so with the up-front check
+        # still passed, each of its posts would fail on its own, run after
+        # run, each asking again.
+        fake = _fake_with_channels()
+        fake.post(_CHANNEL, _raw_message("1117"))
+        app, _ = await _setup(fake)
+        intent_off = r"^The Message Content intent is off"
+        async with app:
+            await _items(_channel(app))
+            fake.flags = 0
+            with pytest.raises(_DiscordError, match=intent_off):
+                await _items(_channel(app))
+            fake.requests.clear()
+            with pytest.raises(_DiscordError, match=intent_off):
+                await _items(_channel(app))
+        # The next listing fails up front, before fetching the channel.
+        assert _requests(fake) == [("/applications/@me", {})]
 
     async def test_thread_messages(self) -> None:
         fake = _FakeDiscord()
