@@ -19,7 +19,9 @@ pub mod error;
     feature = "neo4j",
     feature = "falkordb",
     feature = "lancedb",
-    feature = "zvec"
+    feature = "zvec",
+    feature = "bigquery",
+    feature = "snowflake"
 ))]
 mod finite;
 pub mod inspect;
@@ -35,7 +37,13 @@ pub(crate) mod profile;
 pub mod registry;
 pub mod resources;
 pub mod row_schema;
-#[cfg(any(feature = "doris", feature = "sqlite", feature = "surrealdb"))]
+#[cfg(any(
+    feature = "doris",
+    feature = "sqlite",
+    feature = "surrealdb",
+    feature = "bigquery",
+    feature = "snowflake"
+))]
 pub(crate) mod sql_ident;
 pub mod statediff;
 mod stats;

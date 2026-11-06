@@ -142,7 +142,13 @@ pub(crate) fn not_vector_field_error(connector: &str, field_name: &str) -> Error
     ))
 }
 
-#[cfg(any(feature = "postgres", feature = "sqlite", feature = "doris"))]
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "bigquery",
+    feature = "snowflake"
+))]
 pub(crate) fn serialized_duration_parts(value: &serde_json::Value) -> Option<(u64, u32)> {
     let object = value.as_object()?;
     if object.len() != 2 {
