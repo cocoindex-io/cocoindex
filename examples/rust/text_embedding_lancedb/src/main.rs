@@ -113,7 +113,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = Embedder::embed(embedder, query).await?;
+    let query_vec = embedder.embed_batch(vec![query.to_string()]).await?.remove(0);
     let results = lancedb::vector_search(db, TABLE, "embedding", query_vec, TOP_K).await?;
     for r in results {
         let filename = r.get("filename").and_then(|v| v.as_str()).unwrap_or("");

@@ -2,13 +2,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use async_trait::async_trait;
 use cocoindex::connectors::surrealdb;
 use cocoindex::entity_resolution;
+use cocoindex::ops::api::LlmPairResolver;
 use cocoindex::prelude::*;
-use serde::Deserialize;
 
-use crate::clients::{EMBEDDER, Embedder, GRAPH, LLM, LlmClient, RESOLVER_LLM};
+use crate::clients::{EMBEDDER, GRAPH, LLM, RESOLVER_LLM};
 use crate::models::*;
 
 // ---------------------------------------------------------------------------
@@ -162,7 +161,9 @@ pub async fn process_session(ctx: &Ctx, source: SessionSource) -> Result<Process
 // ---------------------------------------------------------------------------
 
 /// Resolve near-duplicate entity names of one type. Returns a map
-/// name -> Some(canonical) / None (canonical). Memoized by (kind, names).
+/// name -> Some(canonical) / None (canonical). Memoized by (kind, names); the
+/// SDK embedder and `LlmPairResolver` also memoize each name and each pair
+/// decision, so a new name costs one embedding and its own LLM calls only.
 #[cocoindex::function(memo)]
 pub async fn resolve_entities(
     ctx: &Ctx,
@@ -170,81 +171,18 @@ pub async fn resolve_entities(
     names: &Vec<String>,
 ) -> Result<HashMap<String, Option<String>>> {
     let embedder = ctx.get_key(&EMBEDDER)?;
-    let llm = ctx.get_key(&RESOLVER_LLM)?;
-    let resolver = LlmEntityResolver {
-        llm: llm.clone(),
-        kind: kind.clone(),
-    };
+    let resolver = LlmPairResolver::with_client(ctx.get_key(&RESOLVER_LLM)?.clone())
+        .with_entity_type(kind.as_str());
     let resolved = entity_resolution::resolve_entities(
+        ctx,
         names,
-        &EntityNameEmbedder {
-            embedder: embedder.clone(),
-        },
+        embedder,
         &resolver,
         None,
         entity_resolution::ResolveOptions::default(),
     )
     .await?;
     Ok(resolved.to_map().into_iter().collect())
-}
-
-#[derive(Deserialize)]
-struct PairResolution {
-    matched: Option<String>,
-    #[serde(default)]
-    canonical: Option<String>,
-}
-
-struct EntityNameEmbedder {
-    embedder: Embedder,
-}
-
-#[async_trait]
-impl entity_resolution::EntityEmbedder for EntityNameEmbedder {
-    async fn embed_entity(&self, entity: &str) -> Result<Vec<f32>> {
-        let mut embeddings = self.embedder.embed(vec![entity.to_string()]).await?;
-        embeddings
-            .pop()
-            .ok_or_else(|| Error::engine("embedder returned no vector"))
-    }
-}
-
-struct LlmEntityResolver {
-    llm: LlmClient,
-    kind: String,
-}
-
-#[async_trait]
-impl entity_resolution::PairResolver for LlmEntityResolver {
-    async fn resolve_pair(
-        &self,
-        entity: &str,
-        candidates: &[String],
-    ) -> Result<entity_resolution::PairDecision> {
-        let candidate_lines = candidates
-            .iter()
-            .enumerate()
-            .map(|(idx, candidate)| format!("{idx}. {candidate}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let system = format!(
-            "You are resolving duplicate {kind} entities. Given one new entity and a candidate \
-             list of canonical entities, decide whether the new entity refers to exactly one of \
-             the candidates. Return JSON {{\"matched\": string|null, \"canonical\": \"matched\"|\"new\"}}. \
-             Use matched=null when none are the same real-world {kind}. Be conservative.",
-            kind = self.kind
-        );
-        let user = format!("Entity: {entity}\n\nCandidates:\n{candidate_lines}");
-        let response: PairResolution = self.llm.json(&system, &user).await?;
-        let canonical = match response.canonical.as_deref() {
-            Some("new") => entity_resolution::CanonicalSide::New,
-            _ => entity_resolution::CanonicalSide::Matched,
-        };
-        Ok(entity_resolution::PairDecision {
-            matched: response.matched,
-            canonical,
-        })
-    }
 }
 
 // ---------------------------------------------------------------------------

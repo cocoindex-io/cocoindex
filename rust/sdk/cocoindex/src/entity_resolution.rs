@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -104,14 +105,27 @@ impl ResolvedEntities {
     }
 }
 
+/// Embeds one entity name (cf. Python's `Embedder` protocol as used by
+/// `resolve_entities`). Every [`Embedder`](crate::resources::embedder::Embedder)
+/// is one through a blanket impl; the built-in embedders memoize per name and
+/// batch concurrent calls through `ctx`.
 #[async_trait]
 pub trait EntityEmbedder {
-    async fn embed_entity(&self, entity: &str) -> Result<Vec<f32>>;
+    async fn embed_entity(&self, ctx: &Ctx, entity: &str) -> Result<Vec<f32>>;
 }
 
+/// Decides whether `entity` refers to one of `candidates` (cf. Python's
+/// `PairResolver` protocol). `candidates` is non-empty and de-duplicated.
+/// `resolve_pair` may run concurrently across components; the built-in
+/// `LlmPairResolver` memoizes each `(entity, candidates)` pair through `ctx`.
 #[async_trait]
 pub trait PairResolver {
-    async fn resolve_pair(&self, entity: &str, candidates: &[String]) -> Result<PairDecision>;
+    async fn resolve_pair(
+        &self,
+        ctx: &Ctx,
+        entity: &str,
+        candidates: &[String],
+    ) -> Result<PairDecision>;
 }
 
 #[derive(Clone, Debug)]
@@ -144,7 +158,13 @@ struct ComponentEvents {
     pass_2: Vec<ResolutionEvent>,
 }
 
+/// Resolve a set of raw entity names into a canonical dedup map (cf. Python's
+/// `cocoindex.ops.entity_resolution.resolve_entities`).
+///
+/// `ctx` is passed to `embedder` and `resolve_pair`, so the built-in
+/// embedders and `LlmPairResolver` memoize and batch through the engine.
 pub async fn resolve_entities<E, R, I, S>(
+    ctx: &Ctx,
     entities: I,
     embedder: &E,
     resolve_pair: &R,
@@ -158,6 +178,7 @@ where
     S: AsRef<str>,
 {
     resolve_entities_with_events(
+        ctx,
         entities,
         embedder,
         resolve_pair,
@@ -173,6 +194,7 @@ where
 /// `resolve_entities(on_resolution=...)`): pass-1 seeded canonicals first
 /// (sorted by name), then pass-2 entities (sorted by name).
 pub async fn resolve_entities_with_events<E, R, I, S>(
+    ctx: &Ctx,
     entities: I,
     embedder: &E,
     resolve_pair: &R,
@@ -198,9 +220,12 @@ where
 
     // Embed concurrently (cf. Python's `asyncio.gather`); an embedder that
     // batches concurrent calls turns this into few requests.
-    let embeddings =
-        futures::future::try_join_all(entity_list.iter().map(|name| embedder.embed_entity(name)))
-            .await?;
+    let embeddings = futures::future::try_join_all(
+        entity_list
+            .iter()
+            .map(|name| embedder.embed_entity(ctx, name)),
+    )
+    .await?;
     let dimension = embeddings.first().map_or(0, Vec::len);
     let mut infos = Vec::with_capacity(entity_list.len());
     for (name, vec) in entity_list.iter().zip(embeddings) {
@@ -249,6 +274,7 @@ where
                     let mut candidate_index =
                         CandidateIndex::new(options.max_distance, options.top_n);
                     resolve_component(
+                        ctx,
                         &component_infos,
                         entity_map_ref,
                         &mut component_dedup,
@@ -277,7 +303,9 @@ where
     Ok(ResolvedEntities { dedup })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn resolve_component<R: PairResolver + Sync>(
+    ctx: &Ctx,
     infos: &[EntityInfo],
     entity_map: &HashMap<String, EntityInfo>,
     dedup: &mut BTreeMap<String, Option<String>>,
@@ -320,7 +348,9 @@ async fn resolve_component<R: PairResolver + Sync>(
             continue;
         }
 
-        let decision = resolve_pair.resolve_pair(&info.name, &candidates).await?;
+        let decision = resolve_pair
+            .resolve_pair(ctx, &info.name, &candidates)
+            .await?;
         validate_pair_decision(&info.name, &candidates, &decision)?;
         let (canonical, repointed) =
             apply_pair_decision(info, &decision, entity_map, dedup, existing_policy)?;

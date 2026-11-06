@@ -510,6 +510,7 @@ dependencies = [
  "fastembed",
  "futures",
  "globset",
+ "hf-hub",
  "linkme",
  "qdrant-client",
  "rmp-serde",
@@ -520,6 +521,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "ureq",
  "uuid",
  "walkdir",
 ]

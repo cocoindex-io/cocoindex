@@ -151,7 +151,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = vector_param(&Embedder::embed(embedder, query).await?);
+    let query_vec = vector_param(&embedder.embed_batch(vec![query.to_string()]).await?.remove(0));
 
     let rows = sqlx::query(&format!(
         "SELECT filename, code, start_line, end_line, embedding <=> $1::vector AS distance \

@@ -505,6 +505,7 @@ dependencies = [
  "fastembed",
  "futures",
  "globset",
+ "hf-hub",
  "hmac",
  "linkme",
  "quick-xml",
@@ -519,6 +520,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "ureq",
  "uuid",
  "walkdir",
 ]
