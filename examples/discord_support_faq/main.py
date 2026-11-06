@@ -43,10 +43,10 @@ litellm.drop_params = True
 FAQ_PATH = pathlib.Path("FAQ.md")
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-# Only the fields the thread's text and links read, so a reaction, a pin or
-# someone joining a thread reads nothing again. A thread keeps the fields that
-# change when it gets a reply, a deletion, an archive or a lock, since those are
-# the only signs that the messages inside it changed.
+# Only the fields the thread's text and links read, so a reaction or someone
+# joining a thread reads nothing again. A thread keeps the fields that change
+# when it gets a reply, a deletion, an archive or a lock, since those are the
+# only signs that the messages inside it changed.
 MESSAGE_FIELDS = ["author", "content", "embeds", "mentions", "type"]
 THREAD_FIELDS = [
     "guild_id",
