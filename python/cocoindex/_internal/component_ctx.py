@@ -182,7 +182,24 @@ class ComponentContext:
             if node is None:
                 # No handlers registered — log directly without building
                 # the ExceptionContext metadata at all. Don't propagate.
-                _logger.error("component build failed: %s", exc, exc_info=exc)
+                # The callback also serves descendant deletion failures, so
+                # the path is where the failure was reported, not necessarily
+                # the exact failing component.
+                if processor_name is not None:
+                    _logger.error(
+                        "component failed at or under %s (%s): %s",
+                        stable_path,
+                        processor_name,
+                        exc,
+                        exc_info=exc,
+                    )
+                else:
+                    _logger.error(
+                        "component failed at or under %s: %s",
+                        stable_path,
+                        exc,
+                        exc_info=exc,
+                    )
                 return
 
             env_name = self._env.name
