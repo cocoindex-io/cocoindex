@@ -868,7 +868,6 @@ async fn lancedb_connect_with_options() -> Result<()> {
         lancedb::ConnectOptions {
             read_consistency_interval: Some(std::time::Duration::ZERO),
             storage_options: [("timeout".to_string(), "30s".to_string())].into(),
-            ..Default::default()
         },
     )
     .await?;

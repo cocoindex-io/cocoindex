@@ -1404,9 +1404,7 @@ fn build_record_batch(
                 values
                     .map(|v| {
                         typed_value(name, def, v, "a 16-bit float", |v| {
-                            v.as_f64()
-                                .map(|n| f16::from_f64(n))
-                                .filter(|n| n.is_finite())
+                            v.as_f64().map(f16::from_f64).filter(|n| n.is_finite())
                         })
                     })
                     .collect::<Result<Vec<_>>>()?,
