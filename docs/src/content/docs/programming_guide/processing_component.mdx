@@ -6,6 +6,7 @@ description: >
   mount_each, mount_target), component paths, and granularity tradeoffs.
 ---
 import MountVsUseMount from '/src/components/diagrams/concepts/MountVsUseMount.astro';
+import LangTabs from '../../../components/LangTabs.astro';
 
 :::note[Prerequisite]
 Read [Core Concepts](./core_concepts) for processing components, target states, and incremental sync. Its per-file fan-out and chunk-embedding diagrams illustrate the mounting APIs below.
@@ -19,10 +20,29 @@ A **component path** is the stable identifier for a processing component across 
 
 Component paths are hierarchical and form a tree structure. You specify child paths using `coco.component_subpath()` with stable identifiers like string literals, file names, row keys, or entity IDs:
 
+{/* Rust: rust/sdk/cocoindex/tests/mount.rs (`mount!("b.md", ..)`, `ctx.with_subpath(&"process").mount(&"x", ..)`) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 coco.component_subpath(filename)           # e.g., coco.component_subpath("hello.pdf")
 coco.component_subpath("user", user_id)    # e.g., coco.component_subpath("user", 12345)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// The key is the first argument of the mount macros and methods.
+mount!("hello.pdf", process_file(ctx, file, target)).await?;
+// A multi-part path: a subpath context, then the key.
+ctx.with_subpath(&"user").mount(&user_id, |ctx| async move { /* ... */ Ok(()) }).await?;
+```
+
+In Rust there is no `component_subpath` value. A mount takes its key as a `Display` value (a `&str`, a `String`, a number), and `ctx.with_subpath(&"user")` returns a `Ctx` whose mounts go one level down.
+
+</Fragment>
+</LangTabs>
 
 Choose paths that are stable for the "same" item (e.g., file path, primary key). If an item disappears and its path is no longer present, CocoIndex cleans up the target states owned by that path (and its sub-paths).
 
@@ -59,14 +79,42 @@ And two sugar APIs that simplify common patterns:
 
 See also [`map()`](#using-cocoindex-map-to-apply-transformations) for a utility API that operates within a component without creating new ones.
 
+The Rust SDK has each API in two forms. The macros `mount!`, `use_mount!` and `mount_each!` take a `#[cocoindex::function]` call, substitute the child's `&Ctx` for its first argument, and fingerprint the function's logic and arguments so an unchanged child is skipped. The methods `ctx.mount`, `ctx.scope` and `ctx.mount_each` take a key and a closure, and always run it. `ctx.mount_each_live` is `mount_each` for a live source. The table maps the names:
+
+| Python | Rust macro | Rust method |
+|--------|------------|-------------|
+| `coco.mount(fn, ...)` | `mount!(fn(ctx, ...))` | `ctx.mount(&key, \|ctx\| async move { ... })` |
+| `coco.use_mount(fn, ...)` | `use_mount!(fn(ctx, ...))` | `ctx.scope(&key, \|ctx\| async move { ... })` |
+| `coco.mount_each(fn, items, ...)` | `mount_each!(items, \|item\| fn(ctx, item, ...))` | `ctx.mount_each(items, key_fn, \|ctx, item\| async move { ... })`, `ctx.mount_each_live(&key, feed, ...)` |
+| `coco.mount_target(target)` | — | `mount_target(&ctx, target_state)`, or a connector's `mount_*_target` |
+| `coco.map(fn, items, ...)` | — | `ctx.map(items, async \|item\| { ... })` |
+
 ### Automatic subpath derivation
 `mount()`, `use_mount()`, and `mount_each()` all accept an optional `ComponentSubpath` as their first argument. When omitted, the subpath is **auto-derived** from the function name using `Symbol(fn.__name__)`.
+
+{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (`mount!` doc), rust/sdk/cocoindex/tests/mount.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # These are equivalent:
 await coco.mount(process_file, file, target)
 await coco.mount(coco.component_subpath(coco.Symbol("process_file")), process_file, file, target)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// These are equivalent:
+mount!(process_file(ctx, file, target)).await?;
+mount!("process_file", process_file(ctx, file, target)).await?;
+```
+
+The Rust macros derive the subpath from the function's name too. The key is a plain string, not a `Symbol`. The methods `ctx.mount`, `ctx.scope` and `ctx.mount_each` always take an explicit key.
+
+</Fragment>
+</LangTabs>
 
 This means the component path for a `process_file` function is `parent / Symbol("process_file")`. The function must have a `__name__` attribute; if it doesn't (e.g., a lambda), provide an explicit subpath.
 
@@ -79,11 +127,29 @@ Since sibling component paths must not collide, you need an explicit subpath whe
 
 Use `mount()` when you don't need a return value from the processing component. It schedules the processing component to run and returns a handle:
 
+{/* Rust: rust/sdk/SHOWCASE.md "Mount processing components", verified against rust/sdk/cocoindex/tests/mount.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 handle = await coco.mount(process_file, file, target)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let handle = mount!(process_file(ctx, file, target)).await?;
+```
+
+</Fragment>
+</LangTabs>
+
 With an explicit subpath, for example when mounting multiple components of the same function:
+
+{/* Rust: rust/sdk/SHOWCASE.md "Nested component paths", verified against rust/sdk/cocoindex/tests/mount.rs (`with_subpath_nests_child_paths`) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 handle = await coco.mount(
@@ -94,25 +160,73 @@ handle = await coco.mount(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let process = ctx.with_subpath(&"process");
+let ctx = &process;
+let handle = mount!(file.key(), process_file(ctx, file, target.clone())).await?;
+```
+
+The macro reads the parent context from the `ctx` argument of the call, so bind the subpath context to `ctx` first. `ctx.mount(&key, |ctx| async move { .. })` is the closure form, for a key and body decided at run time; it always runs the body.
+
+</Fragment>
+</LangTabs>
+
 The handle provides a method you can call if you need to wait until the processing component is fully ***ready*** — meaning all its target states have been applied to external systems and all components in its sub-paths are ready:
+
+{/* Rust: rust/sdk/cocoindex/tests/mount.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 await handle.ready()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+handle.ready().await?;
+```
+
+The handle is a `ComponentMountHandle`. Without `ready()`, the parent still waits for its children before the update completes.
+
+</Fragment>
+</LangTabs>
+
 You usually only need to call `ready()` when you have logic that depends on the processing component's target states being applied — for example, querying the latest data from a target table after syncing it.
 
-`mount()` also accepts **LiveComponent classes** — components that process continuously and react to changes incrementally instead of rescanning everything. See [Live Components](../advanced_topics/live_component) for details.
+`mount()` also accepts **LiveComponent classes** — components that process continuously and react to changes incrementally instead of rescanning everything. See [Live Components](../advanced_topics/live_component) for details. In Rust, a `LiveComponent` is mounted with `ctx.mount_live(&key, component)`.
 
 ### `use_mount()`
 
 Use `use_mount()` when you need the processing component's return value. It mounts the component, waits until it's ready, and returns the value directly:
 
+{/* Rust: rust/sdk/SHOWCASE.md "Mount processing components", verified against rust/sdk/cocoindex/tests/memo_deps.rs (`use_mount!`) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 table = await coco.use_mount(setup_table, table_name="docs")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let summary = use_mount!(summarize(ctx, document)).await?;
+```
+
+</Fragment>
+</LangTabs>
+
 With an explicit subpath:
+
+{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (`use_mount!` doc), rust/sdk/cocoindex/src/ctx.rs (`Ctx::scope` doc) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 table = await coco.use_mount(
@@ -122,15 +236,49 @@ table = await coco.use_mount(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let summary = use_mount!("setup", summarize(ctx, document)).await?;
+
+// The closure form, always run:
+let val = ctx.scope(&"child", |child_ctx| async move {
+    Ok(42)
+}).await?;
+```
+
+The return value of a `use_mount!` child must implement `Serialize` and `Deserialize`: the engine stores it with the component's memo and returns it on a hit.
+
+</Fragment>
+</LangTabs>
+
 A common use of `use_mount()` is to obtain a [target](./target_state#where-do-targets-come-from) after its container target state is applied.
 
 ### `mount_each()`
 `mount_each()` mounts one processing component per item in a keyed iterable.
 
+{/* Rust: examples/rust/files_transform/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 files = localfs.walk_dir(sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]))
 await coco.mount_each(process_file, files.items(), target)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let files = cocoindex::resources::fs::walk_items(&source_dir, &["**/*.md"])?;
+mount_each!(files, |file| process_file(ctx, file, target)).await?;
+```
+
+`walk_items` returns `(relative_path, FileEntry)` pairs. The closure binds each item's value; `ctx` in the call is each child's context, and `target` is a captured extra that is fingerprinted with the value.
+
+</Fragment>
+</LangTabs>
 
 Each item in the iterable is a `(key, value)` tuple. The value is passed as the first argument to the function, and any additional arguments are passed through. Items are mounted under an [auto-derived subpath](#automatic-subpath-derivation) (`Symbol(fn.__name__)`), so the component path for each item is `parent / Symbol("process_file") / key`.
 
@@ -143,17 +291,40 @@ handle = await coco.mount_each(process_file, files.items(), target)
 await handle.ready()  # waits until every per-item component is ready
 ```
 
+Rust differs here: `mount_each!` is a foreground mount. It waits for every child and returns their values as a `Vec`, so there is no handle. `ctx.mount_each` returns the values the same way. `ctx.mount_each_live` returns once the feed's first scan is mounted and ready; in live mode its children keep reacting in the background.
+
 If you want per-item results without creating components, use [`map()`](#using-cocoindex-map-to-apply-transformations).
 
 You can provide an explicit subpath as the first argument:
+
+{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (`mount_each!` doc), examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 await coco.mount_each(coco.component_subpath("files"), process_file, files.items(), target)
 ```
 
-Source connectors provide an `items()` method that returns `(StableKey, T)` pairs. For example, `localfs.walk_dir(...).items()` yields `(relative_path, File)` tuples.
+</Fragment>
+<Fragment slot="rust">
 
-Keys must be unique within one `mount_each()` call. If the iterable yields the same key twice, `mount_each()` raises a `coco.AlreadyDeclaredError` (a `ValueError` subclass) that names the repeated component path.
+```rust
+mount_each!("files", files, |file| process_file(ctx, file, target)).await?;
+
+// A live source takes the closure form, with the prefix first:
+ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
+    let target_table = target_table.clone();
+    async move { process_file(&ctx, &file, &target_table).await }
+})
+.await?;
+```
+
+</Fragment>
+</LangTabs>
+
+Source connectors provide an `items()` method that returns `(StableKey, T)` pairs. For example, `localfs.walk_dir(...).items()` yields `(relative_path, File)` tuples. In Rust, `walk_items(dir, patterns)` returns the pairs as a `Vec`, and `walk_dir(dir).live()` returns a live feed for `ctx.mount_each_live`.
+
+Keys must be unique within one `mount_each()` call. If the iterable yields the same key twice, `mount_each()` raises a `coco.AlreadyDeclaredError` (a `ValueError` subclass) that names the repeated component path. In Rust, `ctx.mount_each` returns an error that names the duplicate key.
 
 An item's key is relative to its source, so two sources can yield the same key. When you mount several sources under one parent component, give each `mount_each()` its own subpath:
 
@@ -179,7 +350,13 @@ dir_target = await coco.mount_target(localfs.dir_target(outdir))
 
 The component path is derived automatically from the target's globally unique key — you don't need to create a `component_subpath` for it. This is sugar over calling `use_mount()` with a target declaration function.
 
+In Rust, `mount_target(&ctx, target_state)` is the generic form, for connector authors. Pipelines use the connectors' `mount_*` functions below.
+
 Connectors also provide convenience methods that wrap `mount_target()`:
+
+{/* Rust: examples/rust/files_transform/src/main.rs, examples/rust/text_embedding/src/main.rs, rust/sdk/cocoindex/tests/registered.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Equivalent to the above
@@ -193,9 +370,36 @@ table = await postgres.mount_table_target(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// A directory target; `DirTarget::mount(&ctx, &output_dir)?` is the same call.
+let target = mount_dir_target(&ctx, out)?;
+
+// PostgreSQL example
+let target_table = postgres::mount_table_target(
+    &ctx,
+    &DB,
+    TABLE,
+    postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+        .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+        .await?,
+    Some(PG_SCHEMA),
+)
+.await?;
+```
+
+</Fragment>
+</LangTabs>
+
 ### Using `component_subpath` as a context manager
 
 You can use `component_subpath()` as a context manager to create nested paths without repeating common prefixes:
+
+{/* Rust: rust/sdk/SHOWCASE.md "Nested component paths", verified against rust/sdk/cocoindex/tests/mount.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 with coco.component_subpath("process"):
@@ -207,6 +411,22 @@ with coco.component_subpath("process"):
             target,
         )
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let process = ctx.with_subpath(&"process");
+for file in files {
+    let ctx = &process;
+    mount!(file.key(), process_file(ctx, file, target.clone())).await?;
+}
+```
+
+`ctx.with_subpath(&"process")` returns a scoped `Ctx`; the original is unchanged. Chain calls for a multi-part prefix. The scoped context still belongs to the same component, so target states declared through it are the component's own. `use_state` is an error on a subpath context, as in Python.
+
+</Fragment>
+</LangTabs>
 
 This is equivalent to:
 
@@ -228,6 +448,10 @@ When iterating over keyed items, prefer [`mount_each()`](#mount_each) — it han
 
 `memo=True` on a function you **mount** memoizes the whole component — the *processing-component-level* memoization introduced in [Core Concepts](./core_concepts#function-memoization-skip-unchanged-computations). On a cache hit the body doesn't run, and everything the previous run produced is carried over as a unit: the component's declared [target states](./target_state) **and** its child mounts. Cleanup of no-longer-mounted children only applies when the body actually *runs* — a run that no longer mounts a child removes that child's subtree, while a cache hit retains it.
 
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 @coco.fn(memo=True)
 async def process_file(file: FileLike, table: postgres.TableTarget[DocEmbedding]) -> None:
@@ -235,6 +459,27 @@ async def process_file(file: FileLike, table: postgres.TableTarget[DocEmbedding]
 
 await coco.mount_each(process_file, files.items(), table)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_file(ctx: &Ctx, file: &FileEntry, table: &postgres::TableTarget) -> Result<()> {
+    // ...
+}
+
+ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
+    let target_table = target_table.clone();
+    async move { process_file(&ctx, &file, &target_table).await }
+})
+.await?;
+```
+
+In Rust, the macros `mount!`, `use_mount!` and `mount_each!` memoize the component on the function's logic and arguments even without `memo`: an unchanged child is skipped on the next run. The closure forms (`ctx.mount`, `ctx.scope`, `ctx.mount_each`, `ctx.mount_each_live`) always run the body, so put `memo` on the function they call, as above. The table target is not `MemoInput`; `memo_key(table = skip)` leaves it out of the key.
+
+</Fragment>
+</LangTabs>
 
 Skipping a stable item this way costs almost nothing in storage, provided you follow one principle:
 
@@ -273,7 +518,7 @@ The framework's general rule: **a call raises on failure iff the failed work was
 
 To react to background failures, you can:
 
-- Install [exception handlers](../advanced_topics/exception_handlers#exception-handlers) — global or scoped — to send alerts, record metrics, or implement custom logic. A handler that raises propagates the failure through `await handle.ready()` if you choose to await it.
+- Install [exception handlers](../advanced_topics/exception_handlers#exception-handlers) — global or scoped — to send alerts, record metrics, or implement custom logic. A handler that raises propagates the failure through `await handle.ready()` if you choose to await it. In Rust, `EnvironmentBuilder::exception_handler` installs a global handler and `ctx.with_exception_handler(handler)` returns a scoped `Ctx`; a child mounted from it inherits the handler chain. A handler returns `Ok(())` to swallow the failure or `Err(_)` to pass it on, and the last error reaches `handle.ready()`.
 - [Monitor app progress](../advanced_topics/progress_monitoring) — `UpdateStats` exposes per-component stats including error counts, so you can detect failures programmatically.
 
 For the full picture (including the critical-path principle applied to every API, interrupted update recovery, and the exception handler API) see [Error Handling](../advanced_topics/exception_handlers).
@@ -328,10 +573,22 @@ def app_main() -> None:
 
 This pattern ensures that CocoIndex can track component relationships and target state ownership even across thread boundaries.
 
+The Rust SDK has no ambient context to capture: the `Ctx` is an explicit, `Clone` value. Pass a clone into a spawned task:
+
+{/* Rust: rust/sdk/cocoindex/tests/batching_runner.rs */}
+```rust
+let ctx = ctx.clone();
+tokio::spawn(async move { limited(&ctx, item).await })
+```
+
 ## Processing helpers
 
 ### Using CocoIndex `map()` to apply transformations
 The `map()` API (also known as `coco.map()`) applies an async function to each item in a collection, running all calls concurrently within the current processing component. Unlike [`mount()`](#mount) and [`mount_each()`](#mount_each), it does **not** create child processing components — it's purely concurrent execution (similar to `asyncio.gather()`).
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn(memo=True)
@@ -341,7 +598,38 @@ async def process_file(file: FileLike, table: postgres.TableTarget[DocEmbedding]
     await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
 ```
 
-The first argument to the function receives each item; additional arguments are passed through to every call. The `coco.map()` API returns a `list` of the results, in the same order as the input items.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_file(ctx: &Ctx, file: &FileEntry, table: &postgres::TableTarget) -> Result<()> {
+    let text = file.read_text().await?;
+    let chunks = RecursiveSplitter::new()?.split_with(
+        &text,
+        RecursiveChunkConfig {
+            chunk_size: CHUNK_SIZE,
+            min_chunk_size: None,
+            chunk_overlap: Some(CHUNK_OVERLAP),
+            language: Some("markdown".to_string()),
+        },
+    );
+    let filename = file.key();
+    let id_gen = IdGenerator::new();
+    ctx.map(chunks, async |chunk| {
+        process_chunk(ctx, chunk, &text, &filename, &id_gen, &table).await
+    })
+    .await?;
+    Ok(())
+}
+```
+
+`ctx.map(items, f)` takes an async closure. The futures run in place, so the closure may borrow the caller's values (the text, the `IdGenerator`, the target).
+
+</Fragment>
+</LangTabs>
+
+The first argument to the function receives each item; additional arguments are passed through to every call. The `coco.map()` API returns a `list` of the results, in the same order as the input items. The Rust `ctx.map` returns a `Vec` in the same order.
 
 #### When to use the `map()` API vs `mount_each()`
 
