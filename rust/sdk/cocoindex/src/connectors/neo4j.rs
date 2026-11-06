@@ -1,6 +1,7 @@
 //! Neo4j graph target helpers.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -10,11 +11,39 @@ use crate::target_state::{STATIC_ROOT_PROVIDERS, StaticRootProvider};
 
 pub use cypher_graph::{ColumnDef, TableSchema, TableSpec, VectorMetric};
 
+/// Retry policy for a transaction that hits a transient error (a deadlock
+/// between concurrent writers of the same nodes): a handful of attempts,
+/// sub-second backoff. Python's `_TXN_MAX_ATTEMPTS` and
+/// `_TXN_RETRY_*_BACKOFF_SECONDS`.
+const TXN_MAX_ATTEMPTS: u32 = 8;
+const TXN_RETRY_INITIAL_BACKOFF: Duration = Duration::from_millis(50);
+const TXN_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(2);
+
 #[derive(Clone)]
 pub struct Graph {
     db: Arc<neo4rs::Graph>,
     database: Arc<str>,
 }
+
+fn neo4j_error(e: neo4rs::Error) -> Error {
+    Error::engine(format!("neo4j: {e}"))
+}
+
+/// A transaction over the server's memory limit. Neo4j reports it as a
+/// transient error, but retrying the same transaction fails the same way.
+fn is_memory_limit(e: &neo4rs::Error) -> bool {
+    matches!(e, neo4rs::Error::Neo4j(err) if err.kind() == neo4rs::Neo4jErrorKind::Transient && err.code().contains("Memory"))
+}
+
+fn is_retryable(e: &neo4rs::Error) -> bool {
+    matches!(e, neo4rs::Error::Neo4j(err) if err.kind() == neo4rs::Neo4jErrorKind::Transient)
+        && !is_memory_limit(e)
+}
+
+/// The marker [`cypher_graph::CypherExecutor::is_transaction_too_large`]
+/// recognizes in an error [`Graph::execute_batch`] raised for a transaction
+/// over the memory limit.
+const MEMORY_LIMIT_MARKER: &str = "neo4j transaction over the server's memory limit: ";
 
 fn normalize_uri(uri: &str) -> String {
     uri.strip_prefix("bolt://")
@@ -80,15 +109,65 @@ impl cypher_graph::CypherExecutor for Graph {
         cypher: &str,
         params: &cypher_graph::CypherParams,
     ) -> Result<()> {
-        let mut query = neo4rs::query(cypher);
-        for (name, value) in params {
-            query = query.param(name, json_to_bolt(value)?);
-        }
         self.db
-            .run_on(&self.database, query)
+            .run_on(&self.database, bolt_query(cypher, params)?)
             .await
-            .map_err(|e| Error::engine(format!("neo4j: {e}")))
+            .map_err(neo4j_error)
     }
+
+    /// Run `statements` in one transaction, retried on a transient error (a
+    /// deadlock: Neo4j expects the client to retry). A failure rolls the
+    /// transaction back and raises.
+    async fn execute_batch(&self, statements: &[cypher_graph::CypherStatement]) -> Result<()> {
+        let queries = statements
+            .iter()
+            .map(|statement| bolt_query(&statement.cypher, &statement.params))
+            .collect::<Result<Vec<_>>>()?;
+        let mut backoff = TXN_RETRY_INITIAL_BACKOFF;
+        for attempt in 1.. {
+            match self.run_in_txn(&queries).await {
+                Ok(()) => return Ok(()),
+                Err(e) if is_memory_limit(&e) => {
+                    return Err(Error::engine(format!("{MEMORY_LIMIT_MARKER}{e}")));
+                }
+                Err(e) if is_retryable(&e) && attempt < TXN_MAX_ATTEMPTS => {
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(TXN_RETRY_MAX_BACKOFF);
+                }
+                Err(e) => return Err(neo4j_error(e)),
+            }
+        }
+        unreachable!("the retry loop returns")
+    }
+
+    fn is_transaction_too_large(&self, error: &Error) -> bool {
+        error.to_string().contains(MEMORY_LIMIT_MARKER)
+    }
+}
+
+impl Graph {
+    async fn run_in_txn(
+        &self,
+        queries: &[neo4rs::Query],
+    ) -> std::result::Result<(), neo4rs::Error> {
+        let mut txn = self.db.start_txn_on(self.database.as_ref()).await?;
+        for query in queries {
+            if let Err(e) = txn.run(query.clone()).await {
+                // A rollback failure is reported through the run error.
+                let _ = txn.rollback().await;
+                return Err(e);
+            }
+        }
+        txn.commit().await
+    }
+}
+
+fn bolt_query(cypher: &str, params: &cypher_graph::CypherParams) -> Result<neo4rs::Query> {
+    let mut query = neo4rs::query(cypher);
+    for (name, value) in params {
+        query = query.param(name, json_to_bolt(value)?);
+    }
+    Ok(query)
 }
 
 /// Convert a JSON value to a Bolt parameter value (cf. the Python driver's

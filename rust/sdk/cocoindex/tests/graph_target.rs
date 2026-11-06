@@ -97,6 +97,33 @@ fn from_row_matches_explicit_schema() -> Result<()> {
 }
 
 #[test]
+fn from_row_takes_column_type_overrides() -> Result<()> {
+    // Python's `from_class(column_overrides={"location": Neo4jType("POINT")})`.
+    #[derive(SchemaFields)]
+    #[allow(dead_code)]
+    struct Row {
+        id: String,
+        location: Option<String>,
+    }
+
+    let schema = TableSchema::from_row::<Row>("id")?.with_column_type("location", "POINT")?;
+    let explicit = TableSchema::new(
+        [
+            ("id", ColumnDef::new("STRING")),
+            ("location", ColumnDef::new("POINT").nullable()),
+        ],
+        "id",
+    )?;
+    assert_eq!(schema, explicit);
+
+    let err = TableSchema::from_row::<Row>("id")?
+        .with_column_type("missing", "POINT")
+        .unwrap_err();
+    assert!(err.to_string().contains("\"missing\""), "{err}");
+    Ok(())
+}
+
+#[test]
 fn from_row_requires_the_primary_key_to_be_a_field() {
     let err = TableSchema::from_row::<Knows>("id").unwrap_err();
     assert!(err.to_string().contains("\"id\" not found"), "{err}");
