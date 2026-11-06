@@ -27,6 +27,7 @@ import dataclasses
 import os
 import re
 import ssl
+import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple, cast
@@ -173,6 +174,18 @@ def _bucket_headers(*, remaining: int, reset_after: float) -> dict[str, str]:
     }
 
 
+@dataclasses.dataclass
+class _FakeBucket:
+    """A rate limit the fake enforces on one path, as Discord does: ``limit``
+    requests, until ``reset_after`` seconds after the first of them, then 429s
+    until the reset."""
+
+    limit: int
+    reset_after: float
+    remaining: int = 0
+    reset_at: float = float("-inf")
+
+
 def _archived_at(raw_thread: dict[str, Any]) -> datetime:
     return datetime.fromisoformat(raw_thread["thread_metadata"]["archive_timestamp"])
 
@@ -187,9 +200,11 @@ class _FakeDiscord:
     network error), then normal handling resumes; ``before_request[path]`` is
     called once, just before the next request to ``path`` is answered, to
     change the state mid-listing; ``rate_limit_headers[path]`` are added to
-    every answer for ``path`` but scripted ones; ``page_cap`` answers fewer
-    messages or threads per page than asked for, as Discord may.
-    ``requests`` logs every request as ``(method, path, params)``.
+    every answer for ``path`` but scripted ones; ``buckets[path]`` enforces a
+    rate limit on ``path``, timed by ``clock``, logging each 429 it answers in
+    ``rate_limited``; ``page_cap`` answers fewer messages or threads per page
+    than asked for, as Discord may. ``requests`` logs every request as
+    ``(method, path, params)``.
     """
 
     def __init__(self) -> None:
@@ -208,6 +223,9 @@ class _FakeDiscord:
         self.script: dict[str, list[httpx.Response | httpx.HTTPError]] = {}
         self.before_request: dict[str, Callable[[], None]] = {}
         self.rate_limit_headers: dict[str, dict[str, str]] = {}
+        self.buckets: dict[str, _FakeBucket] = {}
+        self.clock: Callable[[], float] = time.monotonic
+        self.rate_limited: list[str] = []
         self.page_cap: int | None = None
         self.requests: list[tuple[str, str, dict[str, str]]] = []
 
@@ -257,11 +275,36 @@ class _FakeDiscord:
             if isinstance(answer, httpx.HTTPError):
                 raise answer
             return answer
+        if (bucket := self.buckets.get(path)) is not None:
+            now = self.clock()
+            if now >= bucket.reset_at:
+                bucket.remaining = bucket.limit
+                bucket.reset_at = now + bucket.reset_after
+            if bucket.remaining == 0:
+                self.rate_limited.append(path)
+                return httpx.Response(
+                    429,
+                    json={
+                        "message": "You are being rate limited.",
+                        "retry_after": bucket.reset_at - now,
+                        "global": False,
+                    },
+                    headers=_bucket_headers(
+                        remaining=0, reset_after=bucket.reset_at - now
+                    ),
+                )
+            bucket.remaining -= 1
         if (failure := self.fail.get(path)) is not None:
             resp = _discord_error(*failure)
         else:
             resp = self._answer(path, params)
         resp.headers.update(self.rate_limit_headers.get(path, {}))
+        if bucket is not None:
+            resp.headers.update(
+                _bucket_headers(
+                    remaining=bucket.remaining, reset_after=bucket.reset_at - now
+                )
+            )
         return resp
 
     def _limit(self, params: dict[str, str]) -> int:
@@ -810,6 +853,28 @@ class TestPacing:
         assert len(sleeps) == 2
         assert sleeps[0] == 0.5
         assert 4.0 < sleeps[1] <= 4.5
+
+    async def test_concurrent_requests_share_the_bucket(
+        self, sleeps: list[float], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Channels listed together each send the server's active-thread
+        # listing twice, all on one bucket and server ID. The bucket's state
+        # comes only from responses, so requests sent together would all see
+        # what was left before any of them.
+        monkeypatch.setattr(_source, "RateLimiter", _RecordingLimiter)
+        fake = _FakeDiscord()
+        channel_ids = [str(n) for n in range(1099, 1107)]
+        for channel_id in channel_ids:
+            fake.add_channel(_raw_channel(channel_id))
+        path = f"/guilds/{_GUILD}/threads/active"
+        fake.buckets[path] = _FakeBucket(limit=5, reset_after=0.5)
+        # Time passes as the connector waits.
+        fake.clock = lambda: time.monotonic() + sum(sleeps)
+        app, _ = await _setup(fake)
+        async with app:
+            await asyncio.gather(*(_items(_channel(app, c)) for c in channel_ids))
+        assert fake.rate_limited == []
+        assert fake.count(path) == 2 * len(channel_ids)
 
     async def test_routes_without_headers_not_paced(self, sleeps: list[float]) -> None:
         app, ctx = await _setup(_fake_with_channels())

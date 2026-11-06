@@ -382,6 +382,7 @@ class _ApiContext:
         "_intent_ok",
         "_rate_limiter",
         "_route_buckets",
+        "_route_locks",
         "_token_rejected",
     )
 
@@ -394,6 +395,7 @@ class _ApiContext:
         )
         self._route_buckets: dict[str, str] = {}
         self._bucket_states: dict[tuple[str, str | None], _BucketState] = {}
+        self._route_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
         # Set by a 401. Discord bans an IP that gets 10,000 responses of 401,
         # 403 or 429 in 10 minutes, so a rejected token stops every request.
         self._token_rejected = False
@@ -424,6 +426,21 @@ class _ApiContext:
     ) -> Any:
         """GET ``route``, a path template, with its top-level ID ``major`` in
         place of ``{id}``, and return the response's JSON.
+
+        Requests with the same route and top-level ID are sent one at a time:
+        a bucket's state comes only from responses, so requests sent together
+        would all see what it had left before any of them. Each is paced and
+        retried as :meth:`_get_paced` says."""
+        async with self._route_locks.setdefault((route, major), asyncio.Lock()):
+            return await self._get_paced(route, major, params)
+
+    async def _get_paced(
+        self,
+        route: str,
+        major: str | None,
+        params: Mapping[str, str | int] | None,
+    ) -> Any:
+        """Send one request for :meth:`get`, retrying it as needed.
 
         Each attempt, retries included, waits for the route's bucket if it's
         used up, then takes a token from the App's ``rate_limiter`` (if set)
