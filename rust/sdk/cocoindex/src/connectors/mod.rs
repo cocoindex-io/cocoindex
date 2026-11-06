@@ -2,6 +2,8 @@
 
 #[cfg(feature = "amazon_s3")]
 pub mod amazon_s3;
+#[cfg(feature = "azure_blob")]
+pub mod azure_blob;
 #[cfg(feature = "doris")]
 pub mod doris;
 #[cfg(feature = "falkordb")]
@@ -30,3 +32,5 @@ pub mod surrealdb;
 pub mod turbopuffer;
 #[cfg(feature = "valkey")]
 pub mod valkey;
+#[cfg(feature = "zvec")]
+pub mod zvec;
