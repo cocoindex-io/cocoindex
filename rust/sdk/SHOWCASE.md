@@ -318,10 +318,51 @@ for batching; with `memo`, they must also implement `MemoInput` unless their
 memo identity is transformed or skipped.
 
 A physical batch does not inherit any individual caller's deadline. A batch
-error currently fails every item in that physical batch; the Rust SDK does not
-yet retry smaller sub-batches automatically. A batching function must also not
-call itself recursively from its own body, because that waits on the batcher
-which is already executing the body.
+error fails every item in that physical batch, unless the body asks for a
+smaller batch: returning `Error::retry_with_smaller_batch(cause)` (Python's
+`raise RetryWithSmallerBatch() from err`) makes the engine halve the batch and
+re-run each half, down to single items, so one rejected input fails only its
+own caller while the rest keep their results. At batch size one the engine
+unwraps the signal and fails that caller with `cause`, so the body never checks
+the batch size:
+
+```rust
+#[cocoindex::function(memo, batching, max_batch_size = 64)]
+async fn embed_batch(ctx: &Ctx, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+    let client = ctx.get_key(&EMBEDDING_CLIENT)?;
+    client
+        .embed(&texts)
+        .await
+        .map_err(|err| Error::retry_with_smaller_batch(Error::user(err)))
+}
+```
+
+A batching function must also not call itself recursively from its own body,
+because that waits on the batcher which is already executing the body.
+
+## Run on a GPU
+
+`runner = ...` (Python's `runner=coco.GPU`) makes each call hold a share of a
+GPU from the process-wide pool while its body runs. With `batching`, each
+physical batch, and each retried half, holds it instead. `cocoindex::GPU`
+takes a whole GPU, so bodies on one GPU run one at a time;
+`GPURunner::fraction(0.5)` lets two run at once on the same GPU. Inside the
+body, `current_gpu()`, `current_gpus()` and `current_gpu_fraction()` report
+the assignment:
+
+```rust
+#[cocoindex::function(memo, batching, max_batch_size = 16, runner = cocoindex::GPU)]
+async fn embed_on_gpu(_ctx: &Ctx, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+    let device = cocoindex::current_gpu().unwrap_or(0);
+    MODEL.encode_on(device, &texts)
+}
+```
+
+The pool's size is detected from `COCOINDEX_NUM_GPUS`, `CUDA_VISIBLE_DEVICES`
+or `nvidia-smi` (one GPU by default); `configure_gpu_pool(n)` overrides it
+before the first GPU function runs. Python's subprocess mode and dedicated GPU
+thread exist for the GIL and CUDA's fork rules, which a Rust body does not
+have, so there is no equivalent.
 
 ## Embed, transcribe and resolve entities with the built-in ops
 
