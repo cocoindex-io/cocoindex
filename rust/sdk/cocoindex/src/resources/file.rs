@@ -13,12 +13,17 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Serialize, Serializer, ser::SerializeTuple};
 use tokio::sync::Mutex;
 
+use crate::ctx::{ContextKey, Ctx};
 use crate::error::{Error, Result};
 
 /// A file path with an optional stable base key.
 ///
 /// The resolved location may move, while [`FilePath::memo_key`] stays stable
-/// when callers supply the same logical base key.
+/// when callers supply the same logical base key. The base is either a
+/// directory resolved up front ([`FilePath::with_base_dir`]) or a
+/// [`ContextKey`] whose directory the environment provides
+/// ([`FilePath::with_base_key`], resolved by [`FilePath::resolve_in`]), as
+/// Python's `FilePath(path, base_dir=SOURCE_DIR)`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct FilePath {
     base_key: Option<Arc<str>>,
@@ -47,6 +52,18 @@ impl FilePath {
         }
     }
 
+    /// A path under the directory the environment provides for `base`
+    /// (`builder.provide_key(&SOURCE_DIR, dir)`). The key's name is the stable
+    /// base key, so the memo key does not change when the directory moves.
+    /// Resolve with [`FilePath::resolve_in`].
+    pub fn with_base_key(base: &ContextKey<PathBuf>, path: impl Into<PathBuf>) -> Self {
+        Self {
+            base_key: Some(Arc::from(base.name())),
+            base_dir: None,
+            path: path.into(),
+        }
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -55,10 +72,31 @@ impl FilePath {
         self.base_key.as_deref()
     }
 
+    /// The full path for a base-less path or one built with
+    /// [`FilePath::with_base_dir`]. A path built with [`FilePath::with_base_key`]
+    /// needs the environment: use [`FilePath::resolve_in`].
     pub fn resolve(&self) -> PathBuf {
         match &self.base_dir {
             Some(base) => base.join(&self.path),
             None => self.path.clone(),
+        }
+    }
+
+    /// The full path, resolving a [`FilePath::with_base_key`] base through the
+    /// directory provided for its key in `ctx`'s environment (cf. Python
+    /// `FilePath.resolve()`, which reads the key with `use_context`).
+    ///
+    /// # Errors
+    /// [`Error::MissingContext`] when the base key has no provided directory.
+    pub fn resolve_in(&self, ctx: &Ctx) -> Result<PathBuf> {
+        match (&self.base_dir, &self.base_key) {
+            (None, Some(key)) => {
+                let base: Arc<PathBuf> = ctx
+                    .resolve_context_by_name(key)
+                    .ok_or_else(|| Error::MissingContext(key.to_string()))?;
+                Ok(base.join(&self.path))
+            }
+            _ => Ok(self.resolve()),
         }
     }
 
@@ -106,6 +144,50 @@ impl FilePath {
             return None;
         }
         Some(self.with_path(parent.to_path_buf()))
+    }
+
+    /// The path's logical ancestors, nearest first (cf. `PurePath.parents`,
+    /// without its final `.` entry).
+    pub fn parents(&self) -> Vec<FilePath> {
+        let mut parents = Vec::new();
+        let mut current = self.parent();
+        while let Some(parent) = current {
+            current = parent.parent();
+            parents.push(parent);
+        }
+        parents
+    }
+
+    /// Whether `base` is this path or one of its ancestors (cf.
+    /// `PurePath.is_relative_to`).
+    pub fn is_relative_to(&self, base: impl AsRef<Path>) -> bool {
+        self.path.starts_with(base.as_ref())
+    }
+
+    /// Match the path against a glob `pattern` with `PurePath.match` semantics:
+    /// a relative pattern is matched from the right, component by component
+    /// (`*` and `?` stay within one component; `**` is not special); an
+    /// absolute pattern must match the whole path. An invalid pattern never
+    /// matches.
+    pub fn matches(&self, pattern: &str) -> bool {
+        let pattern = pattern.replace('\\', "/");
+        let pattern_parts: Vec<&str> = pattern.split('/').filter(|p| !p.is_empty()).collect();
+        if pattern_parts.is_empty() {
+            return false;
+        }
+        let parts = self.parts();
+        let anchored = pattern.starts_with('/');
+        if anchored && (!self.path.is_absolute() || parts.len() != pattern_parts.len() + 1) {
+            return false;
+        }
+        if parts.len() < pattern_parts.len() {
+            return false;
+        }
+        parts
+            .iter()
+            .rev()
+            .zip(pattern_parts.iter().rev())
+            .all(|(part, glob)| Glob::new(glob).is_ok_and(|g| g.compile_matcher().is_match(part)))
     }
 
     /// All file-name suffixes, e.g. `a.tar.gz` -> `[".tar", ".gz"]` (cf.
@@ -262,8 +344,18 @@ pub trait FileLike: Send + Sync {
         self.read_impl(Some(size)).await
     }
 
+    /// The content as text: BOM-detected encoding (UTF-8/16/32), else UTF-8,
+    /// with invalid sequences replaced by U+FFFD. The Python defaults.
     async fn read_text(&self) -> Result<String> {
         Ok(decode_bytes(&self.read().await?))
+    }
+
+    /// The content as text in `encoding` (a WHATWG label such as `"latin1"` or
+    /// `"utf-16le"`, or `"utf-32le"`/`"utf-32be"`; `None` detects by BOM, else
+    /// UTF-8), with `errors` deciding what an undecodable sequence does. Cf.
+    /// Python `read_text(encoding=..., errors=...)`.
+    async fn read_text_with(&self, encoding: Option<&str>, errors: DecodeErrors) -> Result<String> {
+        decode_bytes_with(&self.read().await?, encoding, errors)
     }
 
     async fn content_fingerprint(&self) -> Result<Fingerprint> {
@@ -516,49 +608,119 @@ pub mod system_time_serde {
     }
 }
 
+/// What an undecodable byte sequence does when reading text (cf. Python's
+/// `errors` argument to `bytes.decode`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DecodeErrors {
+    /// Replace it with U+FFFD (the default).
+    #[default]
+    Replace,
+    /// Drop it.
+    Ignore,
+    /// Fail the read.
+    Strict,
+}
+
+/// Decode `bytes` as text, detecting the encoding by BOM (UTF-8/16/32) and
+/// falling back to UTF-8, with invalid sequences replaced by U+FFFD.
 pub fn decode_bytes(bytes: &[u8]) -> String {
-    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        let (text, _had_errors) = encoding_rs::UTF_8.decode_with_bom_removal(bytes);
-        return text.into_owned();
+    decode_bytes_with(bytes, None, DecodeErrors::Replace)
+        .expect("replacing decode errors never fails")
+}
+
+/// Decode `bytes` as text in `encoding` (`None` detects by BOM, else UTF-8),
+/// handling undecodable sequences per `errors`. See
+/// [`FileLike::read_text_with`].
+pub fn decode_bytes_with(
+    bytes: &[u8],
+    encoding: Option<&str>,
+    errors: DecodeErrors,
+) -> Result<String> {
+    let Some(label) = encoding else {
+        return decode_detected(bytes, errors);
+    };
+    let normalized = label.trim().to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "utf-32" | "utf-32-le" | "utf-32le" => decode_utf32(bytes, false, errors),
+        "utf-32-be" | "utf-32be" => decode_utf32(bytes, true, errors),
+        // Python's `utf-8-sig` strips a BOM; encoding_rs's UTF-8 does not.
+        "utf-8-sig" => decode_with(
+            encoding_rs::UTF_8,
+            bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes),
+            errors,
+        ),
+        _ => {
+            let encoding = encoding_rs::Encoding::for_label(normalized.as_bytes())
+                .ok_or_else(|| Error::engine(format!("unknown text encoding {label:?}")))?;
+            decode_with(encoding, bytes, errors)
+        }
+    }
+}
+
+fn decode_detected(bytes: &[u8], errors: DecodeErrors) -> Result<String> {
+    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return decode_with(encoding_rs::UTF_8, rest, errors);
     }
     // UTF-32 must be checked BEFORE UTF-16: a UTF-32LE BOM (FF FE 00 00) starts
     // with the UTF-16LE BOM (FF FE). `encoding_rs` has no UTF-32 decoder, so
     // decode it by hand.
-    if bytes.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) {
-        return decode_utf32(&bytes[4..], false);
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE, 0x00, 0x00]) {
+        return decode_utf32(rest, false, errors);
     }
-    if bytes.starts_with(&[0x00, 0x00, 0xFE, 0xFF]) {
-        return decode_utf32(&bytes[4..], true);
+    if let Some(rest) = bytes.strip_prefix(&[0x00, 0x00, 0xFE, 0xFF]) {
+        return decode_utf32(rest, true, errors);
     }
-    if bytes.starts_with(&[0xFF, 0xFE]) {
-        let (text, _had_errors) = encoding_rs::UTF_16LE.decode_with_bom_removal(bytes);
-        return text.into_owned();
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return decode_with(encoding_rs::UTF_16LE, rest, errors);
     }
-    if bytes.starts_with(&[0xFE, 0xFF]) {
-        let (text, _had_errors) = encoding_rs::UTF_16BE.decode_with_bom_removal(bytes);
-        return text.into_owned();
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return decode_with(encoding_rs::UTF_16BE, rest, errors);
     }
-    let (text, _encoding, _had_errors) = encoding_rs::UTF_8.decode(bytes);
-    text.into_owned()
+    decode_with(encoding_rs::UTF_8, bytes, errors)
 }
 
-/// Decode UTF-32 (BOM already stripped) into a `String`, replacing invalid code
-/// points with U+FFFD (mirrors lossy decoding of the other encodings).
-fn decode_utf32(bytes: &[u8], big_endian: bool) -> String {
-    bytes
-        .chunks(4)
-        .map(|chunk| {
-            if chunk.len() < 4 {
-                return '\u{FFFD}';
+/// Decode with an `encoding_rs` encoding (BOM already stripped). `encoding_rs`
+/// only replaces, so `Ignore` strips the replacement characters it inserted
+/// and `Strict` fails when it inserted any.
+fn decode_with(
+    encoding: &'static encoding_rs::Encoding,
+    bytes: &[u8],
+    errors: DecodeErrors,
+) -> Result<String> {
+    let (text, had_errors) = encoding.decode_without_bom_handling(bytes);
+    if !had_errors {
+        return Ok(text.into_owned());
+    }
+    match errors {
+        DecodeErrors::Replace => Ok(text.into_owned()),
+        DecodeErrors::Ignore => Ok(text.chars().filter(|c| *c != '\u{FFFD}').collect()),
+        DecodeErrors::Strict => Err(Error::engine(format!(
+            "invalid {} byte sequence in text",
+            encoding.name()
+        ))),
+    }
+}
+
+/// Decode UTF-32 (BOM already stripped) into a `String`; an invalid code point
+/// or a trailing partial code unit is an undecodable sequence.
+fn decode_utf32(bytes: &[u8], big_endian: bool, errors: DecodeErrors) -> Result<String> {
+    let mut text = String::with_capacity(bytes.len() / 4);
+    for chunk in bytes.chunks(4) {
+        let decoded = match <[u8; 4]>::try_from(chunk) {
+            Ok(unit) if big_endian => char::from_u32(u32::from_be_bytes(unit)),
+            Ok(unit) => char::from_u32(u32::from_le_bytes(unit)),
+            Err(_) => None,
+        };
+        match (decoded, errors) {
+            (Some(c), _) => text.push(c),
+            (None, DecodeErrors::Replace) => text.push('\u{FFFD}'),
+            (None, DecodeErrors::Ignore) => {}
+            (None, DecodeErrors::Strict) => {
+                return Err(Error::engine("invalid UTF-32 code unit in text"));
             }
-            let code = if big_endian {
-                u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-            } else {
-                u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-            };
-            char::from_u32(code).unwrap_or('\u{FFFD}')
-        })
-        .collect()
+        }
+    }
+    Ok(text)
 }
 
 fn build_glob(pattern: &str) -> Result<globset::Glob> {

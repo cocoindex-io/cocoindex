@@ -15,8 +15,8 @@ pub use crate::live_component::{
 pub use crate::resources::chunk::{Chunk, TextPosition};
 pub use crate::resources::embedder::Embedder;
 pub use crate::resources::file::{
-    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
-    MatchAllFilePathMatcher, PatternFilePathMatcher,
+    DecodeErrors, FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher,
+    FileSourceItem, MatchAllFilePathMatcher, PatternFilePathMatcher,
 };
 pub use crate::resources::fs::{
     DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
@@ -26,12 +26,13 @@ pub use crate::resources::id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
     generate_uuid_default,
 };
-pub use crate::resources::live_map::LiveMap;
+pub use crate::resources::live_map::{LiveMap, LiveMapKey};
 pub use crate::resources::rate_limit::RateLimiter;
 pub use crate::resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,
 };
+pub use crate::resources::view::{SegmentKind, SourceView, ViewSegment};
 pub use crate::runner::{
     GPU, GPURunner, configure_gpu_pool, current_gpu, current_gpu_fraction, current_gpus,
 };

@@ -16,9 +16,9 @@ fn live_map_create_and_declare() {
         .unwrap();
 
     app.update_blocking(|ctx| async move {
-        let lm: LiveMap<String> = LiveMap::create(&ctx).await?;
-        lm.declare_entry(&ctx, "a", "alpha".to_string())?;
-        lm.declare_entry(&ctx, "b", "beta".to_string())?;
+        let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
+        lm.declare_entry(&ctx, "a".to_string(), "alpha".to_string())?;
+        lm.declare_entry(&ctx, "b".to_string(), "beta".to_string())?;
         Ok(())
     })
     .unwrap();
@@ -32,15 +32,15 @@ async fn live_map_preview_applies_nothing() {
     let app = App::open("live_map_preview", dir.path().join("lmdb"))
         .await
         .unwrap();
-    let created: Arc<Mutex<Option<LiveMap<String>>>> = Arc::new(Mutex::new(None));
+    let created: Arc<Mutex<Option<LiveMap<String, String>>>> = Arc::new(Mutex::new(None));
 
     let actions = app
         .preview({
             let created = created.clone();
             move |ctx| async move {
-                let lm: LiveMap<String> = LiveMap::create(&ctx).await?;
-                lm.declare_entry(&ctx, "a", "alpha".to_string())?;
-                lm.declare_entry(&ctx, "b", "beta".to_string())?;
+                let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
+                lm.declare_entry(&ctx, "a".to_string(), "alpha".to_string())?;
+                lm.declare_entry(&ctx, "b".to_string(), "beta".to_string())?;
                 *created.lock().unwrap() = Some(lm);
                 Ok(())
             }
@@ -90,7 +90,7 @@ mod live {
 
     /// Declares every entry of `source`; re-runs its full pass on `trigger`.
     struct Producer {
-        lm: LiveMap<String>,
+        lm: LiveMap<String, String>,
         source: Arc<Mutex<Vec<(String, String)>>>,
         trigger: Arc<Notify>,
     }
@@ -118,7 +118,7 @@ mod live {
     /// Consumes the map; runs its full pass twice, so its `mount_each_live`
     /// child is mounted again and the map is watched a second time.
     struct Consumer {
-        lm: LiveMap<String>,
+        lm: LiveMap<String, String>,
         seen: Arc<Mutex<Vec<String>>>,
         remounted: Arc<Notify>,
     }
@@ -171,7 +171,7 @@ mod live {
                     ..UpdateOptions::default()
                 },
                 move |ctx| async move {
-                    let lm: LiveMap<String> = LiveMap::create(&ctx).await?;
+                    let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
                     ctx.mount_live(
                         &"producer",
                         Producer {
