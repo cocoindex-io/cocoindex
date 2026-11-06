@@ -59,10 +59,8 @@ async def test_litellm_omits_null_encoding_format_from_extra_body() -> None:
         body = json.loads(request.content)
         request_bodies.append(body)
         if "encoding_format" in body and body["encoding_format"] is None:
-            return httpx.Response(
-                400, json={"error": {"message": "Invalid encoding_format"}}
-            )
-        return httpx.Response(
+            return Response(400, json={"error": {"message": "Invalid encoding_format"}})
+        return Response(
             200,
             json={
                 "object": "list",
