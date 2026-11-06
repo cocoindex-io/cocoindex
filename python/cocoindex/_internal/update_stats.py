@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import enum as _enum
-from collections.abc import AsyncIterator, Coroutine
+import io
+import sys
+from collections.abc import AsyncIterator, Coroutine, Iterator
 from datetime import timedelta
 from typing import Any, Generic, NamedTuple, Protocol, TypeVar
 
@@ -26,6 +29,77 @@ def _resolve_report_to_stdout(
             raise ValueError("report_to_stdout interval must be a positive duration")
         return True, secs
     return bool(report_to_stdout), None
+
+
+class DisplayMode(_enum.Enum):
+    """Where a progress display draws, if one runs. Component failures are
+    reported to suit it: the display lists them, so a traceback per failure
+    would only push it off screen."""
+
+    NONE = _enum.auto()
+    TERMINAL = _enum.auto()
+    PLAIN = _enum.auto()
+
+
+# Progress displays running now, by where they draw.
+_displays = {DisplayMode.TERMINAL: 0, DisplayMode.PLAIN: 0}
+
+
+def display_mode() -> DisplayMode:
+    """Where the progress display draws now; a terminal one wins."""
+    for mode in (DisplayMode.TERMINAL, DisplayMode.PLAIN):
+        if _displays[mode] > 0:
+            return mode
+    return DisplayMode.NONE
+
+
+def readable_path(path: str) -> str:
+    """A component path as people read it: ``item/3`` for ``/"item"/"3"``.
+    Matches the progress display; keys that are not plain strings or numbers
+    keep the exact form ``cocoindex show`` takes."""
+    parts = path.strip("/").split("/")
+    if parts == [""]:
+        return "(root)"
+
+    def plain(part: str) -> str | None:
+        if len(part) >= 2 and part[0] == part[-1] == '"':
+            inner = part[1:-1]
+            return inner if inner and not set(inner) & {'"', "\\"} else None
+        return part if part and all(c.isdigit() or c == "-" for c in part) else None
+
+    readable = [plain(p) for p in parts]
+    if any(r is None for r in readable):
+        return path
+    return "/".join(r for r in readable if r is not None)
+
+
+@contextlib.contextmanager
+def _std_streams_in_order() -> Iterator[None]:
+    """Keep Python's output in order with the progress display.
+
+    The display is written by Rust straight to the file descriptors, past
+    Python's buffers. So flush what Python holds before it starts and after it
+    ends, and line-buffer ``sys.stdout`` while it runs: when stdout is not a
+    terminal (a pipe, a CI log) Python block-buffers it, and a ``print`` made
+    during the run would come out only at exit, after the final stats.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    mode = DisplayMode.TERMINAL if sys.stdout.isatty() else DisplayMode.PLAIN
+    _displays[mode] += 1
+    stdout = sys.stdout
+    switched: io.TextIOWrapper | None = None
+    if isinstance(stdout, io.TextIOWrapper) and not stdout.line_buffering:
+        stdout.reconfigure(line_buffering=True)
+        switched = stdout
+    try:
+        yield
+    finally:
+        _displays[mode] -= 1
+        if switched is not None:
+            switched.reconfigure(line_buffering=False)
+        sys.stdout.flush()
+        sys.stderr.flush()
 
 
 class _CoreStatsHandle(Protocol):
