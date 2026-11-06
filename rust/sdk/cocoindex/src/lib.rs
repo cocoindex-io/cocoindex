@@ -89,7 +89,8 @@ pub use runner::{
 pub use linkme;
 pub use live_component::{
     ExceptionContext, ExceptionHandler, ExceptionSource, LiveComponent, LiveComponentOperator,
-    LiveMapFeed, LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
+    LiveMapFeed, LiveMapSubscriber, LiveMapView, LiveStream, LiveStreamSubscriber, MountKind,
+    ReadyHandle, SingleWatcherGuard, SingleWatcherToken,
 };
 #[doc(hidden)]
 pub use logic::{COCO_FN_LOGIC, FnDeps, FnLogicEntry};

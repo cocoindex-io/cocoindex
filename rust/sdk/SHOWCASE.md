@@ -551,9 +551,26 @@ ctx.mount_each_live(&"orders", kafka::topic_as_map(&consumer, "orders"), |ctx, m
 .await?;
 ```
 
+`topic_as_stream` is also a `LiveStream` (the Rust form of Python's
+`LiveStream` protocol): `watch` delivers every record to a
+`LiveStreamSubscriber`, polling the partitions at the same time, acknowledges a
+record once the `ReadyHandle` its `send` returned is ready, and marks the
+subscriber ready once every partition has caught up. `.payloads()` is the
+`LiveStream<Vec<u8>>` view of the values, the input of a live object-store
+view. An Iggy map derives keys and deletions from the whole
+`IggyReceivedMessage`, and a client the caller built is wrapped with
+`KafkaConsumer::from_client` / `IggyConsumer::from_client`.
+
+```rust
+let events = kafka::topic_as_stream(&consumer, ["bucket-events"]).payloads();
+let walker = oci_object_storage::list_objects_live(&client, "ns", "bucket", ListOptions::default(), events);
+```
+
 The Kafka and Iggy targets take their producer as a `ContextKey`, like every
 other connector target: `provide_key(&PRODUCER, producer)` once, name the key
-in `mount_kafka_topic_target(&ctx, &PRODUCER, topic, options)`.
+in `mount_kafka_topic_target(&ctx, &PRODUCER, topic, options)`. `kafka_topic_target` / `iggy_topic_target` build the
+topic's `TargetState` for `mount_target`, and `declare_message_bytes` declares a
+message under a binary key.
 
 A personal Google account signs in once with `UserAccount::sign_in`
 (`client_secret.json` of a Desktop-app OAuth client), to the same token file

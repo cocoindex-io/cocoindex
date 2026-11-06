@@ -15,7 +15,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use cocoindex::connectors::iggy::{self, IggyConsumer, IggyProducer};
+use cocoindex::connectors::iggy::{self, IggyConsumer, IggyProducer, IggyReceivedMessage};
 use cocoindex::{App, Environment, Result, UpdateOptions};
 use iggy::prelude::{
     CompressionAlgorithm, Identifier, IggyExpiry, MaxTopicSize, StreamClient, TopicClient,
@@ -91,7 +91,8 @@ async fn declare(
                     partition: PARTITION,
                     ..Default::default()
                 },
-            )?;
+            )
+            .await?;
             for (k, payload) in &messages {
                 target.declare_message(&ctx, k, payload)?;
             }
@@ -104,9 +105,11 @@ async fn declare(
 
 /// `key_fn` recovering the key from a `"<key>=<value>"` payload.
 fn key_fn() -> iggy::IggyKeyFn {
-    Arc::new(|payload: &[u8]| {
-        let s = String::from_utf8_lossy(payload);
-        s.split_once('=').map(|(k, _)| k.to_string())
+    Arc::new(|message: &IggyReceivedMessage| {
+        message
+            .payload_str()
+            .split_once('=')
+            .map(|(k, _)| k.to_string())
     })
 }
 
@@ -163,16 +166,17 @@ async fn iggy_source_catch_up_scan_compacts_log() -> Result<()> {
             let stream = stream.clone();
             async move {
                 let feed = iggy::topic_as_map(&consumer, GROUP, stream, topic, key_fn());
-                ctx.mount_each_live(&"messages", feed, move |_ctx, value: Vec<u8>| {
-                    let processed = processed.clone();
-                    async move {
-                        processed
-                            .lock()
-                            .unwrap()
-                            .push(String::from_utf8_lossy(&value).into_owned());
-                        Ok(())
-                    }
-                })
+                ctx.mount_each_live(
+                    &"messages",
+                    feed,
+                    move |_ctx, message: IggyReceivedMessage| {
+                        let processed = processed.clone();
+                        async move {
+                            processed.lock().unwrap().push(message.payload_str());
+                            Ok(())
+                        }
+                    },
+                )
                 .await
             }
         }
@@ -234,16 +238,17 @@ async fn iggy_source_live_watch_tails_new_messages() -> Result<()> {
                     let stream = stream.clone();
                     async move {
                         let feed = iggy::topic_as_map(&consumer, GROUP, stream, topic, key_fn());
-                        ctx.mount_each_live(&"messages", feed, move |_ctx, value: Vec<u8>| {
-                            let processed = processed.clone();
-                            async move {
-                                processed
-                                    .lock()
-                                    .unwrap()
-                                    .push(String::from_utf8_lossy(&value).into_owned());
-                                Ok(())
-                            }
-                        })
+                        ctx.mount_each_live(
+                            &"messages",
+                            feed,
+                            move |_ctx, message: IggyReceivedMessage| {
+                                let processed = processed.clone();
+                                async move {
+                                    processed.lock().unwrap().push(message.payload_str());
+                                    Ok(())
+                                }
+                            },
+                        )
                         .await
                     }
                 }
@@ -326,16 +331,17 @@ async fn iggy_source_stream_reads_all_payloads_keyless() -> Result<()> {
             let stream = stream.clone();
             async move {
                 let feed = iggy::topic_as_stream(&consumer, GROUP, stream, topic);
-                ctx.mount_each_live(&"stream", feed, move |_ctx, value: Vec<u8>| {
-                    let processed = processed.clone();
-                    async move {
-                        processed
-                            .lock()
-                            .unwrap()
-                            .push(String::from_utf8_lossy(&value).into_owned());
-                        Ok(())
-                    }
-                })
+                ctx.mount_each_live(
+                    &"stream",
+                    feed,
+                    move |_ctx, message: IggyReceivedMessage| {
+                        let processed = processed.clone();
+                        async move {
+                            processed.lock().unwrap().push(message.payload_str());
+                            Ok(())
+                        }
+                    },
+                )
                 .await
             }
         }
@@ -429,7 +435,8 @@ async fn iggy_source_stream_reads_all_partitions() -> Result<()> {
                         partition: pid,
                         ..Default::default()
                     },
-                )?;
+                )
+                .await?;
                 target.declare_message(&ctx, &format!("k{i}"), &value)?;
                 Ok(())
             }
@@ -454,16 +461,17 @@ async fn iggy_source_stream_reads_all_partitions() -> Result<()> {
             let stream = stream.clone();
             async move {
                 let feed = iggy::topic_as_stream(&consumer, GROUP, stream, topic);
-                ctx.mount_each_live(&"stream", feed, move |_ctx, value: Vec<u8>| {
-                    let processed = processed.clone();
-                    async move {
-                        processed
-                            .lock()
-                            .unwrap()
-                            .push(String::from_utf8_lossy(&value).into_owned());
-                        Ok(())
-                    }
-                })
+                ctx.mount_each_live(
+                    &"stream",
+                    feed,
+                    move |_ctx, message: IggyReceivedMessage| {
+                        let processed = processed.clone();
+                        async move {
+                            processed.lock().unwrap().push(message.payload_str());
+                            Ok(())
+                        }
+                    },
+                )
                 .await
             }
         }
@@ -547,16 +555,17 @@ async fn iggy_source_consumer_group_resumes_from_stored_offset() -> Result<()> {
                                     is_deletion: None,
                                 },
                             );
-                            ctx.mount_each_live(&"messages", feed, move |_ctx, value: Vec<u8>| {
-                                let processed = processed.clone();
-                                async move {
-                                    processed
-                                        .lock()
-                                        .unwrap()
-                                        .push(String::from_utf8_lossy(&value).into_owned());
-                                    Ok(())
-                                }
-                            })
+                            ctx.mount_each_live(
+                                &"messages",
+                                feed,
+                                move |_ctx, message: IggyReceivedMessage| {
+                                    let processed = processed.clone();
+                                    async move {
+                                        processed.lock().unwrap().push(message.payload_str());
+                                        Ok(())
+                                    }
+                                },
+                            )
                             .await
                         }
                     }
@@ -636,8 +645,12 @@ async fn iggy_source_init_retries_wait_for_a_late_topic() -> Result<()> {
                 let stream = stream.clone();
                 async move {
                     let feed = iggy::topic_as_stream(&consumer, GROUP, stream, topic);
-                    ctx.mount_each_live(&"stream", feed, |_ctx, _value: Vec<u8>| async { Ok(()) })
-                        .await
+                    ctx.mount_each_live(
+                        &"stream",
+                        feed,
+                        |_ctx, _message: IggyReceivedMessage| async { Ok(()) },
+                    )
+                    .await
                 }
             }
         })
@@ -681,16 +694,17 @@ async fn iggy_source_init_retries_wait_for_a_late_topic() -> Result<()> {
                         ..Default::default()
                     },
                 );
-                ctx.mount_each_live(&"stream", feed, move |_ctx, value: Vec<u8>| {
-                    let processed = processed.clone();
-                    async move {
-                        processed
-                            .lock()
-                            .unwrap()
-                            .push(String::from_utf8_lossy(&value).into_owned());
-                        Ok(())
-                    }
-                })
+                ctx.mount_each_live(
+                    &"stream",
+                    feed,
+                    move |_ctx, message: IggyReceivedMessage| {
+                        let processed = processed.clone();
+                        async move {
+                            processed.lock().unwrap().push(message.payload_str());
+                            Ok(())
+                        }
+                    },
+                )
                 .await
             }
         }
@@ -698,5 +712,79 @@ async fn iggy_source_init_retries_wait_for_a_late_topic() -> Result<()> {
     let (_, result) = tokio::join!(create, read);
     result?;
     assert_eq!(processed.lock().unwrap().clone(), vec!["k1=v1".to_string()]);
+    Ok(())
+}
+
+/// Records what a `LiveStream<Vec<u8>>` delivered and when it became ready.
+#[derive(Default)]
+struct PayloadRecorder {
+    payloads: Mutex<Vec<Vec<u8>>>,
+    ready: std::sync::atomic::AtomicBool,
+}
+
+#[cocoindex::async_trait]
+impl cocoindex::LiveStreamSubscriber<Vec<u8>> for PayloadRecorder {
+    async fn send(&self, message: Vec<u8>) -> Result<cocoindex::ReadyHandle> {
+        self.payloads.lock().unwrap().push(message);
+        Ok(cocoindex::ReadyHandle::immediate())
+    }
+
+    async fn mark_ready(&self) {
+        self.ready.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// `topic_as_stream(..).payloads()` watched directly as a `LiveStream`: every
+/// payload is delivered and readiness is signalled once the messages that
+/// existed when the watch started are processed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn iggy_stream_payloads_watch_delivers_values_and_marks_ready() -> Result<()> {
+    let Ok(conn) = std::env::var("IGGY_CONNECTION_STRING") else {
+        eprintln!("skipping live Iggy payload stream test; IGGY_CONNECTION_STRING is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let stream = format!("coco_src_payloads_{nonce}");
+    let topic = "rows";
+    let producer = IggyProducer::connect(&conn).await?;
+    ensure_stream_topic(&producer, &stream, topic).await;
+    let tmp = tempfile::tempdir().unwrap();
+    declare(
+        &producer,
+        &tmp.path().join("populate_db"),
+        &stream,
+        topic,
+        vec![("k1", "v1"), ("k2", "v2")],
+    )
+    .await;
+
+    let consumer = IggyConsumer::connect(&conn).await?;
+    let payloads = iggy::topic_as_stream(&consumer, GROUP, stream, topic).payloads();
+    let recorder = PayloadRecorder::default();
+    let outcome = tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::select! {
+            r = cocoindex::LiveStream::watch(&payloads, &recorder) => r,
+            _ = async {
+                while !recorder.ready.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            } => Ok(()),
+        }
+    })
+    .await;
+    assert!(outcome.is_ok(), "the stream did not become ready in time");
+    outcome.unwrap()?;
+    let mut got: Vec<String> = recorder
+        .payloads
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect();
+    got.sort();
+    assert_eq!(got, vec!["k1=v1".to_string(), "k2=v2".to_string()]);
     Ok(())
 }
