@@ -420,8 +420,8 @@ needs it on the library path, or a `build.rs` that calls
 ## Derive connector schemas from row types
 
 `SchemaFields` keeps the Rust row and connector schema in one place. A bare
-`#[coco(vector)]` marks a vector whose runtime dimension can be supplied after
-the embedding model is loaded:
+`#[coco(vector)]` marks a vector whose dimension and element type come from the
+embedder, once the model is loaded:
 
 ```rust
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
@@ -432,9 +432,206 @@ struct DocEmbedding {
     embedding: Vec<f32>,
 }
 
-let dim = ctx.get_key(&EMBEDDER)?.dimension();
 let schema = postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
-    .with_vector_dim("embedding", dim)?;
+    .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+    .await?;
+```
+
+`with_vector_schema` takes any `VectorSchemaProvider`: an embedder, or a fixed
+`VectorSchema`. The Postgres, SQLite, Doris and LanceDB schemas have it, and
+`with_vector_dim(field, n)` remains for a dimension known up front. An `f16`
+provider selects `halfvec(N)` in Postgres and a `float16` list in LanceDB.
+
+`with_column_type` replaces one derived column type for this schema only. Use
+it where the same row struct feeds two connectors, so a `#[coco(type = "…")]`
+attribute would not fit both:
+
+```rust
+let schema = sqlite::TableSchema::from_row::<DocEmbedding>(["id"])?
+    .with_vector_dim("embedding", 384)?
+    .with_column_type("text", "VARCHAR(2000)")?;
+```
+
+To encode a value differently on the way to the store, put
+`#[serde(serialize_with = "…")]` on the field.
+
+SQLite `vec0` tables need the `sqlite-vec` extension in the connection.
+`connect_with_vec` loads it from the library you name:
+
+```rust
+let db = sqlite::Database::connect_with_vec("app.db", "/usr/local/lib/vec0").await?;
+```
+
+Doris has a query builder for vector search over a table CocoIndex maintains:
+
+```rust
+let sql = doris::build_vector_search_query(
+    "doc_embeddings",
+    "embedding",
+    &query_vector,
+    &doris::VectorSearchOptions {
+        select_columns: vec!["id".into(), "text".into()],
+        ..Default::default()
+    },
+)?;
+```
+
+### Graph targets: Neo4j and FalkorDB
+
+The Neo4j and FalkorDB targets share one API. A node table takes a schema
+derived from the row struct, or `TableSchema::schemaless(primary_key)` when the
+records are written as they serialize:
+
+```rust
+#[derive(Serialize, SchemaFields)]
+struct Person {
+    id: String,
+    name: Option<String>,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+let people =
+    neo4j::mount_table_target(ctx, &GRAPH, "Person", TableSchema::from_row::<Person>("id")?)
+        .await?;
+let notes =
+    neo4j::mount_table_target(ctx, &GRAPH, "Note", TableSchema::schemaless("id")?).await?;
+```
+
+A relation is schemaless and keyed by `id` by default. Give it a schema to name
+its primary key. A record that carries the key is keyed by it; otherwise the
+relation's id is derived from its endpoints:
+
+```rust
+let knows = neo4j::mount_relation_target_with_schema(
+    ctx, &GRAPH, "KNOWS", &people, &people,
+    TableSchema::from_row::<Knows>("edge_id")?,
+)
+.await?;
+knows.declare_relation_record(ctx, "a", "b", &Knows { edge_id: "e1".into(), since: 2020 })?;
+```
+
+A vector index is named `vec_{table}__{field}`, or by you. The name identifies
+the declaration: a rename rebuilds the index once and does not remove it. A
+field takes one vector index:
+
+```rust
+people.declare_vector_index_named(ctx, "person_embedding", "embedding", 384, VectorMetric::Cosine)?;
+```
+
+`neo4j::Graph::connect` covers basic authentication. For TLS or other driver
+settings, build the `neo4rs::Graph` yourself and wrap it:
+
+```rust
+let config = neo4rs::ConfigBuilder::default()
+    .uri("neo4j+s://db.example.com")
+    .user("neo4j")
+    .password(password)
+    .build()?;
+let graph = neo4j::Graph::from_client(neo4rs::Graph::connect(config).await?, "neo4j")?;
+```
+
+A FalkorDB connection takes its password in the URI
+(`falkor://:password@host:6379`).
+
+The graph examples are
+[`examples/rust/meeting_notes_graph_neo4j`](../../examples/rust/meeting_notes_graph_neo4j)
+and
+[`examples/rust/meeting_notes_graph_falkordb`](../../examples/rust/meeting_notes_graph_falkordb).
+
+### SurrealDB: derived schemas and field groups
+
+A SurrealDB table is schemaless by default. A schema derived from the row
+struct makes it `SCHEMAFULL`; the record id is passed separately, so the struct
+has no `id` field:
+
+```rust
+#[derive(Serialize, SchemaFields)]
+struct Session {
+    name: String,
+    description: Option<String>,        // option<string>
+    recorded_at: chrono::DateTime<chrono::Utc>, // datetime
+    #[coco(vector = 384)]
+    embedding: Vec<f32>,                // array<float, 384>
+}
+
+let sessions = surrealdb::mount_table_target_with_schema(
+    ctx, &GRAPH, "session", Some(surrealdb::TableSchema::from_row::<Session>()?),
+)
+.await?;
+sessions.declare_record(ctx, session_id, &session)?;
+```
+
+A record is written with `UPSERT … SET`, one assignment per field. Each field
+is replaced whole, and fields of other owners are left alone, so several
+components can own different fields of one record. `declare_fields` contributes one named group of
+fields to a record that another component declares. When the group goes away,
+or drops a field, only its own fields are unset:
+
+```rust
+// Component A owns the record.
+players.declare_record(ctx, "ann", &json!({ "name": "Ann" }))?;
+// Component B owns the `stats` fields of the same record.
+players.declare_fields(ctx, "ann", "stats", &json!({ "score": 7, "rank": 1 }))?;
+```
+
+The record must exist when a field group is written; otherwise the write fails
+and the next run retries it.
+
+The SurrealDB example is
+[`examples/rust/conversation_to_knowledge`](../../examples/rust/conversation_to_knowledge).
+
+## Qdrant sparse vectors and Valkey connections
+
+A Qdrant collection can hold sparse vectors beside dense ones. Both kinds share
+one namespace, and a sparse field is always named:
+
+```rust
+let schema = qdrant::CollectionSchema::named([
+    (
+        "dense",
+        qdrant::QdrantNamedVectorDef::from(qdrant::QdrantVectorDef::f32(384, Distance::Cosine)?),
+    ),
+    (
+        "sparse",
+        qdrant::QdrantSparseVectorDef { modifier: Some(qdrant::SparseModifier::Idf) }.into(),
+    ),
+])?;
+let target = qdrant::mount_collection_target(ctx, &QDRANT, "docs", schema).await?;
+target.declare_named_vectors_point(
+    ctx,
+    id,
+    [
+        ("dense", NamedPointVector::Single(embedding)),
+        ("sparse", NamedPointVector::Sparse { indices, values }),
+    ],
+    payload,
+)?;
+```
+
+A change to a sparse field (added, removed, or a new modifier) recreates the
+collection, as a dense change does.
+
+`connect(url)` uses the client's defaults. For an API key, TLS or timeouts,
+build the client and wrap it:
+
+```rust
+let client = qdrant_client::Qdrant::from_url(url).api_key(api_key).build()?;
+let conn = qdrant::QdrantConnection::from_client(url, client);
+```
+
+Valkey takes a password, TLS and a client name through `ClientConfig`, and a
+ready `redis::Client` through `from_client`:
+
+```rust
+let db = valkey::Valkey::connect_with_config(valkey::ClientConfig {
+    host: "valkey.internal".into(),
+    password: Some(password),
+    use_tls: true,
+    ..Default::default()
+})
+.await?;
+let db = valkey::Valkey::from_client("valkey.internal", &redis_client).await?;
 ```
 
 The current end-to-end reference is

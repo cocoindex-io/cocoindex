@@ -121,8 +121,9 @@ snowflake = [
 ]
 neo4j = ["dep:neo4rs", "chrono"]
 falkordb = ["dep:redis", "chrono"]
-# Valkey/Redis (RediSearch) vector-search target. Reuses the `redis` crate.
-valkey = ["dep:redis"]
+# Valkey/Redis (RediSearch) vector-search target. Reuses the `redis` crate,
+# with TLS (`ClientConfig::use_tls`, `rediss://` URIs).
+valkey = ["dep:redis", "redis/tokio-native-tls-comp"]
 # Zvec embedded vector-database target, through the `zvec-rust` bindings to the
 # zvec C API. Its build script downloads the prebuilt `libzvec_c_api`.
 zvec = ["dep:zvec-rust", "dep:base64", "chrono", "rust_decimal"]

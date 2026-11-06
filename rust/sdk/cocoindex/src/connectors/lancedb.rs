@@ -30,6 +30,7 @@ use serde_json::{Map, Value as JsonValue};
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
+use crate::resources::schema::{VectorElementType, VectorSchemaProvider};
 use crate::statediff::{
     CompositeTrackingRecord, DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord,
     diff, diff_composite, resolve_system_transition,
@@ -203,7 +204,49 @@ impl TableSchema {
     }
 
     /// Resolve or override the dimension of a vector field derived from a row.
-    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+    pub fn with_vector_dim(self, field_name: &str, dim: usize) -> Result<Self> {
+        self.set_vector_column(field_name, dim, None)
+    }
+
+    /// Resolve a vector field derived from a row from a
+    /// [`VectorSchemaProvider`], typically the embedder that fills it (Python's
+    /// `column_specs={"embedding": embedder}`). The column is a fixed-size
+    /// list of `f16` for `f16` elements and of `f32` otherwise. For an embedder
+    /// held in the context, pass `ctx.get_key(&EMBEDDER)?`.
+    pub async fn with_vector_schema(
+        self,
+        field_name: &str,
+        provider: &(impl VectorSchemaProvider + ?Sized),
+    ) -> Result<Self> {
+        let schema =
+            crate::row_schema::provided_vector_schema("LanceDB", field_name, provider).await?;
+        let half = match schema.element_type {
+            VectorElementType::Float16 => true,
+            VectorElementType::Float32 | VectorElementType::Float64 => false,
+        };
+        self.set_vector_column(field_name, schema.size, Some(half))
+    }
+
+    /// Replace the type of one column of a schema derived from a row (Python's
+    /// `column_specs={"col": LanceType(…)}`), keeping its nullability.
+    pub fn with_column_type(mut self, field_name: &str, col_type: ColumnType) -> Result<Self> {
+        let (_, def) = self
+            .columns
+            .iter_mut()
+            .find(|(name, _)| name == field_name)
+            .ok_or_else(|| crate::row_schema::unknown_column_error("LanceDB", field_name))?;
+        def.col_type = col_type;
+        Ok(self)
+    }
+
+    /// Set the dimension of the vector column `field_name`, and whether its
+    /// elements are half precision when `half` is given.
+    fn set_vector_column(
+        mut self,
+        field_name: &str,
+        dim: usize,
+        half: Option<bool>,
+    ) -> Result<Self> {
         if dim == 0 || i32::try_from(dim).is_err() {
             return Err(crate::row_schema::vector_dimension_error(
                 "LanceDB",
@@ -216,16 +259,20 @@ impl TableSchema {
             .iter_mut()
             .find(|(name, _)| name == field_name)
             .ok_or_else(|| crate::row_schema::unknown_vector_field_error("LanceDB", field_name))?;
-        match &mut def.col_type {
-            ColumnType::Vector(current_dim) | ColumnType::HalfVector(current_dim) => {
-                *current_dim = dim;
-            }
+        let current_half = match def.col_type {
+            ColumnType::Vector(_) => false,
+            ColumnType::HalfVector(_) => true,
             _ => {
                 return Err(crate::row_schema::not_vector_field_error(
                     "LanceDB", field_name,
                 ));
             }
-        }
+        };
+        def.col_type = if half.unwrap_or(current_half) {
+            ColumnType::HalfVector(dim)
+        } else {
+            ColumnType::Vector(dim)
+        };
         Ok(self)
     }
 

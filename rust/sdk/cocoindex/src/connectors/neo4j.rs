@@ -24,6 +24,7 @@ fn normalize_uri(uri: &str) -> String {
 }
 
 impl Graph {
+    /// Connect to the Neo4j server at `uri` with basic authentication.
     pub async fn connect(uri: &str, user: &str, password: &str, database: &str) -> Result<Self> {
         validate_database(database)?;
         let config = neo4rs::ConfigBuilder::default()
@@ -36,9 +37,17 @@ impl Graph {
         let db = neo4rs::Graph::connect(config)
             .await
             .map_err(|e| Error::engine(format!("neo4j connect: {e}")))?;
+        Self::from_client(db, database)
+    }
+
+    /// Wrap a ready `neo4rs::Graph`, for a connection [`connect`](Self::connect)
+    /// can't describe (TLS, a custom pool size, a fetch size): build it with
+    /// `neo4rs::ConfigBuilder`. Statements run on `database`.
+    pub fn from_client(client: neo4rs::Graph, database: &str) -> Result<Self> {
+        validate_database(database)?;
         Ok(Self {
-            db: Arc::new(db),
-            database: Arc::from(database.to_string()),
+            db: Arc::new(client),
+            database: Arc::from(database),
         })
     }
 }
@@ -237,6 +246,47 @@ mod tests {
         let password = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "cocoindex".to_string());
         let database = std::env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".to_string());
         Graph::connect(&uri, &user, &password, &database).await.ok()
+    }
+
+    #[tokio::test]
+    async fn from_client_wraps_a_caller_built_graph_when_available() -> Result<()> {
+        let Ok(uri) = std::env::var("NEO4J_URI") else {
+            eprintln!("skipping live Neo4j from_client test; NEO4J_URI is not set");
+            return Ok(());
+        };
+        let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
+        let password = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "cocoindex".to_string());
+        let database = std::env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".to_string());
+        let config = neo4rs::ConfigBuilder::default()
+            .uri(normalize_uri(&uri))
+            .user(user)
+            .password(password)
+            .max_connections(2)
+            .build()
+            .unwrap();
+        let client = neo4rs::Graph::connect(config).await.unwrap();
+
+        // A database name is validated the same way as in `connect`.
+        assert!(Graph::from_client(client.clone(), "bad name").is_err());
+
+        let graph = Graph::from_client(client, &database)?;
+        let label = format!("FromClient{}", nonce());
+        let mut params = cypher_graph::CypherParams::new();
+        params.insert("id".to_string(), serde_json::json!(1));
+        cypher_graph::CypherExecutor::execute_with_params(
+            &graph,
+            &format!("CREATE (n:`{label}` {{id: $id}})"),
+            &params,
+        )
+        .await?;
+        let found = count(&graph, &format!("MATCH (n:`{label}`) RETURN count(n) AS c")).await?;
+        cypher_graph::CypherExecutor::execute(
+            &graph,
+            &format!("MATCH (n:`{label}`) DETACH DELETE n"),
+        )
+        .await?;
+        assert_eq!(found, 1);
+        Ok(())
     }
 
     fn nonce() -> u128 {

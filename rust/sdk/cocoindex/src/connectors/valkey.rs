@@ -42,22 +42,133 @@ pub struct Valkey {
     state_id: Arc<str>,
 }
 
+/// Connection settings for [`Valkey::connect_with_config`] — the Rust analogue
+/// of Python's `create_client_config`. For anything these fields do not cover
+/// (client certificates, a username, a database number), build a
+/// `redis::Client` yourself and pass it to [`Valkey::from_client`]. Its `Debug`
+/// output shows the password as redacted.
+///
+/// ```
+/// use cocoindex::connectors::valkey::ClientConfig;
+///
+/// let config = ClientConfig {
+///     host: "valkey.internal".to_string(),
+///     password: Some("secret".to_string()),
+///     use_tls: true,
+///     ..ClientConfig::default()
+/// };
+/// ```
+#[derive(Clone)]
+pub struct ClientConfig {
+    /// Valkey server host. Defaults to `localhost`.
+    pub host: String,
+    /// Valkey server port. Defaults to `6379`.
+    pub port: u16,
+    /// Optional authentication password.
+    pub password: Option<String>,
+    /// Whether to use TLS for the connection.
+    pub use_tls: bool,
+    /// Client name for the connection, visible in `CLIENT LIST` and monitoring
+    /// dashboards. Defaults to `cocoindex_vector_store`; `None` sets no name.
+    pub client_name: Option<String>,
+}
+
+/// Prints every field but the password, which is shown as redacted.
+impl std::fmt::Debug for ClientConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("use_tls", &self.use_tls)
+            .field("client_name", &self.client_name)
+            .finish()
+    }
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            host: "localhost".to_string(),
+            port: 6379,
+            password: None,
+            use_tls: false,
+            client_name: Some("cocoindex_vector_store".to_string()),
+        }
+    }
+}
+
+impl ClientConfig {
+    fn connection_info(&self) -> redis::ConnectionInfo {
+        let addr = if self.use_tls {
+            redis::ConnectionAddr::TcpTls {
+                host: self.host.clone(),
+                port: self.port,
+                insecure: false,
+                tls_params: None,
+            }
+        } else {
+            redis::ConnectionAddr::Tcp(self.host.clone(), self.port)
+        };
+        redis::ConnectionInfo {
+            addr,
+            redis: redis::RedisConnectionInfo {
+                password: self.password.clone(),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The server's address as a URI, without the password.
+    fn state_id(&self) -> String {
+        let scheme = if self.use_tls { "rediss" } else { "redis" };
+        format!("{scheme}://{}:{}", self.host, self.port)
+    }
+}
+
 impl Valkey {
     /// Connect to a Valkey/Redis server (e.g. `redis://localhost:6379`).
     pub async fn connect(uri: &str) -> Result<Self> {
         let client =
             redis::Client::open(uri).map_err(|e| Error::engine(format!("valkey config: {e}")))?;
+        Self::from_client(uri, &client).await
+    }
+
+    /// Connect with a host, port, password, TLS and client name (see
+    /// [`ClientConfig`]).
+    pub async fn connect_with_config(config: ClientConfig) -> Result<Self> {
+        let client = redis::Client::open(config.connection_info())
+            .map_err(|e| Error::engine(format!("valkey config: {e}")))?;
+        let db = Self::from_client(config.state_id(), &client).await?;
+        if let Some(client_name) = &config.client_name {
+            let mut conn = db.conn.lock().await;
+            let _: redis::Value = redis::cmd("CLIENT")
+                .arg("SETNAME")
+                .arg(client_name)
+                .query_async(&mut *conn)
+                .await
+                .map_err(|e| Error::engine(format!("valkey CLIENT SETNAME {client_name}: {e}")))?;
+        }
+        Ok(db)
+    }
+
+    /// Connect through an already-configured `redis::Client` (advanced use:
+    /// client certificates, a username, a database number). `state_id` is the
+    /// stable identity used for memo dependencies; it should name the server,
+    /// not hold a secret.
+    pub async fn from_client(state_id: impl Into<String>, client: &redis::Client) -> Result<Self> {
         let conn = client
             .get_multiplexed_async_connection()
             .await
             .map_err(|e| Error::engine(format!("valkey connect: {e}")))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
-            state_id: Arc::from(uri),
+            state_id: Arc::from(state_id.into()),
         })
     }
 
-    /// Stable identity (the URI) for use as a `ContextKey` state id / memo dep.
+    /// Stable identity (the URI, or the `state_id` given to
+    /// [`Valkey::from_client`]) for use as a `ContextKey` state id / memo dep.
     pub fn state_id(&self) -> &str {
         &self.state_id
     }
@@ -862,6 +973,73 @@ mod tests {
         assert!(validate_name("a:b", "x").is_err());
         assert!(validate_name("a b", "x").is_err());
         assert!(validate_name("a*b", "x").is_err());
+    }
+
+    #[test]
+    fn client_config_builds_the_connection_info() {
+        let plain = ClientConfig::default().connection_info();
+        assert!(matches!(
+            &plain.addr,
+            redis::ConnectionAddr::Tcp(host, 6379) if host == "localhost"
+        ));
+        assert_eq!(plain.redis.password, None);
+
+        let config = ClientConfig {
+            host: "valkey.internal".to_string(),
+            port: 6380,
+            password: Some("secret".to_string()),
+            use_tls: true,
+            ..ClientConfig::default()
+        };
+        let secured = config.connection_info();
+        assert!(matches!(
+            &secured.addr,
+            redis::ConnectionAddr::TcpTls { host, port: 6380, insecure: false, .. }
+                if host == "valkey.internal"
+        ));
+        assert_eq!(secured.redis.password.as_deref(), Some("secret"));
+        // The identity names the server and never carries the password.
+        assert_eq!(config.state_id(), "rediss://valkey.internal:6380");
+        assert_eq!(ClientConfig::default().state_id(), "redis://localhost:6379");
+    }
+
+    #[test]
+    fn client_config_debug_redacts_the_password() {
+        let config = ClientConfig {
+            password: Some("secret".to_string()),
+            ..ClientConfig::default()
+        };
+        let printed = format!("{config:?}");
+        assert!(!printed.contains("secret"), "{printed}");
+        assert!(
+            printed.contains(r#"password: Some("<redacted>")"#),
+            "{printed}"
+        );
+        assert!(printed.contains(r#"host: "localhost""#), "{printed}");
+
+        let printed = format!("{:?}", ClientConfig::default());
+        assert!(printed.contains("password: None"), "{printed}");
+    }
+
+    #[tokio::test]
+    async fn tls_connection_is_attempted_not_refused_as_unsupported() {
+        let config = ClientConfig {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            use_tls: true,
+            ..ClientConfig::default()
+        };
+        // False when the `redis` crate is built without a TLS feature.
+        assert!(config.connection_info().addr.is_supported());
+
+        // Nothing listens on port 1: the attempt fails at the socket. Without
+        // TLS support compiled in, `redis` refuses before it opens one.
+        let Err(err) = Valkey::connect_with_config(config).await else {
+            panic!("connected to a closed port");
+        };
+        let message = err.to_string();
+        assert!(message.contains("valkey connect"), "{message}");
+        assert!(!message.contains("without the tls feature"), "{message}");
     }
 
     #[test]
