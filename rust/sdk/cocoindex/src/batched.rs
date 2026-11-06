@@ -25,7 +25,8 @@
 //! each half re-run, down to single items, so that one bad input fails only
 //! its own caller and the rest keep their results. A `runner` (see
 //! [`crate::runner`]) bounds how many bodies run at once; each physical batch
-//! and each retried half takes the runner's resource for the time it runs.
+//! and each retried half runs under the runner, so it takes the runner's
+//! resource for the time it runs.
 //! A batching function must not call itself recursively from its body
 //! because it would wait on the batcher that is already executing that body.
 //! [`Batched`] remains available as the lower-level explicit adapter when a
@@ -45,7 +46,7 @@ use serde::de::DeserializeOwned;
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
-use crate::runner::GPURunner;
+use crate::runner::__run_under;
 
 type CoreResult<T> = cocoindex_utils::error::Result<T>;
 
@@ -64,10 +65,10 @@ struct BatchCall<In> {
 
 /// Adapts a user closure `Vec<In> -> Result<Vec<Out>>` to the core batcher's
 /// `Runner`, with split-and-retry on [`Error::RetryWithSmallerBatch`] and an
-/// optional GPU runner around every body run.
+/// optional [`crate::Runner`] around every body run.
 struct FnRunner<In, Out> {
     f: BatchFn<In, Out>,
-    runner: Option<GPURunner>,
+    runner: Option<Arc<dyn crate::Runner>>,
 }
 
 impl<In: Clone + Send + 'static, Out: Send + 'static> FnRunner<In, Out> {
@@ -86,7 +87,7 @@ impl<In: Clone + Send + 'static, Out: Send + 'static> FnRunner<In, Out> {
         batch_ctx.deadline = DeadlineContext::NONE;
         let body = (self.f)(batch_ctx, inputs);
         let result = match &self.runner {
-            Some(runner) => runner.run(body).await,
+            Some(runner) => __run_under(runner.as_ref(), body).await,
             None => body.await,
         };
 
@@ -185,7 +186,7 @@ type ScheduledBatchers<In, Out> = Mutex<HashMap<ScheduledBatchKey, Weak<Function
 
 fn new_batcher<In, Out>(
     f: BatchFn<In, Out>,
-    runner: Option<GPURunner>,
+    runner: Option<Arc<dyn crate::Runner>>,
     options: BatchingOptions,
 ) -> Arc<FunctionBatcher<In, Out>>
 where
@@ -282,7 +283,7 @@ where
     Out: Send + 'static,
 {
     options: BatchingOptions,
-    runner: Option<GPURunner>,
+    runner: Option<Arc<dyn crate::Runner>>,
     batchers: ScheduledBatchers<In, Out>,
     code_hash: u64,
 }
@@ -294,7 +295,11 @@ where
 {
     /// Construct the scheduler used by generated batching wrappers.
     #[doc(hidden)]
-    pub fn __new(code_hash: u64, max_batch_size: Option<usize>, runner: Option<GPURunner>) -> Self {
+    pub fn __new(
+        code_hash: u64,
+        max_batch_size: Option<usize>,
+        runner: Option<Arc<dyn crate::Runner>>,
+    ) -> Self {
         Self {
             options: BatchingOptions {
                 max_batch_size,
@@ -337,7 +342,7 @@ where
             if let Some(batcher) = batchers.get(&key).and_then(Weak::upgrade) {
                 batcher
             } else {
-                let batcher = new_batcher(f, self.runner, self.options.clone());
+                let batcher = new_batcher(f, self.runner.clone(), self.options.clone());
                 batchers.insert(key, Arc::downgrade(&batcher));
                 batcher
             }
