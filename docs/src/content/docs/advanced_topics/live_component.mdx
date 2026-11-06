@@ -6,6 +6,8 @@ description: >
   (update_full, update, delete, mark_ready) and LiveMapFeed / LiveMapView
   abstractions over event sources.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 By default, a [processing component](../programming_guide/processing_component) runs in **catch-up mode** — on each `app.update()`, it declares all target states and mounts all sub-components from scratch. CocoIndex handles incremental updates by skipping [memoized](../programming_guide/function) sub-components and reconciling target states at the end, then the component exits. This works well when the dataset is small enough to scan fully each cycle.
 
 When the dataset is large or you need to react to changes continuously (e.g., watching a file system), you want the component itself to stay running and react incrementally. A **live component** does an initial full scan (same as catch-up mode), then keeps running and reacts to individual changes without rescanning everything.
@@ -13,6 +15,10 @@ When the dataset is large or you need to react to changes continuously (e.g., wa
 ## The LiveComponent protocol
 
 A live component is a class with three methods:
+
+{/* Rust: rust/sdk/cocoindex/src/live_component.rs (LiveComponent trait), rust/sdk/cocoindex/tests/live_map.rs (Producer) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class MyLiveComponent:
@@ -30,11 +36,45 @@ class MyLiveComponent:
         ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::prelude::*;
+
+struct MyLiveComponent {
+    folder: PathBuf,
+    target: DirTarget,
+}
+
+#[cocoindex::async_trait]
+impl LiveComponent for MyLiveComponent {
+    /// Full processing: mount all children, declare all target states.
+    async fn process(&self, ctx: Ctx) -> Result<()> {
+        // ...
+        Ok(())
+    }
+
+    /// Continuous processing: orchestrate full and incremental updates.
+    async fn process_live(&self, operator: LiveComponentOperator) -> Result<()> {
+        operator.update_full().await?;
+        operator.mark_ready().await;
+        // ...
+        Ok(())
+    }
+}
+```
+
+In Rust a live component is a type that implements the `LiveComponent` trait. Its fields take the place of `__init__`: you build the value and pass it to `ctx.mount_live(&key, component)`. `process` receives the component's `Ctx`. `process_live` has a default body: one full pass, then `mark_ready`.
+
+</Fragment>
+</LangTabs>
+
 - **`__init__`** receives arguments passed to `coco.mount()`.
 - **`process()`** does a full scan — mounts children via `coco.mount()` and declares target states, just like a traditional component function. Called indirectly via `operator.update_full()`.
 - **`process_live(operator)`** is the long-running entry point. It orchestrates full and incremental updates using the operator.
 
-CocoIndex detects a live component by checking if the class has both `process` and `process_live` methods.
+CocoIndex detects a live component by checking if the class has both `process` and `process_live` methods. In Rust the trait is the marker, and `ctx.mount_live` is the mount call.
 
 ## LiveComponentOperator
 
@@ -47,6 +87,18 @@ The `operator` passed to `process_live()` provides five methods:
 | `await operator.delete(subpath)` | Delete a child component. |
 | `await operator.mark_ready()` | Signal that processing has caught up to the time `process_live()` was called. |
 | `await operator.report_exception(exc)` | Surface a `process_live`-body exception through the parent's exception handler chain. |
+
+The Rust `LiveComponentOperator` has the same methods, with the child's body as a closure:
+
+| Rust method | Description |
+|--------|-------------|
+| `operator.update_full().await?` | Run `process()` with a full submission phase. |
+| `operator.update(key, \|ctx\| async move { .. }).await?` | Mount a child component under `key` incrementally. Awaits until its state has synced. |
+| `operator.delete(key).await?` | Delete a child component. |
+| `operator.mark_ready().await` | Signal that processing has caught up. |
+| `operator.is_live()` | Whether the update runs in live mode. |
+
+There is no `report_exception` in Rust. Return the error from `process_live` instead: before `mark_ready`, the mount fails with it; after `mark_ready`, it is logged. The operator also has `read_committed_state` and `write_committed_state` for a durable cursor of the component's own.
 
 ### `update_full()`
 
@@ -87,9 +139,15 @@ The handler receives an `ExceptionContext` with `mount_kind="process_live"` and 
 
 You **don't** need `report_exception` around `update_full` / `update` / `delete` themselves — those route their own errors automatically.
 
+In Rust, `update_full`, `update` and `delete` route their failures the same way, with `mount_kind` set to `MountKind::UpdateFull`, `MountKind::Update` or `MountKind::Delete`. Register a handler with `ctx.mount_live_with_handler(&key, component, handler)` for one component, or on the environment builder for all of them (see [Exception handlers](./exception_handlers#exception-handlers)).
+
 ## Example: file system watcher
 
 A component that watches a local folder and processes each file:
+
+{/* Rust: rust/sdk/cocoindex/tests/live_component.rs (DirectDelete), rust/sdk/cocoindex/tests/live_map.rs (Producer) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import pathlib
@@ -130,7 +188,54 @@ class FolderWatcher:
                 await operator.delete(subpath)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+struct FolderWatcher {
+    source: Vec<(String, String)>,
+    provider: TargetStateProvider<String>,
+}
+
+#[cocoindex::async_trait]
+impl LiveComponent for FolderWatcher {
+    /// Full scan: one child per entry of the source.
+    async fn process(&self, ctx: Ctx) -> Result<()> {
+        let provider = self.provider.clone();
+        ctx.mount_each(
+            self.source.clone(),
+            |(k, _v): &(String, String)| k.clone(),
+            move |child, (k, v)| {
+                let provider = provider.clone();
+                async move { declare_target_state(&child, provider.target_state(k, v)) }
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn process_live(&self, operator: LiveComponentOperator) -> Result<()> {
+        // 1. Full scan.
+        operator.update_full().await?;
+        // 2. Signal readiness: the parent can proceed.
+        operator.mark_ready().await;
+        // 3. React to changes: delete the child mounted for key "a".
+        operator.delete("a").await?;
+        Ok(())
+    }
+}
+```
+
+For a real directory, the Rust SDK ships the watcher: `walk_dir(dir).live()` returns a `LiveMapView`, and `ctx.mount_each_live` mounts one child per file (see `examples/rust/text_embedding`). Write a `LiveComponent` by hand when the change source is your own.
+
+</Fragment>
+</LangTabs>
+
 The parent mounts it like any other component:
+
+{/* Rust: rust/sdk/cocoindex/tests/live_component.rs (mount_live_catch_up_runs_process_once) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn
@@ -140,6 +245,21 @@ async def app_main(folder: pathlib.Path, outdir: pathlib.Path) -> None:
     # Mount the live component.
     await coco.mount(FolderWatcher, folder, target)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+app.update(move |ctx| async move {
+    ctx.mount_live(&"comp", FolderWatcher { source, provider }).await
+})
+.await?;
+```
+
+`mount_live` returns when the component marks itself ready. In live mode the component keeps running in the background until the app is dropped.
+
+</Fragment>
+</LangTabs>
 
 ## Example: traditional component equivalent
 
@@ -153,6 +273,10 @@ async def process_all(data) -> None:
 ```
 
 is equivalent to this LiveComponent:
+
+{/* Rust: rust/sdk/cocoindex/tests/live_component.rs (Declarer) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class ProcessAll:
@@ -168,11 +292,39 @@ class ProcessAll:
         # mark_ready() is called automatically on return.
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+struct ProcessAll {
+    provider: TargetStateProvider<String>,
+    rows: Vec<(&'static str, &'static str)>,
+}
+
+#[cocoindex::async_trait]
+impl LiveComponent for ProcessAll {
+    async fn process(&self, ctx: Ctx) -> Result<()> {
+        for (k, v) in &self.rows {
+            declare_target_state(&ctx, self.provider.target_state(*k, v.to_string()))?;
+        }
+        Ok(())
+    }
+    // The default `process_live` runs one full pass and marks the component ready.
+}
+```
+
+</Fragment>
+</LangTabs>
+
 The key difference: the LiveComponent version can later be extended to handle incremental changes in `process_live()` without changing `process()`.
 
 ## Example: periodic refresh with `coco.auto_refresh`
 
 A common pattern is "run a regular processor on a fixed schedule." `coco.auto_refresh` wraps any processor function as a LiveComponent that re-runs it on an interval — no need to write `process_live` yourself.
+
+{/* Rust: rust/sdk/cocoindex/tests/live_component.rs (auto_refresh), rust/sdk/cocoindex/src/ctx.rs (Ctx::auto_refresh) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import datetime
@@ -190,6 +342,30 @@ async def app_main(db, target) -> None:
         db, target,
     )
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::time::Duration;
+
+ctx.auto_refresh(&"sync_users", Duration::from_secs(5 * 60), move |ctx| {
+    let table = table.clone();
+    async move {
+        let rows = fetch_all_users(&ctx).await?;
+        for row in rows {
+            table.declare_row(&ctx, &row)?;
+        }
+        Ok(())
+    }
+})
+.await?;
+```
+
+`ctx.auto_refresh(&key, interval, f)` mounts the refresh component under `key`. `f` is called with a fresh `Ctx` each cycle, so it must be `Fn` and `Clone`; clone the handles it needs into the closure.
+
+</Fragment>
+</LangTabs>
 
 Behavior:
 - The first cycle runs immediately, then `mark_ready` is signaled to the parent.
@@ -210,6 +386,10 @@ Two protocols represent live keyed collections that `mount_each()` can consume. 
 - **`LiveMapView`** — the source has enumerable current state that can be scanned (e.g., a directory listing, database table). Supports both full scans via `__aiter__()` and incremental changes via `watch()`.
 - **`LiveMapFeed`** — the source only streams changes, with no "current state" to scan (e.g., a Kafka consumer, a webhook event stream). Provides only `watch()`.
 
+{/* Rust: rust/sdk/cocoindex/src/live_component.rs (LiveMapFeed, LiveMapView) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 class LiveMapFeed(Protocol[K, V]):
     async def watch(self, subscriber: LiveMapSubscriber[K, V]) -> None: ...
@@ -218,10 +398,40 @@ class LiveMapView(LiveMapFeed[K, V], Protocol[K, V]):
     def __aiter__(self) -> AsyncIterator[tuple[K, V]]: ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[async_trait]
+pub trait LiveMapFeed<K, V>: Send + Sync + 'static {
+    /// Stream changes to `subscriber` until cancelled. Call
+    /// `subscriber.mark_ready()` once caught up.
+    async fn watch(&self, subscriber: LiveMapSubscriber<K, V>) -> Result<()>;
+
+    /// Whether to skip the initial catch-up scan in live mode. Defaults to `false`.
+    async fn skip_initial_scan(&self, _operator: &LiveComponentOperator) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+#[async_trait]
+pub trait LiveMapView<K, V>: LiveMapFeed<K, V> {
+    /// All current `(key, value)` pairs, for the catch-up full pass and re-scans.
+    async fn scan(&self) -> Result<Vec<(K, V)>>;
+}
+```
+
+`ctx.mount_each_live(&key, feed, process_fn)` takes a `LiveMapView`. A watch-only source implements `scan` as an empty snapshot, so everything arrives through `watch()`. A durable feed can override `skip_initial_scan` to resume from a cursor it kept with `operator.read_committed_state`.
+
+</Fragment>
+</LangTabs>
+
 `LiveMapView` extends `LiveMapFeed` — any `LiveMapView` is also a valid `LiveMapFeed`. When `mount_each()` receives either protocol as its `items` argument, it automatically creates an internal `LiveComponent`:
 
 - **`LiveMapView`**: `__aiter__()` yields all `(key, value)` pairs for full scans (called inside the internal `process()`). `watch()` handles the full lifecycle.
 - **`LiveMapFeed`**: `process()` is a no-op (no snapshot to scan). All work happens in `watch()`.
+
+In Rust the live mount is a separate method, `ctx.mount_each_live`, and `ctx.mount_each` only takes a plain collection.
 
 ### LiveMapSubscriber
 
@@ -234,7 +444,13 @@ The `subscriber` passed to `watch()` mirrors `LiveComponentOperator`:
 | `await subscriber.update(key, value)` | `await operator.update(subpath, fn, ...)` | Incremental update; returns `ComponentMountHandle` |
 | `await subscriber.delete(key)` | `await operator.delete(subpath)` | Incremental delete; returns `ComponentMountHandle` |
 
+The Rust `LiveMapSubscriber<K, V>` has the same four methods: `update_all().await?`, `mark_ready().await`, `update(key, value).await?` and `delete(key).await?`, plus `is_live()`. `update` and `delete` await until the child's state has synced.
+
 A typical `watch()` implementation for a `LiveMapView`:
+
+{/* Rust: rust/sdk/cocoindex/tests/live_component.rs (StreamFeed) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async def watch(self, subscriber: LiveMapSubscriber[K, V]) -> None:
@@ -243,6 +459,40 @@ async def watch(self, subscriber: LiveMapSubscriber[K, V]) -> None:
     # ... watch for changes and call subscriber.update()/delete() ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+/// Watch-only stream: emits a fixed set of incremental updates after readiness.
+struct StreamFeed {
+    items: Vec<(String, i64)>,
+}
+
+#[async_trait]
+impl LiveMapFeed<String, i64> for StreamFeed {
+    async fn watch(&self, subscriber: LiveMapSubscriber<String, i64>) -> Result<()> {
+        subscriber.mark_ready().await;
+        for (k, v) in &self.items {
+            subscriber.update(k.clone(), *v).await?;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LiveMapView<String, i64> for StreamFeed {
+    async fn scan(&self) -> Result<Vec<(String, i64)>> {
+        // Empty initial snapshot; everything arrives via watch().
+        Ok(Vec::new())
+    }
+}
+```
+
+The framework runs the initial scan itself, before `watch()`, so `watch()` starts with `mark_ready`.
+
+</Fragment>
+</LangTabs>
+
 ### Implementing live support for a connector
 
 To add live support to a source connector, make your source return an object that implements `LiveMapView` (if the source has scannable state) or `LiveMapFeed` (if it only streams changes):
@@ -250,11 +500,63 @@ To add live support to a source connector, make your source return an object tha
 - **`LiveMapView` example**: The [`localfs`](../connectors/localfs) connector's `DirWalker` — `walk_dir(..., live=True).items()` returns a `LiveMapView` backed by `watchfiles`.
 - **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from a Kafka topic.
 
+The Rust SDK has the same two: `walk_dir(dir).live()` (feature `fs_live`) is a `LiveMapView`, and the `kafka` connector's topic map implements `LiveMapView`, with a scan that reads the latest message per key. A third one is `LiveMap<K, V>`, an in-process live source, described below.
+
+### LiveMap: an in-process live source (Rust)
+
+`LiveMap<K, V>` joins live data-*producing* logic and live data-*consuming* logic inside one session. The producer declares `(key, value)` entries as target states with `declare_entry`; the consumer reads the map as a `LiveMapView` through `ctx.mount_each_live`. An entry exists as long as some component declares it; when its declaring component stops declaring it, the entry is removed, and the consumer's child for it is deleted.
+
+{/* Rust: rust/sdk/cocoindex/tests/live_map.rs (Producer, Consumer), rust/sdk/cocoindex/src/resources/live_map.rs */}
+```rust
+use cocoindex::prelude::*;
+
+/// Declares every entry of `source`.
+struct Producer {
+    lm: LiveMap<String, String>,
+    source: Vec<(String, String)>,
+}
+
+#[cocoindex::async_trait]
+impl LiveComponent for Producer {
+    async fn process(&self, ctx: Ctx) -> Result<()> {
+        for (key, value) in self.source.clone() {
+            self.lm.declare_entry(&ctx, key, value)?;
+        }
+        Ok(())
+    }
+}
+
+/// Consumes the map: one child per entry.
+struct Consumer {
+    lm: LiveMap<String, String>,
+}
+
+#[cocoindex::async_trait]
+impl LiveComponent for Consumer {
+    async fn process(&self, ctx: Ctx) -> Result<()> {
+        ctx.mount_each_live(&"each", self.lm.clone(), move |_ctx, value: String| async move {
+            // ... process one entry ...
+            Ok(())
+        })
+        .await
+    }
+}
+
+// Inside the component tree:
+let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
+```
+
+`LiveMap::create(&ctx)` mounts the map's backing container target. The map is an in-memory, live-mode primitive, not state that persists across runs.
+
 ### Single-subscriber contract
 
 A live feed (`LiveMapView`, `LiveMapFeed`, or `LiveStream`) is **single-subscriber**. Its `watch()` typically owns an exclusive underlying resource (a consumer subscription, an OS file watch, a single in-memory change channel) that can't be fanned out to two concurrent callers — e.g. two subscriptions would race one consumer's offset commits. So a given feed instance supports **one active `watch()` (one `mount_each`) at a time**; consuming it from two places concurrently is unsupported. Fan-out to multiple subscribers, if ever needed, belongs in a layer above the feed.
 
 Enforce this in your `watch()` with `cocoindex.connectorkits.SingleWatcherGuard`, which raises `RuntimeError` on a second concurrent call:
+
+{/* Rust: rust/sdk/cocoindex/src/live_component.rs (SingleWatcherGuard doc comment) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectorkits import SingleWatcherGuard
@@ -268,7 +570,29 @@ class MyView:
             ...  # existing body
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+struct MyFeed { watch_guard: SingleWatcherGuard, /* ... */ }
+
+#[async_trait]
+impl LiveMapFeed<String, Vec<u8>> for MyFeed {
+    async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
+        let _token = self.watch_guard.enter()?;
+        // ... body ...
+    }
+}
+```
+
+Build the guard with `SingleWatcherGuard::new("MyFeed")`. `enter()` returns an error on a second concurrent `watch()`; the flag clears when the token drops, on return, error or cancellation.
+
+</Fragment>
+</LangTabs>
+
 ## LiveStream
+
+The Rust SDK has no `LiveStream`: a Rust connector that consumes raw events implements `LiveMapFeed` and translates each event into `subscriber.update` / `subscriber.delete` itself.
 
 Some change sources are not naturally keyed maps — they deliver opaque event payloads (e.g. cloud-storage event notifications, raw message buses) that the consuming connector translates into map updates on its own terms. For these, CocoIndex provides **`LiveStream`**: a keyless sibling of `LiveMapFeed` — an unkeyed sequence of messages without any "key" or "delete" semantics. Connectors typically wrap a user-supplied `LiveStream` into their own `LiveMapView` (or `LiveMapFeed`) by translating each event into the appropriate key-level operation.
 
@@ -307,6 +631,8 @@ For a manual `LiveComponent`, the mode controls whether `process_live()` continu
 
 This lets you use the same `LiveComponent` class in both modes without code changes.
 
+In Rust, live mode is `UpdateOptions { live: true, .. }` on `app.update_with_options(..)`, or `cocoindex update -L` with the Rust CLI. `operator.is_live()` tells the body which mode it runs in.
+
 ## Restrictions
 
 ### No `use_mount()` inside `process()`
@@ -320,6 +646,8 @@ LiveComponent classes can only be used with `coco.mount()` and `operator.update(
 :::tip
 While LiveComponent classes cannot be passed to `mount_each()`, use a [`LiveMapFeed` or `LiveMapView`](#livemapfeed-and-livemapview) — `mount_each()` automatically creates an internal LiveComponent when it detects one.
 :::
+
+In Rust a `LiveComponent` is mounted only with `ctx.mount_live` (or `mount_live_with_handler`). To mount one live component per item, use `ctx.mount_each_live_component(items, key_fn, make_component)`; to fan one feed out into closure-driven children, use `ctx.mount_each_live`.
 
 ## Readiness
 

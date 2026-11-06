@@ -5,11 +5,29 @@ description: >
   model caching, thread-safe GPU access, and optional normalization — plus
   VectorSchemaProvider integration for connectors.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 The `cocoindex.ops.sentence_transformers` module provides integration with the [sentence-transformers](https://www.sbert.net/) library for text embeddings.
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+```
+
+The Rust module is `cocoindex::ops::sentence_transformers`, behind the `fastembed` feature of the `cocoindex` crate. It runs the same ONNX models locally through [`fastembed`](https://github.com/Anush008/fastembed-rs), with no Python runtime.
+
+</Fragment>
+</LangTabs>
 
 :::note[Dependencies]
 This module requires additional dependencies. Install with:
@@ -29,9 +47,15 @@ The `SentenceTransformerEmbedder` class is a wrapper around SentenceTransformer 
 - Provides an `embed()` method
 - Returns typed NumPy arrays
 
+The Rust `SentenceTransformerEmbedder` implements `VectorSchemaProvider` and `Embedder` too, and returns `Vec<f32>`. It runs the model on the ONNX Runtime execution providers compiled into the binary (CPU by default), on a blocking thread.
+
 ## Basic usage
 
 ### Creating an embedder
+
+{/* Rust: examples/rust/text_embedding/src/main.rs (load_embedder) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
@@ -40,9 +64,28 @@ from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+
+// Load a pre-trained model; this downloads and initializes the ONNX model.
+let embedder = SentenceTransformerEmbedder::load("sentence-transformers/all-MiniLM-L6-v2").await?;
+```
+
+`load` is async and returns a `Result`, because it downloads and initializes the model. `embedder.dimension()` returns the model's dimension and `embedder.model_name()` the name it was loaded with. The embedder is cheap to clone.
+
+</Fragment>
+</LangTabs>
+
 ### Embedding text
 
 The `embed()` method converts text into a `numpy.ndarray` of `float32`. It supports both sync and async usage:
+
+{/* Rust: examples/rust/text_embedding/src/main.rs (process_file, query_once) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # In a CocoIndex function
@@ -52,13 +95,35 @@ embedding = await embedder.embed("Hello, world!")
 table.declare_row(row=CodeEmbedding(code="Hello, world!", embedding=embedding))
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// In a CocoIndex function: memoized per text, batched across concurrent calls.
+let embedding = embedder.embed(&ctx, "Hello, world!").await?;
+
+// Outside an update (a search query): one raw batch, no memoization.
+let query_vec = embedder.embed_batch(vec![query.to_string()]).await?.remove(0);
+```
+
+`embed(&ctx, text)` returns `Vec<f32>`. Outside an update there is no `Ctx`: use `embed_batch(texts)`, which embeds one batch directly.
+
+</Fragment>
+</LangTabs>
+
 :::note[Built-in memoization]
 `embed()` is memoized (`memo=True`): inside a processing component, each distinct text's vector is cached across that component's runs, so a caller that re-executes doesn't recompute unchanged text — the tradeoff is model compute vs. cache storage (one full vector per distinct text). This composes well with the per-file component in the example below; mind the [memoization placement rule](../programming_guide/function#when-to-memoize) if your components are instead keyed by the embedded content. Callsite control over an op's memoization is tracked in [#2275](https://github.com/cocoindex-io/cocoindex/issues/2275).
 :::
 
+The Rust `embed(&ctx, text)` is memoized the same way, and it batches: concurrent cache misses in one update are coalesced into batches of up to 64 texts. The memo key holds the model name and dimension, so a different model invalidates the cached vectors.
+
 ### Using as a type annotation
 
 The `SentenceTransformerEmbedder` implements [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), which means it can be used directly as metadata in `Annotated` type annotations. This is the recommended way to declare vector columns — CocoIndex connectors automatically extract the vector dimension and dtype from the annotation when creating tables.
+
+{/* Rust: examples/rust/text_embedding/src/main.rs (DocEmbedding, index) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from dataclasses import dataclass
@@ -77,7 +142,34 @@ class CodeEmbedding:
     end_line: int
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::prelude::*;
+
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct DocEmbedding {
+    id: i64,
+    filename: String,
+    chunk_start: i32,
+    chunk_end: i32,
+    text: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+```
+
+A Rust row struct cannot name the embedder in a field attribute. `#[coco(vector)]` marks the column; the embedder supplies the dimension when the table is mounted, below.
+
+</Fragment>
+</LangTabs>
+
 When you pass this dataclass to a connector's `TableSchema.from_class()`, the connector automatically reads the embedder annotation to determine the vector column's dimension and dtype. For example, with Postgres:
+
+{/* Rust: examples/rust/text_embedding/src/main.rs (index) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import postgres
@@ -94,11 +186,39 @@ target_table = await postgres.mount_table_target(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::postgres;
+
+// The embedder reports the dimension of the `embedding` column.
+let table = postgres::mount_table_target(
+    &ctx,
+    &DB,
+    "doc_embeddings",
+    postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+        .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+        .await?,
+    Some("my_schema"),
+)
+.await?;
+```
+
+`TableSchema::from_row::<Row>(primary_key)` is the Rust `from_class`; `with_vector_schema(field, &embedder)` resolves the `#[coco(vector)]` column from any `VectorSchemaProvider`. See [Vector schema annotations](../common_resources/vector_schema).
+
+</Fragment>
+</LangTabs>
+
 The connector automatically creates the appropriate `vector(384)` column. See the [Connectors](../connectors/postgres) docs for other supported backends (LanceDB, Qdrant, SQLite).
 
 ## Example: text embedding pipeline
 
 Here's a complete example of a text embedding pipeline (based on the [text_embedding example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding)):
+
+{/* Rust: examples/rust/text_embedding/src/main.rs (trimmed: the query command and the main body are left out) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import pathlib
@@ -180,6 +300,150 @@ async def app_main(sourcedir: pathlib.Path) -> None:
     await coco.mount_each(process_file, files.items(), target_table)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::path::PathBuf;
+use std::time::Duration;
+
+use cocoindex::connectors::postgres;
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
+use cocoindex::prelude::*;
+
+const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
+const PG_SCHEMA: &str = "coco_examples";
+const TABLE: &str = "doc_embeddings";
+const CHUNK_SIZE: usize = 2000;
+const CHUNK_OVERLAP: usize = 500;
+
+cocoindex::context_key!(static DB: postgres::Database);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
+);
+
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct DocEmbedding {
+    id: i64,
+    filename: String,
+    chunk_start: i32,
+    chunk_end: i32,
+    text: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+/// Chunk and embed one file. Memoized on the file, so an unchanged file
+/// returns its rows without re-chunking.
+#[cocoindex::function(memo)]
+async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<DocEmbedding>> {
+    let filename = file.key();
+    let text = file.content_str()?;
+
+    let splitter = RecursiveSplitter::new()?;
+    let chunks = splitter.split_with(
+        &text,
+        RecursiveChunkConfig {
+            chunk_size: CHUNK_SIZE,
+            min_chunk_size: None,
+            chunk_overlap: Some(CHUNK_OVERLAP),
+            language: Some("markdown".to_string()),
+        },
+    );
+    if chunks.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
+    let embedder = ctx.get_key(&EMBEDDER)?.clone();
+    let embedding_ctx = ctx.clone();
+    let embeddings = ctx
+        .map(texts.clone(), move |chunk_text| {
+            let embedder = embedder.clone();
+            let ctx = embedding_ctx.clone();
+            async move { embedder.embed(&ctx, chunk_text).await }
+        })
+        .await?;
+
+    let mut id_gen = IdGenerator::new();
+    let mut rows = Vec::with_capacity(texts.len());
+    for ((chunk, chunk_text), embedding) in chunks.iter().zip(texts).zip(embeddings) {
+        let id = id_gen.next_id(&ctx, &chunk_text).await?;
+        let id =
+            i64::try_from(id).map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
+        rows.push(DocEmbedding {
+            id,
+            filename: filename.clone(),
+            chunk_start: chunk.start.char_offset as i32,
+            chunk_end: chunk.end.char_offset as i32,
+            text: chunk_text,
+            embedding,
+        });
+    }
+    Ok(rows)
+}
+
+/// Environment setup: the state db, Postgres and the embedder.
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    let db = postgres::Database::connect(&database_url()).await?;
+    let pool = db.pool().clone();
+    let embedder = SentenceTransformerEmbedder::load(EMBED_MODEL).await?;
+    Ok(builder
+        .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&DB, db)
+        .provide_key(&EMBEDDER, embedder)
+        .on_shutdown(move || async move { pool.close().await }))
+}
+
+#[cocoindex::app(name = "TextEmbeddingRust")]
+async fn app_main(ctx: Ctx) -> Result<()> {
+    index(ctx, source_dir()).await
+}
+
+async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
+    // The embedder reports the dimension of the `embedding` column.
+    let table = postgres::mount_table_target(
+        &ctx,
+        &DB,
+        TABLE,
+        postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+            .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+            .await?,
+        Some(PG_SCHEMA),
+    )
+    .await?;
+
+    // One component per markdown file; each declares its own rows. In live
+    // mode (`cocoindex update -L`) the walker keeps watching the directory.
+    let files = walk_dir(sourcedir)
+        .recursive(true)
+        .path_matcher(PatternFilePathMatcher::new(
+            ["**/*.md"],
+            std::iter::empty::<&str>(),
+        )?)
+        .live()
+        .poll_interval(Duration::from_secs(1));
+    ctx.mount_each_live(&"files", files, move |ctx, file: FileEntry| {
+        let table = table.clone();
+        async move {
+            for row in process_file(&ctx, &file).await? {
+                table.declare_row(&ctx, &row)?;
+            }
+            Ok(())
+        }
+    })
+    .await
+}
+```
+
+The full program, with the `database_url()` and `source_dir()` helpers, a `query` command and the `#[cocoindex::main]` entry point, is `examples/rust/text_embedding`. Run it with the [CLI for Rust projects](../cli_rust): `cocoindex update`, or `cocoindex update -L` to keep watching the directory.
+
+</Fragment>
+</LangTabs>
+
 ## Configuration options
 
 ### Model selection
@@ -200,6 +464,8 @@ embedder = SentenceTransformerEmbedder("sentence-transformers/paraphrase-multili
 embedder = SentenceTransformerEmbedder("/path/to/local/model")
 ```
 
+The Rust `SentenceTransformerEmbedder::load(name_or_path)` accepts a name from the `fastembed` model registry (matched case-insensitively, and by the trailing model name, so `sentence-transformers/all-MiniLM-L6-v2` and `Xenova/all-MiniLM-L6-v2` resolve to the same model), a local directory holding a sentence-transformers ONNX export (`onnx/model.onnx` or `model.onnx` plus the tokenizer files), or the Hugging Face Hub repository of such an export. `HF_HOME` and `HF_ENDPOINT` apply to the download. A model with a pooling mode other than CLS or mean is rejected.
+
 ### Normalization
 
 By default, embeddings are normalized to unit length (suitable for cosine similarity):
@@ -217,3 +483,5 @@ embedder = SentenceTransformerEmbedder(
     normalize_embeddings=False
 )
 ```
+
+The Rust embedder always normalizes: `fastembed` L2-normalizes its output, so `normalize_embeddings` has no Rust counterpart. Python's `prompt_name` and `device` have none either: `fastembed` has no prompt registry (prepend the model's query or document prefix to the text yourself) and runs on the execution providers compiled into the binary.

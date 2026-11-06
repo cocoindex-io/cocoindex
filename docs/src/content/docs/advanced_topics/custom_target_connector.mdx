@@ -6,6 +6,8 @@ description: >
   targets, attachment providers, and idempotent operations.
 toc_max_heading_level: 4
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 A **custom target connector** is the mechanism that connects CocoIndex's declarative target state system to external systems. When you call methods like `dir_target.declare_file()` or `table_target.declare_row()`, a target connector handles the actual synchronization — determining what changed and applying those changes to the external system.
 
 ## When to create a custom target connector
@@ -24,9 +26,15 @@ For simple use cases where you just need to write data to an external system wit
 
 The labels distinguish types you implement from types CocoIndex provides.
 
+The Rust SDK has the same types, in `cocoindex::prelude`: the `TargetHandler<V>` trait, `TargetActionSink<A>`, `TargetAction<A>`, `TargetReconcileOutput<A, R>`, `TargetStateProvider<V>`, `TargetState<V>`, `ChildTargetDef`, and the functions `register_root_target_states_provider`, `declare_target_state`, `declare_target_state_with_child` and `mount_target`. Each Python snippet below has a Rust tab where the surface matches. For a complete Rust connector, read `rust/sdk/cocoindex/src/connectors/valkey.rs` (a container target with child documents) or `rust/sdk/cocoindex/src/resources/live_map.rs` (the smallest container target).
+
 ### TargetHandler *(you implement)*
 
 A `TargetHandler` implements the reconciliation logic. It's a protocol with one required method and one optional method:
+
+{/* Rust: rust/sdk/cocoindex/src/target_state.rs (TargetHandler) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
@@ -44,6 +52,37 @@ class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
     def attachments(self) -> dict[str, TargetHandler]:
         return {}  # Default: no attachments
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub trait TargetHandler<V>: Send + Sync + 'static
+where
+    V: Serialize + DeserializeOwned + Send + 'static,
+{
+    type TrackingRecord: Serialize + DeserializeOwned + Send + Sync + 'static;
+    type Action: Serialize + DeserializeOwned + Send + 'static;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired_target_state: Option<V>,
+        prev_possible_records: Vec<Self::TrackingRecord>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<Self::Action, Self::TrackingRecord>>>;
+
+    // Optional: attachment handlers, keyed by attachment type name.
+    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
+        Ok(Vec::new())
+    }
+}
+```
+
+The value type `V` is the trait's type parameter; the tracking record and the action are associated types. `desired_target_state` is `None` where Python passes `NON_EXISTENCE`. The child handler type is not part of the trait: a container's sink builds it (see [container targets](#implementing-container-targets)).
+
+</Fragment>
+</LangTabs>
 
 **Type Parameters:**
 
@@ -83,7 +122,7 @@ A **tracking record** captures the essential information needed to detect change
 
 - Are **minimal**: Only include what's needed for change detection
 - Are **deterministic**: Same input always produces the same record
-- Are **serializable**: Must be persistable (typically a NamedTuple or dataclass). Dataclasses and NamedTuples are serialized with msgspec automatically. For types requiring pickle, use `@coco.serialize_by_pickle`.
+- Are **serializable**: Must be persistable (typically a NamedTuple or dataclass). Dataclasses and NamedTuples are serialized with msgspec automatically. For types requiring pickle, use `@coco.serialize_by_pickle`. In Rust, `TrackingRecord` is any `Serialize + DeserializeOwned` type; `cocoindex::Fingerprint::from_bytes(&bytes)` gives a content fingerprint.
 
 ```python
 # Example: File tracking record
@@ -123,6 +162,10 @@ class _FileAction(NamedTuple):
 
 A **TargetActionSink** batches and executes actions:
 
+{/* Rust: rust/sdk/cocoindex/tests/deadline.rs (declare_memory_row), rust/sdk/cocoindex/src/target_state.rs (TargetActionSink::from_async_fn) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 # Sync sink
 sink = coco.TargetActionSink.from_fn(apply_actions)
@@ -147,11 +190,44 @@ def apply_actions(
             action.path.write_bytes(action.content)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct WriteAction {
+    key: String,
+    value: String,
+}
+
+let sink = TargetActionSink::from_async_fn(move |actions| {
+    let applied = applied.clone();
+    async move {
+        let mut applied = applied.lock().unwrap();
+        for action in actions {
+            if let TargetAction::Update(action) = action {
+                applied.push(action);
+            }
+        }
+        Ok(())
+    }
+});
+```
+
+A Rust sink is always async. Its closure receives `Vec<TargetAction<A>>`, where each item is `TargetAction::Create(a)`, `Update(a)` or `Delete(a)`, so the operation kind travels beside your action. There is no `context_provider` argument: move the connection into the closure, or read it from the `Ctx` when you build the handler. The action type must be `Serialize + DeserializeOwned`.
+
+</Fragment>
+</LangTabs>
+
 A **container** target's sink also takes a `child_handler` factory, `child_handler(context_provider, action) -> handler`, which returns the handler for the child target states of a created or updated container. The callback stays the same: it applies the actions. See [Implementing container targets](#implementing-container-targets).
 
 ### TargetReconcileOutput *(you return)*
 
 `TargetReconcileOutput` bundles what `reconcile()` returns when an action is needed:
+
+{/* Rust: rust/sdk/cocoindex/src/target_state.rs (TargetReconcileOutput, TargetAction, TargetChildInvalidation) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class TargetReconcileOutput(Generic[ActionT, TrackingRecordT, OptChildHandlerT], NamedTuple):
@@ -161,6 +237,21 @@ class TargetReconcileOutput(Generic[ActionT, TrackingRecordT, OptChildHandlerT],
     child_invalidation: Literal["destructive", "lossy"] | None = None  # For container targets
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub struct TargetReconcileOutput<A, R> {
+    pub action: TargetAction<A>,                            // Create(A) | Update(A) | Delete(A)
+    pub sink: TargetActionSink<A>,                          // How to execute it
+    pub tracking_record: Option<R>,                         // What to remember; None = non-existence
+    pub child_invalidation: Option<TargetChildInvalidation>, // Destructive | Lossy, for containers
+}
+```
+
+</Fragment>
+</LangTabs>
+
 `OptChildHandlerT` is the handler type of the child target states, which the sink's `child_handler` factory returns for the action (`None` for leaf targets). Nothing in the tuple depends on it; it is how a container handler declares its child handler type.
 
 The `child_invalidation` field is only relevant for **container targets** (those with children). See [Child invalidation](#child-invalidation) for details.
@@ -168,6 +259,10 @@ The `child_invalidation` field is only relevant for **container targets** (those
 ### TargetStateProvider *(CocoIndex provides)*
 
 A `TargetStateProvider` is a factory that creates `TargetState` objects. You don't implement this class — CocoIndex gives you one when you register a handler or declare a target state with children.
+
+{/* Rust: rust/sdk/cocoindex/src/target_state.rs (register_root_target_states_provider, declare_target_state_with_child, mount_target, TargetStateProvider::attachment) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # You get a provider from registration
@@ -180,9 +275,36 @@ child_provider = coco.declare_target_state_with_child(parent_target_state)
 att_provider = child_provider.attachment("vector_index")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// You get a provider from registration, for the current run.
+let provider = register_root_target_states_provider(ctx, "my.target", handler)?;
+
+// Or from declaring a parent target state (the child provider is ready once
+// the enclosing component commits) ...
+let child_provider = declare_target_state_with_child(ctx, parent_target_state)?;
+// ... or from mounting the parent, which commits it in a foreground child
+// component, so the child provider is ready at once.
+let child_provider = mount_target(ctx, parent_target_state).await?;
+
+// Or from an attachment on a mounted child provider.
+let att_provider = child_provider.attachment(ctx, "vector_index")?;
+```
+
+Every call takes the `Ctx`: there is no ambient component context in Rust.
+
+</Fragment>
+</LangTabs>
+
 ### TargetState *(CocoIndex provides)*
 
 A `TargetState` wraps a key and spec. You create these using the provider, then declare them:
+
+{/* Rust: rust/sdk/cocoindex/tests/deadline.rs (declare_memory_row) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Create a target state
@@ -191,6 +313,19 @@ target_state = provider.target_state(key, spec)
 # Declare it for reconciliation
 coco.declare_target_state(target_state)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Create a target state and declare it for reconciliation
+declare_target_state(ctx, provider.target_state("row-1", value))?;
+```
+
+The key is anything that implements `IntoStableKey`: a `StableKey`, `&str`, `String`, `i64` or `u64`.
+
+</Fragment>
+</LangTabs>
 
 ## Implementing root target states
 
@@ -243,6 +378,10 @@ class _RowAction(NamedTuple):
 ```
 
 ### Step 2: Implement the handler
+
+{/* Rust: rust/sdk/cocoindex/tests/deadline.rs (MemoryHandler) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class _RowHandler(coco.TargetHandler[_RowSpec, _RowTrackingRecord]):
@@ -302,9 +441,58 @@ class _RowHandler(coco.TargetHandler[_RowSpec, _RowTrackingRecord]):
         )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[derive(Clone)]
+struct MemoryHandler {
+    sink: TargetActionSink<WriteAction>,
+}
+
+impl TargetHandler<String> for MemoryHandler {
+    type TrackingRecord = String;
+    type Action = WriteAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired_target_state: Option<String>,
+        prev_possible_records: Vec<Self::TrackingRecord>,
+        _prev_may_be_missing: bool,
+    ) -> cocoindex::Result<Option<TargetReconcileOutput<Self::Action, Self::TrackingRecord>>> {
+        let Some(value) = desired_target_state else {
+            return Ok(None);
+        };
+        // Skip if unchanged
+        if prev_possible_records.iter().any(|prev| prev == &value) {
+            return Ok(None);
+        }
+        Ok(Some(TargetReconcileOutput {
+            action: TargetAction::Update(WriteAction {
+                key: key.to_string(),
+                value: value.clone(),
+            }),
+            sink: self.sink.clone(),
+            tracking_record: Some(value),
+            child_invalidation: None,
+        }))
+    }
+}
+```
+
+This handler keeps the value itself as the tracking record and never deletes; a real one returns `TargetAction::Delete(..)` with `tracking_record: None` when `desired_target_state` is `None` and a previous record exists.
+
+</Fragment>
+</LangTabs>
+
 ### Step 3: Register the provider
 
 For root-level target states (not nested within another target), register a provider:
+
+{/* Rust: rust/sdk/cocoindex/tests/deadline.rs (declare_memory_row) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 _row_provider = coco.register_root_target_states_provider(
@@ -313,9 +501,25 @@ _row_provider = coco.register_root_target_states_provider(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let provider = register_root_target_states_provider(
+    ctx,
+    "mycompany.io/mydb/row", // Unique provider name
+    MemoryHandler { sink },
+)?;
+```
+
+A Rust provider is registered for the current run, from inside a component. Once a run stops registering it, the engine cannot reach its handler, and the target states declared through it are left in place.
+
+</Fragment>
+</LangTabs>
+
 ### Step 4: Create user-facing APIs
 
-Wrap the provider in a user-friendly API:
+Wrap the provider in a user-friendly API. In Rust, this is a struct that holds the `TargetStateProvider<V>` and whose methods take `&Ctx`, as `DirTarget::declare_file(ctx, name, content)` does.
 
 ```python
 class TableTarget:
@@ -431,6 +635,20 @@ def _entry_handler(
 
 _dir_sink = coco.TargetActionSink.from_fn(
     _apply_dir_actions, child_handler=_entry_handler
+)
+```
+
+In Rust, a container sink is `TargetActionSink::from_async_fn_with_child_handler(apply, child_handler)`. The factory takes `&A` and returns a `ChildTargetDef`, which wraps a typed child handler:
+
+{/* Rust: rust/sdk/cocoindex/src/resources/live_map.rs (ContainerHandler::sink) */}
+```rust
+TargetActionSink::from_async_fn_with_child_handler(
+    |_actions| async { Ok(()) },
+    move |_: &ContainerAction| {
+        Ok(ChildTargetDef::new::<V, _>(EntryHandler {
+            inner: inner.clone(),
+        }))
+    },
 )
 ```
 
@@ -703,6 +921,8 @@ if not prev_may_be_missing and all(
     return None  # Safe to skip
 ```
 
+The Rust SDK packages this decision in `cocoindex::statediff`. `TrackingRecordTransition { desired, prev, prev_may_be_missing }` holds the inputs of one `reconcile` call, and `diff(Some(&transition))` returns `None` (skip) or a `DiffAction`: `Insert`, `Upsert`, `Replace` or `Delete`. `Replace` means a previous record differs from the desired one; `Upsert` means the records match but the target may be missing. For a target the user may own, `ManagedBy::{System, User}` and `resolve_system_transition(..)` leave a user-managed target alone.
+
 ### Efficient change detection
 
 Choose tracking records that enable efficient change detection without storing full content:
@@ -774,7 +994,7 @@ class _MyHandler(coco.TargetHandler[...]):
 
 ## Complete example: local file system
 
-Here's a simplified version of the `localfs` connector showing the complete pattern:
+Here's a simplified version of the `localfs` connector showing the complete pattern. The Rust counterpart is `DirTarget` in `rust/sdk/cocoindex/src/resources/fs.rs`; `rust/sdk/cocoindex/src/connectors/valkey.rs` shows the same pattern against a database.
 
 ```python
 from __future__ import annotations

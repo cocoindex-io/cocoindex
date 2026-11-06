@@ -5,6 +5,8 @@ description: >
   via two-phase processing, and lets you register exception handlers globally
   via lifespan or scoped via context manager to observe background errors.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 CocoIndex isolates component failures and provides APIs for observing errors, handling interrupted updates, and reacting to failures in production.
 
 For a quick overview of failure isolation and the two-phase model, see [What happens when a component fails](../programming_guide/processing_component#what-happens-when-a-component-fails) in the Processing Component guide.
@@ -21,6 +23,8 @@ For a quick overview of failure isolation and the two-phase model, see [What hap
 | `await coco.use_mount(...)` | the inner component's *value* is produced | **Yes** — component success is on the critical path |
 | `await app.drop()` (and `cocoindex drop`) | GC succeeds at *every* level | **Yes**, at any depth — leaking target state would otherwise go silent |
 
+The Rust SDK follows the same table: `ctx.mount` / `mount!` schedule work and return a handle; `handle.ready().await` resolves `Ok` on an unhandled failure (the failure is logged); `LiveComponentOperator::update_full` does the same; `ctx.scope` / `use_mount!` return the child's error; `app.drop_state()` returns the error of a failed delete. One difference: Rust's `ctx.mount_each` is a foreground call that returns the children's values, so a failed item returns its error to the caller, as `scope` does.
+
 **Why `ready`/`update_full` tolerate errors by default:** `handle.ready()` is usually not awaited (callers spawn many mounts in a loop and rely on the parent's `wait_for_children`), so raising into nobody would silently disappear. Logging the failure gives operators a signal regardless. The same applies to `update_full` — a periodic refresh that died on the first cycle failure would be worse than one that logs and retries on the next tick.
 
 **Why `app.drop` raises at every level:** clearing tracking records is only safe if every component's delete actually ran its sink calls. If a descendant delete silently fails, `await app.drop()` would return Ok while target state is still live in your database — a leak. So failures at any depth surface as an exception.
@@ -30,6 +34,8 @@ For a quick overview of failure isolation and the two-phase model, see [What hap
 Install an exception handler (described below). A handler that **returns normally** swallows; a handler that **raises** propagates through `handle.ready()` (or `update_full()`) up to your awaiting code. For `app.drop`, propagation is built in — you don't need to install anything.
 
 [Live components](./live_component) follow the same principle: their `update`/`delete`/`update_full` calls route failures through this chain with `mount_kind="process_live"`. The operator also exposes [`report_exception(exc)`](./live_component#report_exception) for surfacing errors raised in `process_live`'s body that aren't already routed by `update`/`delete`/`update_full`.
+
+In Rust, a handler returns `Ok(())` to swallow a failure and `Err(_)` to propagate it. The Rust `LiveComponentOperator` has no `report_exception`: return the error from `process_live` instead.
 
 ## Processing and submit phases
 
@@ -56,6 +62,10 @@ For details on how target handlers deal with multiple possible previous states a
 
 `app.update()` returns an `UpdateHandle` that exposes processing stats, including error counts:
 
+{/* Rust: rust/sdk/cocoindex/tests/detailed_stats.rs, rust/sdk/cocoindex/src/app.rs (UpdateHandle), src/stats.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 handle = app.update()
 
@@ -69,6 +79,32 @@ async for snapshot in handle.watch():
     print(f"{snapshot.stats.total.num_errored} errors so far")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let mut handle = app.start_update(|ctx| async move {
+    // ...
+    Ok(())
+})?;
+
+// Poll stats at any time
+let detailed = handle.detailed_stats_snapshot();
+println!("Errors: {}", detailed.total().num_errors);
+
+// Follow progress until the update finishes
+loop {
+    if handle.changed().await?.is_done() {
+        break;
+    }
+    println!("{} errors so far", handle.detailed_stats_snapshot().total().num_errors);
+}
+let result = handle.result().await?;
+```
+
+</Fragment>
+</LangTabs>
+
 See [Progress monitoring](./progress_monitoring) for the full `UpdateHandle` API.
 
 ## Exception handlers
@@ -80,6 +116,8 @@ CocoIndex supports two levels of exception handlers:
 - **Global (environment-level)**: registered once in your lifespan function; applies to all background mounts in the environment.
 - **Scoped**: an async context manager that applies to all `mount()` / `mount_each()` calls made within it.
 
+In the Rust SDK the global handler is `EnvironmentBuilder::exception_handler`, and a scoped handler is `ctx.with_exception_handler(handler)`, which returns a scoped `Ctx`. A handler is `Fn(&Error, &ExceptionContext) -> Result<()>`: return `Ok(())` to swallow the failure, `Err(_)` to propagate it.
+
 :::note
 Exception handlers only apply to `mount()` and `mount_each()`. `use_mount()` propagates errors directly to the caller since the parent has an explicit dependency on the result.
 :::
@@ -87,6 +125,10 @@ Exception handlers only apply to `mount()` and `mount_each()`. `use_mount()` pro
 ### Global exception handler
 
 Register a handler inside your `@coco.lifespan` function using `builder.set_exception_handler()`:
+
+{/* Rust: rust/sdk/cocoindex/tests/mount.rs (temp_app_with_handler), rust/sdk/cocoindex/src/app.rs (EnvironmentBuilder::exception_handler) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import cocoindex as coco
@@ -100,11 +142,33 @@ def lifespan(builder: coco.EnvironmentBuilder):
     yield
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    Ok(builder.exception_handler(|err, exc| {
+        println!("[{}] {:?} failed at {}: {err}", exc.env_name, exc.mount_kind, exc.stable_path);
+        Ok(())
+    }))
+}
+```
+
+The same method works on an `Environment::builder()` you build yourself.
+
+</Fragment>
+</LangTabs>
+
 This replaces the default "log error" behavior for all background mounts in the environment.
 
 ### Scoped exception handler
 
 Use `coco.exception_handler()` as an async context manager to apply a handler to a specific dynamic scope:
+
+{/* Rust: rust/sdk/cocoindex/tests/mount.rs (scoped_handler_applies_only_to_mounts_from_the_scoped_ctx) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn
@@ -117,9 +181,36 @@ async def process_all(files):
             await coco.mount(coco.component_subpath(str(f.path)), process_file, f)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function]
+async fn process_all(ctx: &Ctx, files: Vec<FileEntry>) -> Result<()> {
+    let scoped = ctx.with_exception_handler(|err, exc| {
+        println!("Failed processing {}: {err}", exc.stable_path);
+        Ok(())
+    });
+    for file in files {
+        let key = file.relative_path().display().to_string();
+        scoped
+            .mount(&key, move |child| async move { process_file(&child, file).await })
+            .await?;
+    }
+    Ok(())
+}
+```
+
+Only mounts made from `scoped` see the handler. A mount made from the unscoped `ctx` goes to the global handler.
+
+</Fragment>
+</LangTabs>
+
 The handler applies to all `mount()` / `mount_each()` calls within the `async with` block, including those in nested functions called from within the block, and to every item of a `mount_each()` whether it iterates a collection or a [`LiveMapView` / `LiveMapFeed`](./live_component#livemapfeed-and-livemapview).
 
 It does not reach the mounts those components make themselves: a component's own `mount()` / `mount_each()` calls start from the global handler, plus any handler the component scopes itself. To observe the failures of components at any depth, register a global handler.
+
+The Rust SDK differs here on purpose. A child component's `Ctx` inherits the handler chain of the `Ctx` it was mounted from, so a handler installed with `ctx.with_exception_handler` also sees the failures of the mounts that child makes itself, at any depth. The global handler is the outermost entry of every chain.
 
 ### Handler type
 
@@ -139,12 +230,29 @@ async def async_handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
 
 The type alias is:
 
+{/* Rust: rust/sdk/cocoindex/src/live_component.rs (ExceptionHandler) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 ExceptionHandler = Callable[
     [BaseException, ExceptionContext],
     None | Awaitable[None],
 ]
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub type ExceptionHandler =
+    Arc<dyn Fn(&Error, &ExceptionContext) -> Result<()> + Send + Sync + 'static>;
+```
+
+`EnvironmentBuilder::exception_handler` and `ctx.with_exception_handler` accept any closure with that signature and wrap it. Rust handlers are synchronous closures.
+
+</Fragment>
+</LangTabs>
 
 ### What `exc` is
 
@@ -157,6 +265,10 @@ An exception raised by a handler keeps its type as well: `await handle.ready()` 
 
 Earlier releases handed every component failure to handlers as a `RuntimeError` whose message embedded the formatted traceback, and re-wrapped handler-raised exceptions the same way. A handler that checked `isinstance(exc, RuntimeError)` or parsed `str(exc)` for the traceback should switch to the checks above.
 
+{/* Rust: rust/sdk/cocoindex/tests/mount.rs (handler_error_propagates_through_ready_with_its_type) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 import traceback
 
@@ -168,6 +280,37 @@ def on_error(exc: BaseException, ctx: coco.ExceptionContext) -> None:
     else:
         raise exc  # propagate through handle.ready()
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// The handler wraps the component's error in its own error type and returns it.
+let app = Environment::builder()
+    .db_path(db_path)
+    .exception_handler(|err, _exc| Err(Error::user(DeadLetter(err.to_string()))))
+    .build()
+    .await?
+    .app("my_app")
+    .await?;
+
+// `handle.ready()` returns the same value the last handler returned.
+let handle = ctx
+    .mount(&"child", |_child| async move { Err(Error::engine("boom")) })
+    .await?;
+if let Err(e) = handle.ready().await {
+    let is_dead_letter = match &e {
+        Error::User(inner) => inner.downcast_ref::<DeadLetter>().is_some(),
+        _ => false,
+    };
+    // ...
+}
+```
+
+A Rust handler receives `&Error`. A failure your own code returned with `Error::user(..)` arrives as `Error::User(inner)`; `inner.downcast_ref::<T>()` recovers its type. `Error::DeadlineExceeded` is the cooperative deadline.
+
+</Fragment>
+</LangTabs>
 
 ### `ExceptionContext` fields
 
@@ -184,6 +327,20 @@ Your handler receives an `ExceptionContext` dataclass with information about the
 | `source` | `"component" \| "handler"` | `"component"` for the original failure; `"handler"` if a handler itself raised |
 | `original_exception` | `BaseException \| None` | The original component exception, set only when `source == "handler"` |
 
+The Rust `ExceptionContext` is a struct with the fields the Rust SDK can fill:
+
+| Field | Rust type | Notes |
+|---|---|---|
+| `env_name` | `String` | Name of the app the failing component runs under |
+| `stable_path` | `String` | Stable path of the failing component |
+| `parent_stable_path` | `Option<String>` | Set for a child mount or delete |
+| `processor_name` | `Option<String>` | Name of the processor that failed, if known |
+| `mount_kind` | `MountKind` | `Mount` (`ctx.mount` / `mount!`), `UpdateFull`, `Update` or `Delete` (the live component operator) |
+| `is_background` | `bool` | `true` for background work |
+| `source` | `ExceptionSource` | `Component` for the component's own error; `Handler` for an error a nearer handler returned |
+
+There is no `original_exception` field in Rust. The error a handler returns replaces the component's error for the next handler.
+
 ### Handler stacking and fallback
 
 Handlers are stacked: the most specific (innermost) handler runs first.
@@ -191,6 +348,10 @@ Handlers are stacked: the most specific (innermost) handler runs first.
 If the innermost handler raises an exception, the next outer handler is called with that new exception. In this case `ctx.source` is `"handler"` and `ctx.original_exception` holds the original component error.
 
 This continues up the stack. If every handler raises, the last handler's exception propagates through `handle.ready()` (see [How to opt into propagation](#how-to-opt-into-propagation)). If no handler is registered, CocoIndex falls back to the built-in behavior: logging the error at `ERROR` level, with no crash.
+
+{/* Rust: rust/sdk/cocoindex/tests/mount.rs (scoped handler then global handler with source == Handler) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.lifespan
@@ -217,5 +378,37 @@ async def _root() -> None:
     async with coco.exception_handler(inner_handler):
         await coco.mount(coco.component_subpath("child"), _child)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    Ok(builder.db_path("...").exception_handler(|err, exc| {
+        match exc.source {
+            // A handler itself failed: `err` is the error that handler returned.
+            ExceptionSource::Handler => println!("Handler error: {err}"),
+            ExceptionSource::Component => println!("Component error: {err}"),
+        }
+        Ok(())
+    }))
+}
+
+app.update(|ctx| async move {
+    let scoped = ctx.with_exception_handler(|err, _exc| {
+        println!("inner: {err}");
+        Err(Error::engine("handler failed")) // falls through to the global handler
+    });
+    scoped
+        .mount(&"child", |_child| async move { Err(Error::engine("boom")) })
+        .await?;
+    Ok(())
+})
+.await?;
+```
+
+</Fragment>
+</LangTabs>
 
 Users who never register handlers see identical behavior to the default — exceptions from background mounts are logged at `ERROR` level and siblings continue unaffected.

@@ -6,6 +6,8 @@ description: >
   max_dbs via environment variables or programmatic settings for large-scale
   deployments.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 CocoIndex uses an [LMDB](http://www.lmdb.tech/doc/) database to persist its internal state. This database tracks target states and [memoization](../programming_guide/function) results from previous runs, enabling CocoIndex to detect what changed and apply only the necessary updates.
 
 ## Database path
@@ -18,6 +20,10 @@ export COCOINDEX_DB=./cocoindex.db
 
 You can also set it programmatically in a [lifespan function](../programming_guide/app#lifespan-optional):
 
+{/* Rust: rust/sdk/cocoindex/tests/registered.rs (lifespan), rust/sdk/cocoindex/src/app.rs (EnvironmentBuilder::db_path) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
@@ -25,13 +31,44 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     yield
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    Ok(builder.db_path("./cocoindex.db"))
+}
+```
+
+</Fragment>
+</LangTabs>
+
 Or pass it directly when creating a [`Settings`](./multiple_environments) object:
+
+{/* Rust: rust/sdk/cocoindex/src/app.rs (Environment::builder, App::builder) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 settings = coco.Settings(db_path=pathlib.Path("./cocoindex.db"))
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let env = Environment::builder().db_path("./cocoindex.db").build().await?;
+// or, for a single app:
+let app = App::builder("MyApp").db_path("./cocoindex.db").build().await?;
+```
+
+</Fragment>
+</LangTabs>
+
 Setting `db_path` in the lifespan or `Settings` takes precedence over the `COCOINDEX_DB` environment variable. If neither is provided, CocoIndex will raise an error.
+
+In the Rust SDK only `Environment::from_registered()` reads `COCOINDEX_DB`: it runs every `#[cocoindex::lifespan]` and uses the variable when no lifespan set a `db_path`; with neither, it returns an error. That is the path the `cocoindex` CLI takes. A plain `Environment::builder().build()` reads no environment variables and defaults `db_path` to `./coco_state`.
 
 ## Opening and closing the database
 
@@ -39,7 +76,7 @@ Opening a `db_path` opens its LMDB environment, and LMDB allows one environment 
 
 ## LMDB tuning
 
-The LMDB database has two tunable settings, grouped under `coco.LmdbSettings` and attached to `Settings` as `db_settings`. The defaults work well for most use cases — you only need to adjust them for large-scale deployments.
+The LMDB database has two tunable settings, grouped under `coco.LmdbSettings` and attached to `Settings` as `db_settings`. The defaults work well for most use cases — you only need to adjust them for large-scale deployments. The Rust builder exposes them as `lmdb_max_dbs(..)` and `lmdb_map_size(..)`, with the same defaults; `Environment::from_registered()` reads the two environment variables when a lifespan did not set them.
 
 | Setting | Default | Env Variable | Description |
 |---------|---------|-------------|-------------|
@@ -75,6 +112,10 @@ export COCOINDEX_LMDB_MAX_DBS=2048
 
 Or programmatically in a lifespan function:
 
+{/* Rust: rust/sdk/cocoindex/src/app.rs (EnvironmentBuilder::lmdb_map_size, lmdb_max_dbs), rust/sdk/cocoindex/tests/registered.rs (lifespan shape) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
@@ -83,6 +124,24 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     builder.settings.db_settings.max_dbs = 2048
     yield
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    Ok(builder
+        .db_path("./cocoindex.db")
+        .lmdb_map_size(8 * 1024 * 1024 * 1024) // 8 GiB
+        .lmdb_max_dbs(2048))
+}
+```
+
+The same setters exist on `App::builder(name)`.
+
+</Fragment>
+</LangTabs>
 
 Or when creating a `Settings` object directly:
 
@@ -112,3 +171,42 @@ cocoindex show --db ./cocoindex.db --app-name MyApp --target-states
 ```
 
 The database format does not depend on the SDK that wrote it. The Python CLI lists and shows a database written by an app built with the Rust SDK, and prints the same output as the Rust SDK's own `cocoindex` CLI.
+
+The Rust `cocoindex` CLI reads a database the same way, with the same flags:
+
+```bash
+cocoindex ls --db ./cocoindex.db
+cocoindex show --db ./cocoindex.db --app-name MyApp
+cocoindex show --db ./cocoindex.db --app-name MyApp '/"a.md"'
+```
+
+Without `--db`, `ls` uses `COCOINDEX_DB`. With an app target instead of `--db` and `--app-name`, the CLI builds the crate and asks the app for its database.
+
+### Inspecting from Rust code
+
+`cocoindex::inspect` reads the same data from a program: an app's stable paths, the details of each one, and the target states it tracks. Every function takes an `App`; its `_by_name` form takes an `Environment` and an app name, for an app whose pipeline the binary does not hold. The functions only read.
+
+{/* Rust: rust/sdk/cocoindex/src/inspect.rs (module docs), rust/sdk/cocoindex/tests/inspect.rs */}
+```rust
+use cocoindex::inspect::{self, StablePath, StablePathQuery};
+use futures::TryStreamExt;
+
+for path in inspect::list_stable_paths(&app).await? {
+    println!("{path}");
+}
+
+// Streams read in one transaction and buffer nothing.
+let mut target_states = std::pin::pin!(inspect::iter_target_states(&app).await);
+while let Some(entry) = target_states.try_next().await? {
+    println!("{} owner:{}", entry.readable_path, entry.owner_component_path);
+}
+
+// One path, with the paths directly under it.
+let query = StablePathQuery { include_children: true, ..Default::default() };
+let details = inspect::query_stable_path_details(&app, &StablePath::root(), query).await?;
+
+// Without the `App`: an environment and the app's name.
+let one = inspect::get_stable_path_detail_by_name(&env, "MyApp", &StablePath::root()).await?;
+```
+
+A streaming read holds its LMDB transaction for the whole stream, so a map resize waits for it to finish (see [How the map grows](#lmdb-tuning)).
