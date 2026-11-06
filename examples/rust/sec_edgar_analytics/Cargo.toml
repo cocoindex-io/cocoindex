@@ -1,0 +1,30 @@
+[workspace]
+
+[package]
+name = "sec_edgar_analytics"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# `doris` is the target (vector + inverted indexes); `text` is the chunker;
+# `fastembed` the local sentence-transformer embedder.
+cocoindex = { path = "../../../rust/sdk/cocoindex", features = [
+    "doris",
+    "text",
+    "fastembed",
+] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# PII scrubbing (SSN / phone / email patterns).
+regex = "1"
+# Stable chunk ids: uuid5 of (filename, chunk offsets), as in the Python example.
+uuid = { version = "1", features = ["v5"] }
+# Hybrid-search path (`cargo run -- search`), over the Doris MySQL protocol;
+# target writes go through cocoindex::connectors::doris.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "mysql",
+] }
+dotenvy = "0.15"
