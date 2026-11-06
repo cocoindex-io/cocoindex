@@ -20,6 +20,7 @@ use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 
 use crate::ctx::ContextStore;
+use crate::deps::validate_data_deps;
 use crate::error::{Error, Result};
 use crate::memo::{MemoInput, collect_component_states};
 
@@ -44,9 +45,10 @@ impl EngineProfile for RustProfile {
     type TargetActionSink = BoxedSink;
     type TargetStateValue = Value;
 
-    /// The SDK records no data dependencies (`use_data_dep` has no Rust API
-    /// yet), so a row with records was written by another host and nothing
-    /// here can validate it: the ancestor's probe is a miss.
+    /// A memoized ancestor's probe validates the open descendants its memo
+    /// lists from their stored rows before reusing it, while none of them is
+    /// mounted: there is no processor and no `Ctx` for the row at `path`, only
+    /// its records, validated through the registered [`crate::DataDep`] kinds.
     fn validate_data_deps(
         _host_runtime_ctx: &(),
         path: &StablePath,
@@ -54,14 +56,15 @@ impl EngineProfile for RustProfile {
     ) -> cocoindex_utils::error::Result<
         impl Future<Output = cocoindex_utils::error::Result<DataDepsValidation>> + Send + 'static,
     > {
-        tracing::debug!(
-            "memo of {path} holds data dependencies, which the Rust SDK cannot validate"
-        );
+        let where_ = format!("component {path}");
         Ok(async move {
+            let outcome = validate_data_deps(records, &where_)
+                .await
+                .map_err(Error::into_core)?;
             Ok(DataDepsValidation {
-                records,
-                can_reuse: false,
-                states_changed: false,
+                records: outcome.records,
+                can_reuse: outcome.can_reuse,
+                states_changed: outcome.states_changed,
             })
         })
     }
@@ -124,7 +127,9 @@ type ProcessFn = Box<
 pub(crate) struct BoxedProcessor {
     process_fn: std::sync::Mutex<Option<ProcessFn>>,
     memo_fp: Option<Fingerprint>,
-    has_memo_state_handler: bool,
+    /// Whether context values with memo state functions may be read, so a
+    /// miss has initial context states to collect.
+    has_context_memo_state: bool,
     /// Mount arguments whose memo states gate a component-memo hit.
     state_inputs: Vec<Arc<dyn MemoInput>>,
     info: Arc<ComponentProcessorInfo>,
@@ -144,14 +149,14 @@ impl BoxedProcessor {
         Self {
             process_fn: std::sync::Mutex::new(Some(Box::new(process_fn))),
             memo_fp,
-            has_memo_state_handler: false,
+            has_context_memo_state: false,
             state_inputs: Vec::new(),
             info: Arc::new(ComponentProcessorInfo::new(name)),
         }
     }
 
-    pub(crate) fn with_memo_state_handler(mut self, enabled: bool) -> Self {
-        self.has_memo_state_handler = enabled;
+    pub(crate) fn with_context_memo_state(mut self, enabled: bool) -> Self {
+        self.has_context_memo_state = enabled;
         self
     }
 
@@ -185,8 +190,14 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
         self.memo_fp
     }
 
+    /// Always: a stored entry may hold data dependencies (`use_data_dep`) to
+    /// validate even when no argument or context value carries state.
     fn has_memo_state_handler(&self) -> bool {
-        self.has_memo_state_handler || !self.state_inputs.is_empty()
+        true
+    }
+
+    fn collects_initial_states(&self) -> bool {
+        self.has_context_memo_state || !self.state_inputs.is_empty()
     }
 
     fn handle_memo_states(
@@ -202,6 +213,7 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
     > {
         let context = Arc::clone(comp_ctx.host_ctx());
         let state_inputs = self.state_inputs.clone();
+        let where_ = format!("component {}", comp_ctx.stable_path());
         let initial_context_states = stored_states
             .is_none()
             .then(|| comp_ctx.collect_context_initial_states());
@@ -221,16 +233,28 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
                     .validate_memo_states(&stored_states.by_context_fp)
                     .await
                     .map_err(Error::into_core)?;
+                let mut can_reuse = positional_valid && validation.memo_valid;
+                let mut states_changed = positional_changed || validation.states_changed;
+                // The component's own data dependencies (`use_data_dep`),
+                // validated only when the states still allow a reuse.
+                let data_deps = if can_reuse && !stored_states.data_deps.is_empty() {
+                    let outcome = validate_data_deps(stored_states.data_deps, &where_)
+                        .await
+                        .map_err(Error::into_core)?;
+                    can_reuse &= outcome.can_reuse;
+                    states_changed |= outcome.states_changed;
+                    outcome.records
+                } else {
+                    Vec::new()
+                };
                 return Ok((
                     MemoStatesPayload {
                         positional,
                         by_context_fp: validation.states,
-                        // The SDK records no data dependencies (`use_data_dep`
-                        // has no Rust API yet), so an entry it validates holds none.
-                        data_deps: Vec::new(),
+                        data_deps,
                     },
-                    positional_valid && validation.memo_valid,
-                    positional_changed || validation.states_changed,
+                    can_reuse,
+                    states_changed,
                 ));
             };
             let (positional, _) = collect_component_states(&state_inputs, None)

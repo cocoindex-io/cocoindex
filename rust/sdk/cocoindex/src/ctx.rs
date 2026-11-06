@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use cocoindex_core::engine::component::ComponentExecutionHandle;
-use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
+use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext, FnFrameId};
 use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::environment::Environment;
 use cocoindex_core::engine::execution;
@@ -22,6 +22,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::app::{AppInner, StatsGroupHandle, StatsGroupOptions};
+use crate::deps::{DataDep, LogicDep, PropagatedCallback};
 use crate::error::{Error, Result};
 use crate::live_component::{
     ExceptionContext, ExceptionHandler, ExceptionSource, LiveComponent, LiveMapView,
@@ -483,6 +484,7 @@ impl Ctx {
         module_path: &'static str,
         fn_name: &'static str,
         code_hash: u64,
+        deps_fp: Option<Fingerprint>,
         propagate_children_fn_logic: bool,
         f: F,
     ) -> Result<T>
@@ -490,7 +492,7 @@ impl Ctx {
         F: FnOnce(Ctx) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        let fp = fn_logic_fingerprint(module_path, fn_name, code_hash)?;
+        let fp = fn_logic_fingerprint(module_path, fn_name, code_hash, deps_fp)?;
         // `propagate_children_fn_logic` is the `logic_tracking` mode lowered by
         // the `#[function]` macro: `true` for `"full"` (default — a transitively
         // called function's logic change also invalidates this one), `false` for
@@ -512,23 +514,197 @@ impl Ctx {
             comp_ctx: self.comp_ctx.clone(),
             parent_fn_ctx: self.fn_ctx.clone(),
             fn_ctx,
+            tunnel_owner: None,
         }
+    }
+
+    /// Like [`frame_guard`](Self::frame_guard) for a propagated callback's
+    /// collector frame: what it gathered is addressed to `owner` when it
+    /// joins the enclosing function frame (see
+    /// `FnCallContext::join_tunneled_child`). At the component boundary it is
+    /// flattened into the component's logic set like any other frame.
+    pub(crate) fn tunnel_guard(
+        &self,
+        collector: Arc<FnCallContext>,
+        owner: FnFrameId,
+    ) -> FnFrameGuard {
+        FnFrameGuard {
+            comp_ctx: self.comp_ctx.clone(),
+            parent_fn_ctx: self.fn_ctx.clone(),
+            fn_ctx: collector,
+            tunnel_owner: Some(owner),
+        }
+    }
+
+    /// The frame the current call records into: the enclosing function frame
+    /// if there is one, else a frame joined straight into the component.
+    /// `None` outside a pipeline context.
+    fn record_into_frame(&self, record: impl FnOnce(&FnCallContext)) -> Option<()> {
+        if let Some(fn_ctx) = &self.fn_ctx {
+            record(fn_ctx);
+        } else {
+            let frame = FnCallContext::default();
+            record(&frame);
+            self.comp_ctx.as_ref()?.join_fn_call(&frame);
+        }
+        Some(())
+    }
+
+    /// Record `dep` as part of the current call's logic.
+    ///
+    /// The dependency is added to the current function frame beside the
+    /// function's own fingerprint and travels exactly as that fingerprint
+    /// does: into the entry of a memoized caller, onward through `"full"`
+    /// callers, hidden by a `"self"` caller above unless the call is carried by
+    /// a [`PropagatedCallback`], and from a component into every ancestor
+    /// component's entry. It is recorded whatever the current function's own
+    /// `logic_tracking` is: it describes the call, not the function's code.
+    ///
+    /// Call it as many times as the call has dependencies; recording the same
+    /// dependency twice records it once.
+    ///
+    /// Adopting `use_logic_dep` in a function that memoized callers already
+    /// stored entries for does not re-store those entries: ship the adoption
+    /// with a `version` bump on those callers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error outside a pipeline context.
+    pub fn use_logic_dep(&self, dep: &LogicDep) -> Result<()> {
+        let fp = dep.fingerprint();
+        self.record_into_frame(|frame| frame.add_fn_logic_dep(fp))
+            .ok_or_else(|| Error::engine("use_logic_dep requires an active pipeline context"))
+    }
+
+    /// Record one data dependency into the current call.
+    ///
+    /// **Experimental:** the API and its semantics may change in a later
+    /// release.
+    ///
+    /// `key` identifies what was read; `state` is what was observed. Both are
+    /// serialized now and stored with the memo entry; the next probe hands
+    /// them to the kind's validator. Use plain values: the resolved path, a
+    /// tuple of mtime and digest.
+    ///
+    /// Recording the same kind and key again with an equal state records once.
+    /// Recording it with a different state makes the current run store no
+    /// entry: output that used two states of one key has no single state to
+    /// validate against, so the function or component re-runs next time. A
+    /// body that writes what it then reads back should not record the
+    /// read-back.
+    ///
+    /// The record rides up through every enclosing function frame regardless
+    /// of `logic_tracking`, into every enclosing memoized function's entry and
+    /// the component's entry, where it stops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error outside a pipeline context, when the current frame has
+    /// already closed (a task recording after the function that started it
+    /// returned), or when `key` or `state` cannot be serialized.
+    pub fn use_data_dep<K: Serialize, S: Serialize>(
+        &self,
+        kind: &DataDep<K, S>,
+        key: &K,
+        state: &S,
+    ) -> Result<()> {
+        if self
+            .fn_ctx
+            .as_ref()
+            .is_some_and(|fn_ctx| fn_ctx.is_closed())
+        {
+            return Err(Error::engine(format!(
+                "use_data_dep({kind:?}) called after the function that owns the current frame returned: a task that outlives its frame cannot record into it. Await the reader inside the function that started it."
+            )));
+        }
+        let record = crate::deps::data_dep_record(kind.fingerprint(), key, state)?;
+        self.record_into_frame(|frame| frame.add_data_dep(record))
+            .ok_or_else(|| Error::engine("use_data_dep requires an active pipeline context"))
+    }
+
+    /// Return `f` as a callback whose logic is propagated to its callers' memo
+    /// entries, through `logic_tracking = "self"` / `"none"` layers.
+    ///
+    /// Call this in the function that hands the callback down (the
+    /// **owner**): typically the library entry point that receives it. The
+    /// returned wrapper runs `f` as usual; afterwards the logic `f` offered
+    /// (its own fingerprint and its callees', per the `#[cocoindex::function]`
+    /// it calls) is recorded in **every** memo entry between the call site and
+    /// the owner's frame, regardless of their `logic_tracking`. The owner's own
+    /// entry records it too; the owner's mode only decides whether it is
+    /// offered to its callers (`"full"`) or stops there (`"self"` / `"none"`).
+    ///
+    /// The wrapper is valid only while the owner's call is running: calling it
+    /// after the owner returned is an error. Adopting the wrapper later does
+    /// not re-store existing memo entries.
+    ///
+    /// ```no_run
+    /// # use std::future::Future;
+    /// # use cocoindex::{Ctx, PropagatedCallback, Result};
+    /// #[cocoindex::function]
+    /// async fn visit_file(_ctx: &Ctx, file: String) -> Result<String> {
+    ///     Ok(file.to_uppercase())
+    /// }
+    ///
+    /// // A library layer that calls a callback it received.
+    /// async fn accept<F, Fut>(ctx: &Ctx, file: String, visit: &PropagatedCallback<F>) -> Result<String>
+    /// where
+    ///     F: Fn(Ctx, String) -> Fut,
+    ///     Fut: Future<Output = Result<String>>,
+    /// {
+    ///     visit.call(ctx, file).await
+    /// }
+    ///
+    /// #[cocoindex::function]
+    /// async fn walk(ctx: &Ctx, files: Vec<String>) -> Result<()> {
+    ///     // `walk` owns the callback.
+    ///     let visit = ctx.logic_propagated_to_callers(|ctx: Ctx, file: String| async move {
+    ///         visit_file(&ctx, file).await
+    ///     })?;
+    ///     for file in files {
+    ///         accept(ctx, file, &visit).await?;
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error outside a pipeline context.
+    pub fn logic_propagated_to_callers<F>(&self, f: F) -> Result<PropagatedCallback<F>> {
+        if self.comp_ctx.is_none() {
+            return Err(Error::engine(
+                "logic_propagated_to_callers requires an active pipeline context",
+            ));
+        }
+        // With no enclosing function frame the owner is the component itself:
+        // a frame no call site ever resolves, so what the callback offers
+        // rides to the component boundary and is recorded there.
+        let owner = self
+            .fn_ctx
+            .clone()
+            .unwrap_or_else(|| Arc::new(FnCallContext::default()));
+        Ok(PropagatedCallback::new(f, owner))
     }
 }
 
 /// The logic fingerprint of one `#[cocoindex::function]`. Must match the one
-/// registered at startup (see `crate::logic`).
+/// registered at startup (see `crate::logic`). `deps_fp` is the fingerprint of
+/// the function's `deps = ...` value, folded in so a change to it moves the
+/// function's logic exactly as a body edit does.
 pub(crate) fn fn_logic_fingerprint(
     module_path: &str,
     fn_name: &str,
     code_hash: u64,
+    deps_fp: Option<Fingerprint>,
 ) -> Result<Fingerprint> {
-    Ok(Fingerprint::from(&(
-        "cocoindex_fn",
-        module_path,
-        fn_name,
-        code_hash,
-    ))?)
+    let fp = match deps_fp {
+        None => Fingerprint::from(&("cocoindex_fn", module_path, fn_name, code_hash))?,
+        Some(deps_fp) => {
+            Fingerprint::from(&("cocoindex_fn", module_path, fn_name, code_hash, deps_fp))?
+        }
+    };
+    Ok(fp)
 }
 
 /// Joins a function-call frame into its enclosing frame on drop, so the join
@@ -537,12 +713,18 @@ pub(crate) struct FnFrameGuard {
     comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
     parent_fn_ctx: Option<Arc<FnCallContext>>,
     fn_ctx: Arc<FnCallContext>,
+    /// Set for a propagated callback's collector frame: the owner its logic
+    /// is addressed to. See [`Ctx::tunnel_guard`].
+    tunnel_owner: Option<FnFrameId>,
 }
 
 impl Drop for FnFrameGuard {
     fn drop(&mut self) {
         if let Some(parent) = &self.parent_fn_ctx {
-            parent.join_child(&self.fn_ctx);
+            match self.tunnel_owner {
+                Some(owner) => parent.join_tunneled_child(&self.fn_ctx, owner),
+                None => parent.join_child(&self.fn_ctx),
+            }
         } else if let Some(comp_ctx) = &self.comp_ctx {
             comp_ctx.join_fn_call(&self.fn_ctx);
         }
@@ -1184,7 +1366,7 @@ impl Ctx {
             memo.as_ref().map(|memo| memo.fp),
             processor_name.clone(),
         )
-        .with_memo_state_handler(has_context_memo_state)
+        .with_context_memo_state(has_context_memo_state)
         .with_state_inputs(memo.map(|memo| memo.state_inputs).unwrap_or_default());
 
         let on_error = build_chained_on_error(
@@ -1327,7 +1509,7 @@ impl Ctx {
             memo.as_ref().map(|memo| memo.fp),
             processor_name,
         )
-        .with_memo_state_handler(has_context_memo_state)
+        .with_context_memo_state(has_context_memo_state)
         .with_state_inputs(memo.map(|memo| memo.state_inputs).unwrap_or_default());
 
         let handle = match child_component
@@ -1421,6 +1603,15 @@ impl Ctx {
     /// (not a captured outer one) for `get_key` so change-detection
     /// dependencies are attributed to this memo entry — this is what keeps
     /// invalidation correct when memo bodies run concurrently.
+    ///
+    /// A manual memo block is **not logic-tracked**: the closure's code is not
+    /// part of `key`, so editing the closure does not invalidate the entry,
+    /// and the block's logic is not offered to memoized callers. Prefer
+    /// `#[cocoindex::function(memo)]`, which hashes the function body into
+    /// the key, registers its logic and propagates it. When a manual block
+    /// must invalidate after its enclosing `#[cocoindex::function]` changes,
+    /// include that function's generated `__COCO_FN_HASH_<NAME>` constant in
+    /// `key`.
     ///
     /// # Examples
     ///

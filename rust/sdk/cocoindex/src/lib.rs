@@ -7,6 +7,7 @@ pub mod connectors;
 pub mod ctx;
 #[cfg(any(feature = "neo4j", feature = "falkordb"))]
 mod cypher_graph;
+pub mod deps;
 pub mod entity_resolution;
 pub mod error;
 // Rejects non-finite floats before the JSON round-trip in target connectors that
@@ -59,6 +60,7 @@ pub use app::{
 };
 pub use batched::Batched;
 pub use ctx::{ComponentMountHandle, ContextKey, Ctx};
+pub use deps::{DataDep, LogicDep, PropagatedCallback};
 pub use entity_resolution::{
     CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
     ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,
@@ -90,7 +92,7 @@ pub use live_component::{
     LiveMapFeed, LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
 };
 #[doc(hidden)]
-pub use logic::{COCO_FN_LOGIC, FnLogicEntry};
+pub use logic::{COCO_FN_LOGIC, FnDeps, FnLogicEntry};
 // Re-exported for `#[cocoindex::app]` / `#[cocoindex::lifespan]` output.
 #[doc(hidden)]
 pub use registry::{AppEntry, COCO_APPS, COCO_LIFESPANS, LifespanEntry};
