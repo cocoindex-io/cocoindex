@@ -1,0 +1,216 @@
+---
+title: The *CLI* for Rust projects
+description: >
+  Reference for the `cocoindex` CLI for Rust projects — how it builds and drives
+  your crate, the app target format, the three attributes an app registers with,
+  and the ls, show, update, drop and init subcommands.
+---
+The `cocoindex` CLI for Rust projects gives a Rust pipeline the same commands the [Python CLI](./cli) has: `ls`, `show`, `update`, `drop` and `init`. The Python prose on that page describes the Python tool; this page describes the Rust tool, which is a separate binary built from the `rust/cli` crate of the repository.
+
+## How it works
+
+A Rust pipeline is compiled into your own binary, so the CLI cannot import it the way the Python CLI imports a module. It works like `cargo run`:
+
+1. It **builds** your crate with `cargo build` and finds the binary.
+2. It **runs** the binary as a protocol child, with the environment setup and the app you registered (see [Registering an app](#registering-an-app)).
+3. It **talks** to the child over a JSON-lines protocol on stdout. Your program's own stdout and stderr pass through.
+
+Two commands never need your code: `ls --db PATH` and `show --db PATH --app-name NAME` open the state database directly. Both SDKs use the same core engine and the same database format, so the Rust CLI can inspect a database a Python app wrote, and the Python CLI (`cocoindex show --db PATH --app-name NAME`) can inspect one a Rust app wrote.
+
+## Get the binary
+
+The CLI is not on crates.io yet. Build it from a checkout of the repository:
+
+```sh
+cargo install --path rust/cli
+```
+
+Inside the repository workspace you can also run it without installing:
+
+```sh
+cargo run -p cocoindex_cli -- update path/to/your/crate
+```
+
+The package is `cocoindex_cli`; the binary it installs is `cocoindex`.
+
+## Registering an app
+
+The CLI finds your environment setup and your app through three attributes. Register them in your crate's binary.
+
+{/* Rust: examples/rust/text_embedding/src/main.rs (lifespan, app_main, main; bodies trimmed) */}
+```rust
+use cocoindex::prelude::*;
+
+/// Environment setup, shared by `cocoindex` and `cargo run -- index`
+/// (`Environment::from_registered`): the state db, Postgres and the embedder.
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    let db = postgres::Database::connect(&database_url()).await?;
+    let pool = db.pool().clone();
+    let embedder = load_embedder().await?;
+    Ok(builder
+        .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&DB, db)
+        .provide_key(&EMBEDDER, embedder)
+        .on_shutdown(move || async move { pool.close().await }))
+}
+
+#[cocoindex::app(name = "TextEmbeddingRust")]
+async fn app_main(ctx: Ctx) -> Result<()> {
+    index(ctx, source_dir()).await
+}
+
+/// `cocoindex ...` invocations are answered before this body runs.
+#[cocoindex::main]
+async fn main() -> Result<()> {
+    // The program's own behaviour: a query command, a one-off run, ...
+    Ok(())
+}
+```
+
+- `#[cocoindex::lifespan]` registers the environment setup: the state database path, the shared resources provided under context keys, and shutdown hooks. The function takes the `EnvironmentBuilder` by value and returns it. It is the Rust analogue of Python's `@coco.lifespan`. The same lifespan runs when your own code calls `Environment::from_registered()`.
+- `#[cocoindex::app(name = "...")]` registers an app entry point. The name defaults to the function name. The function keeps its signature and stays callable. App names must be unique within one binary.
+- `#[cocoindex::main]` makes your `async fn main` the entry point of a cocoindex binary. When the CLI started the binary, the CLI's request is answered before the body runs; otherwise the body runs as a normal `main`.
+
+A lifespan that sets no `db_path` takes it from the `COCOINDEX_DB` environment variable. `COCOINDEX_LMDB_MAX_DBS` and `COCOINDEX_LMDB_MAP_SIZE` apply when the lifespan does not set them.
+
+## Invoke the CLI
+
+Most commands take an `APP_TARGET` argument, which tells the CLI which crate (or binary) holds your apps.
+
+### APP_TARGET format
+
+The `APP_TARGET` is `[path][:app_name]`. The path is one of:
+
+1. A **crate directory** (the default is `.`). The CLI builds it and runs its binary.
+2. A **`Cargo.toml`** manifest.
+3. An **already-built binary**: an existing file that is not a manifest. The CLI runs it as is, with no build.
+
+For commands that operate on a specific app, add the app name after a colon: `.:TextEmbeddingRust`, `path/to/crate:MyApp`. When the binary registers one app, the name can be left out. A Windows drive letter before `:` is part of the path, not an app separator.
+
+### Build options
+
+* `--release`: build the target crate with the release profile.
+* `--bin <NAME>`: the binary to run when the target crate builds several.
+
+### Environment variables
+
+You can set environment variables in an environment file.
+
+* By default, the CLI searches upward from the current directory for a `.env` file.
+* You can use `--env-file <path>` to specify one explicitly:
+
+    ```sh
+    cocoindex --env-file path/to/custom.env <COMMAND> ...
+    ```
+
+Loaded variables do *NOT* override existing system ones. The child binary inherits the environment.
+
+### Global options
+
+* `-e, --env-file <PATH>`: Load environment variables from a specified `.env` file. If not provided, `.env` in the current directory or its parents is loaded if it exists.
+* `-V, --version`: Show the CLI version and exit.
+* `-h, --help`: Show the main help message and exit.
+
+## Subcommands
+
+### `ls`
+
+List all apps.
+
+```sh
+cocoindex ls [APP_TARGET]
+cocoindex ls --db <PATH>
+```
+
+With `APP_TARGET`, the CLI builds the crate, runs its lifespan to learn the state database path, and lists the apps the binary registers together with their persisted status. An app that has no persisted state yet is marked with `[+]`.
+
+Without `APP_TARGET`, it lists the apps persisted in the database given by `--db` (or `COCOINDEX_DB`), without your code.
+
+**Options:**
+
+* `--db <PATH>`: Path to database to list apps from (only used when `APP_TARGET` is not specified).
+
+### `show`
+
+Show the persisted state of an app: its stable paths, or its target states.
+
+```sh
+cocoindex show [APP_TARGET] [STABLE_PATH]
+cocoindex show --db <PATH> --app-name <NAME> [STABLE_PATH]
+```
+
+The first form builds the crate and resolves the database path and the app through the binary; the second reads the database directly and needs no code.
+
+**Options:**
+
+* `--db <PATH>`: Path to database (used with `--app-name` when `APP_TARGET` is not specified).
+* `--app-name <NAME>`: App name to inspect (used with `--db` when `APP_TARGET` is not specified).
+* `--tree`: Display stable paths (or `--target-states` entries) as a tree.
+* `-l, --long`: Display detailed information in multi-line format.
+* `-r, --recursive`: Show all children recursively (requires `STABLE_PATH`).
+* `-p, --parents`: Show all parent paths (requires `STABLE_PATH`).
+* `--fingerprints`: Show target-state paths as raw fingerprints (as stored) instead of readable keys.
+* `--target-states`: List all tracked target states with their owner components.
+
+When `show` reads the database without your code, a target-state segment that was never persisted with a readable name renders as a fingerprint.
+
+### `update`
+
+Run an app in catch-up mode. With `--live`, run in live mode.
+
+```sh
+cocoindex update [APP_TARGET]
+cocoindex update -L [APP_TARGET]
+cocoindex update --preview [APP_TARGET]
+```
+
+Progress renders on stderr; the final `[Stats] ...` line prints on stdout.
+
+**Options:**
+
+* `-f, --force`: Skip confirmation prompt.
+* `-q, --quiet`: Avoid printing anything to the standard output, e.g. statistics.
+* `--reset`: Drop existing setup before updating (equivalent to running `cocoindex drop` first). The CLI asks for confirmation when there is state to drop, unless `-f` is given.
+* `--full-reprocess`: Reprocess everything, bypassing all memoization caches.
+* `-L, --live`: Run in live mode (live components continue processing after initial update).
+* `--preview`: Compute target actions without applying them. Prints planned actions, and writes nothing to the state database. It cannot be combined with `--reset` or `--live`.
+
+Ctrl-C stops the run: the CLI prints `Stopping...` and forwards the interrupt to the child; a second Ctrl-C kills it.
+
+### `drop`
+
+Drop an app and all its target states.
+
+```sh
+cocoindex drop [APP_TARGET]
+```
+
+**Options:**
+
+* `-f, --force`: Skip confirmation prompt.
+* `-q, --quiet`: Avoid printing anything to the standard output.
+* `--db-only`: Only clear the app's state database; do not revert its target states.
+
+### `init`
+
+Initialize a new Rust CocoIndex project.
+
+```sh
+cocoindex init [PROJECT_NAME]
+```
+
+The scaffold is a crate with `Cargo.toml`, `src/main.rs` (a `lifespan`, an `app` that processes `./data` into `./out`, and a `main`, all three attributes in place), `.env.example`, `README.md` and `.gitignore`. By default `Cargo.toml` depends on the SDK through its git repository, since the crate is not on crates.io yet.
+
+**Arguments:**
+
+* `PROJECT_NAME`: Name of the project (defaults to the directory name).
+
+**Options:**
+
+* `--dir <DIR>`: Directory to create the project in.
+* `--sdk-path <PATH>`: Depend on a local checkout of the cocoindex Rust SDK (`rust/sdk/cocoindex`) instead of the git repository.
+
+## Exit codes
+
+`0` on success (also after a clean Ctrl-C), `1` on an error (including a failed build), `2` on a usage error or a protocol mismatch between the CLI and the SDK the binary was built with.

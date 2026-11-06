@@ -5,11 +5,19 @@ description: >
   the three annotation patterns (ContextKey, embedder instance, explicit
   schema) and MultiVectorSchema for models like ColBERT.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 The schema module (`cocoindex.resources.schema`) defines types that describe vector columns. CocoIndex connectors use these to automatically configure the correct column type (e.g., `vector(384)` in Postgres, `fixed_size_list<float32>(384)` in LanceDB).
+
+The Rust SDK has the same types in `cocoindex::resources::schema` (re-exported from `cocoindex::prelude`): `VectorSchema`, `VectorElementType`, `VectorSchemaProvider`, `MultiVectorSchema` and `MultiVectorSchemaProvider`. Python attaches a schema to a dataclass field with `Annotated`; Rust attaches it to a row struct field with `#[coco(vector)]` and resolves it on the connector's `TableSchema`.
 
 ## VectorSchema
 
 A frozen dataclass that describes a vector column's dtype and dimension.
+
+{/* Rust: rust/sdk/cocoindex/src/resources/schema.rs (VectorSchema::f32, f16) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.resources.schema import VectorSchema
@@ -18,12 +26,34 @@ import numpy as np
 schema = VectorSchema(dtype=np.dtype(np.float32), size=768)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::prelude::*;
+
+let schema = VectorSchema::f32(768);
+// A half-precision column, where the store has one (halfvec in Postgres, float16 in LanceDB).
+let half = VectorSchema::f16(768);
+// The same, written out.
+let schema = VectorSchema { element_type: VectorElementType::Float32, size: 768 };
+```
+
+</Fragment>
+</LangTabs>
+
 **Fields:**
 
 - `dtype` — NumPy dtype of each element (e.g., `np.float32`)
 - `size` — Number of dimensions in the vector (e.g., `384`)
 
+In Rust, the element type is the `VectorElementType` enum (`Float32`, `Float16`, `Float64`) instead of a NumPy dtype. `Float16` selects a half-precision column where the store has one; `Float32` and `Float64` both select the store's standard float vector column, as the Python connectors do for every dtype other than `float16`.
+
 You can construct `VectorSchema` directly when using a custom embedding model that doesn't implement `VectorSchemaProvider`:
+
+{/* Rust: examples/rust/text_embedding_qdrant/src/main.rs (mount_collection_target); CollectionSchema::from_vector_schema from rust/sdk/cocoindex/src/connectors/qdrant.rs (signature) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.resources.schema import VectorSchema
@@ -42,17 +72,48 @@ target_collection = await qdrant.mount_collection_target(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::qdrant::{self, CollectionSchema, Distance};
+use cocoindex::prelude::*;
+
+cocoindex::context_key!(static DB: qdrant::QdrantConnection);
+
+// For a custom CLIP model with known dimension
+let schema = VectorSchema::f32(768);
+
+// Use it in a Qdrant collection schema
+let target = qdrant::mount_collection_target(
+    &ctx,
+    &DB,
+    "image_search",
+    CollectionSchema::from_vector_schema(schema, Distance::Cosine)?,
+)
+.await?;
+```
+
+</Fragment>
+</LangTabs>
+
 ## VectorSchemaProvider
 
 A protocol for objects that can provide vector schema information. The primary use case is as metadata in `Annotated` type annotations — connectors extract vector column configuration from the annotation automatically.
 
 Any object that implements the `__coco_vector_schema__()` method satisfies this protocol. The built-in [`SentenceTransformerEmbedder`](../ops/sentence_transformers) implements it.
 
+In Rust, `VectorSchemaProvider` is a trait with one method, `async fn vector_schema(&self) -> Result<VectorSchema>`. `SentenceTransformerEmbedder`, `ApiEmbedder` and `VectorSchema` itself implement it. A Rust row struct does not carry the provider: a field marked `#[coco(vector)]` has a dimension that is "unresolved" until the connector schema's `with_vector_schema(field, &provider)` (or `with_vector_dim(field, n)`) supplies it. Mounting a target with an unresolved vector column is an error that names the field and `with_vector_dim`.
+
 There are three ways to specify vector schema in annotations:
 
 ### Using a `ContextKey` (recommended)
 
 Define a [`ContextKey`](../programming_guide/context) for the embedder and use it as the annotation. The connector resolves the key at schema creation time. This is the recommended approach because the embedder is configured once in the lifespan and shared across all functions via context.
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import cocoindex as coco
@@ -77,9 +138,64 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 embedding = await coco.use_context(EMBEDDER).embed(text)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::postgres;
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+use cocoindex::prelude::*;
+
+const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
+
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
+);
+
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct DocEmbedding {
+    id: i64,
+    text: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+// In the lifespan, provide the embedder:
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    let embedder = SentenceTransformerEmbedder::load(EMBED_MODEL).await?;
+    Ok(builder.provide_key(&EMBEDDER, embedder))
+}
+
+// When mounting the target, the embedder reports the dimension of the `embedding` column:
+let table = postgres::mount_table_target(
+    &ctx,
+    &DB,
+    "doc_embeddings",
+    postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+        .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+        .await?,
+    Some("public"),
+)
+.await?;
+
+// In functions, access the embedder:
+let embedding = ctx.get_key(&EMBEDDER)?.embed(ctx, text).await?;
+```
+
+Python's connector resolves the `ContextKey` itself. In Rust the context is explicit: resolve the key with `ctx.get_key(&EMBEDDER)?` and pass the embedder to `with_vector_schema`.
+
+</Fragment>
+</LangTabs>
+
 ### Using a `VectorSchemaProvider` instance
 
 Pass an embedder instance directly as the annotation. Simpler for scripts where the embedder is a module-level constant.
+
+{/* Rust: rust/sdk/SHOWCASE.md "Derive connector schemas from row types", verified against rust/sdk/cocoindex/src/connectors/postgres.rs (with_vector_schema) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
@@ -93,9 +209,29 @@ class DocEmbedding:
     embedding: Annotated[NDArray, embedder]  # dimension inferred from model (384)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let embedder = SentenceTransformerEmbedder::load("sentence-transformers/all-MiniLM-L6-v2").await?;
+
+let schema = postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+    .with_vector_schema("embedding", &embedder) // dimension read from the model (384)
+    .await?;
+```
+
+`with_vector_schema` takes any `VectorSchemaProvider` by reference. The Postgres, SQLite, Doris and LanceDB schemas have it; Qdrant's `CollectionSchema::from_row` takes `with_vector_dim`.
+
+</Fragment>
+</LangTabs>
+
 ### Using a `VectorSchema`
 
 Specify dimension and dtype explicitly. Useful when using a custom embedding model that doesn't implement `VectorSchemaProvider`.
+
+{/* Rust: rust/sdk/cocoindex/src/row_schema.rs (module docs), rust/sdk/cocoindex/tests/schema_from_row.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.resources.schema import VectorSchema
@@ -106,11 +242,34 @@ class ImageEmbedding:
     embedding: Annotated[NDArray, VectorSchema(dtype=np.dtype(np.float32), size=768)]
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct ImageEmbedding {
+    id: i64,
+    #[coco(vector = 768)]
+    embedding: Vec<f32>,
+}
+```
+
+`#[coco(vector = N)]` fixes an `f32` column of dimension `N` for every connector the struct is used with. `#[coco(vector = N, half)]` makes it a half-precision column. For a dimension known only at run time, keep `#[coco(vector)]` and call `with_vector_dim("embedding", n)?` on the connector schema, or pass a fixed `VectorSchema` to `with_vector_schema`, since `VectorSchema` is its own provider.
+
+</Fragment>
+</LangTabs>
+
 When a connector's `TableSchema.from_class()` encounters an `Annotated[NDArray, annotation]` field, it resolves the annotation (unwrapping `ContextKey` if needed) and calls `__coco_vector_schema__()` to determine the column's dimension and dtype.
+
+The Rust counterpart is the connector's `TableSchema::from_row::<Row>(primary_key)`, which reads the `#[derive(SchemaFields)]` row struct. A `#[coco(vector = N)]` field is complete; a `#[coco(vector)]` field waits for `with_vector_schema` or `with_vector_dim`.
 
 ## MultiVectorSchema / MultiVectorSchemaProvider
 
 Analogous types for multi-vector columns (e.g., ColBERT-style token-level embeddings). `MultiVectorSchema` wraps a `VectorSchema` describing the individual vectors. Used by connectors like [Qdrant](../connectors/qdrant) that support multi-vector storage.
+
+{/* Rust: rust/sdk/cocoindex/src/resources/schema.rs; CollectionSchema::from_multivector_schema from rust/sdk/cocoindex/src/connectors/qdrant.rs (signature) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.resources.schema import MultiVectorSchema, VectorSchema
@@ -119,3 +278,21 @@ multi_schema = MultiVectorSchema(
     vector_schema=VectorSchema(dtype=np.dtype(np.float32), size=128)
 )
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::qdrant::{CollectionSchema, Distance};
+use cocoindex::prelude::*;
+
+let multi_schema = MultiVectorSchema {
+    vector_schema: VectorSchema::f32(128),
+};
+let collection = CollectionSchema::from_multivector_schema(multi_schema, Distance::Cosine)?;
+```
+
+`MultiVectorSchemaProvider` is the trait form (`async fn multi_vector_schema(&self) -> Result<MultiVectorSchema>`), implemented by `MultiVectorSchema` itself; Qdrant's `CollectionSchema::from_multivector_provider(&provider, distance)` accepts one.
+
+</Fragment>
+</LangTabs>

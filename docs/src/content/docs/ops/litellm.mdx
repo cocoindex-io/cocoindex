@@ -5,11 +5,29 @@ description: >
   providers (OpenAI, Azure, Vertex AI, Bedrock, Cohere, and more) — with
   VectorSchemaProvider for automatic vector column configuration.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 The `cocoindex.ops.litellm` module provides integration with the [LiteLLM](https://docs.litellm.ai/) library for text embeddings (`LiteLLMEmbedder`) and speech-to-text transcription (`LiteLLMTranscriber`).
+
+The Rust SDK does not use LiteLLM. Its counterpart is `cocoindex::ops::api` (feature `embed_api`): `ApiEmbedder` and `ApiTranscriber` call an OpenAI-compatible HTTP API directly, with `reqwest`. Point them at any compatible base URL (OpenAI, Together, vLLM, Ollama, ...) with `with_base_url`. The Rust tabs on this page show that API; the LiteLLM model strings and provider tables apply to Python only.
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.litellm import LiteLLMEmbedder, LiteLLMTranscriber
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::ops::api::{ApiEmbedder, ApiTranscriber};
+```
+
+</Fragment>
+</LangTabs>
 
 :::note[Dependencies]
 This module requires additional dependencies. Install with:
@@ -30,11 +48,17 @@ The `LiteLLMEmbedder` class is a wrapper around LiteLLM's embedding API that:
 - Passes through all additional arguments to the LiteLLM embedding API, except `timeout` and `max_inflight_requests`, which CocoIndex owns
 - Returns properly typed numpy arrays
 
+The Rust `ApiEmbedder` calls `POST {base_url}/embeddings`. It implements `VectorSchemaProvider` (it probes one embedding to discover the dimension, once) and `Embedder`, and returns `Vec<f32>`. There is no pass-through of arbitrary provider arguments: the request carries the model, the input, and the optional `dimensions` and `input_type`.
+
 ## Basic usage
 
 ### Creating an embedder
 
 All extra keyword arguments are passed through to every `litellm.aembedding` call (`api_key`, `api_base`, `dimensions`, …) — except `timeout` and `max_inflight_requests`, which are CocoIndex's own knobs (see [Timeout](#timeout) and [Limiting concurrent requests](#limiting-concurrent-requests)). See [Supported providers](#supported-providers) for provider-specific model strings and configuration.
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (ApiEmbedder builders) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from datetime import timedelta
@@ -56,9 +80,46 @@ embedder = LiteLLMEmbedder("text-embedding-3-small", max_inflight_requests=8)
 embedder = LiteLLMEmbedder("openai/bge-m3", api_base="http://localhost:7997", timeout=timedelta(minutes=30))
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::time::Duration;
+
+use cocoindex::ops::api::ApiEmbedder;
+
+// Defaults to the OpenAI base URL and the OPENAI_API_KEY environment variable.
+let embedder = ApiEmbedder::new("text-embedding-3-small");
+
+// With explicit API key and base URL
+let embedder = ApiEmbedder::new("text-embedding-3-small")
+    .with_base_url("https://my-proxy.example.com")
+    .with_api_key("sk-...");
+
+// With custom dimensions (OpenAI text-embedding-3 models)
+let embedder = ApiEmbedder::new("text-embedding-3-small").with_dimensions(512);
+
+// With a cap on concurrent requests to the backend
+let embedder = ApiEmbedder::new("text-embedding-3-small").with_max_inflight_requests(8);
+
+// With a longer timeout, for a slow self-hosted endpoint
+let embedder = ApiEmbedder::new("bge-m3")
+    .with_base_url("http://localhost:7997")
+    .with_timeout(Duration::from_secs(30 * 60));
+```
+
+The model is the name the endpoint expects, with no provider prefix. The embedder is cheap to clone; clones share the in-flight cap and the probed dimension.
+
+</Fragment>
+</LangTabs>
+
 ### Embedding text
 
 The `embed()` method converts text into a `numpy.ndarray` of `float32`. It's an async method — use `await` when calling it:
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (embed, embed_with_input_type, embed_batch) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # In a CocoIndex function
@@ -68,9 +129,29 @@ embedding = await embedder.embed("Hello, world!")
 table.declare_row(row=DocEmbedding(text="Hello, world!", embedding=embedding))
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// In a CocoIndex function: memoized per text, batched across concurrent calls.
+let embedding = embedder.embed(&ctx, "Hello, world!").await?;
+
+// For asymmetric models, send an input type; each input type is memoized and batched apart.
+let query_vec = embedder.embed_with_input_type(&ctx, "q", "search_query").await?;
+let doc_vec = embedder.embed_with_input_type(&ctx, "doc", "search_document").await?;
+
+// Outside an update there is no Ctx: one raw request, no memoization.
+let vectors = embedder.embed_batch(vec!["Hello, world!".to_string()]).await?;
+```
+
+</Fragment>
+</LangTabs>
+
 #### Text that looks like a media reference
 
 litellm's Gemini embedding path reads a string that starts with `data:` and contains `;base64,`, or that starts with `gs://` or `files/`, as a file to embed rather than text — an inline file, a Cloud Storage object, or an uploaded file. Ordinary corpus text hits all three (a glTF file's buffer, an HTML page's inline image, a list of paths beginning `files/`), and the request would then fail before it is sent or silently embed an image. `LiteLLMEmbedder` sends such a text with one leading space, for every provider, so it embeds as text — litellm has no way to send such a string as text ([BerriAI/litellm#46719](https://github.com/BerriAI/litellm/issues/46719)). To embed media through Gemini, call `litellm.aembedding` directly.
+
+This is a litellm behavior. The Rust `ApiEmbedder` sends the text as given.
 
 ### Limiting concurrent requests
 
@@ -80,6 +161,10 @@ work queued. `max_inflight_requests` caps how many requests this embedder keeps
 open against the backend at once — useful for a self-hosted endpoint (Infinity,
 TEI, Ollama, vLLM, …) that rejects bursts with 429s:
 
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (with_max_inflight_requests) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 embedder = LiteLLMEmbedder(
     "openai/bge-m3",
@@ -88,13 +173,31 @@ embedder = LiteLLMEmbedder(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let embedder = ApiEmbedder::new("bge-m3")
+    .with_base_url("http://localhost:7997")
+    .with_max_inflight_requests(8);
+```
+
+</Fragment>
+</LangTabs>
+
 The default is `None` (no cap). The cap is per embedder instance: two
 embedders pointed at the same endpoint have independent limits, so share one
 instance when you want one limit.
 
+The Rust embedder batches the same way (up to 64 texts per request) and is uncapped by default. Its cap is shared by all clones of one embedder.
+
 ### Using as a type annotation
 
 The `LiteLLMEmbedder` implements [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), which means it can be used directly as metadata in `Annotated` type annotations. This is the recommended way to declare vector columns — CocoIndex connectors automatically extract the vector dimension and dtype from the annotation when creating tables.
+
+{/* Rust: row struct from examples/rust/text_embedding/src/main.rs; with_vector_schema from rust/sdk/SHOWCASE.md, verified against rust/sdk/cocoindex/src/connectors/postgres.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from dataclasses import dataclass
@@ -111,7 +214,32 @@ class DocEmbedding:
     embedding: Annotated[NDArray, embedder]
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::prelude::*;
+
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct DocEmbedding {
+    id: i64,
+    filename: String,
+    text: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+```
+
+A Rust row struct cannot name the embedder in a field attribute. `#[coco(vector)]` marks the column; the embedder supplies the dimension when the table is mounted, below.
+
+</Fragment>
+</LangTabs>
+
 When you pass this dataclass to a connector's `TableSchema.from_class()`, the connector automatically reads the embedder annotation to determine the vector column's dimension and dtype. For example, with Postgres:
+
+{/* Rust: examples/rust/text_embedding/src/main.rs (index), with an ApiEmbedder in the context key */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import postgres
@@ -128,15 +256,47 @@ target_table = await postgres.mount_table_target(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::postgres;
+
+cocoindex::context_key!(static EMBEDDER: ApiEmbedder, detect_change);
+
+// The embedder probes its dimension once and reports it for the `embedding` column.
+let table = postgres::mount_table_target(
+    &ctx,
+    &DB,
+    "doc_embeddings",
+    postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+        .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+        .await?,
+    Some("my_schema"),
+)
+.await?;
+```
+
+See [Vector schema annotations](../common_resources/vector_schema) for `with_vector_schema` and `with_vector_dim`.
+
+</Fragment>
+</LangTabs>
+
 The connector automatically creates the appropriate `vector(N)` column. See the [Connectors](../connectors/postgres) docs for other supported backends (LanceDB, Qdrant, SQLite).
 
 ## Speech-to-text
 
 The `LiteLLMTranscriber` class is a wrapper around LiteLLM's transcription API that turns audio into text through any LiteLLM-supported speech-to-text provider (OpenAI Whisper, ElevenLabs, Groq, and more) using a unified interface.
 
+The Rust `ApiTranscriber` calls `POST {base_url}/audio/transcriptions` with the audio as a multipart upload, read from any `FileLike`.
+
 ### Creating a transcriber
 
 All extra keyword arguments are passed through to every `litellm.atranscription` call (`api_key`, `api_base`, `language`, `extra_body`, …) — except `timeout`, which is CocoIndex's own bound on the whole request (see [Timeout](#timeout)).
+
+{/* Rust: examples/rust/audio_to_text/src/main.rs, rust/sdk/cocoindex/tests/ops_api.rs (ApiTranscriber builders) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from datetime import timedelta
@@ -155,9 +315,39 @@ transcriber = LiteLLMTranscriber("whisper-1", language="en")
 transcriber = LiteLLMTranscriber("whisper-1", timeout=timedelta(minutes=30))
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::time::Duration;
+
+use cocoindex::ops::api::ApiTranscriber;
+
+// Defaults to the OpenAI base URL and the OPENAI_API_KEY environment variable.
+let transcriber = ApiTranscriber::new("whisper-1");
+
+// With an explicit API key and a language hint applied to every call
+let transcriber = ApiTranscriber::new("whisper-1")
+    .with_api_key("sk-...")
+    .with_language("en");
+
+// With a longer timeout, for long audio or a slow endpoint
+let transcriber = ApiTranscriber::new("whisper-1").with_timeout(Duration::from_secs(30 * 60));
+
+// An OpenAI-compatible endpoint
+let transcriber = ApiTranscriber::new("whisper-1").with_base_url(base_url);
+```
+
+</Fragment>
+</LangTabs>
+
 ### Transcribing audio
 
 The `transcribe()` method takes a `FileLike` object (such as a `localfs.File`) containing audio data and returns the transcribed text as a `str`. It's an async method — use `await` when calling it. Per-call keyword arguments override the defaults provided at construction time — except `timeout`, which is settable only on the constructor (see [Timeout](#timeout)):
+
+{/* Rust: examples/rust/audio_to_text/src/main.rs (process_audio) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # In a CocoIndex function, `file` is a FileLike (e.g. localfs.File)
@@ -167,7 +357,23 @@ transcript = await transcriber.transcribe(file)
 transcript = await transcriber.transcribe(file, response_format="verbose_json")
 ```
 
-A complete pipeline that walks local audio files, transcribes each one, and stores the transcripts in Postgres is available in the [`audio_to_text` example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/audio_to_text).
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// In a CocoIndex function, `file` is a FileLike (here a FileEntry); memoized by the file's content.
+let text = ctx.get_key(&TRANSCRIBER)?.transcribe(ctx, &file).await?;
+
+// Raw bytes, outside an update: no memoization. The filename's extension tells the server the format.
+let text = transcriber.transcribe_bytes(bytes, "clip.mp3".to_string()).await?;
+```
+
+The Rust `transcribe` has no per-call options: the language hint is set once with `with_language`. `transcribe_bytes` is from the `ApiTranscriber` docs in `rust/sdk/cocoindex/src/ops/api.rs`.
+
+</Fragment>
+</LangTabs>
+
+A complete pipeline that walks local audio files, transcribes each one, and stores the transcripts in Postgres is available in the [`audio_to_text` example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/audio_to_text). The Rust port is [`examples/rust/audio_to_text`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/rust/audio_to_text).
 
 ### Supported transcription providers
 
@@ -181,18 +387,37 @@ A complete pipeline that walks local audio files, transcribes each one, and stor
 
 See the [LiteLLM audio transcription docs](https://docs.litellm.ai/docs/audio_transcription) for the full list of providers and model strings.
 
+The Rust `ApiTranscriber` takes the model name the endpoint expects (`whisper-1` at OpenAI) and reaches other providers through `with_base_url`, when they offer an OpenAI-compatible transcription endpoint.
+
 ## Shared behavior
 
 `LiteLLMEmbedder` and `LiteLLMTranscriber` reach their providers the same way: one retry loop, one clock, one memoization contract. Everything in this section applies to both.
+
+The Rust `ApiEmbedder` and `ApiTranscriber` follow the same contract: the same default timeout, the same retry rules, and the same memoization.
 
 ### Timeout
 
 `timeout` bounds each request end to end; the default is 10 minutes. Transient failures (HTTP 429, 5xx, a dropped connection, and [others below](#retries)) are retried with backoff inside that window; a request that times out fails with `DeadlineExceededError` and is not retried. It takes a `timedelta`, or seconds as a number.
 
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (with_timeout) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 embedder = LiteLLMEmbedder("text-embedding-3-small", timeout=timedelta(minutes=30))
 transcriber = LiteLLMTranscriber("whisper-1", timeout=timedelta(minutes=30))
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let embedder = ApiEmbedder::new("text-embedding-3-small").with_timeout(Duration::from_secs(30 * 60));
+let transcriber = ApiTranscriber::new("whisper-1").with_timeout(Duration::from_secs(30 * 60));
+```
+
+</Fragment>
+</LangTabs>
 
 `timeout` is CocoIndex's own clock and the only one on the request — litellm's per-request `timeout` is not forwarded. What to size it against is where the two differ:
 
@@ -215,9 +440,13 @@ The 408 row and the timeout row look contradictory and aren't: an HTTP 408 *resp
 
 A surrounding [`coco.timeout()`](../advanced_topics/timeouts) merges with this one by taking whichever is shorter, so it can only cut retries short — raising `timeout` is the only way to give a request longer.
 
+In Rust, an active `Ctx` deadline plays that role: it can only shorten the bound, never extend it.
+
 ### Memoization
 
 `embed()` and `transcribe()` are both memoized (`memo=True`): inside a processing component, each distinct input's result is cached across that component's runs, so a caller that re-executes doesn't re-pay the API call for unchanged input. `timeout` and `max_inflight_requests` are deliberately absent from the memo key — they bound and pace requests but cannot change a result, so retuning them invalidates nothing.
+
+The Rust memo keys are the same: `ApiEmbedder` keys on the model, base URL and `dimensions`; `ApiTranscriber` on the model, base URL and language, plus the file's identity and content. The API key, timeout and in-flight cap are absent from both.
 
 Mind the [memoization placement rule](../programming_guide/function#when-to-memoize); it lands differently on the two:
 
@@ -229,6 +458,8 @@ Callsite control over an op's memoization is tracked in [#2275](https://github.c
 ## Supported providers
 
 Below are common providers with their model strings and configuration. The `litellm` module is re-exported from `cocoindex.ops.litellm` for setting provider-specific variables. See the [LiteLLM embedding docs](https://docs.litellm.ai/docs/embedding/supported_embedding) for the full list.
+
+This section is Python only. The Rust `ApiEmbedder` has no provider router: it reaches a provider through its OpenAI-compatible `/embeddings` endpoint, with `with_base_url` and `with_api_key`, and the bare model name.
 
 ### Ollama
 

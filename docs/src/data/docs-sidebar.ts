@@ -114,6 +114,7 @@ export const sidebar: SidebarItem[] = [
     ],
   },
   { type: 'doc', slug: 'cli', label: 'CLI Reference' },
+  { type: 'doc', slug: 'cli_rust', label: 'CLI for Rust projects' },
   { type: 'doc', slug: 'faq', label: 'FAQ' },
   {
     type: 'category',
