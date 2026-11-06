@@ -12,6 +12,8 @@ A *connector* links a CocoIndex flow to an external system. It plays one or both
 
 Some connectors do both. Each page documents the APIs for whichever roles the system supports, under `## As source` / `## As target` sections.
 
+Every connector listed here also exists in the Rust SDK. Each one lives in `cocoindex::connectors::<name>` behind a Cargo feature of the same name: `cocoindex::connectors::postgres` needs the `postgres` feature, `cocoindex::connectors::qdrant` the `qdrant` feature, and so on. Two names differ: the Google Drive source is `cocoindex::connectors::gdrive` behind the `google_drive` feature, and the local filesystem connector is `cocoindex::resources::fs`, which is always compiled (its live watch needs the `fs_live` feature). Each connector page shows the Rust API next to the Python API.
+
 ## Sources
 
 Connectors that feed rows into a flow.

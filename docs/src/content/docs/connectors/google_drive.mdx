@@ -6,11 +6,29 @@ description: >
   personal account signed in with OAuth. Supports MIME-type filtering and
   auto-exports Google Docs, Sheets, and Slides to text or CSV.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 The `google_drive` connector provides utilities for reading files from Google Drive, authenticated with a service account or with a personal Google account signed in through OAuth.
+
+{/* Rust: examples/rust/gdrive_text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import google_drive
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::gdrive::{DriveFile, GoogleDriveClient, GoogleDriveSource};
+```
+
+The Rust module is `gdrive`, and the Rust SDK needs the `google_drive` Cargo feature of the `cocoindex` crate.
+
+</Fragment>
+</LangTabs>
 
 :::note[Dependencies]
 This connector requires additional dependencies. Install with:
@@ -32,6 +50,8 @@ Both authenticate with one of:
 
 - a **service account** with access to the target Drive folders (`service_account_credential_path`), the fit for a shared or automated setup;
 - a **personal Google account** signed in once through OAuth (`user_account`, experimental), the fit for your own Drive: see [Signing in with a personal account](#signing-in-with-a-personal-account).
+
+In Rust the authentication lives in a `GoogleDriveClient`: `GoogleDriveClient::from_service_account_file(path)?` for a service account, `GoogleDriveClient::from_user_account(&account)?` for a personal account. The client is `Clone` and is provided under a `ContextKey` so that functions can read files through it.
 
 ### Setting up a service account
 
@@ -55,6 +75,10 @@ In headless or agent workflows, `gws` can also read credentials from `GOOGLE_WOR
 
 The primary source class for iterating over Google Drive files.
 
+{/* Rust: examples/rust/gdrive_text_embedding/src/main.rs; rust/sdk/cocoindex/src/connectors/gdrive.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 class GoogleDriveSource(
     *,
@@ -64,6 +88,25 @@ class GoogleDriveSource(
     mime_types: Sequence[str] | None = None,
 )
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn GoogleDriveSource::new(client: GoogleDriveClient, root_folder_ids: Vec<String>) -> Self
+pub fn GoogleDriveSource::mime_types(self, mime_types: Vec<String>) -> Self
+```
+
+For example, with the client provided under the `GDRIVE` key:
+
+```rust
+cocoindex::context_key!(static GDRIVE: GoogleDriveClient);
+
+let source = GoogleDriveSource::new(ctx.get_key(&GDRIVE)?.clone(), root_folder_ids);
+```
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -76,6 +119,10 @@ class GoogleDriveSource(
 
 `GoogleDriveSource` provides async iteration via `files()`, yielding `DriveFile` objects (implementing the [`FileLike`](../common_resources/data_types#filelike) base class):
 
+{/* Rust: examples/rust/gdrive_text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 source = google_drive.GoogleDriveSource(
     service_account_credential_path="./credentials.json",
@@ -87,18 +134,60 @@ async for file in source.files():
     ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let client = GoogleDriveClient::from_service_account_file("./credentials.json")?;
+let source = GoogleDriveSource::new(client, vec!["1abc...xyz".to_string()]);
+
+for file in source.list_files().await? {
+    let text = file.read_text().await?;
+    // ...
+}
+```
+
+`list_files()` returns the whole listing as a `Vec<DriveFile>`; there is no async iterator. A listed file carries the client, so `file.read_text()` works; `client.read_text(&file)` reads through a client you hold.
+
+</Fragment>
+</LangTabs>
+
 ### Keyed iteration with `items()`
 
 `items()` yields `(str, DriveFile)` pairs keyed by the file's Google Drive ID. IDs remain stable across renames and avoid collisions when files share a name, including within the same folder. This is useful with `mount_each()`:
+
+{/* Rust: examples/rust/gdrive_text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async for key, file in source.items():
     content = await file.read()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let files = source.list_files().await?;
+let rows_by_file = mount_each!(files.into_iter().map(|file| (file.key(), file)), |file| {
+    process_file(ctx, file)
+})
+.await?;
+```
+
+`file.key()` is the file's Google Drive ID; `source.items().await?` returns the same `(key, file)` pairs as a `Vec`.
+
+</Fragment>
+</LangTabs>
+
 ### Filtering by MIME type
 
 Use `mime_types` to restrict which files are returned:
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/gdrive.rs (GoogleDriveSource::mime_types) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 source = google_drive.GoogleDriveSource(
@@ -107,6 +196,17 @@ source = google_drive.GoogleDriveSource(
     mime_types=["application/pdf", "text/plain"],
 )
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let source = GoogleDriveSource::new(client, vec!["1abc...xyz".to_string()])
+    .mime_types(vec!["application/pdf".to_string(), "text/plain".to_string()]);
+```
+
+</Fragment>
+</LangTabs>
 
 Google Workspace files (Docs, Sheets, Slides) are automatically exported:
 
@@ -120,15 +220,35 @@ Google Workspace files (Docs, Sheets, Slides) are automatically exported:
 
 A lower-level sync iterator for listing files:
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/gdrive.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def list_files(spec: GoogleDriveSourceSpec) -> Iterator[DriveFile]
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub struct GoogleDriveSourceSpec {
+    pub client: GoogleDriveClient,
+    pub root_folder_ids: Vec<String>,
+    pub mime_types: Option<Vec<String>>,
+}
+
+pub async fn list_files(spec: GoogleDriveSourceSpec) -> Result<Vec<DriveFile>>
+```
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
-- `spec` — A `GoogleDriveSourceSpec` with the same fields as `GoogleDriveSource` constructor parameters.
+- `spec` — A `GoogleDriveSourceSpec` with the same fields as `GoogleDriveSource` constructor parameters. In Rust the spec holds the `GoogleDriveClient` instead of a credential path.
 
-**Returns:** A sync iterator of `DriveFile` objects.
+**Returns:** A sync iterator of `DriveFile` objects. The Rust function is `async` and returns a `Vec<DriveFile>`.
 
 ### DriveFile
 
@@ -139,6 +259,8 @@ def list_files(spec: GoogleDriveSourceSpec) -> Iterator[DriveFile]
 - `file_path` — A `DriveFilePath` containing the path relative to the configured root folder; `resolve()` returns the Google Drive file ID. If roots overlap or a file is reachable more than once, it is emitted once using the first path encountered in breadth-first traversal. Each folder's children are visited in order of name, then ID, so the same path is kept on every run.
 - `read()` / `read_text()` — Downloads file content via the Google Drive API. Partial reads (`size` parameter) are not supported. Requests Google refuses for rate limits (HTTP 429, or 403 with a rate-limit reason) are retried with backoff.
 - Change detection uses the Drive MD5 checksum of binary files, so an unchanged file is not downloaded again. Google Docs, Sheets and Slides have no checksum; their exported content is hashed instead.
+
+The Rust `DriveFile` has the public fields `file_id`, `name`, `path`, `mime_type`, `size`, `modified_time` and `md5_checksum`, plus `info()`, `key()`, `file_path()` (a `DriveFilePath` with `path()`, `file_id()` and `resolve()`), `read()` and `read_text()`. It implements `FileLike` and `MemoInput`, with the same change detection: a memoized function takes it as an argument and runs again only for a file whose content changed.
 
 ## Signing in with a personal account
 
@@ -184,17 +306,45 @@ cocoindex google-drive sign-out      # revokes the sign-in at Google and deletes
 
 The same two steps are available in Python as `UserAccount().sign_in(client_secrets_path)` (with no argument for CocoIndex's own client) and `UserAccount().sign_out()`.
 
+The Rust SDK has no `cocoindex google-drive` command. The Rust `UserAccount` reads and writes the same token file as the Python SDK, at the same default location, so one sign-in serves both: sign in with the Python CLI, or call `UserAccount::new()?.sign_in(client_secrets_path).await?` once from a small binary. The Rust `sign_in` always takes the client secrets file. `sign_out().await?` revokes the sign-in and deletes the file.
+
 ### UserAccount
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/gdrive.rs; usage in rust/sdk/cocoindex/tests/gdrive_user_account.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class UserAccount(token_path: str | os.PathLike[str] | None = None)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn UserAccount::new() -> Result<Self>
+pub fn UserAccount::with_token_path(token_path: impl Into<PathBuf>) -> Self
+pub fn UserAccount::token_path(&self) -> &Path
+pub async fn UserAccount::sign_in(&self, client_secrets_path: impl AsRef<Path>) -> Result<String>
+pub async fn UserAccount::sign_out(&self) -> Result<bool>
+pub fn UserAccount::email(&self) -> Result<String>
+pub fn UserAccount::is_signed_in(&self) -> bool
+```
+
+`new()` uses the default token path; `with_token_path` picks another location. `sign_in` returns the signed-in address.
+
+</Fragment>
+</LangTabs>
 
 The handle a run passes to `GoogleDriveSource`. It reads the token file at `token_path` (default: the path `sign-in` writes to) when the source is first used:
 
 - the access token is refreshed with the stored refresh token as it expires, and the refreshed token is written back to the file;
 - `email` is the signed-in account's address, and the memo key of a `UserAccount` is that address: a refreshed token does not invalidate memoized work, a different account does;
 - when no sign-in is stored, or Google refuses the stored one (the consent expired or was revoked, or the OAuth client was deleted, disabled or given a new secret), the run raises `SignInRequiredError` (a `SignInError`), whose message says which and to sign in again. The message never contains a token.
+
+{/* Rust: rust/sdk/cocoindex/tests/gdrive_user_account.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import cocoindex as coco
@@ -211,7 +361,29 @@ async def app_main(folder_ids: list[str]) -> None:
             await coco.mount(coco.component_subpath(key), process_file, file)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let account = UserAccount::new()?;
+let client = GoogleDriveClient::from_user_account(&account)?;
+let files = GoogleDriveSource::new(client, folder_ids).list_files().await?;
+mount_each!(files.into_iter().map(|file| (file.key(), file)), |file| {
+    process_file(ctx, file)
+})
+.await?;
+```
+
+`from_user_account` reads the token file now and fails with a message that says how to sign in when no usable sign-in is stored. The client's identity is the account's address, so a refreshed token keeps memoized work and a different account invalidates it.
+
+</Fragment>
+</LangTabs>
+
 ### Example
+
+{/* Rust: examples/rust/gdrive_text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import cocoindex as coco
@@ -245,3 +417,56 @@ app = coco.App(
     folder_ids=["1abc...xyz"],
 )
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::path::PathBuf;
+
+use cocoindex::connectors::gdrive::{DriveFile, GoogleDriveClient, GoogleDriveSource};
+use cocoindex::prelude::*;
+
+cocoindex::context_key!(static GDRIVE: GoogleDriveClient);
+
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: DriveFile) -> Result<()> {
+    let client = ctx.get_key(&GDRIVE)?;
+    let text = client.read_text(&file).await?;
+    // ... process the file content ...
+    Ok(())
+}
+
+async fn app_main(ctx: Ctx, root_folder_ids: Vec<String>) -> Result<()> {
+    let source = GoogleDriveSource::new(ctx.get_key(&GDRIVE)?.clone(), root_folder_ids);
+    let files = source.list_files().await?;
+    println!("indexing {} Google Drive files", files.len());
+
+    mount_each!(files.into_iter().map(|file| (file.key(), file)), |file| {
+        process_file(ctx, file)
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let gdrive = GoogleDriveClient::from_service_account_file("./credentials.json")?;
+    let root_folder_ids = vec!["1abc...xyz".to_string()];
+    let app = Environment::builder()
+        .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&GDRIVE, gdrive)
+        .build()
+        .await?
+        .app("GoogleDriveTextEmbeddingRust")
+        .await?;
+    let stats = app.run(move |ctx| app_main(ctx, root_folder_ids)).await?;
+    println!("{stats}");
+    Ok(())
+}
+```
+
+The full program, which chunks and embeds each file into Postgres, is `examples/rust/gdrive_text_embedding`.
+
+</Fragment>
+</LangTabs>

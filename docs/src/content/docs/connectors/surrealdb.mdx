@@ -6,11 +6,29 @@ description: >
   typed values, array record IDs, bounded transactions, and HNSW vector indexes
   with cosine / euclidean / manhattan distances.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 The `surrealdb` connector provides utilities for writing records to SurrealDB databases, with support for normal tables, relation (graph edge) tables, optional schema enforcement, and vector indexes.
+
+{/* Rust: examples/rust/conversation_to_knowledge/src/pipeline.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import surrealdb
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::surrealdb::{self, ColumnDef, Graph, TableSchema, VectorIndexOptions};
+```
+
+The Rust SDK needs the `surrealdb` Cargo feature of the `cocoindex` crate.
+
+</Fragment>
+</LangTabs>
 
 :::note[Dependencies]
 This connector requires additional dependencies. Install with:
@@ -28,6 +46,10 @@ Create a `ConnectionFactory` and provide it via a `ContextKey`. It holds connect
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
+
+{/* Rust: examples/rust/conversation_to_knowledge/src/main.rs and src/clients.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from collections.abc import AsyncIterator
@@ -49,6 +71,35 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     await factory.close()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::surrealdb::Graph;
+use cocoindex::prelude::*;
+
+cocoindex::context_key!(pub static GRAPH: Graph);
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Connect SurrealDB: WebSocket address, namespace, database, root user and password.
+    let graph = Graph::connect("127.0.0.1:8000", "test", "test", "root", "root").await?;
+    let app = Environment::builder()
+        .provide_key(&GRAPH, graph)
+        .build()
+        .await?
+        .app("ConversationToKnowledge")
+        .await?;
+    // ...
+    Ok(())
+}
+```
+
+`Graph::connect(url, ns, db, user, pass)` opens one WebSocket connection and signs in as a root user. `url` is the host and port, without the `ws://` scheme or `/rpc` path. A `Graph` has no `close()` method; `builder.on_shutdown(..)` in a `#[cocoindex::lifespan]` function is the place for teardown.
+
+</Fragment>
+</LangTabs>
+
 ## As target
 
 The `surrealdb` connector provides target state APIs for writing records to normal tables and relation tables. CocoIndex tracks what records should exist and automatically handles upserts and deletions.
@@ -57,7 +108,7 @@ Writes are sent as typed parameters (`datetime`, `date`, `Decimal`, `UUID`, `byt
 
 **Transactions and errors.** The changes of each table are applied in chunks of at most 500 actions, each chunk one transaction (`Transaction conflict` errors are retried with backoff). Atomicity is per chunk, not across tables. Any statement error rolls the chunk back and raises, so the update fails and the affected components are retried on the next run.
 
-**Record IDs** may be a string, an integer, or a tuple/list, which becomes an array ID (`person:['sap', '0001']`). Relation endpoints (`from_id`, `to_id`) take the same forms.
+**Record IDs** may be a string, an integer, or a tuple/list, which becomes an array ID (`person:['sap', '0001']`). Relation endpoints (`from_id`, `to_id`) take the same forms. In Rust a record id is any `IntoRecordId` value: an integer, a `String` or a `&str`; array ids have no Rust counterpart.
 
 **Ownership.** `declare_record` writes with `UPSERT ... MERGE`, never `CONTENT`: fields written by other owners survive, and fields you stop declaring are unset. Use `declare_fields` when a pipeline contributes only some fields of a record that another pipeline owns. Relation records are single-owner and are replaced whole.
 
@@ -69,6 +120,10 @@ Writes are sent as typed parameters (`datetime`, `date`, `Decimal`, `UUID`, `byt
 
 Declares a table as a target state. Returns a `TableTarget` for declaring records.
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/surrealdb.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def declare_table_target(
     db: ContextKey,
@@ -78,6 +133,30 @@ def declare_table_target(
     managed_by: Literal["system", "user"] = "system",
 ) -> TableTarget[RowT, coco.PendingS]
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn declare_table_target(
+    ctx: &Ctx,
+    graph: &ContextKey<Graph>,
+    table_name: impl Into<String>,
+) -> Result<TableTarget>
+
+pub fn declare_table_target_with_schema_and_options(
+    ctx: &Ctx,
+    graph: &ContextKey<Graph>,
+    table_name: impl Into<String>,
+    table_schema: Option<TableSchema>,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget>
+```
+
+`declare_table_target` declares a schemaless, system-managed table. The `mount_*` forms (`mount_table_target`, `mount_table_target_with_schema`, `mount_table_target_with_options`, `mount_table_target_with_schema_and_options`) are `async` and return a resolved target. `ManagedTargetOptions::user_managed()` is Python's `managed_by="user"`.
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -92,6 +171,10 @@ def declare_table_target(
 
 Once a `TableTarget` is resolved, declare records to be upserted:
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/surrealdb.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def TableTarget.declare_record(
     self,
@@ -100,11 +183,34 @@ def TableTarget.declare_record(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn TableTarget::declare_record<R: serde::Serialize>(
+    &self,
+    ctx: &Ctx,
+    id: impl IntoRecordId,
+    row: &R,
+) -> Result<()>
+
+pub fn TableTarget::declare_row<R: serde::Serialize>(&self, ctx: &Ctx, row: &R) -> Result<()>
+```
+
+`declare_record` takes the record id separately, so the row struct has no `id` field. `declare_row` takes the id from the row's own scalar `id` field, as Python does.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include an `id` field.
 
 `declare_row` is an alias for `declare_record`, for compatibility with Postgres and other RDBMS targets.
+
+{/* Rust: rust/sdk/SHOWCASE.md (declare_fields), verified against rust/sdk/cocoindex/src/connectors/surrealdb.rs and tests/surrealdb_target.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def TableTarget.declare_fields(
@@ -116,11 +222,40 @@ def TableTarget.declare_fields(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn TableTarget::declare_fields<R: serde::Serialize>(
+    &self,
+    ctx: &Ctx,
+    id: impl IntoRecordId,
+    group: &str,
+    fields: &R,
+) -> Result<()>
+```
+
+`fields` is a struct or map that serializes to an object of field name to value; it cannot name `id`. For example:
+
+```rust
+// Component A owns the record.
+players.declare_record(ctx, "ann", &json!({ "name": "Ann" }))?;
+// Component B owns the `stats` fields of the same record.
+players.declare_fields(ctx, "ann", "stats", &json!({ "score": 7, "rank": 1 }))?;
+```
+
+</Fragment>
+</LangTabs>
+
 Declares the fields one owner (`group`) contributes to a record. It runs `UPDATE $id MERGE {fields}` and touches nothing else. When the declaration goes away, or a field is dropped from it, those fields are unset. If the record does not exist, the write raises and is retried on the next run, so declare the base record in the same or another pipeline.
 
 #### Relation tables (parent state)
 
 Declares a relation (graph edge) table. Returns a `RelationTarget` for declaring relation records.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/surrealdb.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def declare_relation_target(
@@ -133,6 +268,39 @@ def declare_relation_target(
     managed_by: Literal["system", "user"] = "system",
 ) -> RelationTarget[RowT, coco.PendingS]
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub async fn mount_relation_target(
+    ctx: &Ctx,
+    graph: &ContextKey<Graph>,
+    table_name: impl Into<String>,
+    from_table: &TableTarget,
+    to_table: &TableTarget,
+) -> Result<RelationTarget>
+
+pub async fn mount_relation_target_many(
+    ctx: &Ctx,
+    graph: &ContextKey<Graph>,
+    table_name: impl Into<String>,
+    from_tables: &[&TableTarget],
+    to_tables: &[&TableTarget],
+    table_schema: Option<TableSchema>,
+) -> Result<RelationTarget>
+
+pub async fn mount_relation_target_unconstrained(
+    ctx: &Ctx,
+    graph: &ContextKey<Graph>,
+    table_name: impl Into<String>,
+) -> Result<RelationTarget>
+```
+
+`mount_relation_target` connects one source table to one target table, schemaless. `mount_relation_target_many` takes the collections of Python's polymorphic form and an optional schema. `mount_relation_target_unconstrained` accepts any endpoint tables. Each has a `_with_options` form that takes `ManagedTargetOptions`, and a `declare_relation_target_*` form that declares the table in the current component.
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -149,6 +317,10 @@ def declare_relation_target(
 
 Once a `RelationTarget` is resolved, declare relation records:
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/surrealdb.rs; usage in rust/sdk/cocoindex/tests/surrealdb_target.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def RelationTarget.declare_relation(
     self,
@@ -161,6 +333,51 @@ def RelationTarget.declare_relation(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn RelationTarget::declare_relation(
+    &self,
+    ctx: &Ctx,
+    from_id: impl IntoRecordId,
+    to_id: impl IntoRecordId,
+) -> Result<()>
+
+pub fn RelationTarget::declare_relation_record<R: serde::Serialize>(
+    &self,
+    ctx: &Ctx,
+    from_id: impl IntoRecordId,
+    to_id: impl IntoRecordId,
+    record: &R,
+) -> Result<()>
+
+pub fn RelationTarget::declare_relation_between(
+    &self,
+    ctx: &Ctx,
+    from_table: &str,
+    from_id: impl IntoRecordId,
+    to_table: &str,
+    to_id: impl IntoRecordId,
+) -> Result<()>
+```
+
+`declare_relation` and `declare_relation_record` need a relation with one source and one target table. A polymorphic relation names the endpoint tables per record with `declare_relation_between` (or `declare_relation_record_between` with a record):
+
+```rust
+session_statement.declare_relation(&ctx, 100_i64, 200_i64)?;
+statement_mentions.declare_relation_between(
+    &ctx,
+    "statement",
+    200_i64,
+    "person",
+    "George He",
+)?;
+```
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `from_id` — ID of the source record.
@@ -171,6 +388,10 @@ def RelationTarget.declare_relation(
 #### Vector indexes (attachment)
 
 Declare a vector index on a field of the table. CocoIndex tracks the index spec and automatically creates, recreates, or drops the index as needed.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/surrealdb.rs; usage in rust/sdk/cocoindex/tests/surrealdb_target.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def TableTarget.declare_vector_index(
@@ -185,6 +406,50 @@ def TableTarget.declare_vector_index(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn TableTarget::declare_vector_index(
+    &self,
+    ctx: &Ctx,
+    field: &str,
+    dimension: usize,
+    options: VectorIndexOptions,
+) -> Result<()>
+
+pub struct VectorIndexOptions {
+    /// Index name; defaults to `idx_<table>__<field>`.
+    pub name: Option<String>,
+    /// Distance metric: `"cosine"`, `"euclidean"`, or `"manhattan"`.
+    pub metric: &'static str,
+    /// Index method: `"mtree"` or `"hnsw"`.
+    pub method: &'static str,
+    /// Vector element type: `"f32"`, `"f64"`, `"i16"`, `"i32"`, or `"i64"`.
+    pub vector_type: &'static str,
+}
+```
+
+For example:
+
+```rust
+docs.declare_vector_index(
+    &ctx,
+    "embedding",
+    3,
+    VectorIndexOptions {
+        metric: "cosine",
+        method: "hnsw",
+        ..Default::default()
+    },
+)?;
+```
+
+The Rust default `method` is `"mtree"`, which SurrealDB 3 removed: set `method: "hnsw"`.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `name` — Index name (defaults to `idx_{table}__{field}`).
@@ -198,6 +463,10 @@ def TableTarget.declare_vector_index(
 
 Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
 
+{/* Rust: rust/sdk/SHOWCASE.md (SurrealDB), verified against rust/sdk/cocoindex/src/connectors/surrealdb.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 @classmethod
 async def TableSchema.from_class(
@@ -208,10 +477,41 @@ async def TableSchema.from_class(
 ) -> TableSchema[RowT]
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn TableSchema::from_row<T: SchemaFields>() -> Result<Self>
+```
+
+The row type derives `cocoindex::SchemaFields`. The record id is passed to `declare_record` separately, so the struct has no `id` field:
+
+```rust
+#[derive(Serialize, SchemaFields)]
+struct Session {
+    name: String,
+    description: Option<String>,        // option<string>
+    recorded_at: chrono::DateTime<chrono::Utc>, // datetime
+    #[coco(vector = 384)]
+    embedding: Vec<f32>,                // array<float, 384>
+}
+
+let sessions = surrealdb::mount_table_target_with_schema(
+    ctx, &GRAPH, "session", Some(surrealdb::TableSchema::from_row::<Session>()?),
+)
+.await?;
+sessions.declare_record(ctx, session_id, &session)?;
+```
+
+A vector field needs `#[coco(vector = N)]` with its dimension; a bare `#[coco(vector)]` is an error for SurrealDB.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `record_type` — A record type whose fields define table columns. For normal tables, must include an `id` field. For relation tables, `id` is optional.
-- `column_overrides` — Optional per-column overrides for type mapping or vector configuration.
+- `column_overrides` — Optional per-column overrides for type mapping or vector configuration. In Rust, a `#[coco(..)]` attribute on the field does this (see below).
 
 **Example:**
 
@@ -228,25 +528,29 @@ schema = await surrealdb.TableSchema.from_class(Product)
 
 Python types are automatically mapped to SurrealDB types:
 
-| Python Type | SurrealDB Type |
-|-------------|----------------|
-| `bool` | `bool` |
-| `int` | `int` |
-| `float` | `float` |
-| `decimal.Decimal` | `decimal` |
-| `str` | `string` |
-| `bytes` | `bytes` |
-| `uuid.UUID` | `uuid` |
-| `datetime.datetime` | `datetime` |
-| `datetime.date` | `datetime` |
-| `datetime.time` | `datetime` |
-| `datetime.timedelta` | `duration` |
-| `list`, `dict`, nested structs | `object` |
-| `NDArray` (with vector schema) | `array<float, N>` |
+| Python Type | Rust Type | SurrealDB Type |
+|-------------|-----------|----------------|
+| `bool` | `bool` | `bool` |
+| `int` | `i16`, `i32`, `i64` (and the unsigned widths) | `int` |
+| `float` | `f32`, `f64` | `float` |
+| `decimal.Decimal` | `rust_decimal::Decimal` | `decimal` |
+| `str` | `String` | `string` |
+| `bytes` | `Vec<u8>` | `bytes` |
+| `uuid.UUID` | `uuid::Uuid` | `uuid` |
+| `datetime.datetime` | `chrono::DateTime`, `chrono::NaiveDateTime` | `datetime` |
+| `datetime.date` | `chrono::NaiveDate` | `datetime` |
+| `datetime.time` | `chrono::NaiveTime` | `datetime` (Python), `string` (Rust) |
+| `datetime.timedelta` | `std::time::Duration` | `duration` |
+| `list`, `dict`, nested structs | other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `object` (Python), `any` (Rust) |
+| `NDArray` (with vector schema) | `#[coco(vector = N)] Vec<f32>` | `array<float, N>` |
 
 #### SurrealType
 
 Use `SurrealType` to override the default type mapping:
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/surrealdb.rs (from_row docs) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from typing import Annotated
@@ -257,6 +561,22 @@ class MyRow:
     id: str
     value: Annotated[float, SurrealType("decimal")]
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[derive(Serialize, SchemaFields)]
+struct MyRow {
+    #[coco(type = "decimal")]
+    value: f64,
+}
+```
+
+`#[coco(type = "…")]` sets the SurrealDB type verbatim.
+
+</Fragment>
+</LangTabs>
 
 Or via `column_overrides`:
 
@@ -275,6 +595,10 @@ For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_sche
 
 Define columns directly using `ColumnDef`:
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/surrealdb.rs (TableSchema::new, ColumnDef) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def TableSchema.__init__(
     self,
@@ -284,7 +608,28 @@ def TableSchema.__init__(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn TableSchema::new(
+    columns: impl IntoIterator<Item = (impl Into<String>, ColumnDef)>,
+) -> Result<Self>
+
+pub fn ColumnDef::new(surreal_type: impl Into<String>) -> Self
+pub fn ColumnDef::nullable(self) -> Self
+```
+
+A Rust `ColumnDef` is not nullable unless `.nullable()` is called; a nullable column is defined as `option<T>`.
+
+</Fragment>
+</LangTabs>
+
 **Example:**
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/surrealdb.rs (TableSchema::new, ColumnDef) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 schema = surrealdb.TableSchema(
@@ -296,7 +641,24 @@ schema = surrealdb.TableSchema(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let schema = TableSchema::new([
+    ("name", ColumnDef::new("string")),
+    ("price", ColumnDef::new("float").nullable()),
+])?;
+```
+
+</Fragment>
+</LangTabs>
+
 ### Example: Normal tables
+
+{/* Rust: examples/rust/conversation_to_knowledge/src/pipeline.rs and src/models.rs; vector index from rust/sdk/cocoindex/tests/surrealdb_target.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import cocoindex as coco
@@ -345,7 +707,73 @@ async def app_main() -> None:
     )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::surrealdb::{self, Graph, TableSchema, VectorIndexOptions};
+use cocoindex::prelude::*;
+
+cocoindex::context_key!(pub static GRAPH: Graph);
+
+#[derive(Clone, Debug, Serialize, cocoindex::SchemaFields)]
+pub struct SessionRow {
+    pub name: String,
+    pub description: Option<String>,
+    pub transcript: String,
+    #[coco(vector = 384)]
+    pub embedding: Vec<f32>,
+}
+
+pub async fn create_knowledge_base(ctx: &Ctx, processed: &[ProcessedSession]) -> Result<()> {
+    // Declare table target state
+    let session_target = surrealdb::mount_table_target_with_schema(
+        ctx,
+        &GRAPH,
+        "session",
+        Some(surrealdb::TableSchema::from_row::<SessionRow>()?),
+    )
+    .await?;
+
+    // Declare records
+    for ps in processed {
+        session_target.declare_record(
+            ctx,
+            ps.session_id,
+            &SessionRow {
+                name: ps.name.clone(),
+                description: ps.description.clone(),
+                transcript: ps.transcript.clone(),
+                embedding: ps.embedding.clone(),
+            },
+        )?;
+    }
+
+    // Declare a vector index
+    session_target.declare_vector_index(
+        ctx,
+        "embedding",
+        384,
+        VectorIndexOptions {
+            metric: "cosine",
+            method: "hnsw",
+            ..Default::default()
+        },
+    )?;
+    Ok(())
+}
+```
+
+The full program is `examples/rust/conversation_to_knowledge`.
+
+</Fragment>
+</LangTabs>
+
 ### Example: Relation tables
+
+{/* Rust: examples/rust/conversation_to_knowledge/src/pipeline.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @dataclass
@@ -385,3 +813,96 @@ async def app_main() -> None:
             to_id=like["post_id"],
         )
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[derive(Clone, Debug, Serialize, cocoindex::SchemaFields)]
+pub struct StatementRow {
+    pub statement: String,
+}
+
+/// A person, tech or org node.
+#[derive(Clone, Debug, Serialize, cocoindex::SchemaFields)]
+pub struct EntityRow {
+    pub name: String,
+}
+
+pub async fn create_knowledge_base(ctx: &Ctx, processed: &[ProcessedSession]) -> Result<()> {
+    let session_target = surrealdb::mount_table_target_with_schema(
+        ctx,
+        &GRAPH,
+        "session",
+        Some(surrealdb::TableSchema::from_row::<SessionRow>()?),
+    )
+    .await?;
+    let statement_target = surrealdb::mount_table_target_with_schema(
+        ctx,
+        &GRAPH,
+        "statement",
+        Some(surrealdb::TableSchema::from_row::<StatementRow>()?),
+    )
+    .await?;
+    let person_target = surrealdb::mount_table_target_with_schema(
+        ctx,
+        &GRAPH,
+        "person",
+        Some(surrealdb::TableSchema::from_row::<EntityRow>()?),
+    )
+    .await?;
+    let tech_target = surrealdb::mount_table_target_with_schema(
+        ctx,
+        &GRAPH,
+        "tech",
+        Some(surrealdb::TableSchema::from_row::<EntityRow>()?),
+    )
+    .await?;
+    // Declare a relation table (schemaless, no id needed)
+    let session_statement_target = surrealdb::mount_relation_target(
+        ctx,
+        &GRAPH,
+        "session_statement",
+        &session_target,
+        &statement_target,
+    )
+    .await?;
+    // A polymorphic relation: a statement mentions a person or a tech.
+    let statement_mentions_target = surrealdb::mount_relation_target_many(
+        ctx,
+        &GRAPH,
+        "statement_mentions",
+        &[&statement_target],
+        &[&person_target, &tech_target],
+        None,
+    )
+    .await?;
+
+    for ps in processed {
+        for st in &ps.statements {
+            statement_target.declare_record(
+                ctx,
+                st.id,
+                &StatementRow {
+                    statement: st.raw.statement.clone(),
+                },
+            )?;
+            // Declare relations — id is auto-derived from endpoints
+            session_statement_target.declare_relation(ctx, ps.session_id, st.id)?;
+            for name in st.raw.mentioned("person") {
+                statement_mentions_target.declare_relation_between(
+                    ctx,
+                    "statement",
+                    st.id,
+                    "person",
+                    name,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+</Fragment>
+</LangTabs>
