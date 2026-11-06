@@ -245,12 +245,9 @@ async fn target_states_with_their_owner() {
         })
         .collect();
     readable.sort();
-    let expected = |name: &str| {
-        format!(
-            "/@cocoindex/localfs/file/[\"{}\",\"{name}\"]",
-            out.display()
-        )
-    };
+    // A readable path escapes its string keys (the `\` of a Windows path).
+    let out_key = out.display().to_string().escape_default().to_string();
+    let expected = |name: &str| format!("/@cocoindex/localfs/file/[\"{out_key}\",\"{name}\"]");
     assert_eq!(readable, [expected("a.txt"), expected("b.txt")]);
 
     let by_name: Vec<TargetStateEntry> = inspect::iter_target_states_by_name(&env, APP_NAME)

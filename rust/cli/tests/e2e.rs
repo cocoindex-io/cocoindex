@@ -226,7 +226,13 @@ fn update_preview_ls_show_drop() {
     assert!(stdout(&long).contains("processor:app:FixtureApp"));
     // The whole block of each path, in the Python CLI's format. Target states
     // come in stored (fingerprint) order, which depends on the output path.
-    let out_dir = sb.path("out").display().to_string();
+    // A readable path escapes its string keys (the `\` of a Windows path).
+    let out_dir = sb
+        .path("out")
+        .display()
+        .to_string()
+        .escape_default()
+        .to_string();
     let either_order = |text: String, render: &dyn Fn(&str, &str) -> String| {
         assert!(
             text == render("a.txt", "b.txt") || text == render("b.txt", "a.txt"),
