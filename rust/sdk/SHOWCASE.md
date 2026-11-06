@@ -364,6 +364,25 @@ before the first GPU function runs. Python's subprocess mode and dedicated GPU
 thread exist for the GIL and CUDA's fork rules, which a Rust body does not
 have, so there is no equivalent.
 
+Any type implementing `cocoindex::Runner` (Python's `Runner` base class) goes
+in `runner = ...`: it receives each body as a future and decides when to run
+it. The value is built on the function's first call and shared by every call.
+
+```rust
+struct AtMostTwo(tokio::sync::Semaphore);
+
+#[async_trait::async_trait]
+impl cocoindex::Runner for AtMostTwo {
+    async fn run(&self, body: cocoindex::RunnerBody<'_>) -> Result<cocoindex::RunnerOutput> {
+        let _permit = self.0.acquire().await.map_err(|e| Error::engine(e.to_string()))?;
+        body.await
+    }
+}
+
+#[cocoindex::function(memo, runner = AtMostTwo(tokio::sync::Semaphore::new(2)))]
+async fn summarize(_ctx: &Ctx, text: String) -> Result<String> { /* ... */ }
+```
+
 ## Embed, transcribe and resolve entities with the built-in ops
 
 The model ops use the two patterns above, so a pipeline calls them per item
@@ -384,6 +403,10 @@ and gets memoization and batching from the engine, as the Python ops do under
 - `LlmPairResolver` memoizes each `(entity, candidates)` decision, and
   `resolve_entities(&ctx, names, &embedder, &resolver, ..)` embeds the names
   through the batched path. Any `Embedder` is an `EntityEmbedder`.
+- `ApiChatClient::extract::<T>(&ctx, &messages)` runs a JSON-mode chat
+  completion, deserializes the answer into `T` and memoizes it by model,
+  endpoint and messages: structured extraction with an LLM, without parsing
+  by hand.
 
 ```rust
 cocoindex::context_key!(static EMBEDDER: ApiEmbedder, detect_change);
@@ -411,9 +434,13 @@ memoizes nothing.
 `SentenceTransformerEmbedder::load(name_or_path)` accepts a `fastembed`
 registry name, a local directory holding a sentence-transformers ONNX export,
 or the Hugging Face repository of such an export, like Python's
-`model_name_or_path`. `fastembed` always normalizes its vectors and has no
-prompt registry or device selection, so Python's `normalize_embeddings`,
-`prompt_name` and `device` have no Rust counterpart.
+`model_name_or_path`. Its batches, like `ImageEmbedder`'s, run under the GPU
+runner, as Python's do under `runner=coco.GPU`: one inference at a time per
+GPU in the pool. `load_with(name, execution_providers)` picks the ONNX Runtime
+execution providers (Python's `device`), such as CUDA when the binary enables
+the `ort` crate's `cuda` feature. `fastembed` always normalizes its vectors
+and has no prompt registry, so Python's `normalize_embeddings` and
+`prompt_name` have no Rust counterpart.
 
 ## Mount processing components
 
