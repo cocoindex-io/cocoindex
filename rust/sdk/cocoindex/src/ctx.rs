@@ -9,13 +9,14 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use cocoindex_core::engine::component::ComponentExecutionHandle;
 use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
 use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::environment::Environment;
 use cocoindex_core::engine::execution;
 use cocoindex_core::engine::live_component::mount_live_prepare;
 use cocoindex_core::engine::target_state::TargetStateProvider;
-use cocoindex_core::state::stable_path::StableKey;
+use cocoindex_core::state::stable_path::{StableKey, StablePath, StablePathRef};
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -23,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use crate::app::{AppInner, StatsGroupHandle, StatsGroupOptions};
 use crate::error::{Error, Result};
 use crate::live_component::{
-    ExceptionContext, ExceptionHandler, LiveComponent, LiveMapView, MountEachLiveComponent,
-    MountKind, build_chained_on_error, new_operator, start_process_live,
+    ExceptionContext, ExceptionHandler, ExceptionSource, LiveComponent, LiveMapView,
+    MountEachLiveComponent, MountKind, build_chained_on_error, new_operator, start_process_live,
 };
 use crate::memo::{MemoInput, MemoStateDecision, MemoStateValue};
 use crate::profile::{BoxedHandler, BoxedProcessor, RustProfile, Value};
@@ -340,25 +341,28 @@ pub struct Ctx {
     /// argument at each call). `with_timeout` returns a narrowed clone.
     pub(crate) deadline: DeadlineContext,
     /// Exception handlers in scope for background work mounted from this `Ctx`,
-    /// ordered outermost→innermost. Empty at the root; extended by
-    /// `mount_live_with_handler` so nested live components inherit ancestors'
+    /// ordered outermost→innermost. The environment's handler at the root;
+    /// extended by [`Ctx::with_exception_handler`] and
+    /// `mount_live_with_handler` so nested components inherit ancestors'
     /// handlers (the Python handler chain).
     pub(crate) handler_chain: Arc<Vec<crate::live_component::ExceptionHandler>>,
+    /// Path parts [`Ctx::with_subpath`] added below the component's own path.
+    /// Children mounted from this `Ctx` go under `component path + subpath`,
+    /// the way nested `coco.mount` calls go under a `with
+    /// coco.component_subpath(...)` block in Python. Empty by default.
+    pub(crate) subpath: Arc<[StableKey]>,
 }
 
 impl Ctx {
+    /// The root context of a component run: its handler chain starts from the
+    /// environment's handler, as a Python component context does.
     pub(crate) fn new(
         comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
         state: Arc<AppInner>,
         deadline: DeadlineContext,
     ) -> Self {
-        Self {
-            comp_ctx,
-            state,
-            fn_ctx: None,
-            deadline,
-            handler_chain: Arc::new(Vec::new()),
-        }
+        let handler_chain = Arc::new(state.exception_handler.iter().cloned().collect());
+        Self::new_with_handlers(comp_ctx, state, handler_chain, deadline)
     }
 
     pub(crate) fn new_with_handlers(
@@ -373,6 +377,7 @@ impl Ctx {
             fn_ctx: None,
             deadline,
             handler_chain,
+            subpath: Arc::from([]),
         }
     }
 
@@ -385,6 +390,7 @@ impl Ctx {
             fn_ctx: None,
             deadline,
             handler_chain: self.handler_chain.clone(),
+            subpath: Arc::from([]),
         }
     }
 
@@ -397,7 +403,76 @@ impl Ctx {
             fn_ctx: Some(fn_ctx),
             deadline: self.deadline,
             handler_chain: self.handler_chain.clone(),
+            subpath: self.subpath.clone(),
         }
+    }
+
+    /// The stable path children mounted from this `Ctx` go under: the
+    /// component's path plus any [`Ctx::with_subpath`] parts.
+    fn mount_base_path(&self, comp_ctx: &ComponentProcessorContext<RustProfile>) -> StablePath {
+        let base = comp_ctx.stable_path();
+        if self.subpath.is_empty() {
+            base.clone()
+        } else {
+            base.concat(StablePathRef(&self.subpath))
+        }
+    }
+
+    /// The stable path of the child mounted under `key` from this `Ctx`.
+    fn child_path(
+        &self,
+        comp_ctx: &ComponentProcessorContext<RustProfile>,
+        key: &str,
+    ) -> StablePath {
+        self.mount_base_path(comp_ctx)
+            .concat_part(StableKey::Str(Arc::from(key)))
+    }
+
+    /// Return a clone of this `Ctx` whose child mounts go under `key`, below
+    /// the current path: `ctx.with_subpath(&"process")` followed by
+    /// `use_mount!("a.md", ...)` mounts at `process/a.md`. The Rust analogue of
+    /// a `with coco.component_subpath("process"):` block in Python. Chain calls
+    /// for a multi-part subpath.
+    ///
+    /// The scoped context still belongs to the same component: target states
+    /// declared through it are the component's own, and
+    /// [`Ctx::use_state`] is an error inside a subpath, as in Python, because
+    /// the state would be owned by the component but keyed as if by a child.
+    #[must_use = "returns a new scoped Ctx; the original is unchanged"]
+    pub fn with_subpath<K: Display>(&self, key: &K) -> Self {
+        let mut scoped = self.clone();
+        scoped.subpath = self
+            .subpath
+            .iter()
+            .cloned()
+            .chain(std::iter::once(StableKey::Str(Arc::from(
+                key.to_string().as_str(),
+            ))))
+            .collect();
+        scoped
+    }
+
+    /// Return a clone of this `Ctx` that routes the failures of components
+    /// mounted from it in the background ([`Ctx::mount`], [`Ctx::mount_live`],
+    /// `auto_refresh`, …) through `handler` first, then through the handlers
+    /// already in scope, outermost last. The Rust analogue of Python's `async
+    /// with coco.exception_handler(handler):` block.
+    ///
+    /// The handler returns `Ok(())` to swallow a failure or `Err(_)` to pass
+    /// it (possibly rewritten) to the next outer handler; when every handler
+    /// returns `Err`, the last error reaches the mount's
+    /// [`ComponentMountHandle::ready`]. With no handler at all the failure is
+    /// logged and dropped. See [`crate::ExceptionHandler`].
+    #[must_use = "returns a new scoped Ctx; the original is unchanged"]
+    pub fn with_exception_handler<H>(&self, handler: H) -> Self
+    where
+        H: Fn(&Error, &ExceptionContext) -> Result<()> + Send + Sync + 'static,
+    {
+        let mut chain = (*self.handler_chain).clone();
+        chain.push(Arc::new(handler));
+        let mut scoped = self.clone();
+        scoped.handler_chain = Arc::new(chain);
+        scoped
     }
 
     /// Execute a non-memoized `#[cocoindex::function]` body while recording
@@ -624,6 +699,12 @@ impl Ctx {
                 "use_state requires an active pipeline context",
             ));
         };
+        if !self.subpath.is_empty() {
+            return Err(Error::engine(
+                "use_state cannot be called on a `Ctx::with_subpath` context: the state is \
+                 owned by the component, not by the subpath",
+            ));
+        }
         let key = key.into_state_key();
         let stored = comp_ctx
             .use_state(key.clone(), Value::from_serializable(&initial_value)?)
@@ -765,6 +846,7 @@ impl Ctx {
             fn_ctx: self.fn_ctx.clone(),
             deadline: self.deadline,
             handler_chain: self.handler_chain.clone(),
+            subpath: self.subpath.clone(),
         };
         let group_guard = StatsGroupEndGuard::new(derived);
         let result = f(scoped_ctx, handle.clone()).await;
@@ -788,8 +870,7 @@ impl Ctx {
         };
 
         let key_str = key.to_string();
-        let child_stable_key = StableKey::Str(Arc::from(key_str.as_str()));
-        let child_path = comp_ctx.stable_path().concat_part(child_stable_key);
+        let child_path = self.child_path(comp_ctx, &key_str);
         let stable_path = child_path.to_string();
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path, comp_ctx.live())
@@ -825,6 +906,7 @@ impl Ctx {
                             processor_name: Some(processor_name.clone()),
                             mount_kind: MountKind::UpdateFull,
                             is_background: ready_marked && controller.is_live(),
+                            source: ExceptionSource::Component,
                         },
                     );
                     match controller.update_full(processor, on_error).await {
@@ -962,8 +1044,7 @@ impl Ctx {
             return instance.process(self.clone()).await;
         };
 
-        let child_stable_key = StableKey::Str(Arc::from(key_str.as_str()));
-        let child_path = comp_ctx.stable_path().concat_part(child_stable_key);
+        let child_path = self.child_path(comp_ctx, &key_str);
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path.clone(), comp_ctx.live())
             .map_err(|e| Error::engine(format!("{e}")))?;
@@ -1000,6 +1081,132 @@ impl Ctx {
             .ready()
             .await
             .map_err(|e| Error::engine(format!("{e}")))
+    }
+
+    /// Mount a child component under `key` in the background and return a
+    /// handle to wait for it. The Rust analogue of Python's `coco.mount`.
+    ///
+    /// Unlike [`Ctx::scope`] / `use_mount!`, the parent does not wait for the
+    /// child and takes no value from it: the child runs on its own task, its
+    /// target states sync when it finishes, and in live mode it can refresh
+    /// independently. A failure in the child is off the parent's critical
+    /// path: it is logged, or routed through the exception handlers in scope
+    /// ([`Ctx::with_exception_handler`],
+    /// [`EnvironmentBuilder::exception_handler`](crate::EnvironmentBuilder::exception_handler)),
+    /// and reaches the caller only through [`ComponentMountHandle::ready`] when a
+    /// handler returns `Err`. The parent's own completion still waits for every
+    /// child it mounted.
+    ///
+    /// Prefer the `mount!` macro for a `#[cocoindex::function]` call: it adds
+    /// the function's logic and arguments as the component-memo fingerprint, so
+    /// an unchanged child is skipped. This method always runs `f`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use cocoindex::ctx::Ctx;
+    /// # async fn doc(ctx: &Ctx) -> cocoindex::error::Result<()> {
+    /// let handle = ctx.mount(&"child", |child_ctx| async move {
+    ///     // declare target states ...
+    ///     Ok(())
+    /// }).await?;
+    /// handle.ready().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn mount<K, F, Fut>(&self, key: &K, f: F) -> Result<ComponentMountHandle>
+    where
+        K: Display,
+        F: FnOnce(Ctx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        self.__mount_fp(key.to_string(), None, f).await
+    }
+
+    /// Background mount with an explicit component-memo fingerprint. The
+    /// `mount!` macro calls this; [`Ctx::mount`] is the `memo = None`
+    /// (always-run) case.
+    #[doc(hidden)]
+    pub async fn __mount_fp<F, Fut>(
+        &self,
+        key: String,
+        memo: Option<crate::mount::ComponentMemo>,
+        f: F,
+    ) -> Result<ComponentMountHandle>
+    where
+        F: FnOnce(Ctx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        self.check_cancellation()?;
+        let Some(comp_ctx) = &self.comp_ctx else {
+            // No pipeline context — run the closure directly; the handle
+            // reports its outcome.
+            let outcome = f(self.child(None)).await;
+            return Ok(ComponentMountHandle {
+                inner: MountHandleInner::Immediate(outcome),
+                deadline: self.deadline,
+            });
+        };
+
+        let child_path = self.child_path(comp_ctx, &key);
+        let fn_ctx = Arc::new(FnCallContext::default());
+        let child_component = comp_ctx
+            .component()
+            .mount_child(&fn_ctx, child_path.clone())
+            .map_err(Error::from)?;
+        // See `use_mount_named`: join the mount frame into the enclosing frame
+        // whatever happens below.
+        let _frame = self.frame_guard(fn_ctx);
+
+        let state = self.state.clone();
+        let has_context_memo_state = state.context.has_memo_state_fns();
+        let handler_chain = self.handler_chain.clone();
+        let processor_name = format!("mount:{key}");
+        let processor = BoxedProcessor::new(
+            {
+                let handler_chain = handler_chain.clone();
+                move |child_comp_ctx| {
+                    // A background child is deadline-isolated from its parent,
+                    // as in Python: the parent's budget bounds the parent's own
+                    // wait on `ready()`, not the child's work.
+                    let ctx = Ctx::new_with_handlers(
+                        Some(child_comp_ctx),
+                        state.clone(),
+                        handler_chain.clone(),
+                        DeadlineContext::NONE,
+                    );
+                    Box::pin(async move {
+                        f(ctx).await?;
+                        Ok(Value::unit())
+                    })
+                }
+            },
+            memo.as_ref().map(|memo| memo.fp),
+            processor_name.clone(),
+        )
+        .with_memo_state_handler(has_context_memo_state)
+        .with_state_inputs(memo.map(|memo| memo.state_inputs).unwrap_or_default());
+
+        let on_error = build_chained_on_error(
+            &handler_chain,
+            ExceptionContext {
+                env_name: self.state.name.clone(),
+                stable_path: child_path.to_string(),
+                parent_stable_path: Some(self.mount_base_path(comp_ctx).to_string()),
+                processor_name: Some(processor_name),
+                mount_kind: MountKind::Mount,
+                is_background: true,
+                source: ExceptionSource::Component,
+            },
+        );
+        let handle = child_component
+            .mount(comp_ctx, processor, on_error)
+            .await
+            .map_err(Error::from)?;
+        Ok(ComponentMountHandle {
+            inner: MountHandleInner::Core(handle),
+            deadline: self.deadline,
+        })
     }
 
     /// Named sub-component. Creates a child scope in the pipeline tree.
@@ -1078,8 +1285,7 @@ impl Ctx {
             return f(child_ctx).await;
         };
 
-        let child_stable_key = StableKey::Str(Arc::from(key.as_str()));
-        let child_path = comp_ctx.stable_path().concat_part(child_stable_key);
+        let child_path = self.child_path(comp_ctx, &key);
 
         let fn_ctx = Arc::new(FnCallContext::default());
         let child_component = comp_ctx
@@ -1367,6 +1573,38 @@ impl Ctx {
             values.push(outcome?);
         }
         Ok(values)
+    }
+}
+
+/// Handle for a component started with [`Ctx::mount`] / `mount!`. Mirrors
+/// Python's `ComponentMountHandle`.
+pub struct ComponentMountHandle {
+    inner: MountHandleInner,
+    /// The mounting caller's deadline, checked around the wait: the child's
+    /// work is not bounded by it, the caller's wait is.
+    deadline: DeadlineContext,
+}
+
+enum MountHandleInner {
+    Core(ComponentExecutionHandle),
+    /// Standalone use (no pipeline): the body already ran.
+    Immediate(Result<()>),
+}
+
+impl ComponentMountHandle {
+    /// Wait until the component is ready: its body has run and its target
+    /// states are synced. Returns `Err` only when the caller's deadline expires
+    /// or an exception handler in scope propagated the child's failure (see
+    /// [`Ctx::with_exception_handler`]); an unhandled failure is logged and
+    /// resolves `Ok`, as in Python.
+    pub async fn ready(self) -> Result<()> {
+        self.deadline.check()?;
+        match self.inner {
+            MountHandleInner::Core(handle) => handle.ready().await?,
+            MountHandleInner::Immediate(outcome) => outcome?,
+        }
+        self.deadline.check()?;
+        Ok(())
     }
 }
 

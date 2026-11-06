@@ -65,6 +65,8 @@ fn to_core_error(e: Error) -> CoreError {
 /// Which background operation raised the error routed to an [`ExceptionHandler`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MountKind {
+    /// A background child mount ([`crate::Ctx::mount`] / `mount!`).
+    Mount,
     /// A full `process_live`/`process()` cycle
     /// ([`LiveComponentOperator::update_full`]).
     UpdateFull,
@@ -94,6 +96,20 @@ pub struct ExceptionContext {
     /// Whether the failure occurred in background work (a post-ready incremental
     /// update/delete in live mode) rather than the foreground catch-up pass.
     pub is_background: bool,
+    /// Whether the error passed to the handler is the component's own failure
+    /// or one a nearer handler returned instead of swallowing it.
+    pub source: ExceptionSource,
+}
+
+/// Where the error handed to an [`ExceptionHandler`] comes from. Mirrors the
+/// Python `ExceptionContext.source`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExceptionSource {
+    /// The failing component's own error.
+    Component,
+    /// The error a nearer handler returned; the component's own error was the
+    /// first one in the chain.
+    Handler,
 }
 
 /// A handler for failures of background work owned by a live component.
@@ -109,7 +125,9 @@ pub type ExceptionHandler =
 /// Wrap a chain of [`ExceptionHandler`]s (innermost component last) plus the
 /// failure's static context as a core `OnError`. Handlers run nearest-first;
 /// the first to return `Ok` swallows the error, otherwise the (possibly
-/// rewritten) error propagates to the next outer handler and finally out.
+/// rewritten) error propagates to the next outer handler, with
+/// [`ExceptionContext::source`] set to [`ExceptionSource::Handler`], and
+/// finally out.
 pub(crate) fn build_chained_on_error(
     chain: &[ExceptionHandler],
     ctx: ExceptionContext,
@@ -123,11 +141,15 @@ pub(crate) fn build_chained_on_error(
         let ctx = ctx.clone();
         Box::pin(async move {
             let mut current = engine_err(err);
+            let mut ctx = ctx;
             // Chain is stored outer→inner; run nearest (innermost) first.
             for handler in chain.iter().rev() {
                 match handler(&current, &ctx) {
                     Ok(()) => return Ok(()),
-                    Err(next) => current = next,
+                    Err(next) => {
+                        current = next;
+                        ctx.source = ExceptionSource::Handler;
+                    }
                 }
             }
             Err(to_core_error(current))
@@ -199,6 +221,7 @@ impl LiveComponentOperator {
             processor_name: Some(self.name.clone()),
             mount_kind,
             is_background: self.is_background(),
+            source: ExceptionSource::Component,
         }
     }
 
@@ -212,6 +235,7 @@ impl LiveComponentOperator {
             processor_name: Some(self.name.clone()),
             mount_kind,
             is_background: self.is_background(),
+            source: ExceptionSource::Component,
         }
     }
 
