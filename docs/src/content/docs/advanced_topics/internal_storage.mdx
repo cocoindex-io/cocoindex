@@ -101,3 +101,14 @@ When using `Settings.from_env()`, the LMDB settings are automatically loaded fro
 :::note[Legacy keyword arguments]
 For backward compatibility, `Settings` still accepts `lmdb_max_dbs` and `lmdb_map_size` as keyword arguments, and exposes them as attributes (e.g., `settings.lmdb_map_size = ...`). These read and write the same underlying values as `settings.db_settings.max_dbs` / `settings.db_settings.map_size`. Passing both `db_settings=` and the legacy keywords in the same `Settings(...)` call raises `ValueError`.
 :::
+
+## Inspecting the database
+
+The [`cocoindex ls` and `cocoindex show`](../cli#ls) commands read the database directly when you pass `--db` (and `--app-name` for `show`), without loading your app:
+
+```bash
+cocoindex ls --db ./cocoindex.db
+cocoindex show --db ./cocoindex.db --app-name MyApp --target-states
+```
+
+The database format does not depend on the SDK that wrote it. The Python CLI lists and shows a database written by an app built with the Rust SDK, and prints the same output as the Rust SDK's own `cocoindex` CLI.
