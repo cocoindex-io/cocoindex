@@ -911,6 +911,36 @@ class TestPacing:
             assert list(ctx._bucket_states) == [("b", _CHANNEL)]
         assert sleeps == []
 
+    async def test_global_429_pauses_every_request(self, sleeps: list[float]) -> None:
+        # A global limit covers every request the bot sends, and Discord
+        # counts each 429 toward its ban on an IP.
+        fake = _fake_with_channels()
+        fake.script[f"/channels/{_CHANNEL}"] = [
+            httpx.Response(
+                429,
+                json={
+                    "message": "You are being rate limited.",
+                    "retry_after": 2.0,
+                    "global": True,
+                },
+            )
+        ]
+        app, ctx = await _setup(fake)
+
+        async def after_the_429() -> Any:
+            # Once the first request starts waiting out its 429.
+            while not sleeps:
+                await _real_sleep(0)
+            return await ctx.get(_ROUTE_CHANNEL, _OTHER_CHANNEL)
+
+        async with app:
+            await asyncio.gather(ctx.get(_ROUTE_CHANNEL, _CHANNEL), after_the_429())
+        # Each request waited out the pause once.
+        assert len(sleeps) == 2
+        assert all(1.9 < wait <= 2.0 for wait in sleeps)
+        assert fake.count(f"/channels/{_CHANNEL}") == 2
+        assert fake.count(f"/channels/{_OTHER_CHANNEL}") == 1
+
     async def test_routes_without_headers_not_paced(self, sleeps: list[float]) -> None:
         app, ctx = await _setup(_fake_with_channels())
         async with app:
