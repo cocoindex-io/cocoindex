@@ -19,6 +19,13 @@ use tokio::sync::Notify;
 
 type Log = Arc<Mutex<Vec<String>>>;
 
+/// What a handler saw: the error text, the mount kind, the source and the
+/// background flag.
+type SeenFailure = (String, MountKind, ExceptionSource, bool);
+
+/// The failing path and its parent path, as a handler saw them.
+type SeenPaths = (String, Option<String>);
+
 fn new_log() -> Log {
     Arc::new(Mutex::new(Vec::new()))
 }
@@ -303,8 +310,7 @@ async fn mount_failure_without_handler_is_logged_not_propagated() {
 /// Mirrors `test_global_exception_handler_invoked_for_background_mount`.
 #[tokio::test]
 async fn global_exception_handler_invoked_for_background_mount() {
-    let seen: Arc<Mutex<Vec<(String, MountKind, ExceptionSource, bool)>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let seen: Arc<Mutex<Vec<SeenFailure>>> = Arc::new(Mutex::new(Vec::new()));
     let (app, _dir) = temp_app_with_handler("mount_global_handler", {
         let seen = seen.clone();
         move |err, exc| {
@@ -482,7 +488,7 @@ async fn fail_under_subpath(_ctx: &Ctx, _name: String) -> Result<()> {
 /// `mount!` macro honour it.
 #[tokio::test]
 async fn with_subpath_nests_child_paths() {
-    let seen: Arc<Mutex<Vec<(String, Option<String>)>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen: Arc<Mutex<Vec<SeenPaths>>> = Arc::new(Mutex::new(Vec::new()));
     let (app, _dir) = temp_app_with_handler("mount_subpath", {
         let seen = seen.clone();
         move |_err, exc| {
