@@ -80,7 +80,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 
 # ---------------------------------------------------------------------------
-# Neo4j node / edge schemas (dataclasses for declare_record / declare_relation)
+# Neo4j node / edge schemas (dataclasses for declare_record / declare_relationship)
 # ---------------------------------------------------------------------------
 
 
@@ -219,7 +219,7 @@ async def extract_relationships(content: str) -> list[Triple]:
 @coco.fn(memo=True)
 async def process_file(
     file: localfs.File,
-    document_table: neo4j.TableTarget[Document],
+    document_table: neo4j.NodeTarget[Document],
 ) -> DocTriples:
     content = await file.read_text()
     filename = file.file_path.path.as_posix()
@@ -241,9 +241,9 @@ async def process_file(
 @coco.fn
 async def build_graph(
     docs: list[DocTriples],
-    entity_table: neo4j.TableTarget[Entity],
-    relationship_rel: neo4j.RelationTarget[Relationship],
-    mention_rel: neo4j.RelationTarget[Any],
+    entity_table: neo4j.NodeTarget[Entity],
+    relationship_rel: neo4j.RelationshipTarget[Relationship],
+    mention_rel: neo4j.RelationshipTarget[Any],
 ) -> None:
     entities: set[str] = set()
     mentions: set[tuple[str, str]] = set()  # (filename, entity value)
@@ -256,7 +256,7 @@ async def build_graph(
             mentions.add((doc.filename, t.object))
 
             rel_id = await generate_id((t.subject, t.predicate, t.object))
-            relationship_rel.declare_relation(
+            relationship_rel.declare_relationship(
                 from_id=t.subject,
                 to_id=t.object,
                 record=Relationship(id=rel_id, predicate=t.predicate),
@@ -266,7 +266,7 @@ async def build_graph(
         entity_table.declare_record(row=Entity(value=value))
 
     for filename, entity in mentions:
-        mention_rel.declare_relation(from_id=filename, to_id=entity)
+        mention_rel.declare_relationship(from_id=filename, to_id=entity)
 
 
 # ---------------------------------------------------------------------------
@@ -277,23 +277,23 @@ async def build_graph(
 @coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     # --- Mount node tables ---
-    document_table = await neo4j.mount_table_target(
+    document_table = await neo4j.mount_node_target(
         KG_DB,
         "Document",
         await neo4j.TableSchema.from_class(Document, primary_key="filename"),
         primary_key="filename",
     )
-    entity_table = await neo4j.mount_table_target(
+    entity_table = await neo4j.mount_node_target(
         KG_DB,
         "Entity",
         await neo4j.TableSchema.from_class(Entity, primary_key="value"),
         primary_key="value",
     )
 
-    # --- Mount relation targets ---
+    # --- Mount relationship targets ---
     # RELATIONSHIP carries a predicate; mounted with a schema so each distinct
     # triple (keyed by the hashed `id`) becomes its own edge.
-    relationship_rel = await neo4j.mount_relation_target(
+    relationship_rel = await neo4j.mount_relationship_target(
         KG_DB,
         "RELATIONSHIP",
         entity_table,
@@ -302,7 +302,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         primary_key="id",
     )
     # MENTION has no payload; the connector auto-derives the PK from endpoints.
-    mention_rel = await neo4j.mount_relation_target(
+    mention_rel = await neo4j.mount_relationship_target(
         KG_DB, "MENTION", document_table, entity_table
     )
 

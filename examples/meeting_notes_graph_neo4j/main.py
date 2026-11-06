@@ -93,7 +93,7 @@ async def coco_lifespan(
 
 
 # ---------------------------------------------------------------------------
-# Neo4j row schemas (dataclasses for declare_record / declare_relation)
+# Neo4j row schemas (dataclasses for declare_record / declare_relationship)
 # ---------------------------------------------------------------------------
 
 
@@ -250,9 +250,9 @@ class MeetingExtraction:
 @coco.fn(memo=True)
 async def process_file(
     file: google_drive.DriveFile,
-    meeting_table: neo4j.TableTarget[Meeting],
-    task_table: neo4j.TableTarget[Task],
-    decided_rel: neo4j.RelationTarget[Any],
+    meeting_table: neo4j.NodeTarget[Meeting],
+    task_table: neo4j.NodeTarget[Task],
+    decided_rel: neo4j.RelationshipTarget[Any],
 ) -> list[MeetingExtraction]:
     text = await file.read_text()
     note_file = file.file_path.path.as_posix()
@@ -273,7 +273,7 @@ async def process_file(
 
         for task in extracted.tasks:
             task_table.declare_record(row=Task(description=task.description))
-            decided_rel.declare_relation(from_id=meeting_id, to_id=task.description)
+            decided_rel.declare_relationship(from_id=meeting_id, to_id=task.description)
 
         extractions.append(
             MeetingExtraction(
@@ -312,9 +312,9 @@ async def _resolve_persons(raw_persons: set[str]) -> ResolvedEntities:
 async def create_person_relations(
     meetings: list[MeetingExtraction],
     persons: ResolvedEntities,
-    person_table: neo4j.TableTarget[Person],
-    attended_rel: neo4j.RelationTarget[Any],
-    assigned_rel: neo4j.RelationTarget[Any],
+    person_table: neo4j.NodeTarget[Person],
+    attended_rel: neo4j.RelationshipTarget[Any],
+    assigned_rel: neo4j.RelationshipTarget[Any],
 ) -> None:
     # Declare canonical Person nodes.
     for canonical_name in persons.canonicals():
@@ -330,7 +330,7 @@ async def create_person_relations(
             attendees.setdefault(persons.canonical_of(p), False)
 
         for canonical, is_organizer in attendees.items():
-            attended_rel.declare_relation(
+            attended_rel.declare_relationship(
                 from_id=canonical,
                 to_id=m.meeting_id,
                 record=AttendedRel(is_organizer=is_organizer),
@@ -344,7 +344,7 @@ async def create_person_relations(
                 if canonical in seen:
                     continue
                 seen.add(canonical)
-                assigned_rel.declare_relation(from_id=canonical, to_id=task_desc)
+                assigned_rel.declare_relationship(from_id=canonical, to_id=task_desc)
 
 
 # ---------------------------------------------------------------------------
@@ -355,35 +355,35 @@ async def create_person_relations(
 @coco.fn
 async def app_main() -> None:
     # --- Mount node tables ---
-    meeting_table = await neo4j.mount_table_target(
+    meeting_table = await neo4j.mount_node_target(
         KG_DB,
         "Meeting",
         await neo4j.TableSchema.from_class(Meeting, primary_key="id"),
         primary_key="id",
     )
-    person_table = await neo4j.mount_table_target(
+    person_table = await neo4j.mount_node_target(
         KG_DB,
         "Person",
         await neo4j.TableSchema.from_class(Person, primary_key="name"),
         primary_key="name",
     )
-    task_table = await neo4j.mount_table_target(
+    task_table = await neo4j.mount_node_target(
         KG_DB,
         "Task",
         await neo4j.TableSchema.from_class(Task, primary_key="description"),
         primary_key="description",
     )
 
-    # --- Mount relation targets ---
+    # --- Mount relationship targets ---
     # ATTENDED carries is_organizer; mounted without a schema so the connector
     # auto-derives the relation PK from (from_id, to_id).
-    attended_rel = await neo4j.mount_relation_target(
+    attended_rel = await neo4j.mount_relationship_target(
         KG_DB, "ATTENDED", person_table, meeting_table
     )
-    decided_rel = await neo4j.mount_relation_target(
+    decided_rel = await neo4j.mount_relationship_target(
         KG_DB, "DECIDED", meeting_table, task_table
     )
-    assigned_rel = await neo4j.mount_relation_target(
+    assigned_rel = await neo4j.mount_relationship_target(
         KG_DB, "ASSIGNED_TO", person_table, task_table
     )
 
