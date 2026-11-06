@@ -775,7 +775,15 @@ fn entry_path(key: &StableKey) -> Result<(Option<String>, PathBuf)> {
             &parts[..]
     {
         let base_key = (!base_key.is_empty()).then(|| base_key.to_string());
-        return Ok((base_key, Path::new(&**root).join(&**relative)));
+        let root = PathBuf::from(&**root);
+        // A standalone file target is its own root (an empty relative part);
+        // joining "" would add a trailing separator and name a directory.
+        let path = if relative.is_empty() {
+            root
+        } else {
+            root.join(&**relative)
+        };
+        return Ok((base_key, path));
     }
     Err(Error::engine(format!(
         "unexpected file target key: {key:?}"
