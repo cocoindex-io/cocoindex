@@ -14,7 +14,8 @@ posts included) and the main-stream messages that don't start one.
   bans an IP that sends too many failing ones.
 * **Message Content intent.** Without it, Discord answers with messages whose
   text is empty rather than an error, so the application's flags are checked
-  before a channel is listed.
+  before a channel is listed, and again whenever a page of messages holds one
+  that looks stripped.
 * **A listing raises rather than ending early,** since an item missing from
   it would look deleted, and its outputs would be removed.
 """
@@ -400,7 +401,7 @@ class _ApiContext:
         "_bucket_states",
         "_client",
         "_global_limiter",
-        "_intent_lock",
+        "_intent_check",
         "_intent_ok",
         "_paused_until",
         "_rate_limiter",
@@ -426,7 +427,8 @@ class _ApiContext:
         # 403 or 429 in 10 minutes, so a rejected token stops every request.
         self._token_rejected = False
         self._intent_ok = False
-        self._intent_lock = asyncio.Lock()
+        # The first intent check while it's under way, shared by its callers.
+        self._intent_check: asyncio.Future[None] | None = None
         self._client = httpx.AsyncClient(
             base_url=_BASE_URL,
             timeout=httpx.Timeout(60.0, connect=30.0),
@@ -628,29 +630,55 @@ class _ApiContext:
 
     async def check_message_content_intent(self) -> None:
         """Raise unless the app has the Message Content intent. Without it,
-        Discord sends messages with their text empty rather than an error. A
-        success is kept for the context's life; a failure isn't, so the next
-        check asks again."""
+        Discord sends messages with their text empty rather than an error.
+        Asked when a page of messages holds one that looks stripped, to tell
+        a stripped message from one sent empty."""
+        application = await self.get(_ROUTE_APPLICATION, None)
+        if not application.get("flags", 0) & _MESSAGE_CONTENT_INTENT_FLAGS:
+            raise _DiscordError(_INTENT_HINT)
+
+    async def check_message_content_intent_once(self) -> None:
+        """:meth:`check_message_content_intent` until it passes, then never
+        again for the context's life: an early warning before a channel is
+        listed, so that a channel fails once rather than each of its threads.
+        The intent can be turned off later, which :meth:`iter_messages`
+        catches.
+
+        Callers that come while a check is under way share its result,
+        failure included, rather than retrying in turn. A failure isn't kept,
+        so the next caller asks again."""
         if self._intent_ok:
             return
-        async with self._intent_lock:
-            if self._intent_ok:
-                return
-            application = await self.get(_ROUTE_APPLICATION, None)
-            if not application.get("flags", 0) & _MESSAGE_CONTENT_INTENT_FLAGS:
-                raise _DiscordError(_INTENT_HINT)
+        if self._intent_check is None:
+            self._intent_check = asyncio.ensure_future(self._first_intent_check())
+        # A caller cancelled while waiting doesn't cancel the others' check.
+        await asyncio.shield(self._intent_check)
+
+    async def _first_intent_check(self) -> None:
+        try:
+            await self.check_message_content_intent()
             self._intent_ok = True
+        finally:
+            self._intent_check = None
 
     async def iter_messages(self, channel_id: str) -> AsyncIterator[dict[str, Any]]:
         """Every message in the channel ``channel_id``, a thread's too, newest
         first. Each page asks for the messages before the smallest ID on the
         page before, until one comes back empty: Discord doesn't promise that
-        a short page is the last."""
+        a short page is the last.
+
+        A page holding a message that looks stripped raises before any of it
+        is yielded, if the app's flags say the Message Content intent is off:
+        its messages would otherwise rewrite or delete their outputs."""
         params: dict[str, str | int] = {"limit": _PAGE_SIZE}
         while True:
             page = await self.get(_ROUTE_CHANNEL_MESSAGES, channel_id, params)
             if not page:
                 return
+            # The whole page first: a stripped message that keeps a field,
+            # such as a sticker, doesn't look stripped on its own.
+            if any(_looks_stripped(raw) for raw in page):
+                await self.check_message_content_intent()
             for raw in page:
                 yield raw
             # IDs vary in length, so they're compared as numbers.
@@ -840,6 +868,32 @@ def _parse_embed(raw: dict[str, Any]) -> DiscordEmbed:
         footer=raw.get("footer", {}).get("text"),
         fields=tuple((f["name"], f["value"]) for f in raw.get("fields", [])),
     )
+
+
+# The fields that carry what a message says; Discord creates no message
+# without one of them. Without the Message Content intent, Discord empties
+# ``content``, ``embeds``, ``attachments`` and ``components`` and leaves out
+# ``poll``, except in the app's own messages and ones that mention it.
+_CONTENT_FIELDS = (
+    "content",
+    "embeds",
+    "attachments",
+    "components",
+    "sticker_items",
+    "poll",
+    "shared_client_theme",
+)
+
+
+def _looks_stripped(raw: dict[str, Any]) -> bool:
+    """Whether a conversation message has none of the fields in
+    ``_CONTENT_FIELDS``, as Discord sends one without the Message Content
+    intent. A forward is judged by the message it forwards."""
+    if raw["type"] not in _CONVERSATION_MESSAGE_TYPES:
+        return False
+    if raw.get("message_reference", {}).get("type", 0) == _FORWARD_REFERENCE_TYPE:
+        raw = raw["message_snapshots"][0]["message"]
+    return not any(raw.get(name) for name in _CONTENT_FIELDS)
 
 
 def _parse_message(
@@ -1363,7 +1417,7 @@ class DiscordChannel:
         page through in full.
         """
         ctx = await self._app._get_context()
-        await ctx.check_message_content_intent()
+        await ctx.check_message_content_intent_once()
         channel = await ctx.get(_ROUTE_CHANNEL, self._channel_id)
         channel_type = channel["type"]
         if channel_type not in (

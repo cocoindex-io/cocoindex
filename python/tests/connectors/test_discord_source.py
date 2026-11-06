@@ -49,6 +49,7 @@ from cocoindex.connectors.discord._source import (
     _archived_before,
     _DiscordError,
     _error_hint,
+    _looks_stripped,
     _parse_message,
     _render_tokens,
 )
@@ -323,7 +324,27 @@ class _FakeDiscord:
         )
         if (before := params.get("before")) is not None:
             page = [m for m in page if int(m["id"]) < int(before)]
-        return page[: self._limit(params)]
+        return [self._as_sent(m) for m in page[: self._limit(params)]]
+
+    def _as_sent(self, message: dict[str, Any]) -> dict[str, Any]:
+        """``message`` as Discord sends it to the bot. Without the Message
+        Content intent, Discord empties what a message says, except in the
+        bot's own messages and ones that mention it (live)."""
+        if self.flags & (1 << 18 | 1 << 19):
+            return message
+        if message["author"]["id"] == _BOT_ID or any(
+            user["id"] == _BOT_ID for user in message.get("mentions", [])
+        ):
+            return message
+        stripped = {
+            **message,
+            "content": "",
+            "embeds": [],
+            "attachments": [],
+            "components": [],
+        }
+        stripped.pop("poll", None)
+        return stripped
 
     def _members(self, threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The bot's memberships of ``threads``, as Discord's thread member
@@ -1022,11 +1043,11 @@ class TestIntentCheck:
         async with app:
             for _ in range(2):
                 with pytest.raises(_DiscordError):
-                    await ctx.check_message_content_intent()
+                    await ctx.check_message_content_intent_once()
             assert fake.count("/applications/@me") == 2
             fake.flags = _INTENT_ON
             for _ in range(2):
-                await ctx.check_message_content_intent()
+                await ctx.check_message_content_intent_once()
         assert fake.count("/applications/@me") == 3
 
     async def test_concurrent_first_checks_send_one(self) -> None:
@@ -1034,9 +1055,31 @@ class TestIntentCheck:
         app, ctx = await _setup(fake)
         async with app:
             await asyncio.gather(
-                *(ctx.check_message_content_intent() for _ in range(5))
+                *(ctx.check_message_content_intent_once() for _ in range(5))
             )
         assert fake.count("/applications/@me") == 1
+
+    async def test_concurrent_first_checks_share_a_failure(
+        self, sleeps: list[float]
+    ) -> None:
+        # Behind a lasting network error, each channel waiting on the first
+        # check would otherwise retry up to the cap in turn.
+        fake = _FakeDiscord()
+        fake.script["/applications/@me"] = [
+            httpx.ConnectError("refused") for _ in range(14)
+        ]
+        app, ctx = await _setup(fake)
+        async with app:
+            results = await asyncio.gather(
+                *(ctx.check_message_content_intent_once() for _ in range(5)),
+                return_exceptions=True,
+            )
+            assert all(isinstance(result, httpx.ConnectError) for result in results)
+            assert fake.count("/applications/@me") == 14
+            assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0] + [30.0] * 8
+            # A failure isn't kept: the next check asks again.
+            await ctx.check_message_content_intent_once()
+        assert fake.count("/applications/@me") == 15
 
 
 # ---------------------------------------------------------------------------
@@ -3149,6 +3192,150 @@ class TestGuards:
                     seen.append(key)
         assert seen == ["1073", "1072"]
         assert _params(fake, _MESSAGES_PATH) == [_PAGE, {**_PAGE, "before": "1072"}]
+
+
+class TestLooksStripped:
+    """A conversation message with none of the fields that say something
+    looks stripped: Discord creates no message without one of them."""
+
+    @pytest.mark.parametrize(
+        ("fields", "stripped"),
+        [
+            pytest.param({"content": ""}, True, id="nothing"),
+            pytest.param({"content": "", "type": 19}, True, id="empty-reply"),
+            pytest.param({}, False, id="content"),
+            pytest.param({"content": "", "embeds": [_raw_embed()]}, False, id="embed"),
+            pytest.param(
+                {"content": "", "attachments": [_raw_attachment()]},
+                False,
+                id="attachment",
+            ),
+            pytest.param(
+                {"content": "", "components": [{"type": 10, "content": "Hi"}]},
+                False,
+                id="components",
+            ),
+            pytest.param(
+                {
+                    "content": "",
+                    "sticker_items": [{"id": "1107", "name": "wave", "format_type": 1}],
+                },
+                False,
+                id="sticker",
+            ),
+            pytest.param(
+                {
+                    "content": "",
+                    "poll": {
+                        "question": {"text": "Lunch?"},
+                        "answers": [{"answer_id": 1, "poll_media": {"text": "Yes"}}],
+                    },
+                },
+                False,
+                id="poll",
+            ),
+            # Only that it's there counts.
+            pytest.param(
+                {"content": "", "shared_client_theme": {"colors": ["5865f2"]}},
+                False,
+                id="theme",
+            ),
+            # Notices have nothing to say.
+            pytest.param({"content": "", "type": 7}, False, id="join-notice"),
+            pytest.param({"content": "", "type": 21}, False, id="starter-stub"),
+        ],
+    )
+    def test_message(self, fields: dict[str, Any], stripped: bool) -> None:
+        assert _looks_stripped(_raw_message("1108", **fields)) is stripped
+
+    @pytest.mark.parametrize(
+        ("snapshot", "stripped"),
+        [
+            pytest.param({"content": "", "attachments": []}, True, id="empty"),
+            pytest.param({"content": "Hello"}, False, id="content"),
+        ],
+    )
+    def test_forward_judged_by_its_snapshot(
+        self, snapshot: dict[str, Any], stripped: bool
+    ) -> None:
+        assert _looks_stripped(_raw_forward(snapshot)) is stripped
+
+
+@pytest.mark.asyncio
+class TestStrippedMessages:
+    """With the Message Content intent turned off after an App's first check,
+    Discord sends people's messages with nothing they say, and their outputs
+    would be rewritten or deleted. A page holding such a message raises
+    before any of it is yielded."""
+
+    async def test_intent_turned_off_later(self) -> None:
+        fake = _fake_with_channels()
+        fake.post(_CHANNEL, _raw_message("1109"), _raw_message("1110"))
+        app, _ = await _setup(fake)
+        seen: list[str] = []
+        async with app:
+            assert _keys(await _items(_channel(app))) == ["1110", "1109"]
+            fake.flags = 0
+            with pytest.raises(
+                _DiscordError, match=r"^The Message Content intent is off"
+            ):
+                async for key, _ in _channel(app).items():
+                    seen.append(key)
+        assert seen == []
+        # The first listing's check is kept; the stripped page asked again.
+        assert fake.count("/applications/@me") == 2
+
+    async def test_thread_messages(self) -> None:
+        fake = _FakeDiscord()
+        fake.flags = 0
+        fake.post(_POST_ID, _raw_message(_POST_ID), _raw_message("1111"))
+        app, ctx = await _setup(fake)
+        async with app:
+            post = _thread(_raw_thread(_POST_ID, parent_id=_FORUM_ID), ctx=ctx)
+            with pytest.raises(
+                _DiscordError, match=r"^The Message Content intent is off"
+            ):
+                await post.messages()
+
+    async def test_messages_that_keep_what_they_say(self) -> None:
+        # The bot's own messages and ones that mention it keep their text
+        # without the intent, and a notice has none to lose.
+        fake = _fake_with_channels()
+        fake.post(
+            _CHANNEL,
+            _raw_message("1112", author=_BOT_USER),
+            _raw_message(
+                "1113", content=f"<@{_BOT_ID}> are you there?", mentions=[_BOT_USER]
+            ),
+            _raw_message("1114", type=7, content=""),
+        )
+        app, ctx = await _setup(fake)
+        async with app:
+            await ctx.check_message_content_intent_once()
+            fake.flags = 0
+            assert _keys(await _items(_channel(app))) == ["1114", "1113", "1112"]
+        assert fake.count("/applications/@me") == 1
+
+    async def test_empty_message_with_the_intent_on(self) -> None:
+        # A message can be empty with the intent on, such as a webhook's post
+        # of only rich embeds once they're suppressed (flag 1 << 2).
+        fake = _fake_with_channels()
+        fake.post(
+            _CHANNEL,
+            _raw_message(
+                "1115",
+                author=_WEBHOOK_USER,
+                webhook_id=_WEBHOOK_ID,
+                content="",
+                flags=1 << 2,
+            ),
+            _raw_message("1116"),
+        )
+        app, _ = await _setup(fake)
+        async with app:
+            assert _keys(await _items(_channel(app))) == ["1116", "1115"]
+        # The first check, then the page's.
+        assert fake.count("/applications/@me") == 2
 
 
 # ---------------------------------------------------------------------------

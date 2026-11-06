@@ -25,7 +25,7 @@ pip install cocoindex[discord]
 
 1. In the [Discord Developer Portal](https://discord.com/developers/applications), click **New Application** and name it.
 2. On the **Bot** page, click **Reset Token** and copy the bot token. Store it like a password, in an environment variable or a secret manager.
-3. On the same page, under **Privileged Gateway Intents**, turn on **Message Content Intent**. Without it, Discord sends messages without their text, so the connector checks for it and raises before listing a channel.
+3. On the same page, under **Privileged Gateway Intents**, turn on **Message Content Intent**. Without it, Discord sends messages without their text, so the connector checks for it before listing a channel, and again whenever the messages it reads look stripped, and raises. Turning the intent off later fails the run rather than emptying your outputs.
 4. On the **OAuth2** page, in the **OAuth2 URL Generator**, tick the `bot` scope, then the **View Channels** and **Read Message History** permissions. Open the generated URL and add the bot to your server.
 5. Find the IDs of the channels to index: list them with [`list_channels()`](#list_channels), or turn on **Developer Mode** in Discord (User Settings → Advanced), then right-click a channel and choose **Copy Channel ID**.
 6. Add the bot to each private thread you want indexed. The connector reads a private thread only once the bot is a member.
