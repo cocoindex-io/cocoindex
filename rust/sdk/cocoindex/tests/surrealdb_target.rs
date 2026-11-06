@@ -545,17 +545,37 @@ fn surrealdb_from_row_matches_the_hand_written_schema() {
     assert_eq!(derived, by_hand);
 }
 
-#[test]
-fn surrealdb_from_row_rejects_a_vector_without_a_dimension() {
+/// A `#[coco(vector)]` field without a dimension derives, so that
+/// `with_vector_schema` can resolve it; declaring a table with it unresolved
+/// fails before anything reaches the database.
+#[tokio::test]
+async fn surrealdb_declaring_a_vector_without_a_dimension_fails() {
     #[derive(cocoindex::SchemaFields)]
     #[allow(dead_code)]
     struct Unsized {
         #[coco(vector)]
         embedding: Vec<f32>,
     }
-    let message = TableSchema::from_row::<Unsized>().unwrap_err().to_string();
+    let dir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(dir.path().join("lmdb"))
+        .build()
+        .await
+        .unwrap()
+        .app("surrealdb_unsized_vector")
+        .await
+        .unwrap();
+    let message = app
+        .run(|ctx| async move {
+            let schema = TableSchema::from_row::<Unsized>()?;
+            surrealdb::mount_table_target_with_schema(&ctx, &GRAPH, "doc", Some(schema)).await?;
+            Ok(())
+        })
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(message.contains("embedding"), "{message}");
-    assert!(message.contains("#[coco(vector = N)]"), "{message}");
+    assert!(message.contains("unresolved dimension"), "{message}");
 }
 
 #[tokio::test]
@@ -809,4 +829,154 @@ async fn surrealdb_declare_record_replaces_nested_values_when_available() {
     run(&app, serde_json::json!({})).await;
     assert_eq!(page().await, serde_json::json!({}));
     assert_eq!(graph.count("page").await.unwrap(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Column overrides: `with_column_type` and `with_vector_schema` on a derived
+// schema (Python's `from_class(column_overrides=…)`)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn surrealdb_from_row_takes_column_overrides() {
+    #[derive(cocoindex::SchemaFields)]
+    #[allow(dead_code)]
+    struct Doc {
+        title: String,
+        rank: Option<i64>,
+        #[coco(vector)]
+        embedding: Vec<f32>,
+    }
+    let embedder = cocoindex::VectorSchema {
+        element_type: cocoindex::VectorElementType::Float32,
+        size: 4,
+    };
+    let schema = TableSchema::from_row::<Doc>()
+        .unwrap()
+        .with_vector_schema("embedding", &embedder)
+        .await
+        .unwrap()
+        .with_column_type("rank", " float ")
+        .unwrap();
+    assert_eq!(
+        schema,
+        TableSchema::new([
+            ("title", ColumnDef::new("string")),
+            // The override keeps the field's nullability.
+            ("rank", ColumnDef::new("float").nullable()),
+            ("embedding", ColumnDef::new("array<float, 4>")),
+        ])
+        .unwrap()
+    );
+
+    let message = TableSchema::from_row::<Doc>()
+        .unwrap()
+        .with_column_type("missing", "int")
+        .unwrap_err()
+        .to_string();
+    assert!(message.contains("missing"), "{message}");
+
+    // A provider types only a vector column.
+    let message = TableSchema::from_row::<Doc>()
+        .unwrap()
+        .with_vector_schema("title", &embedder)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(message.contains("title"), "{message}");
+}
+
+// ---------------------------------------------------------------------------
+// Bounded round trips: a large batch lands in chunks, each one transaction,
+// and an unchanged re-run writes nothing
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn surrealdb_large_batch_lands_in_bounded_transactions_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_big_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB large-batch test; no local SurrealDB connection");
+        return;
+    };
+    let (app, _dir) = temp_app(&graph, "surrealdb_big").await;
+
+    // More than two chunks of 500.
+    let n = 1350;
+    async fn run(app: &App, n: usize) {
+        app.run(move |ctx| async move {
+            let big = surrealdb::mount_table_target(&ctx, &GRAPH, "big").await?;
+            for i in 0..n {
+                big.declare_record(&ctx, i as i64, &serde_json::json!({ "v": i }))?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+    run(&app, n).await;
+    assert_eq!(graph.count("big").await.unwrap(), n);
+    assert_eq!(
+        graph.record("big", 7i64).await.unwrap().unwrap(),
+        serde_json::json!({ "v": 7 })
+    );
+
+    // Shrinking the declaration deletes the rest, in bounded chunks too.
+    run(&app, 10).await;
+    assert_eq!(graph.count("big").await.unwrap(), 10);
+}
+
+// ---------------------------------------------------------------------------
+// Credentials: a database-level user signs in through `Credentials::Database`
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn surrealdb_connects_with_a_database_user_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_auth_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(root) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB credentials test; no local SurrealDB connection");
+        return;
+    };
+    let url = std::env::var("SURREALDB_URL").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
+    let ns = std::env::var("SURREALDB_NS").unwrap_or_else(|_| "cocoindex".to_string());
+    root.client()
+        .query("DEFINE USER writer ON DATABASE PASSWORD 'writer-pass' ROLES OWNER")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+    let graph = Graph::connect_with_credentials(
+        &url,
+        &ns,
+        &db_name,
+        surrealdb::Credentials::Database {
+            username: "writer".to_string(),
+            password: "writer-pass".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(graph.state_id(), root.state_id());
+    let (app, _dir) = temp_app(&graph, "surrealdb_auth").await;
+    run_graph(&app, &["alice"]).await;
+    assert_eq!(root.count("person").await.unwrap(), 1);
+
+    let denied = Graph::connect_with_credentials(
+        &url,
+        &ns,
+        &db_name,
+        surrealdb::Credentials::Database {
+            username: "writer".to_string(),
+            password: "wrong".to_string(),
+        },
+    )
+    .await;
+    assert!(denied.is_err());
 }
