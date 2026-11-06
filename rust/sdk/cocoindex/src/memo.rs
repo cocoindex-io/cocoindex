@@ -1028,8 +1028,7 @@ pub fn key_bytes_result<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
     rmp_serde::to_vec_named(value).map_err(Error::from)
 }
 
-#[doc(hidden)]
-pub fn key_fingerprint_result<T: Serialize + ?Sized>(value: &T) -> Result<Fingerprint> {
+pub(crate) fn key_fingerprint_result<T: Serialize + ?Sized>(value: &T) -> Result<Fingerprint> {
     Fingerprint::from(value).map_err(|e| Error::engine(format!("fingerprint error: {e}")))
 }
 

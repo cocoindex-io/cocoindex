@@ -1,16 +1,13 @@
 //! Tests for the detailed per-component stats surface (`ComponentStats`,
 //! `UpdateStats`, `UpdateStatus`) — Python parity with `cocoindex.UpdateStats`.
 
+use cocoindex::testing::TestEnv;
 use cocoindex::{App, ComponentStats, UpdateStats, UpdateStatus};
 
-async fn temp_app(name: &str) -> (App, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let app = App::builder(name)
-        .db_path(dir.path().join("lmdb"))
-        .build()
-        .await
-        .unwrap();
-    (app, dir)
+async fn temp_app(name: &str) -> (App, TestEnv) {
+    let env = TestEnv::new().await.unwrap();
+    let app = env.app(name).await.unwrap();
+    (app, env)
 }
 
 // ─── Pure-data tests (no engine) ─────────────────────────────────────────────
@@ -118,7 +115,7 @@ fn update_status_default_is_running() {
 
 #[tokio::test]
 async fn detailed_stats_after_completion_are_ready_and_consistent() {
-    let (app, _dir) = temp_app("detailed_stats_consistency").await;
+    let (app, _env) = temp_app("detailed_stats_consistency").await;
 
     let mut handle = app
         .start_update(|ctx| async move {
@@ -166,7 +163,7 @@ async fn detailed_stats_after_completion_are_ready_and_consistent() {
 
 #[tokio::test]
 async fn detailed_stats_snapshot_before_completion_is_running() {
-    let (app, _dir) = temp_app("detailed_stats_running").await;
+    let (app, _env) = temp_app("detailed_stats_running").await;
 
     // Before driving the handle to Done, status should be Running.
     let handle = app
