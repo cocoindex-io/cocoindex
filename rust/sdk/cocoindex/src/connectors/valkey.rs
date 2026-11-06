@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use cocoindex_utils::fingerprint::Fingerprint;
+use redis::aio::MultiplexedConnection;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
@@ -35,10 +35,12 @@ const VECTOR_FIELD_NAME: &str = "vector";
 // Connection
 // ---------------------------------------------------------------------------
 
-/// A Valkey connection. Clone-cheap (the multiplexed connection is shared).
+/// A Valkey connection. Clone-cheap: the multiplexed connection is shared, and
+/// every command or pipeline runs on a clone of it, so sinks of different
+/// components never wait on one another.
 #[derive(Clone)]
 pub struct Valkey {
-    conn: Arc<Mutex<redis::aio::MultiplexedConnection>>,
+    conn: MultiplexedConnection,
     state_id: Arc<str>,
 }
 
@@ -121,17 +123,35 @@ impl ClientConfig {
 
     /// The server's address as a URI, without the password.
     fn state_id(&self) -> String {
-        let scheme = if self.use_tls { "rediss" } else { "redis" };
-        format!("{scheme}://{}:{}", self.host, self.port)
+        state_id_of(&self.connection_info())
     }
 }
 
+/// The stable identity of a server: its address and database number as a URI,
+/// never the username or password the connection authenticates with. A memo
+/// dependency and the target-state store carry this id, so a credential must
+/// not leak into them, and rotating one must not invalidate them.
+fn state_id_of(info: &redis::ConnectionInfo) -> String {
+    let mut id = match &info.addr {
+        redis::ConnectionAddr::Tcp(host, port) => format!("redis://{host}:{port}"),
+        redis::ConnectionAddr::TcpTls { host, port, .. } => format!("rediss://{host}:{port}"),
+        redis::ConnectionAddr::Unix(path) => format!("redis+unix://{}", path.display()),
+    };
+    if info.redis.db != 0 {
+        id.push('/');
+        id.push_str(&info.redis.db.to_string());
+    }
+    id
+}
+
 impl Valkey {
-    /// Connect to a Valkey/Redis server (e.g. `redis://localhost:6379`).
+    /// Connect to a Valkey/Redis server (e.g. `redis://localhost:6379`). The
+    /// connection's [`state_id`](Self::state_id) is the server's address and
+    /// database number; a password or username in the URI stays out of it.
     pub async fn connect(uri: &str) -> Result<Self> {
         let client =
             redis::Client::open(uri).map_err(|e| Error::engine(format!("valkey config: {e}")))?;
-        Self::from_client(uri, &client).await
+        Self::from_client(state_id_of(client.get_connection_info()), &client).await
     }
 
     /// Connect with a host, port, password, TLS and client name (see
@@ -141,11 +161,11 @@ impl Valkey {
             .map_err(|e| Error::engine(format!("valkey config: {e}")))?;
         let db = Self::from_client(config.state_id(), &client).await?;
         if let Some(client_name) = &config.client_name {
-            let mut conn = db.conn.lock().await;
+            let mut conn = db.conn.clone();
             let _: redis::Value = redis::cmd("CLIENT")
                 .arg("SETNAME")
                 .arg(client_name)
-                .query_async(&mut *conn)
+                .query_async(&mut conn)
                 .await
                 .map_err(|e| Error::engine(format!("valkey CLIENT SETNAME {client_name}: {e}")))?;
         }
@@ -162,13 +182,14 @@ impl Valkey {
             .await
             .map_err(|e| Error::engine(format!("valkey connect: {e}")))?;
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn,
             state_id: Arc::from(state_id.into()),
         })
     }
 
-    /// Stable identity (the URI, or the `state_id` given to
-    /// [`Valkey::from_client`]) for use as a `ContextKey` state id / memo dep.
+    /// Stable identity (the server address without credentials, or the
+    /// `state_id` given to [`Valkey::from_client`]) for use as a `ContextKey`
+    /// state id / memo dep.
     pub fn state_id(&self) -> &str {
         &self.state_id
     }
@@ -396,9 +417,9 @@ fn resolve_db(host_ctx: &Arc<ContextStore>, db_key: &str) -> Result<Arc<Valkey>>
 }
 
 async fn index_exists(db: &Valkey, index_name: &str) -> Result<bool> {
-    let mut conn = db.conn.lock().await;
+    let mut conn = db.conn.clone();
     let names: Vec<String> = redis::cmd("FT._LIST")
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .map_err(|e| Error::engine(format!("valkey FT._LIST: {e}")))?;
     Ok(names.iter().any(|n| n == index_name))
@@ -408,12 +429,56 @@ async fn index_exists(db: &Valkey, index_name: &str) -> Result<bool> {
 // Public target API
 // ---------------------------------------------------------------------------
 
+/// A payload field value: text, or a number for a `NUMERIC` field. Stored as
+/// its text form in the hash; the type still tells a changed document apart
+/// (`1` and `"1"` fingerprint differently, as in the Python SDK).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum PayloadValue {
+    Str(String),
+    Int(i64),
+    Float(f64),
+}
+
+impl From<String> for PayloadValue {
+    fn from(v: String) -> Self {
+        Self::Str(v)
+    }
+}
+impl From<&str> for PayloadValue {
+    fn from(v: &str) -> Self {
+        Self::Str(v.to_string())
+    }
+}
+impl From<i64> for PayloadValue {
+    fn from(v: i64) -> Self {
+        Self::Int(v)
+    }
+}
+impl From<f64> for PayloadValue {
+    fn from(v: f64) -> Self {
+        Self::Float(v)
+    }
+}
+
+impl std::fmt::Display for PayloadValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Str(s) => f.write_str(s),
+            Self::Int(i) => write!(f, "{i}"),
+            Self::Float(x) => write!(f, "{x:?}"),
+        }
+    }
+}
+
 /// A document to store in a Valkey index.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Document {
     pub id: String,
     pub vector: Vec<f32>,
-    pub payload: Option<BTreeMap<String, String>>,
+    /// Extra hash fields stored beside the vector; a value is text or a number
+    /// (see [`PayloadValue`]). The key `vector` is reserved for the vector.
+    pub payload: Option<BTreeMap<String, PayloadValue>>,
 }
 
 impl Document {
@@ -425,8 +490,16 @@ impl Document {
         }
     }
 
-    pub fn with_payload(mut self, payload: BTreeMap<String, String>) -> Self {
-        self.payload = Some(payload);
+    pub fn with_payload<K: Into<String>, V: Into<PayloadValue>>(
+        mut self,
+        payload: impl IntoIterator<Item = (K, V)>,
+    ) -> Self {
+        self.payload = Some(
+            payload
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        );
         self
     }
 }
@@ -484,7 +557,19 @@ pub fn declare_index_target(
     index_name: impl Into<String>,
     schema: IndexSchema,
 ) -> Result<IndexTarget> {
-    let ts = index_target(ctx, db, index_name, schema)?;
+    declare_index_target_with_options(ctx, db, index_name, schema, ManagedTargetOptions::default())
+}
+
+/// [`declare_index_target`] with explicit [`ManagedTargetOptions`]
+/// (`managed_by`).
+pub fn declare_index_target_with_options(
+    ctx: &Ctx,
+    db: &ContextKey<Valkey>,
+    index_name: impl Into<String>,
+    schema: IndexSchema,
+    options: ManagedTargetOptions,
+) -> Result<IndexTarget> {
+    let ts = index_target_with_options(ctx, db, index_name, schema, options)?;
     let name = ts.value().index_name.clone();
     let documents = declare_target_state_with_child::<IndexSpec, Document>(ctx, ts)?;
     Ok(IndexTarget {
@@ -503,7 +588,21 @@ pub async fn mount_index_target(
     index_name: impl Into<String>,
     schema: IndexSchema,
 ) -> Result<IndexTarget> {
-    let ts = index_target(ctx, db, index_name, schema)?;
+    mount_index_target_with_options(ctx, db, index_name, schema, ManagedTargetOptions::default())
+        .await
+}
+
+/// [`mount_index_target`] with explicit [`ManagedTargetOptions`]
+/// (`managed_by`): a user-managed index is never created, recreated or dropped
+/// by CocoIndex, only its documents are.
+pub async fn mount_index_target_with_options(
+    ctx: &Ctx,
+    db: &ContextKey<Valkey>,
+    index_name: impl Into<String>,
+    schema: IndexSchema,
+    options: ManagedTargetOptions,
+) -> Result<IndexTarget> {
+    let ts = index_target_with_options(ctx, db, index_name, schema, options)?;
     let name = ts.value().index_name.clone();
     let documents = mount_target::<IndexSpec, Document>(ctx, ts).await?;
     Ok(IndexTarget {
@@ -520,6 +619,13 @@ impl IndexTarget {
     /// Declare a document to upsert into the index.
     pub fn declare_document(&self, ctx: &Ctx, document: Document) -> Result<()> {
         validate_name(&document.id, "doc_id")?;
+        for key in document.payload.iter().flat_map(|p| p.keys()) {
+            if key == VECTOR_FIELD_NAME {
+                return Err(Error::engine(format!(
+                    "valkey payload key {key:?} is reserved for the vector field"
+                )));
+            }
+        }
         let key = StableKey::Str(Arc::from(document.id.as_str()));
         declare_target_state(ctx, self.documents.target_state(key, document))
     }
@@ -736,13 +842,13 @@ async fn create_index(db: &Valkey, index_name: &str, schema: &IndexSchema) -> Re
         return Ok(());
     }
     let args = ft_create_args(index_name, schema);
-    let mut conn = db.conn.lock().await;
+    let mut conn = db.conn.clone();
     let mut cmd = redis::cmd("FT.CREATE");
     for arg in &args {
         cmd.arg(arg);
     }
     let _: redis::Value = cmd
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .map_err(|e| Error::engine(format!("valkey FT.CREATE {index_name}: {e}")))?;
     Ok(())
@@ -753,10 +859,10 @@ async fn create_index(db: &Valkey, index_name: &str, schema: &IndexSchema) -> Re
 /// is not masked by a later, more confusing failure. Mirrors Python's narrow
 /// `RequestError` swallow.
 async fn drop_index(db: &Valkey, index_name: &str) -> Result<()> {
-    let mut conn = db.conn.lock().await;
+    let mut conn = db.conn.clone();
     let result: redis::RedisResult<redis::Value> = redis::cmd("FT.DROPINDEX")
         .arg(index_name)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await;
     match result {
         Ok(_) => Ok(()),
@@ -784,14 +890,14 @@ async fn delete_prefix_keys(db: &Valkey, index_name: &str) -> Result<()> {
             );
             break;
         }
-        let mut conn = db.conn.lock().await;
+        let mut conn = db.conn.clone();
         let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
             .arg(cursor)
             .arg("MATCH")
             .arg(&pattern)
             .arg("COUNT")
             .arg(500)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .map_err(|e| Error::engine(format!("valkey SCAN {pattern}: {e}")))?;
         if !keys.is_empty() {
@@ -800,7 +906,7 @@ async fn delete_prefix_keys(db: &Valkey, index_name: &str) -> Result<()> {
                 del.arg(k);
             }
             let _: redis::Value = del
-                .query_async(&mut *conn)
+                .query_async(&mut conn)
                 .await
                 .map_err(|e| Error::engine(format!("valkey DEL: {e}")))?;
         }
@@ -897,6 +1003,44 @@ fn stable_key_to_doc_id(key: &StableKey) -> Result<String> {
     }
 }
 
+/// Documents per pipeline: one round trip writes up to this many documents.
+const DOCUMENTS_PER_PIPELINE: usize = 1_000;
+
+/// The pipelines that apply a batch of document actions: one `DEL` for every
+/// deleted key, then the upserts in chunks of [`DOCUMENTS_PER_PIPELINE`], each
+/// document as its own `MULTI` `DEL` `HSET` `EXEC` transaction so no stale
+/// payload field survives an update and a document is never half written. A
+/// batch of `n` documents costs `1 + ceil(n / DOCUMENTS_PER_PIPELINE)` round
+/// trips, not `n`.
+fn document_pipelines(deletes: &[String], upserts: &[(String, Document)]) -> Vec<redis::Pipeline> {
+    let mut pipelines = Vec::new();
+    if !deletes.is_empty() {
+        let mut pipe = redis::pipe();
+        pipe.cmd("DEL").arg(deletes).ignore();
+        pipelines.push(pipe);
+    }
+    for chunk in upserts.chunks(DOCUMENTS_PER_PIPELINE) {
+        let mut pipe = redis::pipe();
+        for (hash_key, doc) in chunk {
+            pipe.cmd("MULTI").ignore();
+            pipe.cmd("DEL").arg(hash_key).ignore();
+            let mut hset = redis::cmd("HSET");
+            hset.arg(hash_key);
+            hset.arg(VECTOR_FIELD_NAME)
+                .arg(vector_to_bytes(&doc.vector));
+            if let Some(payload) = &doc.payload {
+                for (k, v) in payload {
+                    hset.arg(k).arg(v.to_string());
+                }
+            }
+            pipe.add_command(hset).ignore();
+            pipe.cmd("EXEC");
+        }
+        pipelines.push(pipe);
+    }
+    pipelines
+}
+
 fn document_sink(db_key: String) -> TargetActionSink<DocumentAction> {
     TargetActionSink::from_async_fn_with_ctx(
         move |host_ctx, actions: Vec<TargetAction<DocumentAction>>| {
@@ -916,36 +1060,14 @@ fn document_sink(db_key: String) -> TargetActionSink<DocumentAction> {
                         None => deletes.push(a.hash_key),
                     }
                 }
-                let mut conn = db.conn.lock().await;
-                if !deletes.is_empty() {
-                    let mut del = redis::cmd("DEL");
-                    for k in &deletes {
-                        del.arg(k);
-                    }
-                    let _: redis::Value = del
-                        .query_async(&mut *conn)
+                let mut conn = db.conn.clone();
+                for pipe in document_pipelines(&deletes, &upserts) {
+                    // A transaction's `EXEC` reply carries any error of its
+                    // commands; the pipeline query surfaces it as `Err`.
+                    let _: Vec<redis::Value> = pipe
+                        .query_async(&mut conn)
                         .await
-                        .map_err(|e| Error::engine(format!("valkey DEL docs: {e}")))?;
-                }
-                for (hash_key, doc) in upserts {
-                    // Atomic DEL + HSET so no stale payload field survives.
-                    let mut pipe = redis::pipe();
-                    pipe.atomic();
-                    pipe.cmd("DEL").arg(&hash_key);
-                    let mut hset = redis::cmd("HSET");
-                    hset.arg(&hash_key);
-                    hset.arg(VECTOR_FIELD_NAME)
-                        .arg(vector_to_bytes(&doc.vector));
-                    if let Some(payload) = &doc.payload {
-                        for (k, v) in payload {
-                            hset.arg(k).arg(v);
-                        }
-                    }
-                    pipe.add_command(hset);
-                    let _: redis::Value = pipe
-                        .query_async(&mut *conn)
-                        .await
-                        .map_err(|e| Error::engine(format!("valkey upsert {hash_key}: {e}")))?;
+                        .map_err(|e| Error::engine(format!("valkey write documents: {e}")))?;
                 }
                 Ok(())
             }
@@ -1040,6 +1162,103 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("valkey connect"), "{message}");
         assert!(!message.contains("without the tls feature"), "{message}");
+    }
+
+    #[test]
+    fn state_id_of_a_uri_drops_the_credentials() {
+        let id = |uri: &str| state_id_of(redis::Client::open(uri).unwrap().get_connection_info());
+        assert_eq!(id("redis://localhost:6379"), "redis://localhost:6379");
+        assert_eq!(
+            id("redis://user:s3cret@valkey.internal:6380/2"),
+            "redis://valkey.internal:6380/2"
+        );
+        assert_eq!(
+            id("redis://:s3cret@valkey.internal"),
+            "redis://valkey.internal:6379"
+        );
+        assert_eq!(
+            id("rediss://:pw@valkey.internal:6380"),
+            "rediss://valkey.internal:6380"
+        );
+        assert_eq!(
+            id("redis+unix:///run/valkey.sock?pass=pw&db=1"),
+            "redis+unix:///run/valkey.sock/1"
+        );
+    }
+
+    fn command_words(pipe: &redis::Pipeline) -> Vec<String> {
+        pipe.cmd_iter()
+            .map(|cmd| match cmd.args_iter().next() {
+                Some(redis::Arg::Simple(word)) => String::from_utf8_lossy(word).into_owned(),
+                _ => String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_batch_of_documents_is_a_bounded_number_of_pipelines() {
+        let n = DOCUMENTS_PER_PIPELINE + 1;
+        let upserts: Vec<(String, Document)> = (0..n)
+            .map(|i| {
+                let doc = Document::new(format!("d{i}"), vec![0.5]).with_payload([
+                    ("n", PayloadValue::from(i as i64)),
+                    ("f", PayloadValue::from(0.25)),
+                    ("t", PayloadValue::from("text")),
+                ]);
+                (make_hash_key("idx", &doc.id), doc)
+            })
+            .collect();
+        let deletes = vec!["idx:x".to_string(), "idx:y".to_string()];
+
+        let pipelines = document_pipelines(&deletes, &upserts);
+        assert_eq!(pipelines.len(), 3, "one DEL pipeline + two upsert chunks");
+        assert_eq!(command_words(&pipelines[0]), vec!["DEL"]);
+        assert_eq!(
+            pipelines[0].cmd_iter().next().unwrap().args_iter().count(),
+            3
+        );
+
+        let words = command_words(&pipelines[1]);
+        assert_eq!(words.len(), 4 * DOCUMENTS_PER_PIPELINE);
+        assert_eq!(&words[..4], &["MULTI", "DEL", "HSET", "EXEC"]);
+        assert_eq!(
+            command_words(&pipelines[2]),
+            vec!["MULTI", "DEL", "HSET", "EXEC"]
+        );
+
+        // Numeric payload values are stored as their text form.
+        let hset = pipelines[2].cmd_iter().nth(2).unwrap();
+        let args: Vec<String> = hset
+            .args_iter()
+            .map(|a| match a {
+                redis::Arg::Simple(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                redis::Arg::Cursor => String::new(),
+            })
+            .collect();
+        assert_eq!(&args[..2], &["HSET", &format!("idx:d{}", n - 1)]);
+        assert_eq!(args[2], VECTOR_FIELD_NAME);
+        assert_eq!(
+            &args[4..],
+            &["f", "0.25", "n", (n - 1).to_string().as_str(), "t", "text"]
+        );
+
+        assert!(document_pipelines(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn payload_values_fingerprint_by_type() {
+        let doc = |v: PayloadValue| Document::new("d", vec![1.0]).with_payload([("k", v)]);
+        let fp = |d: &Document| Fingerprint::from(&(&d.vector, &d.payload)).unwrap();
+        assert_ne!(
+            fp(&doc(PayloadValue::from(1i64))),
+            fp(&doc(PayloadValue::from("1")))
+        );
+        assert_eq!(
+            fp(&doc(PayloadValue::from(1i64))),
+            fp(&doc(PayloadValue::from(1i64)))
+        );
+        assert_eq!(PayloadValue::from(1.0).to_string(), "1.0");
+        assert_eq!(PayloadValue::from(-3i64).to_string(), "-3");
     }
 
     #[test]

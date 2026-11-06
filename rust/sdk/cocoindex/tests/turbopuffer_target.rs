@@ -269,3 +269,85 @@ async fn turbopuffer_undeclared_and_dropped_namespaces_are_deleted_on_mock_serve
     assert_eq!(deletes().await, 2, "drop_state deletes the namespace");
     Ok(())
 }
+
+/// An integer row id is written as a JSON number, in an upsert and in a
+/// delete, so Turbopuffer stores a `u64` id, not its text.
+#[tokio::test]
+async fn turbopuffer_integer_row_ids_are_written_as_numbers_on_mock_server() -> Result<()> {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v2/namespaces/ns_int_ids"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/v2/namespaces/ns_int_ids"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    let write_bodies = || async {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method.as_str() == "POST")
+            .map(|r| r.body_json::<serde_json::Value>().unwrap())
+            .collect::<Vec<_>>()
+    };
+
+    let conn = TurbopufferConnection::new("mock", "key").with_base_url(server.uri());
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, conn)
+        .build()
+        .await?
+        .app("TurbopufferIntegerIdsMockTest")
+        .await?;
+    let declare = |ids: Vec<u64>| {
+        move |ctx: cocoindex::Ctx| {
+            let ids = ids.clone();
+            async move {
+                let target = turbopuffer::mount_namespace_target(
+                    &ctx,
+                    &DB,
+                    "ns_int_ids",
+                    NamespaceSchema::new(3, DistanceMetric::CosineDistance),
+                )
+                .await?;
+                for id in ids {
+                    target.declare_row(&ctx, id, vec![1.0, 0.0, 0.0], attrs("alpha"))?;
+                }
+                target.declare_row(&ctx, "s1", vec![0.0, 1.0, 0.0], attrs("beta"))?;
+                Ok::<_, cocoindex::Error>(())
+            }
+        }
+    };
+
+    app.run(declare(vec![7, u64::from(u32::MAX) + 1])).await?;
+    let bodies = write_bodies().await;
+    assert_eq!(bodies.len(), 1, "one write per batch");
+    let mut ids: Vec<serde_json::Value> = bodies[0]["upsert_rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].clone())
+        .collect();
+    ids.sort_by_key(|id| id.to_string());
+    assert_eq!(ids, vec![json!("s1"), json!(4294967296u64), json!(7)]);
+
+    // Row 7 is no longer declared: its delete carries the number too.
+    app.run(declare(vec![u64::from(u32::MAX) + 1])).await?;
+    let bodies = write_bodies().await;
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[1]["deletes"], json!([7]));
+    assert!(
+        bodies[1].get("upsert_rows").is_none(),
+        "unchanged rows are skipped"
+    );
+    Ok(())
+}
