@@ -1097,9 +1097,11 @@ struct VectorIndexAction {
     /// The index's declared name (its target-state identity).
     name: String,
     label: String,
-    field: String,
-    /// `Some` to (re)create the index, `None` to drop it.
+    /// `Some` to (re)create the index on the spec's field.
     spec: Option<VectorIndexSpec>,
+    /// Fields this name indexed before and no longer does: the name was
+    /// undeclared, or re-pointed at another field. Their indexes are dropped.
+    released_fields: Vec<String>,
 }
 
 /// Stateless: the graph is named by each index's [`vector_index_key`].
@@ -1137,23 +1139,27 @@ impl<C: CypherExecutor> TargetHandler<VectorIndexSpec> for VectorIndexHandler<C>
         if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
             return Ok(None);
         }
-        let (label, field) = match (&desired, prev.first()) {
-            (Some(d), _) => (d.label.clone(), d.field.clone()),
-            (None, Some(p)) => (p.label.clone(), p.field.clone()),
-            (None, None) => {
-                return Err(Error::engine(format!(
-                    "vector index {key:?} has neither desired nor previous state"
-                )));
-            }
+        let Some(label) = desired.as_ref().or(prev.first()).map(|s| s.label.clone()) else {
+            return Err(Error::engine(format!(
+                "vector index {key:?} has neither desired nor previous state"
+            )));
         };
+        let mut released_fields: Vec<String> = Vec::new();
+        for p in &prev {
+            if desired.as_ref().is_none_or(|d| d.field != p.field)
+                && !released_fields.contains(&p.field)
+            {
+                released_fields.push(p.field.clone());
+            }
+        }
         let key = VectorIndexKey::from_stable_key(&key)?;
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(VectorIndexAction {
                 graph_key: key.graph_key,
                 name: key.name,
                 label,
-                field,
                 spec: desired.clone(),
+                released_fields,
             }),
             sink: self.sink.get(vector_index_sink::<C>),
             tracking_record: desired,
@@ -1165,7 +1171,9 @@ impl<C: CypherExecutor> TargetHandler<VectorIndexSpec> for VectorIndexHandler<C>
 /// An index is tracked by its declared name, but the database identifies it by
 /// its label and field. A renamed index therefore arrives as a create under
 /// the new name and a drop under the old one, both of one database index: the
-/// drop is skipped. Two declared indexes of one database index are an error.
+/// drop is skipped. A name re-pointed at another field releases its old
+/// field, whose index is dropped unless another name creates it. Two declared
+/// indexes of one database index are an error.
 fn vector_index_sink<C: CypherExecutor>() -> TargetActionSink<VectorIndexAction> {
     TargetActionSink::from_async_fn_with_ctx(
         |host_ctx, actions: Vec<TargetAction<VectorIndexAction>>| {
@@ -1180,45 +1188,42 @@ fn vector_index_sink<C: CypherExecutor>() -> TargetActionSink<VectorIndexAction>
                     .collect();
                 // (graph, label, field) of every index created -> declared name.
                 let mut created: BTreeMap<(&str, &str, &str), &str> = BTreeMap::new();
-                for action in actions.iter().filter(|a| a.spec.is_some()) {
+                for action in &actions {
+                    let Some(spec) = &action.spec else { continue };
                     let declared = *created
-                        .entry((&action.graph_key, &action.label, &action.field))
+                        .entry((&action.graph_key, &action.label, &spec.field))
                         .or_insert(&action.name);
                     if declared != action.name {
                         return Err(Error::engine(format!(
                             "Vector indexes {declared:?} and {:?} both index {}.{}: declare \
                              one vector index per field.",
-                            action.name, action.label, action.field
+                            action.name, action.label, spec.field
                         )));
                     }
                 }
                 for action in &actions {
                     let graph = resolve_graph::<C>(&host_ctx, &action.graph_key)?;
-                    match &action.spec {
-                        Some(spec) => {
-                            // Drop-then-create so a metric/dimension change is applied.
-                            let _ = graph.drop_vector_index(&action.label, &action.field).await;
-                            graph
-                                .create_vector_index(
-                                    &action.label,
-                                    &action.field,
-                                    spec.dimension,
-                                    spec.metric,
-                                )
-                                .await?;
+                    for field in &action.released_fields {
+                        let recreated = created.contains_key(&(
+                            action.graph_key.as_str(),
+                            action.label.as_str(),
+                            field.as_str(),
+                        ));
+                        if !recreated {
+                            graph.drop_vector_index(&action.label, field).await?;
                         }
-                        None => {
-                            let recreated = created.contains_key(&(
-                                action.graph_key.as_str(),
-                                action.label.as_str(),
-                                action.field.as_str(),
-                            ));
-                            if !recreated {
-                                graph
-                                    .drop_vector_index(&action.label, &action.field)
-                                    .await?;
-                            }
-                        }
+                    }
+                    if let Some(spec) = &action.spec {
+                        // Drop-then-create so a metric/dimension change is applied.
+                        let _ = graph.drop_vector_index(&action.label, &spec.field).await;
+                        graph
+                            .create_vector_index(
+                                &action.label,
+                                &spec.field,
+                                spec.dimension,
+                                spec.metric,
+                            )
+                            .await?;
                     }
                 }
                 Ok(())
@@ -1641,17 +1646,25 @@ async fn apply_record<C: CypherExecutor>(graph: &C, action: &RecordAction) -> Re
                 params.insert("props".to_string(), JsonValue::Object(state.fields.clone()));
                 " SET r += $props".to_string()
             };
+            let rel_pattern = format!(
+                "`{}` {{`{}`: $rel_id}}",
+                action.spec.table_name, action.spec.primary_key
+            );
+            // The key identifies one relationship. An edge with this key
+            // between other endpoints is this relationship before its
+            // endpoints changed: delete it, or the MERGE would add a second
+            // edge beside it.
             graph
                 .execute_with_params(
                     &format!(
-                        "MERGE (s:`{}` {{`{}`: $from_id}}) MERGE (t:`{}` {{`{}`: $to_id}}) MERGE (s)-[r:`{}` {{`{}`: $rel_id}}]->(t){}",
+                        "MERGE (s:`{}` {{`{}`: $from_id}}) MERGE (t:`{}` {{`{}`: $to_id}}) \
+                         WITH s, t OPTIONAL MATCH (a)-[o:{rel_pattern}]->(b) WHERE a <> s OR b <> t \
+                         DELETE o WITH DISTINCT s, t \
+                         MERGE (s)-[r:{rel_pattern}]->(t){set_clause}",
                         rel.from_table.table_name,
                         rel.from_table.primary_key,
                         rel.to_table.table_name,
                         rel.to_table.primary_key,
-                        action.spec.table_name,
-                        action.spec.primary_key,
-                        set_clause
                     ),
                     &params,
                 )
@@ -1855,9 +1868,11 @@ macro_rules! graph_target_api {
             }
 
             /// [`declare_vector_index`](Self::declare_vector_index) with an
-            /// explicit `name`. The name identifies the declaration, so
-            /// renaming it keeps the index; the database identifies the index
-            /// by its label and field, so a field takes one vector index.
+            /// explicit `name`. The name identifies the declaration. The
+            /// database identifies the index by its label and field, so a
+            /// field takes one vector index, and renaming the declaration
+            /// rebuilds that index once and does not remove it. Declaring the
+            /// name on another field drops the index on the old field.
             pub fn declare_vector_index_named(
                 &self,
                 ctx: &$crate::ctx::Ctx,
@@ -2448,6 +2463,8 @@ mod tests {
         assert_eq!(
             cypher,
             "MERGE (s:`Person` {`id`: $from_id}) MERGE (t:`Event` {`id`: $to_id}) \
+             WITH s, t OPTIONAL MATCH (a)-[o:`ATTENDED` {`id`: $rel_id}]->(b) WHERE a <> s OR b <> t \
+             DELETE o WITH DISTINCT s, t \
              MERGE (s)-[r:`ATTENDED` {`id`: $rel_id}]->(t)"
         );
         assert_eq!(params["from_id"], JsonValue::from("p1"));
@@ -3084,6 +3101,8 @@ mod tests {
         assert_eq!(
             cypher,
             "MERGE (s:`Person` {`id`: $from_id}) MERGE (t:`Person` {`id`: $to_id}) \
+             WITH s, t OPTIONAL MATCH (a)-[o:`KNOWS` {`edge_id`: $rel_id}]->(b) WHERE a <> s OR b <> t \
+             DELETE o WITH DISTINCT s, t \
              MERGE (s)-[r:`KNOWS` {`edge_id`: $rel_id}]->(t) SET r += $props"
         );
         // The record's key identifies the relationship and is not a property
@@ -3196,7 +3215,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn renaming_a_vector_index_keeps_the_database_index() {
+    async fn renaming_a_vector_index_rebuilds_it_once() {
         let graph = RecordingGraph::new("neo4j");
         let tmp = tempfile::tempdir().unwrap();
         let app = recording_app(&graph, tmp.path()).await;
@@ -3226,6 +3245,114 @@ mod tests {
             vector_index_statements(&graph),
             vec![drop, create, drop, create, drop]
         );
+    }
+
+    #[tokio::test]
+    async fn repointing_a_named_vector_index_drops_the_old_field_index() {
+        let graph = RecordingGraph::new("neo4j");
+        let tmp = tempfile::tempdir().unwrap();
+        let app = recording_app(&graph, tmp.path()).await;
+        let drop_a = "DROP INDEX `coco_vec_Doc__a` IF EXISTS";
+        let drop_b = "DROP INDEX `coco_vec_Doc__b` IF EXISTS";
+        let is_create = |s: &String, field: &str| {
+            s.starts_with(&format!("CREATE VECTOR INDEX `coco_vec_Doc__{field}`"))
+        };
+
+        run_vector_indexes(&app, &[(Some("emb"), "a")])
+            .await
+            .unwrap();
+        let before = vector_index_statements(&graph).len();
+
+        // One name, another field: the index on `a` is dropped and not
+        // recreated; the index on `b` is created.
+        run_vector_indexes(&app, &[(Some("emb"), "b")])
+            .await
+            .unwrap();
+        let statements = vector_index_statements(&graph);
+        let repoint = &statements[before..];
+        assert_eq!(repoint.len(), 3, "{repoint:?}");
+        assert_eq!(repoint[0], drop_a);
+        assert_eq!(repoint[1], drop_b);
+        assert!(is_create(&repoint[2], "b"), "{repoint:?}");
+
+        // `emb` moves on to `c` in the run where `other` takes `b`: another
+        // name recreates the released `b`, so it is not dropped for `emb`.
+        let before = statements.len();
+        run_vector_indexes(&app, &[(Some("emb"), "c"), (Some("other"), "b")])
+            .await
+            .unwrap();
+        let statements = vector_index_statements(&graph);
+        let takeover = &statements[before..];
+        assert_eq!(
+            takeover.iter().filter(|s| **s == drop_b).count(),
+            1,
+            "only the drop that precedes the create of `b`: {takeover:?}"
+        );
+        assert_eq!(
+            takeover.iter().filter(|s| is_create(s, "b")).count(),
+            1,
+            "{takeover:?}"
+        );
+        assert!(takeover.iter().any(|s| is_create(s, "c")), "{takeover:?}");
+    }
+
+    #[tokio::test]
+    async fn relation_endpoint_change_under_an_explicit_key_updates_one_edge() {
+        let graph = RecordingGraph::new("neo4j");
+        let tmp = tempfile::tempdir().unwrap();
+        let app = recording_app(&graph, tmp.path()).await;
+
+        // (a, b, e1), then (a, c, e1): one key, so one update of one edge.
+        for to_id in ["b", "c"] {
+            app.run(move |ctx| async move {
+                let options = ManagedTargetOptions::default;
+                let people = mount_table_target_with_options(
+                    &ctx,
+                    &RECORDING,
+                    "Person",
+                    TableSchema::schemaless("id")?,
+                    options(),
+                )
+                .await?;
+                let knows = mount_relation_target_with_options(
+                    &ctx,
+                    &RECORDING,
+                    "KNOWS",
+                    &people,
+                    &people,
+                    TableSchema::schemaless("edge_id")?,
+                    options(),
+                )
+                .await?;
+                knows.declare_relation_record(
+                    &ctx,
+                    "a",
+                    to_id,
+                    &serde_json::json!({ "edge_id": "e1" }),
+                )
+            })
+            .await
+            .unwrap();
+        }
+
+        let calls = graph.param_calls();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        let (cypher, params) = &calls[1];
+        // The upsert removes the edge keyed `e1` between other endpoints
+        // before it merges the edge between the new ones; nothing deletes by
+        // key alone, which would also remove the new edge.
+        assert!(
+            cypher.contains(
+                "OPTIONAL MATCH (a)-[o:`KNOWS` {`edge_id`: $rel_id}]->(b) WHERE a <> s OR b <> t DELETE o"
+            ),
+            "{cypher}"
+        );
+        assert!(
+            cypher.ends_with("MERGE (s)-[r:`KNOWS` {`edge_id`: $rel_id}]->(t)"),
+            "{cypher}"
+        );
+        assert_eq!(params["rel_id"], JsonValue::from("e1"));
+        assert_eq!(params["to_id"], JsonValue::from("c"));
     }
 
     #[tokio::test]

@@ -7,8 +7,9 @@
 //!   FALKORDB_URI=falkor://localhost:6379 \
 //!     cargo test -p cocoindex --features neo4j,falkordb --test graph_target
 //!
-//! The live tests verify that the server accepts what the targets emit; the
-//! exact Cypher is asserted by the unit tests in `cypher_graph.rs`.
+//! The live tests verify that the server accepts what the targets emit, and the
+//! Neo4j one reads the result back; the exact Cypher is asserted by the unit
+//! tests in `cypher_graph.rs`.
 #![cfg(any(feature = "neo4j", feature = "falkordb"))]
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -197,9 +198,33 @@ async fn neo4j_schemaless_tables_relation_schema_and_named_index_when_available(
     let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
     let password = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "cocoindex".to_string());
     let database = std::env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".to_string());
-    let graph = neo4j::Graph::connect(&uri, &user, &password, &database)
+    // The test keeps its own handle on the driver to read the result back.
+    let config = neo4rs::ConfigBuilder::default()
+        .uri(uri.as_str())
+        .user(user.as_str())
+        .password(password.as_str())
+        .db(database.as_str())
+        .build()
+        .expect("a valid Neo4j config");
+    let client = neo4rs::Graph::connect(config)
         .await
         .expect("NEO4J_URI is set but the server is unreachable");
+    let graph = neo4j::Graph::from_client(client.clone(), &database).unwrap();
+    let count = |cypher: String| {
+        let client = client.clone();
+        async move {
+            let mut rows = client
+                .execute(neo4rs::query(&cypher))
+                .await
+                .expect("the read-back query should run");
+            let row = rows
+                .next()
+                .await
+                .expect("the read-back query should return")
+                .expect("a count row");
+            row.get::<i64>("n").expect("a count column")
+        }
+    };
 
     let suffix = nonce().to_string();
     let tmp = tempfile::tempdir().unwrap();
@@ -216,13 +241,28 @@ async fn neo4j_schemaless_tables_relation_schema_and_named_index_when_available(
     // The second run renames the vector index: the declaration moves to the new
     // name and the database keeps one index on the field.
     for index_name in ["person_embedding", "person_embedding_v2"] {
-        let suffix = suffix.clone();
+        let run_suffix = suffix.clone();
         app.run(move |ctx| {
-            let suffix = suffix.clone();
+            let suffix = run_suffix.clone();
             async move { declare_people_graph!(neo4j, &ctx, &G, &suffix, index_name) }
         })
         .await
         .expect("the Neo4j server should accept the graph");
+
+        let vector_indexes = count(format!(
+            "SHOW INDEXES YIELD type, labelsOrTypes, properties \
+             WHERE type = 'VECTOR' AND labelsOrTypes = ['Person{suffix}'] \
+             AND properties = ['embedding'] RETURN count(*) AS n"
+        ))
+        .await;
+        assert_eq!(vector_indexes, 1, "after declaring {index_name}");
+        // The relation's own key is on the edge, and the rerun adds no edge.
+        let keyed_edges = count(format!(
+            "MATCH (:`Person{suffix}`)-[r:`KNOWS{suffix}` {{edge_id: 'e1'}}]->(:`Person{suffix}`) \
+             RETURN count(r) AS n"
+        ))
+        .await;
+        assert_eq!(keyed_edges, 1, "after declaring {index_name}");
     }
     app.drop_state()
         .await
@@ -253,6 +293,8 @@ async fn falkordb_schemaless_tables_relation_schema_and_named_index_when_availab
         .await
         .unwrap();
 
+    // The second run renames the vector index. Nothing here reads the database
+    // back: the statements a rename emits are asserted in `cypher_graph.rs`.
     for index_name in ["person_embedding", "person_embedding_v2"] {
         app.run(
             move |ctx| async move { declare_people_graph!(falkordb, &ctx, &G, "", index_name) },

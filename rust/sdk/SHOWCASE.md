@@ -512,7 +512,8 @@ knows.declare_relation_record(ctx, "a", "b", &Knows { edge_id: "e1".into(), sinc
 ```
 
 A vector index is named `vec_{table}__{field}`, or by you. The name identifies
-the declaration, so a rename keeps the index; a field takes one vector index:
+the declaration: a rename rebuilds the index once and does not remove it. A
+field takes one vector index:
 
 ```rust
 people.declare_vector_index_named(ctx, "person_embedding", "embedding", 384, VectorMetric::Cosine)?;
