@@ -197,10 +197,16 @@ pub struct FileMetadata {
     pub content_fingerprint: Option<Fingerprint>,
 }
 
+/// A file's full content, and when the read that produced it started.
+struct CachedContent {
+    bytes: Vec<u8>,
+    read_at: SystemTime,
+}
+
 #[derive(Default)]
 pub struct FileContentCache {
     metadata: Mutex<Option<FileMetadata>>,
-    full_content: Mutex<Option<Vec<u8>>>,
+    full_content: Mutex<Option<CachedContent>>,
     content_fingerprint: Mutex<Option<Fingerprint>>,
 }
 
@@ -215,6 +221,15 @@ impl FileContentCache {
             full_content: Mutex::new(None),
             content_fingerprint: Mutex::new(None),
         }
+    }
+
+    /// When the read of the cached full content started, if it has been read.
+    pub(crate) async fn full_content_read_at(&self) -> Option<SystemTime> {
+        self.full_content
+            .lock()
+            .await
+            .as_ref()
+            .map(|content| content.read_at)
     }
 }
 
@@ -244,19 +259,23 @@ pub trait FileLike: Send + Sync {
         {
             let guard = self.cache().full_content.lock().await;
             if let Some(content) = guard.as_ref() {
-                return Ok(content.clone());
+                return Ok(content.bytes.clone());
             }
         }
-        let content = self.read_impl(None).await?;
-        *self.cache().full_content.lock().await = Some(content.clone());
-        Ok(content)
+        let read_at = SystemTime::now();
+        let bytes = self.read_impl(None).await?;
+        *self.cache().full_content.lock().await = Some(CachedContent {
+            bytes: bytes.clone(),
+            read_at,
+        });
+        Ok(bytes)
     }
 
     async fn read_size(&self, size: usize) -> Result<Vec<u8>> {
         {
             let guard = self.cache().full_content.lock().await;
             if let Some(content) = guard.as_ref() {
-                return Ok(content.iter().take(size).copied().collect());
+                return Ok(content.bytes.iter().take(size).copied().collect());
             }
         }
         self.read_impl(Some(size)).await
