@@ -43,7 +43,7 @@ Because entities are shared across documents, the pipeline runs in two phases �
 
 ```python
 @coco.fn(memo=True)  # Phase 1 — per doc: declare the Document node, carry triples forward
-async def process_file(file: localfs.File, document_table: neo4j.TableTarget[Document]) -> DocTriples:
+async def process_file(file: localfs.File, document_table: neo4j.NodeTarget[Document]) -> DocTriples:
     content = await file.read_text()
     filename = file.file_path.path.as_posix()
     summary = await extract_summary(content)
@@ -56,9 +56,9 @@ async def build_graph(docs, entity_table, relationship_rel, mention_rel) -> None
     for doc in docs:
         for t in doc.triples:
             rel_id = await generate_id((t.subject, t.predicate, t.object))   # stable edge identity
-            relationship_rel.declare_relation(from_id=t.subject, to_id=t.object,
-                                              record=Relationship(id=rel_id, predicate=t.predicate))
-            mention_rel.declare_relation(from_id=doc.filename, to_id=t.subject)
+            relationship_rel.declare_relationship(from_id=t.subject, to_id=t.object,
+                                                  record=Relationship(id=rel_id, predicate=t.predicate))
+            mention_rel.declare_relationship(from_id=doc.filename, to_id=t.subject)
             ...
     for value in entities:  entity_table.declare_record(row=Entity(value=value))
 ```
@@ -100,6 +100,8 @@ cocoindex update main
 ```
 
 To graph your own docs, drop `.md` / `.mdx` files into `markdown_files/` (or point `sourcedir` at your real docs folder) and re-run.
+
+Built this graph with an older version of the example (`mount_table_target` / `mount_relation_target`)? Those APIs are deprecated since CocoIndex 1.1. To keep the graph, follow [Switching an existing table](https://cocoindex.io/docs/connectors/neo4j/#switching-an-existing-table) in the Neo4j connector docs before you update; otherwise run `cocoindex drop main` first and rebuild.
 
 **4. Explore the graph** — open [Neo4j Browser](http://localhost:7474) (`neo4j` / `cocoindex`) and ask:
 
