@@ -21,7 +21,15 @@ cargo check -p cocoindex --all-features --all-targets
 # (cargo-clippy-sdk compiles it). Arguments narrow the run, e.g.
 # `--test fs_live`.
 SDK_TEST_FEATURES="azure_blob,code_match,doris,embed_api,fs_live,google_drive,kafka,lancedb"
-SDK_TEST_FEATURES+=",oci_object_storage,postgres,sqlite,text,turbopuffer,valkey,zvec"
+SDK_TEST_FEATURES+=",oci_object_storage,postgres,sqlite,text,turbopuffer,valkey"
+# The zvec tests link the prebuilt `zvec_c_api` shared library that the
+# `zvec-rust` build script downloads. On Windows Cargo does not put that DLL on
+# the test binaries' search path (STATUS_DLL_NOT_FOUND), so the tests run on
+# the other platforms; the all-features check above still compiles the target.
+case "${OSTYPE:-}" in
+  msys* | cygwin* | win32*) ;;
+  *) SDK_TEST_FEATURES+=",zvec" ;;
+esac
 cargo test -p cocoindex --features "$SDK_TEST_FEATURES" "$@"
 
 # The CLI's tests: unit tests, and end-to-end tests that build the fixture app
