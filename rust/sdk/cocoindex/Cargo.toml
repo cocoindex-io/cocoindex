@@ -63,12 +63,18 @@ kafka = [
 ]
 iggy = ["dep:iggy"]
 amazon_s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+# Google Drive source: service accounts and a personal account signed in with
+# OAuth (`UserAccount`); `tokio/net` serves the sign-in's loopback redirect.
 google_drive = [
     "dep:reqwest",
     "dep:rsa",
     "dep:sha2",
     "dep:base64",
     "chrono",
+    "tokio/net",
+    "tokio/io-util",
+    "tokio/time",
+    "tokio/macros",
 ]
 # OCI Object Storage source: REST API + RSA-SHA256 HTTP Signature request
 # signing (no official Oracle Rust SDK). Reuses the google_drive crypto/HTTP
