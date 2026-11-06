@@ -15,7 +15,14 @@ const MISSING_OVERLAP_COST: usize = 512;
 const PER_LINE_BREAK_LEVEL_GAP_COST: usize = 64;
 /// The cost of a chunk with no content at all: as much as 16 syntax-level gaps.
 /// A chunk under `min_chunk_size` pays this times its squared shortfall.
-const TOO_SMALL_CHUNK_COST: usize = 16 * SYNTAX_LEVEL_GAP_COST;
+const TOO_SMALL_CHUNK_COST: u64 = 16 * SYNTAX_LEVEL_GAP_COST as u64;
+/// The cost is computed in fixed point, without a division per chunk:
+/// `(shortfall · (2³² - 1) / min_chunk_size)² >> TOO_SMALL_CHUNK_COST_SHIFT`,
+/// which is `TOO_SMALL_CHUNK_COST · (shortfall / min_chunk_size)²`. The scaled
+/// shortfall is under 2³², as `shortfall <= min_chunk_size`, so its square
+/// fits in a `u64`.
+const TOO_SMALL_CHUNK_COST_SHIFT: u32 = 64 - TOO_SMALL_CHUNK_COST.ilog2();
+const _: () = assert!(TOO_SMALL_CHUNK_COST.is_power_of_two());
 
 /// Configuration for a custom language with regex-based separators.
 #[derive(Debug, Clone)]
@@ -332,6 +339,8 @@ struct InternalRecursiveChunker<'s> {
     chunk_size: usize,
     chunk_overlap: usize,
     min_chunk_size: usize,
+    /// `(2³² - 1) / min_chunk_size`: the fixed-point scale for `too_small_chunk_cost`.
+    too_small_chunk_cost_scale: u64,
     min_atom_chunk_size: usize,
 }
 
@@ -418,9 +427,9 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
         if chunk_size >= self.min_chunk_size {
             return 0;
         }
-        let shortfall = self.min_chunk_size - chunk_size;
-        // Divide after each multiplication to stay in range for any size.
-        TOO_SMALL_CHUNK_COST * shortfall / self.min_chunk_size * shortfall / self.min_chunk_size
+        let scaled_shortfall =
+            (self.min_chunk_size - chunk_size) as u64 * self.too_small_chunk_cost_scale;
+        ((scaled_shortfall * scaled_shortfall) >> TOO_SMALL_CHUNK_COST_SHIFT) as usize
     }
 
     fn get_overlap_cost_base(&self, offset: usize) -> usize {
@@ -662,6 +671,9 @@ impl RecursiveChunker {
             chunk_size: config.chunk_size,
             chunk_overlap,
             min_chunk_size,
+            too_small_chunk_cost_scale: u64::from(u32::MAX)
+                .checked_div(min_chunk_size as u64)
+                .unwrap_or(0),
             min_atom_chunk_size: if chunk_overlap > 0 {
                 chunk_overlap
             } else {
@@ -886,6 +898,32 @@ def load(path):
                     );
                 }
             }
+        }
+    }
+
+    /// The fixed-point too-small cost stays in range at any `min_chunk_size`,
+    /// including one larger than 2³² bytes, where its scale is zero.
+    #[test]
+    fn test_split_too_small_cost_in_range_at_extreme_sizes() {
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let text = "Linea 1.\nLinea 2.\n\nLinea 3.";
+        for (chunk_size, min_chunk_size) in [
+            (15, Some(1)),
+            (15, Some(14)),
+            (15, Some(15)),
+            (1 << 20, Some((1 << 20) - 1)),
+            (1 << 40, None),
+            (usize::MAX, Some(usize::MAX)),
+        ] {
+            let chunks = chunker.split(
+                &CodeSource::new(text),
+                RecursiveChunkConfig {
+                    chunk_size,
+                    min_chunk_size,
+                    chunk_overlap: None,
+                },
+            );
+            assert!(!chunks.is_empty(), "chunk_size {chunk_size}");
         }
     }
 
