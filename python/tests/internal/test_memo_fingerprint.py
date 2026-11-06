@@ -92,8 +92,8 @@ def test_registry_overrides_default_behavior() -> None:
             self.v = v
             self.irrelevant = irrelevant
 
+    register_memo_key_function(Y, lambda y: ("y", y.v))
     try:
-        register_memo_key_function(Y, lambda y: ("y", y.v))
         fp_a = fingerprint_call(_dummy_fn, (Y(5, "a"),), {}, [])
         fp_irrelevant_changed = fingerprint_call(_dummy_fn, (Y(5, "b"),), {}, [])
         fp_b = fingerprint_call(_dummy_fn, (Y(6, "a"),), {}, [])
@@ -132,9 +132,9 @@ def test_hook_and_registry_include_type_name_to_avoid_collisions() -> None:
         def __init__(self, v: object) -> None:
             self.v = v
 
+    register_memo_key_function(C, lambda x: ("same", x.v))
+    register_memo_key_function(D, lambda x: ("same", x.v))
     try:
-        register_memo_key_function(C, lambda x: ("same", x.v))
-        register_memo_key_function(D, lambda x: ("same", x.v))
         assert fingerprint_call(_dummy_fn, (C(1),), {}, []) != fingerprint_call(
             _dummy_fn, (D(1),), {}, []
         )
@@ -1160,8 +1160,8 @@ def test_state_methods_collected_from_registry() -> None:
     def _state_fn(obj: Any, prev: Any) -> MemoStateOutcome:
         return MemoStateOutcome(state=prev, memo_valid=True)
 
+    register_memo_key_function(Registered, lambda r: r.v, state_fn=_state_fn)
     try:
-        register_memo_key_function(Registered, lambda r: r.v, state_fn=_state_fn)
         methods: list[Any] = []
         fingerprint_call(_dummy_fn, (Registered(7),), {}, state_methods=methods)
         assert len(methods) == 1

@@ -27,6 +27,7 @@ from .serde import (
 )
 from .typing import Fingerprintable
 
+
 _KeyFn = typing.Callable[[typing.Any], typing.Any]
 _StateFn = typing.Callable[[typing.Any, typing.Any], typing.Any]
 
@@ -159,23 +160,6 @@ def _unregister_memo_type_registry(typ: type) -> None:
     _sync_plain_canonical_form_overridden()
 
 
-# The container types the native plain-data walker handles. A memo key function
-# registered for any type in their MROs overrides their default canonical form.
-_PLAIN_CONTAINER_BASES = frozenset({dict, list, tuple, object})
-
-
-def _sync_plain_canonical_form_overridden() -> None:
-    """Tell the native plain-data walker whether it still applies."""
-    core.set_plain_canonical_form_overridden(
-        any(
-            _memo_type_registry[t].key_fn is not None
-            for t in _PLAIN_CONTAINER_BASES & _memo_type_registry.keys()
-        )
-    )
-
-
-_MEMO_KEY_ATTR = "__coco_memo_key__"
-_MEMO_STATE_ATTR = "__coco_memo_state__"
 _CLASS_OBJECT_OWNER_IDENTITY: tuple[Fingerprintable, Fingerprintable] = (
     canonical_module_name(type),
     type.__qualname__,
@@ -472,12 +456,6 @@ def register_not_memo_keyable(typ: type) -> None:
         coco.register_not_memo_keyable(StatefulGenerator)
     """
 
-    if not isinstance(typ, type):
-        raise TypeError(
-            "register_not_memo_keyable() expects typ to be a type, "
-            f"got {type(typ).__name__}"
-        )
-
     def _raise_not_memo_keyable(obj: object) -> typing.NoReturn:
         raise TypeError(
             f"{type(obj).__name__} cannot be used as a memoization key. "
@@ -490,6 +468,21 @@ def register_not_memo_keyable(typ: type) -> None:
 def unregister_memo_type(typ: type) -> None:
     """Remove the memo registration for ``typ``, if any."""
     _unregister_memo_type_registry(typ)
+
+
+# The container types the native plain-data walker handles. A memo key function
+# registered for any type in their MROs overrides their default canonical form.
+_PLAIN_CONTAINER_BASES = frozenset({dict, list, tuple, object})
+
+
+def _sync_plain_canonical_form_overridden() -> None:
+    """Tell the native plain-data walker whether it still applies."""
+    core.set_plain_canonical_form_overridden(
+        any(
+            _memo_type_registry[t].key_fn is not None
+            for t in _PLAIN_CONTAINER_BASES & _memo_type_registry.keys()
+        )
+    )
 
 
 def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
@@ -545,16 +538,16 @@ def _canonicalize(
     if isinstance(obj, type):
         return _canonicalize_class_object(obj, _seen, state_methods)
 
-    typ = type(obj)
-    hook = getattr(obj, _MEMO_KEY_ATTR, None)
+    hook = getattr(obj, "__coco_memo_key__", None)
     if hook is not None and callable(hook):
         k = hook()
+        typ = type(obj)
         tag = "hook"
-        state_hook = getattr(obj, _MEMO_STATE_ATTR, None)
+        state_hook = getattr(obj, "__coco_memo_state__", None)
         if state_hook is not None and callable(state_hook):
             tag = "shook"
             # raw function for type hint extraction (unbound method on class)
-            raw_fn = getattr(typ, _MEMO_STATE_ATTR)
+            raw_fn = getattr(typ, "__coco_memo_state__")
             state_methods.append(_make_state_fn_entry(state_hook, raw_fn))
         return (
             tag,
@@ -562,11 +555,11 @@ def _canonicalize(
             _canonicalize(k, _seen, state_methods),
         )
 
-    for owner in typ.__mro__:
-        registry = _memo_type_registry.get(owner)
-        if registry is not None and registry.key_fn is not None:
+    for base in type(obj).__mro__:
+        memo = _memo_type_registry.get(base)
+        if memo is not None and memo.key_fn is not None:
             return _canonicalize_registered_memo_key(
-                obj, owner, registry, _seen, state_methods
+                obj, base, memo, _seen, state_methods
             )
 
     # 3) Cycle tracking
@@ -705,11 +698,11 @@ def fingerprint_call(
 
 __all__ = [
     "NotMemoKeyable",
-    "fingerprint_call",
-    "memo_fingerprint",
     "prev_type_id",
     "register_memo_key_function",
     "register_memo_type",
     "register_not_memo_keyable",
     "unregister_memo_type",
+    "fingerprint_call",
+    "memo_fingerprint",
 ]
