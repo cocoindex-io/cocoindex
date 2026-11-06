@@ -9,6 +9,11 @@
 //! Same pipeline as the `text_embedding` example, but the target is the native
 //! `cocoindex::connectors::lancedb` connector instead of Postgres/pgvector. Parallels the
 //! Python example's use of `cocoindex.connectors.lancedb`.
+//!
+//! Parallels the Python example:
+//!   - source            : `walk_dir(..).live()` + `ctx.mount_each_live` (cf. `localfs.walk_dir(live=True)` + `coco.mount_each`)
+//!   - per-file compute  : `#[cocoindex::function(memo)]` declaring its rows (cf. `@coco.fn(memo=True)`)
+//!   - per-chunk compute : `#[cocoindex::function]` under `ctx.map` (cf. `@coco.fn` under `coco.map`)
 
 use std::path::PathBuf;
 
@@ -41,13 +46,43 @@ struct DocEmbedding {
     embedding: Vec<f32>,
 }
 
+/// Embed one chunk and declare its row (cf. Python `process_chunk`).
 #[cocoindex::function]
-async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
-    let filename = file.key();
-    let text = file.content_str()?;
+async fn process_chunk(
+    ctx: &Ctx,
+    chunk: Chunk,
+    text: &str,
+    filename: &str,
+    id_gen: &IdGenerator,
+    table: &lancedb::LanceTableTarget,
+) -> Result<()> {
+    let chunk_text = chunk.text(text);
+    let id = i64::try_from(id_gen.next_id(ctx, chunk_text).await?)
+        .map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
+    table.declare_row(
+        ctx,
+        &DocEmbedding {
+            id,
+            filename: filename.to_string(),
+            chunk_start: chunk.start.char_offset as i64,
+            chunk_end: chunk.end.char_offset as i64,
+            text: chunk_text.to_string(),
+            embedding: ctx.get_key(&EMBEDDER)?.embed(ctx, chunk_text).await?,
+        },
+    )
+}
 
-    let splitter = RecursiveSplitter::new()?;
-    let chunks = splitter.split_with(
+/// Chunk and embed one file, declaring its rows (cf. Python `process_file`).
+/// Memoized on the file: an unchanged file keeps its rows without re-running.
+/// The table target is one per app, so it is not part of the memo key.
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_file(
+    ctx: &Ctx,
+    file: &FileEntry,
+    table: &lancedb::LanceTableTarget,
+) -> Result<()> {
+    let text = file.read_text().await?;
+    let chunks = RecursiveSplitter::new()?.split_with(
         &text,
         RecursiveChunkConfig {
             chunk_size: CHUNK_SIZE,
@@ -56,29 +91,13 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
             language: Some("markdown".to_string()),
         },
     );
-    if chunks.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
-    let embeddings = ctx.get_key(&EMBEDDER)?.embed_batch(texts.clone()).await?;
-
+    let filename = file.key();
     let id_gen = IdGenerator::new();
-    let mut rows = Vec::with_capacity(texts.len());
-    for ((chunk, chunk_text), embedding) in chunks.iter().zip(texts).zip(embeddings) {
-        let id = id_gen.next_id(&ctx, &chunk_text).await?;
-        let id =
-            i64::try_from(id).map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
-        rows.push(DocEmbedding {
-            id,
-            filename: filename.clone(),
-            chunk_start: chunk.start.char_offset as i64,
-            chunk_end: chunk.end.char_offset as i64,
-            text: chunk_text,
-            embedding,
-        });
-    }
-    Ok(rows)
+    ctx.map(chunks, async |chunk| {
+        process_chunk(ctx, chunk, &text, &filename, &id_gen, &table).await
+    })
+    .await?;
+    Ok(())
 }
 
 fn doc_embedding_schema() -> Result<TableSchema> {
@@ -88,24 +107,18 @@ fn doc_embedding_schema() -> Result<TableSchema> {
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let table = lancedb::mount_table_target(&ctx, &DB, TABLE, doc_embedding_schema()?).await?;
 
-    let files = walk_items(&sourcedir, &["**/*.md"])?;
-    println!(
-        "indexing {} markdown file(s) from {}",
-        files.len(),
-        sourcedir.display()
-    );
-
-    let rows_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
-
-    let mut count = 0usize;
-    for rows in &rows_by_file {
-        count += rows.len();
-        for row in rows {
-            table.declare_row(&ctx, row)?;
-        }
-    }
-    println!("indexed {count} chunk(s) total");
-    Ok(())
+    // The source supports live watch (cf. Python `localfs.walk_dir(live=True)`).
+    let files = walk_dir(sourcedir)
+        .recursive(true)
+        .path_matcher(PatternFilePathMatcher::include(["**/*.md"])?)
+        .live();
+    // One processing component per file: each file's rows sync and clean up
+    // with that file (cf. Python `coco.mount_each(process_file, files.items(), target_table)`).
+    ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
+        let table = table.clone();
+        async move { process_file(&ctx, &file, &table).await }
+    })
+    .await
 }
 
 async fn query_once(
