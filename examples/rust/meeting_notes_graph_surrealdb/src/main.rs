@@ -244,11 +244,11 @@ async fn process_file(
     meeting_table: surrealdb::TableTarget,
     task_table: surrealdb::TableTarget,
     decided_rel: surrealdb::RelationTarget,
-    extractions: LiveMap<Vec<MeetingExtraction>>,
+    extractions: LiveMap<String, Vec<MeetingExtraction>>,
 ) -> Result<()> {
     let text = file.content_str()?;
     let note_file = file.key();
-    let mut id_generator = IdGenerator::new();
+    let id_generator = IdGenerator::new();
     let mut file_extractions = Vec::new();
     for section in split_meetings(&text) {
         let extracted = extract_meeting(ctx, &section).await?;
@@ -322,7 +322,7 @@ async fn resolve_persons(ctx: &Ctx, raw_persons: &Vec<String>) -> Result<Resolve
 
 async fn sync_person_graph(
     ctx: &Ctx,
-    extractions: &LiveMap<Vec<MeetingExtraction>>,
+    extractions: &LiveMap<String, Vec<MeetingExtraction>>,
     person_table: &surrealdb::TableTarget,
     attended_rel: &surrealdb::RelationTarget,
     assigned_rel: &surrealdb::RelationTarget,
@@ -430,7 +430,7 @@ async fn app_main(ctx: Ctx, notesdir: PathBuf) -> Result<()> {
             .await?;
 
     // --- Phase 1: per-file extraction, live-watching the notes folder ---
-    let extractions: LiveMap<Vec<MeetingExtraction>> = LiveMap::create(&ctx).await?;
+    let extractions: LiveMap<String, Vec<MeetingExtraction>> = LiveMap::create(&ctx).await?;
     let source = walk_dir(notesdir)
         .recursive(true)
         .path_matcher(PatternFilePathMatcher::include(["**/*.md"])?)
