@@ -8,9 +8,29 @@ description: >
 ---
 The `qdrant` connector provides utilities for writing points to Qdrant vector databases, with support for single vectors, named dense vectors, sparse vectors, and multi-vector configurations.
 
+import LangTabs from '../../../components/LangTabs.astro';
+
+{/* Rust: examples/rust/text_embedding_qdrant/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 from cocoindex.connectors import qdrant
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::qdrant::{
+    self, CollectionSchema, Distance, NamedPointVector, QdrantConnection,
+};
+```
+
+The module is compiled with the `qdrant` Cargo feature of the `cocoindex` crate. The `qdrant-client` crate compiles protobufs, so a `protoc` binary must be on `PATH` (or named by `PROTOC`) to build.
+
+</Fragment>
+</LangTabs>
 
 :::note[Dependencies]
 This connector requires additional dependencies. Install with:
@@ -25,6 +45,10 @@ pip install cocoindex[qdrant]
 
 `create_client()` creates a Qdrant client connection with optional gRPC support.
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/qdrant.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def create_client(
     url: str,
@@ -33,6 +57,22 @@ def create_client(
     **kwargs: Any,
 ) -> QdrantClient
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl QdrantConnection {
+    pub async fn connect(url: &str) -> Result<Self>
+    pub fn from_client(state_id: impl Into<String>, client: Qdrant) -> Self
+    pub fn client(&self) -> &Qdrant
+}
+```
+
+`QdrantConnection::connect(url)` takes the gRPC URL (for example `http://localhost:6334`) and uses the client's defaults. For an API key, TLS or timeouts, build a `qdrant_client::Qdrant` yourself and wrap it with `from_client`; `state_id` should name the server, not hold a secret.
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -44,9 +84,30 @@ def create_client(
 
 **Example:**
 
+{/* Rust: rust/sdk/cocoindex/tests/qdrant_target.rs, rust/sdk/cocoindex/src/connectors/qdrant.rs (from_client doctest) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 client = qdrant.create_client("http://localhost:6333")
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let conn = QdrantConnection::connect(&url).await?;
+
+// With an API key
+let url = "https://example.cloud.qdrant.io:6334";
+let client = qdrant_client::Qdrant::from_url(url)
+    .api_key(std::env::var("QDRANT_API_KEY").ok())
+    .build()?;
+let conn = QdrantConnection::from_client(url, client);
+```
+
+</Fragment>
+</LangTabs>
 
 ## As target
 
@@ -62,6 +123,10 @@ Create a `ContextKey[QdrantClient]` to identify your Qdrant client, then provide
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed collections. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
 
+{/* Rust: examples/rust/text_embedding_qdrant/src/main.rs, rust/sdk/cocoindex/tests/qdrant_target.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 from qdrant_client import QdrantClient
 import cocoindex as coco
@@ -75,9 +140,36 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     yield
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::qdrant::QdrantConnection;
+
+cocoindex::context_key!(static DB: QdrantConnection);
+
+let conn = QdrantConnection::connect(&url).await?;
+let app = Environment::builder()
+    .db_path(tempdir.path().join(".cocoindex_db"))
+    .provide_key(&DB, conn)
+    .build()
+    .await?
+    .app("QdrantTargetTest")
+    .await?;
+```
+
+`context_key!(static DB: QdrantConnection)` declares the key; its name is the stable identity. `provide_key(&DB, conn)` provides the connection, in a `#[cocoindex::lifespan]` function or on `Environment::builder()` as here.
+
+</Fragment>
+</LangTabs>
+
 #### Collections (parent state)
 
 Declares a collection as a target state. Returns a `CollectionTarget` for declaring points.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/qdrant.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def declare_collection_target(
@@ -88,6 +180,38 @@ def declare_collection_target(
     managed_by: Literal["system", "user"] = "system",
 ) -> CollectionTarget[coco.PendingS]
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn declare_collection_target(
+    ctx: &Ctx,
+    conn: &ContextKey<QdrantConnection>,
+    collection_name: impl Into<String>,
+    schema: CollectionSchema,
+) -> Result<CollectionTarget>
+
+pub async fn mount_collection_target(
+    ctx: &Ctx,
+    conn: &ContextKey<QdrantConnection>,
+    collection_name: impl Into<String>,
+    schema: CollectionSchema,
+) -> Result<CollectionTarget>
+
+pub async fn mount_collection_target_with_options(
+    ctx: &Ctx,
+    conn: &ContextKey<QdrantConnection>,
+    collection_name: impl Into<String>,
+    schema: CollectionSchema,
+    options: ManagedTargetOptions,
+) -> Result<CollectionTarget>
+```
+
+`managed_by` is set with `ManagedTargetOptions::user_managed()` on the `_with_options` variants. `declare_collection_target` returns a handle whose points resolve when the current component commits; `mount_collection_target(...).await?` returns a handle that accepts points at once.
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -102,12 +226,60 @@ def declare_collection_target(
 
 Once a `CollectionTarget` is resolved, declare points to be upserted using `qdrant.PointStruct`, which is an alias of `qdrant_client.http.models.PointStruct`:
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/qdrant.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def CollectionTarget.declare_point(
     self,
     point: qdrant.PointStruct,
 ) -> None
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl CollectionTarget {
+    /// A single-vector point.
+    pub fn declare_point(
+        &self,
+        ctx: &Ctx,
+        id: impl Into<QdrantPointId>,
+        vector: Vec<f32>,
+        payload: Map<String, JsonValue>,
+    ) -> Result<()>
+
+    /// A point for a named-vector collection: each value is a single vector,
+    /// a multivector or a sparse vector.
+    pub fn declare_named_vectors_point<I, K>(
+        &self,
+        ctx: &Ctx,
+        id: impl Into<QdrantPointId>,
+        vectors: I,
+        payload: Map<String, JsonValue>,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = (K, NamedPointVector)>,
+        K: Into<String>
+
+    /// A multi-vector point for a collection created with
+    /// `CollectionSchema::multivector`.
+    pub fn declare_multivector_point(
+        &self,
+        ctx: &Ctx,
+        id: impl Into<QdrantPointId>,
+        vectors: Vec<Vec<f32>>,
+        payload: Map<String, JsonValue>,
+    ) -> Result<()>
+}
+```
+
+The Rust SDK has no `PointStruct`: the id, the vector and the payload are separate arguments, and the shape of the vector picks the method. The payload is a `serde_json::Map<String, Value>`.
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -120,6 +292,10 @@ def CollectionTarget.declare_point(
 
 Define vector configurations for a collection using `CollectionSchema`. Unlike row-oriented databases, Qdrant uses a point-oriented model where each point has schemaless payload and one or more vectors with predefined dimensions.
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/qdrant.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 class CollectionSchema:
     @classmethod
@@ -130,6 +306,45 @@ class CollectionSchema:
         | None = None,
     ) -> CollectionSchema
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl CollectionSchema {
+    // One unnamed dense vector per point
+    pub fn new(vector_size: u64, distance: Distance) -> Self
+    pub fn from_vector_schema(schema: VectorSchema, distance: Distance) -> Result<Self>
+    pub async fn from_vector_provider(
+        provider: &(impl VectorSchemaProvider + ?Sized),
+        distance: Distance,
+    ) -> Result<Self>
+
+    // One unnamed multivector per point
+    pub fn multivector(vector_size: u64, distance: Distance) -> Self
+    pub fn from_multivector_schema(schema: MultiVectorSchema, distance: Distance) -> Result<Self>
+    pub async fn from_multivector_provider(
+        provider: &(impl MultiVectorSchemaProvider + ?Sized),
+        distance: Distance,
+    ) -> Result<Self>
+
+    // Named vectors, dense and sparse
+    pub fn named<I, K, V>(vectors: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<QdrantNamedVectorDef>
+
+    // Named dense vectors from a `#[derive(SchemaFields)]` row
+    pub fn from_row<T: SchemaFields>(distance: Distance) -> Result<Self>
+    pub fn with_vector_dim(self, field_name: &str, dim: usize) -> Result<Self>
+}
+```
+
+The Rust schema has one constructor per shape instead of one `create` with a union argument. `from_row` turns each `#[coco(vector)]` field of a row struct into a named dense vector; the other fields stay payload.
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -143,12 +358,47 @@ Dense and sparse vectors share one namespace in Qdrant (the server rejects dupli
 
 Specifies vector configuration including dimension, distance metric, and multi-vector settings:
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/qdrant.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 class QdrantVectorDef(NamedTuple):
     schema: VectorSchemaProvider | MultiVectorSchemaProvider
     distance: Literal["cosine", "dot", "euclid"] = "cosine"
     multivector_comparator: Literal["max_sim"] = "max_sim"
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub struct QdrantVectorDef {
+    pub distance: Distance,
+    pub multivector_comparator: MultivectorComparator,
+    // the vector schema, set by the constructors
+}
+
+impl QdrantVectorDef {
+    pub fn new(schema: VectorSchema, distance: Distance) -> Result<Self>
+    pub fn f32(size: u64, distance: Distance) -> Result<Self>
+    pub async fn from_vector_provider(
+        provider: &(impl VectorSchemaProvider + ?Sized),
+        distance: Distance,
+    ) -> Result<Self>
+    pub fn multivector(schema: MultiVectorSchema, distance: Distance) -> Result<Self>
+    pub async fn from_multivector_provider(
+        provider: &(impl MultiVectorSchemaProvider + ?Sized),
+        distance: Distance,
+    ) -> Result<Self>
+}
+
+pub enum Distance { Cosine, Dot, Euclid }
+pub enum MultivectorComparator { MaxSim }
+```
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -160,16 +410,38 @@ class QdrantVectorDef(NamedTuple):
 
 Specifies a named sparse vector configuration:
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/qdrant.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 class QdrantSparseVectorDef(NamedTuple):
     modifier: Literal["idf"] | None = None
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub struct QdrantSparseVectorDef {
+    pub modifier: Option<SparseModifier>,
+}
+
+pub enum SparseModifier { Idf }
+```
+
+</Fragment>
+</LangTabs>
 
 Sparse vectors use Qdrant's native sparse-vector storage and dot-product scoring. The optional `modifier="idf"` enables Qdrant's IDF modifier for sparse vectors.
 
 #### Single (unnamed) vector
 
 For collections with a single unnamed vector:
+
+{/* Rust: rust/sdk/cocoindex/tests/qdrant_target.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
@@ -191,9 +463,34 @@ point = qdrant.PointStruct(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let target = qdrant::mount_collection_target(
+    &ctx,
+    &DB,
+    &collection,
+    CollectionSchema::new(size, Distance::Cosine),
+)
+.await?;
+for (id, v, filename, text) in &points {
+    target.declare_point(&ctx, *id, v.clone(), payload(filename, text))?;
+}
+```
+
+`CollectionSchema::new(size, distance)` takes the dimension as a number; `CollectionSchema::from_vector_provider(&embedder, distance).await?` takes it from an embedder.
+
+</Fragment>
+</LangTabs>
+
 #### Named vectors
 
 For collections with multiple named vectors:
+
+{/* Rust: examples/rust/text_embedding_qdrant/src/main.rs, rust/sdk/cocoindex/src/connectors/qdrant.rs (CollectionSchema::named doctest) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.resources.schema import VectorSchema
@@ -226,6 +523,68 @@ point = qdrant.PointStruct(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::qdrant::{
+    CollectionSchema, Distance, QdrantNamedVectorDef, QdrantVectorDef,
+};
+
+let schema = CollectionSchema::named([
+    (
+        "dense",
+        QdrantNamedVectorDef::from(QdrantVectorDef::f32(384, Distance::Cosine)?),
+    ),
+    ("sparse", QdrantSparseVectorDef::default().into()),
+])?;
+```
+
+Or derive the named vectors from a row struct, as the `text_embedding_qdrant` example does:
+
+```rust
+/// A computed point: id + vector + payload fields.
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct PointData {
+    id: u64,
+    #[coco(vector)]
+    vector: Vec<f32>,
+    filename: String,
+    chunk_start: i64,
+    chunk_end: i64,
+    text: String,
+}
+
+let vector_dim = ctx.get_key(&EMBEDDER)?.dimension();
+let target = qdrant::mount_collection_target(
+    &ctx,
+    &DB,
+    COLLECTION,
+    CollectionSchema::from_row::<PointData>(Distance::Cosine)?
+        .with_vector_dim("vector", vector_dim)?,
+)
+.await?;
+
+let payload = json!({
+    "filename": p.filename,
+    "chunk_start": p.chunk_start,
+    "chunk_end": p.chunk_end,
+    "text": p.text,
+})
+.as_object()
+.unwrap()
+.clone();
+target.declare_named_vectors_point(
+    &ctx,
+    p.id,
+    [("vector", NamedPointVector::Single(p.vector.clone()))],
+    payload,
+)?;
+```
+
+</Fragment>
+</LangTabs>
+
 #### Dense + sparse vectors
 
 For hybrid retrieval, declare a named dense vector and a named sparse vector in the same collection:
@@ -248,6 +607,10 @@ schema = await qdrant.CollectionSchema.create(
 
 Points put both vector types in `PointStruct.vector`. The sparse vector is a native Qdrant `SparseVector`, not payload:
 
+{/* Rust: rust/sdk/cocoindex/tests/qdrant_target.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 point = qdrant.PointStruct(
     id=123,
@@ -263,13 +626,50 @@ point = qdrant.PointStruct(
 target.declare_point(point)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let schema = CollectionSchema::named([
+    (
+        "dense",
+        QdrantNamedVectorDef::from(QdrantVectorDef::f32(3, Distance::Cosine)?),
+    ),
+    ("sparse", QdrantSparseVectorDef { modifier }.into()),
+])?;
+let target =
+    qdrant::mount_collection_target(&ctx, &DB, &collection, schema).await?;
+for (id, dense, indices, values, text) in points {
+    target.declare_named_vectors_point(
+        &ctx,
+        id,
+        [
+            ("dense", NamedPointVector::Single(dense.to_vec())),
+            ("sparse", NamedPointVector::Sparse { indices, values }),
+        ],
+        payload("f.md", text),
+    )?;
+}
+```
+
+`modifier` is `Some(SparseModifier::Idf)` or `None`. `NamedPointVector::Sparse { indices, values }` takes `Vec<u32>` indices and `Vec<f32>` values; the indices must be unique.
+
+</Fragment>
+</LangTabs>
+
 #### VectorSchemaProvider
 
 The `schema` field of `QdrantVectorDef` accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema` to specify the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
 
+In Rust, `QdrantVectorDef::new(VectorSchema::f32(384), distance)` takes an explicit schema and `QdrantVectorDef::from_vector_provider(&embedder, distance).await?` takes a provider. An `f16` schema is stored as Qdrant's `Float16` datatype.
+
 #### Multi-vector support
 
 For multi-vector configurations (multiple vectors per point stored together):
+
+{/* Rust: examples/rust/image_search_colpali/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.resources.schema import MultiVectorSchema, VectorSchema
@@ -285,6 +685,26 @@ schema = await qdrant.CollectionSchema.create(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let target = qdrant::mount_collection_target(
+    &ctx,
+    &DB,
+    COLLECTION,
+    CollectionSchema::multivector(EMBED_DIM, Distance::Cosine),
+)
+.await?;
+
+target.declare_multivector_point(&ctx, p.id, p.vectors.clone(), payload)?;
+```
+
+`CollectionSchema::multivector(size, distance)` scores with MAX_SIM, the only comparator. See `examples/rust/image_search_colpali` for the full program.
+
+</Fragment>
+</LangTabs>
+
 ### Distance metrics
 
 The `distance` parameter in `QdrantVectorDef` specifies the similarity metric:
@@ -293,7 +713,11 @@ The `distance` parameter in `QdrantVectorDef` specifies the similarity metric:
 - `"dot"` — Dot product similarity
 - `"euclid"` — Euclidean distance (L2)
 
+In Rust these are the `Distance::Cosine`, `Distance::Dot` and `Distance::Euclid` variants. Every Rust constructor takes the distance explicitly; there is no default.
+
 ### Example: single vector
+
+For Rust, the single-vector shape is `CollectionSchema::new(size, Distance::Cosine)` with `declare_point`, shown under [Single (unnamed) vector](#single-unnamed-vector). The end-to-end Rust example, `examples/rust/text_embedding_qdrant`, uses a named vector derived from a row struct; see [Example: named vectors](#example-named-vectors).
 
 ```python
 from qdrant_client import QdrantClient
@@ -352,6 +776,10 @@ async def app_main() -> None:
 
 ### Example: named vectors
 
+{/* Rust: examples/rust/text_embedding_qdrant/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 from cocoindex.resources.schema import VectorSchema
 import numpy as np
@@ -388,7 +816,89 @@ async def app_main() -> None:
         collection.declare_point(point)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::path::PathBuf;
+
+use cocoindex::connectors::qdrant::{
+    self, CollectionSchema, Distance, NamedPointVector, QdrantConnection,
+};
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+use cocoindex::prelude::*;
+use serde_json::json;
+
+const COLLECTION: &str = "TextEmbedding";
+
+cocoindex::context_key!(static DB: QdrantConnection);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
+);
+
+/// A computed point: id + vector + payload fields.
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct PointData {
+    id: u64,
+    #[coco(vector)]
+    vector: Vec<f32>,
+    filename: String,
+    chunk_start: i64,
+    chunk_end: i64,
+    text: String,
+}
+
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<PointData>> {
+    // chunk and embed the file ...
+}
+
+async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
+    let vector_dim = ctx.get_key(&EMBEDDER)?.dimension();
+    let target = qdrant::mount_collection_target(
+        &ctx,
+        &DB,
+        COLLECTION,
+        CollectionSchema::from_row::<PointData>(Distance::Cosine)?
+            .with_vector_dim("vector", vector_dim)?,
+    )
+    .await?;
+
+    let files = walk_items(&sourcedir, &["**/*.md"])?;
+    let points_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
+
+    for points in &points_by_file {
+        for p in points {
+            let payload = json!({
+                "filename": p.filename,
+                "chunk_start": p.chunk_start,
+                "chunk_end": p.chunk_end,
+                "text": p.text,
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            target.declare_named_vectors_point(
+                &ctx,
+                p.id,
+                [("vector", NamedPointVector::Single(p.vector.clone()))],
+                payload,
+            )?;
+        }
+    }
+    Ok(())
+}
+```
+
+See `examples/rust/text_embedding_qdrant` for the full program.
+
+</Fragment>
+</LangTabs>
+
 ### Example: dense + sparse hybrid vectors
+
+For Rust, see the snippet under [Dense + sparse vectors](#dense--sparse-vectors): `CollectionSchema::named` with a `QdrantSparseVectorDef`, and `declare_named_vectors_point` with `NamedPointVector::Sparse`.
 
 ```python
 from qdrant_client.http import models as qdrant_models
@@ -435,6 +945,8 @@ Qdrant only accepts two point ID types — this is enforced by the Qdrant server
 
 `uuid.UUID` instances are also accepted and converted to strings. `declare_point` validates the ID eagerly and raises `ValueError` for anything else, rather than letting the write fail later at the Qdrant server.
 
+In Rust, the id argument is `impl Into<QdrantPointId>`: a `u64` becomes `QdrantPointId::Num`, and a `String` or `&str` becomes `QdrantPointId::Uuid`.
+
 Qdrant stores every textual form of one UUID as the same point. CocoIndex therefore tracks a UUID point ID in its canonical form (hyphenated, lower case). If you declare two forms of one UUID in the same run, the second declaration fails as a duplicate.
 
 To derive a stable point ID from an arbitrary string key (e.g. a document path or chunk key), use a deterministic UUID:
@@ -447,7 +959,7 @@ point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"doc/{chunk_key}"))
 
 ## Payloads
 
-Point payloads are schemaless JSON objects. Any JSON-serializable Python data structure can be used:
+Point payloads are schemaless JSON objects. Any JSON-serializable Python data structure can be used. In Rust, the payload is a `serde_json::Map<String, Value>`, for example `json!({...}).as_object().unwrap().clone()`:
 
 ```python
 payload = {
@@ -468,6 +980,10 @@ payload = {
 
 The connector focuses on writing points to Qdrant. For vector search, use the Qdrant client directly:
 
+{/* Rust: examples/rust/text_embedding_qdrant/src/main.rs, rust/sdk/cocoindex/tests/qdrant_target.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 from qdrant_client.http import models as qdrant_models
 
@@ -486,6 +1002,30 @@ for point in results.points:
     print(f"Score: {point.score}, ID: {point.id}")
     print(f"Payload: {point.payload}")
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Single unnamed vector
+let hits = qdrant::vector_search(&conn, &collection, vec![0.0, 0.9, 0.1], 1).await?;
+
+// Named vector
+let hits = qdrant::named_vector_search(conn, COLLECTION, "vector", query_vec, TOP_K).await?;
+for hit in hits {
+    let filename = hit
+        .payload
+        .get("filename")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    println!("[{:.3}] {filename}", hit.score);
+}
+```
+
+The Rust SDK has search helpers: `vector_search`, `named_vector_search`, `multivector_search` and `named_multivector_search`, each returning `Vec<QdrantHit>` with a `score` and a `payload`. For any other query, such as a hybrid query with prefetch and fusion, use `conn.client()`, the underlying `qdrant_client::Qdrant`.
+
+</Fragment>
+</LangTabs>
 
 For named vectors:
 
