@@ -441,3 +441,47 @@ The current end-to-end reference is
 [`examples/rust/text_embedding`](../../examples/rust/text_embedding). It walks
 Markdown files, splits them into chunks, memoizes and batches embeddings, and
 declares Postgres/pgvector rows using a schema derived from the Rust row type.
+
+## Write rows to a cloud data warehouse
+
+The `bigquery` and `snowflake` features add table targets for the two
+warehouses, mirroring the Python connectors: a connection registered under a
+`ContextKey`, a schema derived from the row type, and a table handle to declare
+rows on. CocoIndex creates the dataset / database / schema / table when needed
+(`managed_by: ManagedBy::System`), `MERGE`s changed rows, skips unchanged ones,
+deletes un-declared ones, and `ALTER TABLE`s the columns when the row type
+changes. Neither service has an official Rust client, so both connectors talk
+HTTP through `reqwest`: BigQuery's v2 REST API with a service-account key or
+Application Default Credentials, and Snowflake's session protocol with
+password auth.
+
+```rust
+use cocoindex::connectors::bigquery::{self, BigQueryConfig, BigQueryConnection};
+
+cocoindex::context_key!(static BIGQUERY: BigQueryConnection);
+
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct Order {
+    order_id: String,
+    quantity: i64,
+    order_total: f64,
+    #[coco(json)]
+    attributes: serde_json::Value,   // a JSON column, written with PARSE_JSON
+}
+
+let conn = BigQueryConnection::connect(BigQueryConfig {
+    project: Some("my-project".into()),
+    ..Default::default()
+})?;
+// … Environment::builder().provide_key(&BIGQUERY, conn) …
+
+let schema = bigquery::TableSchema::from_row::<Order>(["order_id"])?;
+let table = bigquery::mount_table_target(&ctx, &BIGQUERY, "analytics", "orders", schema).await?;
+table.declare_row(&ctx, &order)?;
+```
+
+The Snowflake target is the same shape with `snowflake::SnowflakeConnection`,
+and `SnowflakeTableOptions { database, schema, .. }` naming where the table
+lives. Runnable projects:
+[`examples/rust/bigquery_target`](../../examples/rust/bigquery_target) and
+[`examples/rust/snowflake_target`](../../examples/rust/snowflake_target).

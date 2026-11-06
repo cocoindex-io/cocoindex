@@ -100,6 +100,25 @@ turbopuffer = [
     "chrono",
     "rust_decimal",
 ]
+# Google BigQuery target: v2 REST API over reqwest, with service-account JWT
+# signing (reuses the google_drive crypto crates) or Application Default
+# Credentials.
+bigquery = [
+    "dep:reqwest",
+    "dep:rsa",
+    "dep:sha2",
+    "dep:base64",
+    "chrono",
+    "rust_decimal",
+]
+# Snowflake target: the session + query-request HTTP protocol the official
+# connectors speak (password auth), over reqwest.
+snowflake = [
+    "dep:reqwest",
+    "dep:base64",
+    "chrono",
+    "rust_decimal",
+]
 neo4j = ["dep:neo4rs", "chrono"]
 falkordb = ["dep:redis", "chrono"]
 # Valkey/Redis (RediSearch) vector-search target. Reuses the `redis` crate.

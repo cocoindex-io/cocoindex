@@ -4,6 +4,8 @@
 pub mod amazon_s3;
 #[cfg(feature = "azure_blob")]
 pub mod azure_blob;
+#[cfg(feature = "bigquery")]
+pub mod bigquery;
 #[cfg(feature = "doris")]
 pub mod doris;
 #[cfg(feature = "falkordb")]
@@ -24,6 +26,8 @@ pub mod oci_object_storage;
 pub mod postgres;
 #[cfg(feature = "qdrant")]
 pub mod qdrant;
+#[cfg(feature = "snowflake")]
+pub mod snowflake;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 #[cfg(feature = "surrealdb")]
