@@ -184,7 +184,10 @@ impl Flow {
     }
 
     fn token_path(&self) -> std::path::PathBuf {
-        self.dir.path().join("tokens").join("google_drive_token.json")
+        self.dir
+            .path()
+            .join("tokens")
+            .join("google_drive_token.json")
     }
 
     fn account(&self) -> UserAccount {
@@ -236,7 +239,10 @@ fn land_on(url: String) {
         let (host, target) = rest.split_once('/').unwrap();
         let mut stream = std::net::TcpStream::connect(host).unwrap();
         stream
-            .write_all(format!("GET /{target} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes())
+            .write_all(
+                format!("GET /{target} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
             .unwrap();
         let mut response = String::new();
         let _ = stream.read_to_string(&mut response);
@@ -475,7 +481,10 @@ async fn a_revoked_sign_in_asks_to_sign_in_again_without_leaking_tokens() {
         Ok(_) => panic!("a revoked sign-in must not list files"),
         Err(err) => err.to_string(),
     };
-    assert!(message.contains("invalid_grant") && message.contains("Sign in again"), "{message}");
+    assert!(
+        message.contains("invalid_grant") && message.contains("Sign in again"),
+        "{message}"
+    );
     assert!(!message.contains("revoked-token") && !message.contains("access-1"));
 }
 
@@ -510,12 +519,11 @@ async fn sign_out_deletes_the_file_even_when_google_is_unreachable() {
         .sign_in_with(&flow.client_secrets, flow.options())
         .await
         .unwrap();
-    let unreachable = UserAccount::with_token_path(flow.token_path()).with_endpoints(
-        GoogleEndpoints {
+    let unreachable =
+        UserAccount::with_token_path(flow.token_path()).with_endpoints(GoogleEndpoints {
             revocation: "http://127.0.0.1:9/revoke".to_string(),
             ..flow.google.endpoints()
-        },
-    );
+        });
     assert!(unreachable.sign_out().await.unwrap());
     assert!(!flow.token_path().exists());
 }
@@ -548,7 +556,9 @@ async fn a_token_file_of_another_version_means_signing_in_again() {
     file["version"] = serde_json::json!(2);
     std::fs::write(flow.token_path(), file.to_string()).unwrap();
     assert!(!account.is_signed_in());
-    let err = GoogleDriveClient::from_user_account(&account).err().unwrap();
+    let err = GoogleDriveClient::from_user_account(&account)
+        .err()
+        .unwrap();
     assert!(err.to_string().contains("Sign in once"), "{err}");
 }
 
@@ -556,9 +566,12 @@ async fn a_token_file_of_another_version_means_signing_in_again() {
 async fn a_run_without_a_sign_in_says_how_to_sign_in() {
     let dir = tempfile::tempdir().unwrap();
     let account = UserAccount::with_token_path(dir.path().join("none.json"));
-    let err = GoogleDriveClient::from_user_account(&account).err().unwrap();
+    let err = GoogleDriveClient::from_user_account(&account)
+        .err()
+        .unwrap();
     assert!(
-        err.to_string().contains("No usable Google sign-in is stored"),
+        err.to_string()
+            .contains("No usable Google sign-in is stored"),
         "{err}"
     );
 }

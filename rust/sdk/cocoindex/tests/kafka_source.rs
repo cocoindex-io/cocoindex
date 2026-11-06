@@ -245,13 +245,17 @@ async fn kafka_source_live_watch_tails_new_records() -> Result<()> {
                     let topic = topic.clone();
                     async move {
                         let feed = kafka::topic_as_map(&consumer, topic);
-                        ctx.mount_each_live(&"messages", feed, move |_ctx, message: KafkaMessage| {
-                            let processed = processed.clone();
-                            async move {
-                                processed.lock().unwrap().push(message);
-                                Ok(())
-                            }
-                        })
+                        ctx.mount_each_live(
+                            &"messages",
+                            feed,
+                            move |_ctx, message: KafkaMessage| {
+                                let processed = processed.clone();
+                                async move {
+                                    processed.lock().unwrap().push(message);
+                                    Ok(())
+                                }
+                            },
+                        )
                         .await
                     }
                 }
@@ -350,7 +354,15 @@ async fn kafka_source_stream_reads_every_record_of_several_topics() -> Result<()
     }
     produce_raw(&brokers, &topic_a, 1, Some("gone"), None, BTreeMap::new()).await?;
     let headers = BTreeMap::from([("trace".to_string(), b"t-1".to_vec())]);
-    produce_raw(&brokers, &topic_b, 0, Some("kb"), Some("d"), headers.clone()).await?;
+    produce_raw(
+        &brokers,
+        &topic_b,
+        0,
+        Some("kb"),
+        Some("d"),
+        headers.clone(),
+    )
+    .await?;
 
     let consumer = kafka::KafkaConsumer::connect(&broker_refs).await?;
     let processed: Processed = Arc::new(Mutex::new(Vec::new()));

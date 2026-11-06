@@ -770,7 +770,9 @@ struct Tokens {
 
 impl std::fmt::Debug for Tokens {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Tokens").field("email", &self.email).finish_non_exhaustive()
+        f.debug_struct("Tokens")
+            .field("email", &self.email)
+            .finish_non_exhaustive()
     }
 }
 
@@ -878,7 +880,11 @@ fn check_private(path: &std::path::Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(path).map_err(Error::Io)?.permissions().mode() & 0o777;
+        let mode = std::fs::metadata(path)
+            .map_err(Error::Io)?
+            .permissions()
+            .mode()
+            & 0o777;
         if mode & 0o077 != 0 {
             return Err(Error::engine(format!(
                 "The token file {} is accessible to other users (mode {mode:04o}); run \
@@ -898,10 +904,16 @@ fn load_tokens(path: &std::path::Path) -> Result<Option<Tokens>> {
     }
     check_private(path)?;
     let raw = std::fs::read_to_string(path).map_err(|e| {
-        Error::engine(format!("Cannot read the token file {}: {e}", path.display()))
+        Error::engine(format!(
+            "Cannot read the token file {}: {e}",
+            path.display()
+        ))
     })?;
     let document: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-        Error::engine(format!("Cannot read the token file {}: {e}", path.display()))
+        Error::engine(format!(
+            "Cannot read the token file {}: {e}",
+            path.display()
+        ))
     })?;
     if document.get("version").and_then(|v| v.as_u64()) != Some(TOKEN_FILE_VERSION) {
         return Ok(None);
@@ -952,14 +964,11 @@ async fn token_request(
     token_url: &str,
     form: &[(&str, &str)],
 ) -> std::result::Result<serde_json::Value, TokenRequestError> {
-    let response = http
-        .post(token_url)
-        .form(form)
-        .send()
-        .await
-        .map_err(|e| TokenRequestError::Other(Error::engine(format!(
+    let response = http.post(token_url).form(form).send().await.map_err(|e| {
+        TokenRequestError::Other(Error::engine(format!(
             "Cannot reach Google's token endpoint: {e}"
-        ))))?;
+        )))
+    })?;
     let status = response.status();
     let body: Option<serde_json::Value> = response.json().await.ok();
     if status.as_u16() >= 400 {
@@ -983,7 +992,11 @@ async fn token_request(
             "Google's token endpoint returned no JSON.",
         )));
     };
-    if payload.get("access_token").and_then(|v| v.as_str()).is_none() {
+    if payload
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .is_none()
+    {
         return Err(TokenRequestError::Other(Error::engine(
             "Google's token endpoint returned no access token.",
         )));
@@ -999,9 +1012,11 @@ enum TokenRequestError {
 impl From<TokenRequestError> for Error {
     fn from(e: TokenRequestError) -> Self {
         match e {
-            TokenRequestError::Refused(r) => {
-                Error::engine(format!("Google refused the request: {}{}.", r.code, r.detail()))
-            }
+            TokenRequestError::Refused(r) => Error::engine(format!(
+                "Google refused the request: {}{}.",
+                r.code,
+                r.detail()
+            )),
             TokenRequestError::Other(e) => e,
         }
     }
@@ -1024,7 +1039,11 @@ fn posix_now() -> f64 {
 /// The signed-in account's address, from the Drive API. Also the first call
 /// that needs the Drive API enabled in the client's project, so its failure is
 /// explained here.
-async fn account_email(http: &reqwest::Client, about_url: &str, access_token: &str) -> Result<String> {
+async fn account_email(
+    http: &reqwest::Client,
+    about_url: &str,
+    access_token: &str,
+) -> Result<String> {
     let response = http
         .get(about_url)
         .query(&[("fields", "user(emailAddress)")])
@@ -1063,7 +1082,11 @@ async fn account_email(http: &reqwest::Client, about_url: &str, access_token: &s
 
 /// A new access token from the refresh token. Google does not rotate refresh
 /// tokens. An `invalid_grant` or a refused client means signing in again.
-async fn refresh_tokens(http: &reqwest::Client, token_url: &str, tokens: &Tokens) -> Result<Tokens> {
+async fn refresh_tokens(
+    http: &reqwest::Client,
+    token_url: &str,
+    tokens: &Tokens,
+) -> Result<Tokens> {
     let payload = match token_request(
         http,
         token_url,
@@ -1466,9 +1489,14 @@ async fn run_consent(
                 "The sign-in was cancelled on the consent screen.",
             ));
         }
-        return Err(Error::engine(format!("Google refused the sign-in: {error}.")));
+        return Err(Error::engine(format!(
+            "Google refused the sign-in: {error}."
+        )));
     }
-    if !constant_time_eq(params.get("state").map(String::as_str).unwrap_or(""), &state) {
+    if !constant_time_eq(
+        params.get("state").map(String::as_str).unwrap_or(""),
+        &state,
+    ) {
         return Err(Error::engine(
             "The redirect does not belong to this sign-in (its state does not match); \
              nothing was stored. Start the sign-in again.",
@@ -1495,14 +1523,14 @@ async fn run_consent(
     .await
     {
         Ok(payload) => Ok(payload),
-        Err(TokenRequestError::Refused(r)) if is_client_refusal(&r.code) => Err(Error::engine(
-            format!(
+        Err(TokenRequestError::Refused(r)) if is_client_refusal(&r.code) => {
+            Err(Error::engine(format!(
                 "Google refused the OAuth client in the client file: {}. Download the \
                  current JSON of the Desktop app client (its secret may have been reset) \
                  and sign in again (see {OWN_CLIENT_DOCS}).",
                 r.code
-            ),
-        )),
+            )))
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -1553,7 +1581,10 @@ impl UserAccount {
     /// your own (see the docs linked from the error when it is unusable).
     /// Opens the consent page in the browser, or prints the link when this
     /// host has none, and stores the tokens readable by this user only.
-    pub async fn sign_in(&self, client_secrets_path: impl AsRef<std::path::Path>) -> Result<String> {
+    pub async fn sign_in(
+        &self,
+        client_secrets_path: impl AsRef<std::path::Path>,
+    ) -> Result<String> {
         self.sign_in_with(client_secrets_path, SignInOptions::default())
             .await
     }

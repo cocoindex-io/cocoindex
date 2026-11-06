@@ -26,9 +26,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use cocoindex_utils::fingerprint::Fingerprint;
 use iggy::prelude::{
-    Client, Consumer, ConsumerGroupClient, ConsumerOffsetClient, Identifier, IggyClient,
-    IggyError, IggyMessage, MessageClient, Partitioning, PolledMessages, PollingStrategy,
-    TopicClient,
+    Client, Consumer, ConsumerGroupClient, ConsumerOffsetClient, Identifier, IggyClient, IggyError,
+    IggyMessage, MessageClient, Partitioning, PolledMessages, PollingStrategy, TopicClient,
 };
 use serde::{Deserialize, Serialize};
 
@@ -292,12 +291,14 @@ impl TargetHandler<Vec<u8>> for MessageHandler {
 /// Resolve the live [`IggyProducer`] from the host context by the `ContextKey`
 /// name it was provided under.
 fn resolve_producer(host_ctx: &Arc<ContextStore>, producer_key: &str) -> Result<Arc<IggyProducer>> {
-    host_ctx.resolve::<IggyProducer>(producer_key).ok_or_else(|| {
-        Error::engine(format!(
-            "iggy target: producer `{producer_key}` was not provided in the environment \
+    host_ctx
+        .resolve::<IggyProducer>(producer_key)
+        .ok_or_else(|| {
+            Error::engine(format!(
+                "iggy target: producer `{producer_key}` was not provided in the environment \
              (call Environment::builder().provide_key(&KEY, producer))"
-        ))
-    })
+            ))
+        })
 }
 
 impl MessageHandler {
@@ -306,41 +307,43 @@ impl MessageHandler {
         let stream = self.stream.clone();
         let topic = self.topic.clone();
         let partition = self.partition;
-        TargetActionSink::from_async_fn_with_ctx(move |host_ctx, actions: Vec<TargetAction<MessageAction>>| {
-            let producer_key = producer_key.clone();
-            let stream = stream.clone();
-            let topic = topic.clone();
-            async move {
-                if actions.is_empty() {
-                    return Ok(());
-                }
-                let client = resolve_producer(&host_ctx, &producer_key)?.client.clone();
-                let stream_id = Identifier::from_str_value(&stream)
-                    .map_err(|e| Error::engine(format!("iggy stream id {stream:?}: {e}")))?;
-                let topic_id = Identifier::from_str_value(&topic)
-                    .map_err(|e| Error::engine(format!("iggy topic id {topic:?}: {e}")))?;
-                let partitioning = Partitioning::partition_id(partition);
+        TargetActionSink::from_async_fn_with_ctx(
+            move |host_ctx, actions: Vec<TargetAction<MessageAction>>| {
+                let producer_key = producer_key.clone();
+                let stream = stream.clone();
+                let topic = topic.clone();
+                async move {
+                    if actions.is_empty() {
+                        return Ok(());
+                    }
+                    let client = resolve_producer(&host_ctx, &producer_key)?.client.clone();
+                    let stream_id = Identifier::from_str_value(&stream)
+                        .map_err(|e| Error::engine(format!("iggy stream id {stream:?}: {e}")))?;
+                    let topic_id = Identifier::from_str_value(&topic)
+                        .map_err(|e| Error::engine(format!("iggy topic id {topic:?}: {e}")))?;
+                    let partitioning = Partitioning::partition_id(partition);
 
-                let mut messages = Vec::with_capacity(actions.len());
-                for action in actions {
-                    let msg = match action {
-                        TargetAction::Create(m)
-                        | TargetAction::Update(m)
-                        | TargetAction::Delete(m) => m,
-                    };
-                    let message = IggyMessage::builder()
-                        .payload(Bytes::from(msg.value))
-                        .build()
-                        .map_err(|e| Error::engine(format!("iggy build message: {e}")))?;
-                    messages.push(message);
+                    let mut messages = Vec::with_capacity(actions.len());
+                    for action in actions {
+                        let msg = match action {
+                            TargetAction::Create(m)
+                            | TargetAction::Update(m)
+                            | TargetAction::Delete(m) => m,
+                        };
+                        let message = IggyMessage::builder()
+                            .payload(Bytes::from(msg.value))
+                            .build()
+                            .map_err(|e| Error::engine(format!("iggy build message: {e}")))?;
+                        messages.push(message);
+                    }
+                    client
+                        .send_messages(&stream_id, &topic_id, &partitioning, &mut messages)
+                        .await
+                        .map_err(|e| Error::engine(format!("iggy send_messages: {e}")))?;
+                    Ok(())
                 }
-                client
-                    .send_messages(&stream_id, &topic_id, &partitioning, &mut messages)
-                    .await
-                    .map_err(|e| Error::engine(format!("iggy send_messages: {e}")))?;
-                Ok(())
-            }
-        })
+            },
+        )
     }
 }
 
@@ -693,11 +696,7 @@ impl TopicPoller {
 
     /// Read `partitions` from offset 0 to their current end, passing each
     /// `(partition, message)` to `f`, and record where each ended for `watch`.
-    async fn scan(
-        &self,
-        partitions: &[u32],
-        mut f: impl FnMut(u32, &IggyMessage),
-    ) -> Result<()> {
+    async fn scan(&self, partitions: &[u32], mut f: impl FnMut(u32, &IggyMessage)) -> Result<()> {
         let mut ends: BTreeMap<u32, u64> = BTreeMap::new();
         for &pid in partitions {
             let mut offset = 0u64;
@@ -919,7 +918,9 @@ impl LiveMapFeed<String, Vec<u8>> for IggyTopicMap {
     }
 
     async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
-        self.poller.watch(&[self.partition], self, &subscriber).await
+        self.poller
+            .watch(&[self.partition], self, &subscriber)
+            .await
     }
 }
 

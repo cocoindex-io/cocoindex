@@ -410,9 +410,12 @@ async fn iggy_source_stream_reads_all_partitions() -> Result<()> {
         let producer = producer.clone();
         let stream = stream.clone();
         let pid = *pid;
-        let app =
-            app_with_producer("IggyMpartPopulate", &tmp.path().join(format!("pop_{i}")), &producer)
-                .await;
+        let app = app_with_producer(
+            "IggyMpartPopulate",
+            &tmp.path().join(format!("pop_{i}")),
+            &producer,
+        )
+        .await;
         app.run(move |ctx| {
             let stream = stream.clone();
             let value = value.clone();
@@ -650,14 +653,7 @@ async fn iggy_source_init_retries_wait_for_a_late_topic() -> Result<()> {
         async move {
             tokio::time::sleep(Duration::from_millis(600)).await;
             ensure_stream_topic(&producer, &stream, topic).await;
-            declare(
-                &producer,
-                &pop_db,
-                &stream,
-                topic,
-                vec![("k1", "v1")],
-            )
-            .await;
+            declare(&producer, &pop_db, &stream, topic, vec![("k1", "v1")]).await;
         }
     };
     let processed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));

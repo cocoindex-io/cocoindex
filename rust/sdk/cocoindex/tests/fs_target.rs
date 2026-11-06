@@ -16,7 +16,11 @@ async fn nested_dir_targets_are_created_and_removed_with_their_contents() {
 
     // Run 1: a nested directory target with a file, and a plain file whose
     // parent needs creating.
-    let app = App::builder("fs_nested").db_path(&db).build().await.unwrap();
+    let app = App::builder("fs_nested")
+        .db_path(&db)
+        .build()
+        .await
+        .unwrap();
     let out1 = out.clone();
     app.update(move |ctx| async move {
         let t = DirTarget::mount(&ctx, &out1)?;
@@ -37,7 +41,10 @@ async fn nested_dir_targets_are_created_and_removed_with_their_contents() {
     .await
     .unwrap();
     assert_eq!(std::fs::read(out.join("sub/b.txt")).unwrap(), b"BBB");
-    assert_eq!(std::fs::read(out.join("sub/deep/er/c.txt")).unwrap(), b"CCC");
+    assert_eq!(
+        std::fs::read(out.join("sub/deep/er/c.txt")).unwrap(),
+        b"CCC"
+    );
     assert_eq!(std::fs::read(out.join("made/a.txt")).unwrap(), b"AAA");
     // Something the user put there, inside a declared directory.
     std::fs::write(out.join("sub/user.txt"), b"mine").unwrap();
@@ -45,7 +52,11 @@ async fn nested_dir_targets_are_created_and_removed_with_their_contents() {
 
     // Run 2: the nested target is gone → the directory and everything under
     // it is removed; the plain file stays.
-    let app = App::builder("fs_nested").db_path(&db).build().await.unwrap();
+    let app = App::builder("fs_nested")
+        .db_path(&db)
+        .build()
+        .await
+        .unwrap();
     let out2 = out.clone();
     app.update(move |ctx| async move {
         let t = DirTarget::mount(&ctx, &out2)?;
@@ -54,12 +65,19 @@ async fn nested_dir_targets_are_created_and_removed_with_their_contents() {
     })
     .await
     .unwrap();
-    assert!(!out.join("sub").exists(), "an undeclared directory target is removed");
+    assert!(
+        !out.join("sub").exists(),
+        "an undeclared directory target is removed"
+    );
     assert_eq!(std::fs::read(out.join("made/a.txt")).unwrap(), b"AAA");
     drop(app);
 
     // A file whose parent does not exist is an error without create_parent_dirs.
-    let app = App::builder("fs_nested").db_path(&db).build().await.unwrap();
+    let app = App::builder("fs_nested")
+        .db_path(&db)
+        .build()
+        .await
+        .unwrap();
     let out3 = out.clone();
     let result = app
         .update(move |ctx| async move {
@@ -110,7 +128,10 @@ async fn a_standalone_file_target_is_written_and_removed() {
 
     let app = App::builder("fs_file").db_path(&db).build().await.unwrap();
     app.update(move |_ctx| async move { Ok(()) }).await.unwrap();
-    assert!(!file.exists(), "a file target no longer declared is removed");
+    assert!(
+        !file.exists(),
+        "a file target no longer declared is removed"
+    );
 }
 
 cocoindex::context_key!(static OUT_DIR: PathBuf);

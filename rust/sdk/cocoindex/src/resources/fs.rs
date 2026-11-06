@@ -572,10 +572,8 @@ impl DirTarget {
         let path = normalize_entry_name(path)?;
         declare_target_state(
             ctx,
-            self.provider.target_state(
-                self.entry_key(&path)?,
-                FsEntry::Dir { create_parent_dirs },
-            ),
+            self.provider
+                .target_state(self.entry_key(&path)?, FsEntry::Dir { create_parent_dirs }),
         )?;
         Ok(DirTarget {
             provider: self.provider.clone(),
@@ -771,8 +769,11 @@ impl TargetHandler<FsEntry> for FileHandler {
 /// The base key and path an `[base_key, root, path]` target-state key names.
 fn entry_path(key: &StableKey) -> Result<(Option<String>, PathBuf)> {
     if let StableKey::Array(parts) = key
-        && let [StableKey::Str(base_key), StableKey::Str(root), StableKey::Str(relative)] =
-            &parts[..]
+        && let [
+            StableKey::Str(base_key),
+            StableKey::Str(root),
+            StableKey::Str(relative),
+        ] = &parts[..]
     {
         let base_key = (!base_key.is_empty()).then(|| base_key.to_string());
         let root = PathBuf::from(&**root);
@@ -907,12 +908,23 @@ mod tests {
         let maybe_missing = handler
             .reconcile(key("a.txt"), Some(file(b"A")), vec![fp(b"A")], true)
             .unwrap();
-        assert!(maybe_missing.is_some(), "a possibly-missing file is rewritten");
+        assert!(
+            maybe_missing.is_some(),
+            "a possibly-missing file is rewritten"
+        );
 
         let ambiguous = handler
-            .reconcile(key("a.txt"), Some(file(b"A")), vec![fp(b"A"), fp(b"B")], false)
+            .reconcile(
+                key("a.txt"),
+                Some(file(b"A")),
+                vec![fp(b"A"), fp(b"B")],
+                false,
+            )
             .unwrap();
-        assert!(ambiguous.is_some(), "an ambiguous previous state is rewritten");
+        assert!(
+            ambiguous.is_some(),
+            "an ambiguous previous state is rewritten"
+        );
 
         let changed = handler
             .reconcile(key("a.txt"), Some(file(b"B")), vec![fp(b"A")], false)
@@ -935,7 +947,12 @@ mod tests {
         assert_eq!(action.base_key, None);
 
         let out = handler
-            .reconcile(key("a.txt"), None, vec![Fingerprint::from_bytes(b"A")], false)
+            .reconcile(
+                key("a.txt"),
+                None,
+                vec![Fingerprint::from_bytes(b"A")],
+                false,
+            )
             .unwrap()
             .unwrap();
         let TargetAction::Update(action) = out.action else {
@@ -943,13 +960,18 @@ mod tests {
         };
         assert!(matches!(action.op, FsOp::RemoveFile));
 
-        let known_absent = handler.reconcile(key("a.txt"), None, vec![], false).unwrap();
+        let known_absent = handler
+            .reconcile(key("a.txt"), None, vec![], false)
+            .unwrap();
         assert!(known_absent.is_none());
     }
 
     #[test]
     fn entry_names_are_normalized_and_contained() {
-        assert_eq!(normalize_entry_name("./a/./b.txt").unwrap(), Path::new("a/b.txt"));
+        assert_eq!(
+            normalize_entry_name("./a/./b.txt").unwrap(),
+            Path::new("a/b.txt")
+        );
         assert!(normalize_entry_name("../b.txt").is_err());
         assert!(normalize_entry_name("a/../../b.txt").is_err());
         assert!(normalize_entry_name("/abs.txt").is_err());

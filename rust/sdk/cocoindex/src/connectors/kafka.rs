@@ -139,7 +139,10 @@ impl KafkaTls {
                     Error::engine(format!("kafka tls: parse {}: {e}", path.display()))
                 })?;
                 roots.add(cert).map_err(|e| {
-                    Error::engine(format!("kafka tls: CA certificate in {}: {e}", path.display()))
+                    Error::engine(format!(
+                        "kafka tls: CA certificate in {}: {e}",
+                        path.display()
+                    ))
                 })?;
             }
         }
@@ -453,13 +456,18 @@ impl TargetHandler<Vec<u8>> for MessageHandler {
 
 /// Resolve the live [`KafkaProducer`] from the host context by the
 /// `ContextKey` name it was provided under.
-fn resolve_producer(host_ctx: &Arc<ContextStore>, producer_key: &str) -> Result<Arc<KafkaProducer>> {
-    host_ctx.resolve::<KafkaProducer>(producer_key).ok_or_else(|| {
-        Error::engine(format!(
-            "kafka target: producer `{producer_key}` was not provided in the environment \
+fn resolve_producer(
+    host_ctx: &Arc<ContextStore>,
+    producer_key: &str,
+) -> Result<Arc<KafkaProducer>> {
+    host_ctx
+        .resolve::<KafkaProducer>(producer_key)
+        .ok_or_else(|| {
+            Error::engine(format!(
+                "kafka target: producer `{producer_key}` was not provided in the environment \
              (call Environment::builder().provide_key(&KEY, producer))"
-        ))
-    })
+            ))
+        })
 }
 
 impl MessageHandler {
@@ -1093,10 +1101,7 @@ pub fn topic_as_stream(
 
 /// The stream's child key for a message: its position.
 fn position_key(message: &KafkaMessage) -> String {
-    format!(
-        "{}:{}:{}",
-        message.topic, message.partition, message.offset
-    )
+    format!("{}:{}:{}", message.topic, message.partition, message.offset)
 }
 
 #[crate::async_trait]
