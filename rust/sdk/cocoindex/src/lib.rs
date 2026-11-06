@@ -21,6 +21,7 @@ pub mod error;
     feature = "lancedb"
 ))]
 mod finite;
+pub mod inspect;
 pub mod live_component;
 #[doc(hidden)]
 pub mod logic;

@@ -224,6 +224,29 @@ fn update_preview_ls_show_drop() {
         stdout(&long)
     );
     assert!(stdout(&long).contains("processor:app:FixtureApp"));
+    // The whole block of each path, in the Python CLI's format. Target states
+    // come in stored (fingerprint) order, which depends on the output path.
+    let out_dir = sb.path("out").display().to_string();
+    let either_order = |text: String, render: &dyn Fn(&str, &str) -> String| {
+        assert!(
+            text == render("a.txt", "b.txt") || text == render("b.txt", "a.txt"),
+            "{text}"
+        );
+    };
+    either_order(stdout(&long), &|first, second| {
+        format!(
+            "Stable paths:\n  /\n    type:component version:1 processor:app:FixtureApp\n    \
+             has_memoization:false target_state_count:2\n    Target states:\n      \
+             - path:/@cocoindex/localfs/file/[\"{out_dir}\",\"{first}\"]\n        \
+             states:1:Existing schema_version:0 generation:None\n      \
+             - path:/@cocoindex/localfs/file/[\"{out_dir}\",\"{second}\"]\n        \
+             states:1:Existing schema_version:0 generation:None\n\n  \
+             /\"upper/a.txt\"\n    type:component version:1 processor:mount:upper\n    \
+             has_memoization:true target_state_count:0\n\n  \
+             /\"upper/b.txt\"\n    type:component version:1 processor:mount:upper\n    \
+             has_memoization:true target_state_count:0\n\n"
+        )
+    });
     let one = sb.cli(&[
         "show",
         "--db",
@@ -242,12 +265,27 @@ fn update_preview_ls_show_drop() {
         "FixtureApp",
         "--target-states",
     ]);
-    let text = stdout(&states);
-    assert!(text.starts_with("Target states:\n"), "{text}");
-    assert!(
-        text.contains("\"a.txt\"") && text.contains("owner:/"),
-        "{text}"
-    );
+    either_order(stdout(&states), &|first, second| {
+        format!(
+            "Target states:\n  /@cocoindex/localfs/file/[\"{out_dir}\",\"{first}\"]\n    \
+             owner:/\n  /@cocoindex/localfs/file/[\"{out_dir}\",\"{second}\"]\n    owner:/\n"
+        )
+    });
+    let states_tree = sb.cli(&[
+        "show",
+        "--db",
+        &sb.db(),
+        "--app-name",
+        "FixtureApp",
+        "--target-states",
+        "--tree",
+    ]);
+    either_order(stdout(&states_tree), &|first, second| {
+        format!(
+            "Target states:\n- @cocoindex/localfs/file\n  - [\"{out_dir}\",\"{first}\"] owner:/\n  \
+             - [\"{out_dir}\",\"{second}\"] owner:/\n"
+        )
+    });
 
     // show through the binary (resolves the db path and app over the protocol).
     let show_target = sb.cli(&["show", &target("FixtureApp")]);

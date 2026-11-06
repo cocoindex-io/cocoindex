@@ -145,6 +145,11 @@ impl Environment {
         &self.inner.db_path
     }
 
+    /// The engine environment, for `cocoindex::inspect`.
+    pub(crate) fn core(&self) -> &CoreEnvironment<RustProfile> {
+        &self.inner.core_env
+    }
+
     /// Names of the apps that have persisted state in this environment's db.
     pub(crate) async fn persisted_app_names(&self) -> Result<Vec<String>> {
         Ok(cocoindex_core::inspect::db_inspect::list_app_names(&self.inner.core_env).await?)

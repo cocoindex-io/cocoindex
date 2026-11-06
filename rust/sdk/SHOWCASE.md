@@ -80,6 +80,41 @@ async fn main() -> Result<()> {
 }
 ```
 
+## Inspect stored state
+
+`cocoindex::inspect` reads what an app has stored in the state db: its stable
+paths, the details of each one (processor, version, target states), and the
+tracked target states with their owner component. It is the Rust form of
+Python's `cocoindex.inspect`, and `cocoindex show` prints the same data. Each
+function takes an `App`; its `_by_name` form takes an `Environment` and an app
+name.
+
+```rust
+use cocoindex::inspect::{self, StablePath, StablePathQuery};
+use futures::TryStreamExt;
+
+for path in inspect::list_stable_paths(&app).await? {
+    println!("{path}");
+}
+
+// Streams read in one transaction and buffer nothing.
+let mut entries = std::pin::pin!(inspect::iter_target_states(&app).await);
+while let Some(entry) = entries.try_next().await? {
+    println!("{} owner:{}", entry.readable_path, entry.owner_component_path);
+}
+
+// One path, with the paths under it.
+let query = StablePathQuery { include_children: true, ..Default::default() };
+let details = inspect::query_stable_path_details(&app, &StablePath::root(), query).await?;
+
+// Without the `App`: an environment and the app's name.
+let details = inspect::get_stable_path_detail_by_name(&env, "MyApp", &StablePath::root()).await?;
+```
+
+Both SDKs write one state db format. The Python CLI reads a db that a Rust app
+wrote (`cocoindex show --db PATH --app-name NAME`), and the Rust CLI reads a
+Python app's db the same way.
+
 ## Declare typed context resources
 
 `context_key!` gives a resource a stable name and type without requiring users
