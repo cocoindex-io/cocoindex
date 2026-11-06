@@ -13,7 +13,24 @@ use cocoindex_code_ast::{CodeSource, ParseOutcome};
 const SYNTAX_LEVEL_GAP_COST: usize = 512;
 const MISSING_OVERLAP_COST: usize = 512;
 const PER_LINE_BREAK_LEVEL_GAP_COST: usize = 64;
-const TOO_SMALL_CHUNK_COST: usize = 1048576;
+/// The cost of a chunk with no content at all: as much as 16 syntax-level gaps.
+/// A chunk under `min_chunk_size` pays this times its squared shortfall.
+const TOO_SMALL_CHUNK_COST: u64 = 16 * SYNTAX_LEVEL_GAP_COST as u64;
+/// Extra cost of a chunk under a quarter of `chunk_size`.
+const TINY_CHUNK_COST: usize = 6 * SYNTAX_LEVEL_GAP_COST;
+/// The same with overlap on: a chunk that is mostly overlap adds little.
+const TINY_CHUNK_WITH_OVERLAP_COST: usize = 16 * SYNTAX_LEVEL_GAP_COST;
+/// Cost of a chunk boundary inside a syntax node that fits in `chunk_size`.
+const CUT_FITTING_NODE_COST: u32 = 8 * SYNTAX_LEVEL_GAP_COST as u32;
+/// Cost of a chunk boundary between a node's header and its `body`.
+const CUT_HEADER_FROM_BODY_COST: u32 = 4 * SYNTAX_LEVEL_GAP_COST as u32;
+/// The cost is computed in fixed point, without a division per chunk:
+/// `(shortfall · (2³² - 1) / min_chunk_size)² >> TOO_SMALL_CHUNK_COST_SHIFT`,
+/// which is `TOO_SMALL_CHUNK_COST · (shortfall / min_chunk_size)²`. The scaled
+/// shortfall is under 2³², as `shortfall <= min_chunk_size`, so its square
+/// fits in a `u64`.
+const TOO_SMALL_CHUNK_COST_SHIFT: u32 = 64 - TOO_SMALL_CHUNK_COST.ilog2();
+const _: () = assert!(TOO_SMALL_CHUNK_COST.is_power_of_two());
 
 /// Configuration for a custom language with regex-based separators.
 #[derive(Debug, Clone)]
@@ -39,7 +56,8 @@ pub struct RecursiveSplitConfig {
 pub struct RecursiveChunkConfig {
     /// Target chunk size in bytes.
     pub chunk_size: usize,
-    /// Minimum chunk size in bytes. Defaults to chunk_size / 2.
+    /// Minimum chunk size in bytes. It is a soft floor: a chunk may be smaller
+    /// where that avoids a worse split point. Defaults to chunk_size / 2.
     pub min_chunk_size: Option<usize>,
     /// Overlap between consecutive chunks in bytes.
     pub chunk_overlap: Option<usize>,
@@ -83,6 +101,8 @@ struct InternalChunk<'t, 's: 't> {
     full_text: &'s str,
     range: TextRange,
     kind: ChunkKind<'t>,
+    /// This node is the `body` field of its parent: its header precedes it.
+    is_body: bool,
 }
 
 struct TextChunksIter<'t, 's: 't> {
@@ -139,6 +159,7 @@ impl<'t, 's: 't> Iterator for TextChunksIter<'t, 's> {
                 lang_config: self.lang_config,
                 next_regexp_sep_id: self.regexp_sep_id + 1,
             },
+            is_body: false,
         })
     }
 }
@@ -167,6 +188,7 @@ impl<'t, 's: 't> TreeSitterNodeIter<'t, 's> {
                     lang_config: &DEFAULT_LANGUAGE_CONFIG,
                     next_regexp_sep_id: 0,
                 },
+                is_body: false,
             })
         } else {
             None
@@ -189,6 +211,7 @@ impl<'t, 's: 't> Iterator for TreeSitterNodeIter<'t, 's> {
         {
             return Some(gap);
         }
+        let is_body = cursor.field_name() == Some("body");
         if !cursor.goto_next_sibling() {
             self.cursor = None;
         }
@@ -200,6 +223,7 @@ impl<'t, 's: 't> Iterator for TreeSitterNodeIter<'t, 's> {
                 tree_sitter_info: self.lang_config,
                 node,
             },
+            is_body,
         })
     }
 }
@@ -266,6 +290,10 @@ struct AtomChunk {
     boundary_syntax_level: usize,
     internal_lb_level: LineBreakLevel,
     boundary_lb_level: LineBreakLevel,
+    /// Cost of ending a chunk, or starting one, at this atom's start: the
+    /// boundary is inside a syntax node that fits in `chunk_size`, or between
+    /// a node's header and its body.
+    boundary_cut_cost: u32,
 }
 
 struct AtomChunksCollector<'s> {
@@ -276,7 +304,7 @@ struct AtomChunksCollector<'s> {
 }
 
 impl<'s> AtomChunksCollector<'s> {
-    fn collect(&mut self, range: TextRange) {
+    fn collect(&mut self, range: TextRange, boundary_cut_cost: u32) {
         // Trim trailing whitespaces.
         let end_trimmed_text = &self.full_text[range.start..range.end].trim_end();
         if end_trimmed_text.is_empty() {
@@ -304,6 +332,7 @@ impl<'s> AtomChunksCollector<'s> {
             boundary_syntax_level: self.min_level,
             internal_lb_level: line_break_level(trimmed_text),
             boundary_lb_level,
+            boundary_cut_cost,
         });
         self.min_level = self.curr_level;
     }
@@ -314,6 +343,7 @@ impl<'s> AtomChunksCollector<'s> {
             boundary_syntax_level: self.min_level,
             internal_lb_level: LineBreakLevel::Inline,
             boundary_lb_level: LineBreakLevel::DoubleNewline,
+            boundary_cut_cost: 0,
         });
         self.atom_chunks
     }
@@ -329,15 +359,70 @@ struct InternalRecursiveChunker<'s> {
     chunk_size: usize,
     chunk_overlap: usize,
     min_chunk_size: usize,
+    /// `(2³² - 1) / min_chunk_size`: the fixed-point scale for `too_small_chunk_cost`.
+    too_small_chunk_cost_scale: u64,
     min_atom_chunk_size: usize,
+    tiny_chunk_cost: usize,
 }
 
+/// A syntax node being walked, as a byte range, for `boundary_cut_cost`.
+type NodeSpan = (usize, usize);
+
 impl<'t, 's: 't> InternalRecursiveChunker<'s> {
+    /// The cost of cutting at the start of the atom at `range`, given the
+    /// syntax nodes (outermost first) that the walk is inside of.
+    ///
+    /// A cut inside a node that fits in `chunk_size` is avoidable, since that
+    /// node can stay whole in one chunk; it costs `CUT_FITTING_NODE_COST` for
+    /// the largest such node. A cut that leaves a header without its body
+    /// costs `CUT_HEADER_FROM_BODY_COST`.
+    fn boundary_cut_cost(
+        &self,
+        nodes: &[Option<NodeSpan>],
+        range: TextRange,
+        follows_header: bool,
+    ) -> u32 {
+        let text = &self.full_text[range.start..range.end];
+        let pos = range.start + (text.len() - text.trim_start().len());
+        let mut cost = if follows_header {
+            CUT_HEADER_FROM_BODY_COST
+        } else {
+            0
+        };
+        for &(start, end) in nodes.iter().flatten() {
+            if !(start < pos && pos < end && end - start <= self.chunk_size) {
+                continue;
+            }
+            // A chunk that starts after only indentation on its line starts at
+            // the line's beginning, so the indentation counts toward its size.
+            let bytes = self.full_text.as_bytes();
+            let mut line_start = start;
+            while line_start > 0 && matches!(bytes[line_start - 1], b' ' | b'\t') {
+                line_start -= 1;
+            }
+            if line_start > 0 && bytes[line_start - 1] != b'\n' {
+                line_start = start;
+            }
+            if end - line_start <= self.chunk_size {
+                cost += CUT_FITTING_NODE_COST;
+                break;
+            }
+        }
+        cost
+    }
+
     fn collect_atom_chunks(
         &self,
         chunk: InternalChunk<'t, 's>,
         atom_collector: &mut AtomChunksCollector<'s>,
     ) {
+        // For each frame of `iter_stack`, the syntax node it walks, if any.
+        let mut frame_nodes: Vec<Option<NodeSpan>> = vec![match &chunk.kind {
+            ChunkKind::TreeSitterNode { node, .. } => Some((node.start_byte(), node.end_byte())),
+            ChunkKind::RegexpSepChunk { .. } => None,
+        }];
+        // Set on reaching a node's `body`: the next atom starts the body.
+        let mut follows_header = false;
         let mut iter_stack: Vec<ChunkIterator<'t, 's>> =
             vec![ChunkIterator::Once(std::iter::once(chunk))];
 
@@ -345,8 +430,14 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
             atom_collector.curr_level = iter_stack.len();
 
             if let Some(current_chunk) = iter_stack.last_mut().unwrap().next() {
+                follows_header |= current_chunk.is_body;
                 if current_chunk.range.len() <= self.min_atom_chunk_size {
-                    atom_collector.collect(current_chunk.range);
+                    let cost = self.boundary_cut_cost(
+                        &frame_nodes,
+                        current_chunk.range,
+                        std::mem::take(&mut follows_header),
+                    );
+                    atom_collector.collect(current_chunk.range, cost);
                 } else {
                     match current_chunk.kind {
                         ChunkKind::TreeSitterNode {
@@ -356,6 +447,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                             if !lang_config.terminal_node_kind_ids.contains(&node.kind_id()) {
                                 let mut cursor = node.walk();
                                 if cursor.goto_first_child() {
+                                    frame_nodes.push(Some((node.start_byte(), node.end_byte())));
                                     iter_stack.push(ChunkIterator::TreeSitter(
                                         TreeSitterNodeIter {
                                             lang_config,
@@ -368,6 +460,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                                     continue;
                                 }
                             }
+                            frame_nodes.push(None);
                             iter_stack.push(ChunkIterator::Once(std::iter::once(InternalChunk {
                                 full_text: self.full_text,
                                 range: current_chunk.range,
@@ -375,6 +468,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                                     lang_config: &DEFAULT_LANGUAGE_CONFIG,
                                     next_regexp_sep_id: 0,
                                 },
+                                is_body: false,
                             })));
                         }
                         ChunkKind::RegexpSepChunk {
@@ -382,8 +476,14 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                             next_regexp_sep_id,
                         } => {
                             if next_regexp_sep_id >= lang_config.separator_regex.len() {
-                                atom_collector.collect(current_chunk.range);
+                                let cost = self.boundary_cut_cost(
+                                    &frame_nodes,
+                                    current_chunk.range,
+                                    std::mem::take(&mut follows_header),
+                                );
+                                atom_collector.collect(current_chunk.range, cost);
                             } else {
+                                frame_nodes.push(None);
                                 iter_stack.push(ChunkIterator::Text(TextChunksIter::new(
                                     lang_config,
                                     current_chunk.full_text,
@@ -396,6 +496,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                 }
             } else {
                 iter_stack.pop();
+                frame_nodes.pop();
                 let level_after_pop = iter_stack.len();
                 atom_collector.curr_level = level_after_pop;
                 if level_after_pop < atom_collector.min_level {
@@ -404,6 +505,25 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
             }
         }
         atom_collector.curr_level = 0;
+    }
+
+    /// The cost of a chunk of `chunk_size` bytes for falling short of
+    /// `min_chunk_size`: `TOO_SMALL_CHUNK_COST` times the square of the
+    /// shortfall as a fraction of `min_chunk_size`. A chunk a little under the
+    /// floor costs less than a cut through a syntax node, so it wins over one;
+    /// a chunk far under it costs as much as many such cuts, so it doesn't.
+    fn too_small_chunk_cost(&self, chunk_size: usize) -> usize {
+        if chunk_size >= self.min_chunk_size {
+            return 0;
+        }
+        let scaled_shortfall =
+            (self.min_chunk_size - chunk_size) as u64 * self.too_small_chunk_cost_scale;
+        let graded = ((scaled_shortfall * scaled_shortfall) >> TOO_SMALL_CHUNK_COST_SHIFT) as usize;
+        if chunk_size.saturating_mul(4) < self.chunk_size {
+            graded + self.tiny_chunk_cost
+        } else {
+            graded
+        }
     }
 
     fn get_overlap_cost_base(&self, offset: usize) -> usize {
@@ -451,6 +571,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
 
             let end_syntax_level = atom_chunks[i + 1].boundary_syntax_level;
             let end_lb_level = atom_chunks[i + 1].boundary_lb_level;
+            let end_cut_cost = atom_chunks[i + 1].boundary_cut_cost;
 
             let mut internal_syntax_level = usize::MAX;
             let mut internal_lb_level = LineBreakLevel::Inline;
@@ -470,12 +591,11 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                 cost +=
                     syntax_level_gap_cost(start_chunk.boundary_syntax_level, internal_syntax_level);
                 cost += syntax_level_gap_cost(end_syntax_level, internal_syntax_level);
+                cost += (start_chunk.boundary_cut_cost + end_cut_cost) as usize;
                 cost += (lb_level_gap(start_chunk.boundary_lb_level, internal_lb_level)
                     + lb_level_gap(end_lb_level, internal_lb_level))
                     * PER_LINE_BREAK_LEVEL_GAP_COST;
-                if chunk_size < self.min_chunk_size {
-                    cost += TOO_SMALL_CHUNK_COST;
-                }
+                cost += self.too_small_chunk_cost(chunk_size);
 
                 if chunk_size > self.chunk_size {
                     if min_cost == usize::MAX {
@@ -569,6 +689,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                 full_text: self.full_text,
                 range: TextRange::new(0, self.full_text.len()),
                 kind,
+                is_body: false,
             },
             &mut atom_collector,
         );
@@ -647,10 +768,18 @@ impl RecursiveChunker {
             chunk_size: config.chunk_size,
             chunk_overlap,
             min_chunk_size,
+            too_small_chunk_cost_scale: u64::from(u32::MAX)
+                .checked_div(min_chunk_size as u64)
+                .unwrap_or(0),
             min_atom_chunk_size: if chunk_overlap > 0 {
                 chunk_overlap
             } else {
                 min_chunk_size
+            },
+            tiny_chunk_cost: if chunk_overlap > 0 {
+                TINY_CHUNK_WITH_OVERLAP_COST
+            } else {
+                TINY_CHUNK_COST
             },
         };
 
@@ -791,6 +920,164 @@ mod tests {
         // Verify chunks are trimmed appropriately
         let chunk_text = &text[chunks[0].range.start..chunks[0].range.end];
         assert!(!chunk_text.starts_with("  "));
+    }
+
+    const PYTHON_SAMPLE: &str = r#"class Inventory:
+    """Stock levels for one warehouse."""
+
+    def __init__(self, name):
+        self.name = name
+        self.items = {}
+
+    def add_item(self, sku, qty):
+        if qty <= 0:
+            raise ValueError("qty must be positive")
+        self.items[sku] = self.items.get(sku, 0) + qty
+
+    def remove_item(self, sku, qty):
+        have = self.items.get(sku, 0)
+        if qty > have:
+            raise ValueError(f"only {have} of {sku} left")
+        self.items[sku] = have - qty
+
+    class Report:
+        def __init__(self, inventory):
+            self.inventory = inventory
+
+        def low_stock(self, limit=5):
+            items = self.inventory.items
+            return [k for k in items if items[k] < limit]
+
+        def total(self):
+            return sum(self.inventory.items.values())
+
+
+def load(path):
+    inv = Inventory(path.stem)
+    for line in path.read_text().splitlines():
+        sku, qty = line.split(",")
+        inv.add_item(sku, int(qty))
+    return inv
+"#;
+
+    /// A byte range's size in a chunk: a node on its own line counts its indentation.
+    fn size_with_indent(text: &str, range: &TextRange) -> usize {
+        let line_start = text[..range.start].rfind('\n').map_or(0, |p| p + 1);
+        if text[line_start..range.start].trim().is_empty() {
+            range.end - line_start
+        } else {
+            range.end - range.start
+        }
+    }
+
+    fn python_nodes(tree: &tree_sitter::Tree, kinds: &[&str]) -> Vec<TextRange> {
+        fn walk(node: tree_sitter::Node, kinds: &[&str], out: &mut Vec<TextRange>) {
+            if kinds.contains(&node.kind()) {
+                out.push(TextRange::new(node.start_byte(), node.end_byte()));
+            }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                walk(child, kinds, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(tree.root_node(), kinds, &mut out);
+        out
+    }
+
+    /// A function or class that fits in `chunk_size` is never cut: the splitter
+    /// leaves a chunk under `min_chunk_size` rather than split it. Here
+    /// `class Report:` with its `__init__` is ~95 bytes, under the default
+    /// floor at chunk sizes 200-250, and the old flat penalty cut `low_stock`
+    /// from its signature to avoid it.
+    #[test]
+    fn test_split_python_keeps_fitting_functions_whole() {
+        let text = PYTHON_SAMPLE;
+        let source = CodeSource::with_language(text, "python");
+        let ParseOutcome::Parsed(tree) = source.tree() else {
+            panic!("python must parse");
+        };
+        let nodes = python_nodes(tree, &["function_definition", "class_definition"]);
+
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        for chunk_size in (100..=1100).step_by(25) {
+            let chunks = chunker.split(
+                &source,
+                RecursiveChunkConfig {
+                    chunk_size,
+                    min_chunk_size: None,
+                    chunk_overlap: None,
+                },
+            );
+            for chunk in &chunks {
+                for node in nodes
+                    .iter()
+                    .filter(|n| size_with_indent(text, n) <= chunk_size)
+                {
+                    assert!(
+                        !(node.start < chunk.range.start && chunk.range.start < node.end),
+                        "chunk_size {chunk_size}: a chunk starts inside a function or class \
+                         that fits, at line {}:\n{}",
+                        chunk.start.line,
+                        &text[chunk.range.start..chunk.range.end],
+                    );
+                }
+            }
+        }
+    }
+
+    /// A `def` or `class` header is not left at the end of a chunk with its
+    /// body in the next one.
+    #[test]
+    fn test_split_python_keeps_header_with_body() {
+        let text = PYTHON_SAMPLE;
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        for chunk_size in (100..=1100).step_by(25) {
+            let chunks = chunker.split(
+                &CodeSource::with_language(text, "python"),
+                RecursiveChunkConfig {
+                    chunk_size,
+                    min_chunk_size: None,
+                    chunk_overlap: None,
+                },
+            );
+            for chunk in &chunks[..chunks.len() - 1] {
+                let chunk_text = text[chunk.range.start..chunk.range.end].trim_end();
+                let last_line = chunk_text.rsplit('\n').next().unwrap().trim();
+                assert!(
+                    !((last_line.starts_with("def ") || last_line.starts_with("class "))
+                        && last_line.ends_with(':')),
+                    "chunk_size {chunk_size}: a chunk ends on a header, at line {}:\n{chunk_text}",
+                    chunk.end.line,
+                );
+            }
+        }
+    }
+
+    /// The fixed-point too-small cost stays in range at any `min_chunk_size`,
+    /// including one larger than 2³² bytes, where its scale is zero.
+    #[test]
+    fn test_split_too_small_cost_in_range_at_extreme_sizes() {
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let text = "Linea 1.\nLinea 2.\n\nLinea 3.";
+        for (chunk_size, min_chunk_size) in [
+            (15, Some(1)),
+            (15, Some(14)),
+            (15, Some(15)),
+            (1 << 20, Some((1 << 20) - 1)),
+            (1 << 40, None),
+            (usize::MAX, Some(usize::MAX)),
+        ] {
+            let chunks = chunker.split(
+                &CodeSource::new(text),
+                RecursiveChunkConfig {
+                    chunk_size,
+                    min_chunk_size,
+                    chunk_overlap: None,
+                },
+            );
+            assert!(!chunks.is_empty(), "chunk_size {chunk_size}");
+        }
     }
 
     #[test]
@@ -1004,10 +1291,13 @@ in {
             .iter()
             .map(|chunk| &text[chunk.range.start..chunk.range.end])
             .collect();
+        // The 18-byte header falls a little short of `min_chunk_size`, which
+        // costs less than splitting the `let` bindings apart.
         assert_eq!(chunk_texts.len(), 3);
+        assert_eq!(chunk_texts[0], "{ pkgs, ... }:\nlet");
         assert_eq!(
             chunk_texts[1],
-            "  greeting = \"hello ${package-name}\";\nin"
+            "  package-name = pkgs.hello;\n  greeting = \"hello ${package-name}\";\nin"
         );
         assert!(chunk_texts[2].starts_with("{\n  inherit package-name;"));
     }
