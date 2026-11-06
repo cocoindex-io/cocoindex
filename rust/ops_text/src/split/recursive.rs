@@ -13,7 +13,9 @@ use cocoindex_code_ast::{CodeSource, ParseOutcome};
 const SYNTAX_LEVEL_GAP_COST: usize = 512;
 const MISSING_OVERLAP_COST: usize = 512;
 const PER_LINE_BREAK_LEVEL_GAP_COST: usize = 64;
-const TOO_SMALL_CHUNK_COST: usize = 1048576;
+/// The cost of a chunk with no content at all: as much as 16 syntax-level gaps.
+/// A chunk under `min_chunk_size` pays this times its squared shortfall.
+const TOO_SMALL_CHUNK_COST: usize = 16 * SYNTAX_LEVEL_GAP_COST;
 
 /// Configuration for a custom language with regex-based separators.
 #[derive(Debug, Clone)]
@@ -39,7 +41,8 @@ pub struct RecursiveSplitConfig {
 pub struct RecursiveChunkConfig {
     /// Target chunk size in bytes.
     pub chunk_size: usize,
-    /// Minimum chunk size in bytes. Defaults to chunk_size / 2.
+    /// Minimum chunk size in bytes. It is a soft floor: a chunk may be smaller
+    /// where that avoids a worse split point. Defaults to chunk_size / 2.
     pub min_chunk_size: Option<usize>,
     /// Overlap between consecutive chunks in bytes.
     pub chunk_overlap: Option<usize>,
@@ -406,6 +409,20 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
         atom_collector.curr_level = 0;
     }
 
+    /// The cost of a chunk of `chunk_size` bytes for falling short of
+    /// `min_chunk_size`: `TOO_SMALL_CHUNK_COST` times the square of the
+    /// shortfall as a fraction of `min_chunk_size`. A chunk a little under the
+    /// floor costs less than a cut through a syntax node, so it wins over one;
+    /// a chunk far under it costs as much as many such cuts, so it doesn't.
+    fn too_small_chunk_cost(&self, chunk_size: usize) -> usize {
+        if chunk_size >= self.min_chunk_size {
+            return 0;
+        }
+        let shortfall = self.min_chunk_size - chunk_size;
+        // Divide after each multiplication to stay in range for any size.
+        TOO_SMALL_CHUNK_COST * shortfall / self.min_chunk_size * shortfall / self.min_chunk_size
+    }
+
     fn get_overlap_cost_base(&self, offset: usize) -> usize {
         ((self.full_text.len() - offset) * MISSING_OVERLAP_COST)
             .checked_div(self.chunk_overlap)
@@ -473,9 +490,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                 cost += (lb_level_gap(start_chunk.boundary_lb_level, internal_lb_level)
                     + lb_level_gap(end_lb_level, internal_lb_level))
                     * PER_LINE_BREAK_LEVEL_GAP_COST;
-                if chunk_size < self.min_chunk_size {
-                    cost += TOO_SMALL_CHUNK_COST;
-                }
+                cost += self.too_small_chunk_cost(chunk_size);
 
                 if chunk_size > self.chunk_size {
                     if min_cost == usize::MAX {
@@ -793,6 +808,87 @@ mod tests {
         assert!(!chunk_text.starts_with("  "));
     }
 
+    /// A chunk a little under `min_chunk_size` wins over a cut inside a
+    /// function. Here `class Report:` with its `__init__` is ~95 bytes, under
+    /// the default floor at these sizes, and every function fits in a chunk.
+    #[test]
+    fn test_split_python_no_cut_inside_function_to_reach_min_size() {
+        let text = r#"class Inventory:
+    """Stock levels for one warehouse."""
+
+    def __init__(self, name):
+        self.name = name
+        self.items = {}
+
+    def add_item(self, sku, qty):
+        if qty <= 0:
+            raise ValueError("qty must be positive")
+        self.items[sku] = self.items.get(sku, 0) + qty
+
+    def remove_item(self, sku, qty):
+        have = self.items.get(sku, 0)
+        if qty > have:
+            raise ValueError(f"only {have} of {sku} left")
+        self.items[sku] = have - qty
+
+    class Report:
+        def __init__(self, inventory):
+            self.inventory = inventory
+
+        def low_stock(self, limit=5):
+            items = self.inventory.items
+            return [k for k in items if items[k] < limit]
+
+        def total(self):
+            return sum(self.inventory.items.values())
+
+
+def load(path):
+    inv = Inventory(path.stem)
+    for line in path.read_text().splitlines():
+        sku, qty = line.split(",")
+        inv.add_item(sku, int(qty))
+    return inv
+"#;
+        let source = CodeSource::with_language(text, "python");
+        let ParseOutcome::Parsed(tree) = source.tree() else {
+            panic!("python must parse");
+        };
+        fn collect_functions(node: tree_sitter::Node, out: &mut Vec<TextRange>) {
+            if node.kind() == "function_definition" {
+                out.push(TextRange::new(node.start_byte(), node.end_byte()));
+            }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                collect_functions(child, out);
+            }
+        }
+        let mut functions = Vec::new();
+        collect_functions(tree.root_node(), &mut functions);
+
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        for chunk_size in [200, 225, 250, 275, 300] {
+            let chunks = chunker.split(
+                &source,
+                RecursiveChunkConfig {
+                    chunk_size,
+                    min_chunk_size: None,
+                    chunk_overlap: None,
+                },
+            );
+            for chunk in &chunks {
+                for function in &functions {
+                    assert!(
+                        !(function.start < chunk.range.start && chunk.range.start < function.end),
+                        "chunk_size {chunk_size}: a chunk starts inside a function, at line {}:\n{}",
+                        chunk.start.line,
+                        &text[chunk.range.start..chunk.range.end],
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_split_with_rust_language() {
         let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
@@ -1004,10 +1100,13 @@ in {
             .iter()
             .map(|chunk| &text[chunk.range.start..chunk.range.end])
             .collect();
+        // The 18-byte header falls a little short of `min_chunk_size`, which
+        // costs less than splitting the `let` bindings apart.
         assert_eq!(chunk_texts.len(), 3);
+        assert_eq!(chunk_texts[0], "{ pkgs, ... }:\nlet");
         assert_eq!(
             chunk_texts[1],
-            "  greeting = \"hello ${package-name}\";\nin"
+            "  package-name = pkgs.hello;\n  greeting = \"hello ${package-name}\";\nin"
         );
         assert!(chunk_texts[2].starts_with("{\n  inherit package-name;"));
     }

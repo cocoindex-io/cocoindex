@@ -302,7 +302,7 @@ impl CodeAst {
     /// Split into syntax-aware chunks, reusing the parse.
     ///
     /// - `chunk_size`: target size in bytes.
-    /// - `min_chunk_size`: minimum size in bytes (defaults to `chunk_size / 2`).
+    /// - `min_chunk_size`: soft minimum size in bytes (defaults to `chunk_size / 2`).
     /// - `chunk_overlap`: overlap between consecutive chunks in bytes.
     pub fn split(
         &self,
