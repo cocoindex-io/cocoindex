@@ -700,6 +700,188 @@ async fn lancedb_user_managed_target_does_not_create_table() -> Result<()> {
     Ok(())
 }
 
+/// `declare_table_target_with_options` (the sync, same-component form) honors
+/// `managed_by`: a user-managed table is neither created nor dropped, and its
+/// rows are written once the user has created it.
+#[tokio::test]
+async fn lancedb_declare_table_target_with_options_user_managed() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceDeclareUserManagedTest")
+        .await?;
+
+    let declare_user_managed = |ctx: Ctx, row: Option<Row>| async move {
+        let table = lancedb::declare_table_target_with_options(
+            &ctx,
+            &DB,
+            TABLE,
+            schema(),
+            ManagedTargetOptions::user_managed(),
+        )?;
+        if let Some(row) = row {
+            table.declare_row(&ctx, &row)?;
+        }
+        Ok(())
+    };
+
+    app.run(move |ctx| declare_user_managed(ctx, None)).await?;
+    assert!(!table_exists(&db, TABLE).await, "user-managed: not created");
+
+    // Created outside CocoIndex, the table takes rows.
+    db.connection()
+        .create_empty_table(TABLE, schema_arrow())
+        .execute()
+        .await
+        .unwrap();
+    app.run(move |ctx| {
+        declare_user_managed(
+            ctx,
+            Some(Row {
+                id: 1,
+                text: "one".to_string(),
+                embedding: vec![0.1, 0.2, 0.3],
+            }),
+        )
+    })
+    .await?;
+    assert_eq!(row_count(&db).await, 1);
+
+    // No longer declared: the user-managed table stays.
+    app.run(|_ctx| async { Ok(()) }).await?;
+    assert!(table_exists(&db, TABLE).await, "user-managed: not dropped");
+    assert_eq!(row_count(&db).await, 1);
+    Ok(())
+}
+
+fn schema_arrow() -> arrow_schema::SchemaRef {
+    std::sync::Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new("id", arrow_schema::DataType::Int64, false),
+        arrow_schema::Field::new("text", arrow_schema::DataType::Utf8, false),
+        arrow_schema::Field::new(
+            "embedding",
+            arrow_schema::DataType::FixedSizeList(
+                std::sync::Arc::new(arrow_schema::Field::new(
+                    "item",
+                    arrow_schema::DataType::Float32,
+                    true,
+                )),
+                3,
+            ),
+            false,
+        ),
+    ]))
+}
+
+#[derive(Clone, Serialize)]
+struct WideRow {
+    id: i64,
+    tiny: i8,
+    byte: u8,
+    short: u16,
+    word: u32,
+    long: u64,
+    half: f32,
+}
+
+/// The integer and float widths the Python connector maps (`np.int8`,
+/// `np.uint*`, `np.float16`) are stored with their Arrow types.
+#[tokio::test]
+async fn lancedb_stores_every_integer_width_and_float16() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceWideRowTest")
+        .await?;
+    const WIDE: &str = "wide";
+
+    app.run(move |ctx| async move {
+        let schema = TableSchema::new(
+            [
+                ("id", ColumnDef::new(ColumnType::Int64)),
+                ("tiny", ColumnDef::new(ColumnType::Int8)),
+                ("byte", ColumnDef::new(ColumnType::UInt8)),
+                ("short", ColumnDef::new(ColumnType::UInt16)),
+                ("word", ColumnDef::new(ColumnType::UInt32)),
+                ("long", ColumnDef::new(ColumnType::UInt64)),
+                ("half", ColumnDef::new(ColumnType::Float16)),
+            ],
+            ["id"],
+        )?;
+        let table = lancedb::mount_table_target(&ctx, &DB, WIDE, schema).await?;
+        table.declare_row(
+            &ctx,
+            &WideRow {
+                id: 1,
+                tiny: -8,
+                byte: 255,
+                short: 65_535,
+                word: 4_000_000_000,
+                long: 1 << 40,
+                half: 0.5,
+            },
+        )?;
+        Ok(())
+    })
+    .await?;
+
+    let table = db.connection().open_table(WIDE).execute().await.unwrap();
+    let schema = table.schema().await.unwrap();
+    let data_type = |name: &str| schema.field_with_name(name).unwrap().data_type().clone();
+    assert_eq!(data_type("tiny"), arrow_schema::DataType::Int8);
+    assert_eq!(data_type("byte"), arrow_schema::DataType::UInt8);
+    assert_eq!(data_type("short"), arrow_schema::DataType::UInt16);
+    assert_eq!(data_type("word"), arrow_schema::DataType::UInt32);
+    assert_eq!(data_type("long"), arrow_schema::DataType::UInt64);
+    assert_eq!(data_type("half"), arrow_schema::DataType::Float16);
+    assert_eq!(
+        table
+            .count_rows(Some(
+                "long = 1099511627776 AND byte = 255 AND tiny = -8".to_string()
+            ))
+            .await
+            .unwrap(),
+        1
+    );
+    Ok(())
+}
+
+/// `connect_with_options` passes the options Python's `connect_async(uri,
+/// **options)` takes; the state id stays the URI.
+#[tokio::test]
+async fn lancedb_connect_with_options() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let uri = uri.to_str().unwrap();
+    let db = LanceDatabase::connect_with_options(
+        uri,
+        lancedb::ConnectOptions {
+            read_consistency_interval: Some(std::time::Duration::ZERO),
+            storage_options: [("timeout".to_string(), "30s".to_string())].into(),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert_eq!(db.state_id(), uri);
+    db.connection()
+        .create_empty_table(TABLE, schema_arrow())
+        .execute()
+        .await
+        .unwrap();
+    assert!(table_exists(&db, TABLE).await);
+    Ok(())
+}
+
 #[derive(Clone, Serialize)]
 struct RowTwoVec {
     id: i64,

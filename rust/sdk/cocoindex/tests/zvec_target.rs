@@ -812,3 +812,96 @@ async fn collection_target_rejects_invalid_names_and_schemas() -> Result<()> {
     );
     Ok(())
 }
+
+#[derive(Clone, Serialize, SchemaFields)]
+struct ArrayDoc {
+    id: String,
+    #[coco(type = "array_int64")]
+    ints: Vec<i64>,
+    #[coco(type = "array_double")]
+    floats: Vec<f64>,
+    #[coco(type = "array_bool")]
+    flags: Vec<bool>,
+    /// Overridden to `ARRAY_INT32` through `with_column_type`.
+    small: Vec<i64>,
+    #[coco(vector = 4)]
+    embedding: Vec<f32>,
+}
+
+/// Array fields are stored as zvec `ARRAY_*` fields, as the Python connector
+/// stores `list[int]`, `list[float]` and `list[bool]`.
+#[tokio::test]
+async fn array_fields_round_trip() -> Result<()> {
+    let fx = Fixture::new();
+    const COL: &str = "array_docs";
+    let schema = CollectionSchema::from_row::<ArrayDoc>(["id"])?.with_column_type(
+        "small",
+        ZvecType {
+            data_type: ScalarType::ArrayInt32,
+            indexed: false,
+        },
+    )?;
+    fx.run_rows(
+        "ArrayDocs",
+        COL,
+        schema,
+        vec![ArrayDoc {
+            id: "1".to_string(),
+            ints: vec![1, 2, 3],
+            floats: vec![1.5, 2.5],
+            flags: vec![true, false],
+            small: vec![7, 8],
+            embedding: EMB.to_vec(),
+        }],
+    )
+    .await?;
+    let doc = fx.fetch(COL, "1").await.expect("doc 1");
+    assert_eq!(doc.get_array_i64("ints").unwrap(), Some(vec![1, 2, 3]));
+    assert_eq!(doc.get_array_f64("floats").unwrap(), Some(vec![1.5, 2.5]));
+    // zvec-rust 0.8's getter cannot read an `ARRAY_BOOL` field back ("Unknown
+    // data type"); the field is stored, and the Python connector reads it.
+    assert!(doc.has_field("flags") && !doc.is_field_null("flags"));
+    assert_eq!(doc.get_array_i32("small").unwrap(), Some(vec![7, 8]));
+    Ok(())
+}
+
+/// `open_or_create` sets up a collection outside a run (for a user-managed
+/// target), and `destroy` removes it, like the Python `ManagedConnection`.
+#[tokio::test]
+async fn open_or_create_and_destroy_manage_a_collection_directly() -> Result<()> {
+    let fx = Fixture::new();
+    const COL: &str = "direct_docs";
+    assert!(!fx.exists(COL));
+    let handle = fx.conn.open_or_create(COL, &simple_schema()).await?;
+    assert!(fx.exists(COL));
+    assert_eq!(handle.stats().unwrap().doc_count, 0);
+    // A second call returns the cached handle instead of opening again.
+    drop(handle);
+    fx.conn.open_or_create(COL, &simple_schema()).await?;
+
+    // A user-managed target writes into the collection `open_or_create` made.
+    fx.run("DirectDocs", |ctx| async move {
+        let target = zvec::mount_collection_target_with_options(
+            &ctx,
+            &DB,
+            COL,
+            simple_schema(),
+            ManagedTargetOptions::user_managed(),
+        )
+        .await?;
+        target.declare_row(&ctx, &simple("1", "A", 1))
+    })
+    .await?;
+    assert_eq!(fx.doc_count(COL).await, 1);
+
+    // A live handle blocks `destroy`; once dropped, the collection goes.
+    let live = fx.conn.open_existing(COL).await?;
+    let err = fx.conn.destroy(COL).await.unwrap_err();
+    assert!(err.to_string().contains("still alive"), "{err}");
+    drop(live);
+    fx.conn.destroy(COL).await?;
+    assert!(!fx.exists(COL));
+    // Destroying a missing collection is not an error.
+    fx.conn.destroy(COL).await?;
+    Ok(())
+}
