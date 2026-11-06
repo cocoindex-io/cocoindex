@@ -82,8 +82,11 @@ google_drive = [
 oci_object_storage = [
     "dep:reqwest",
     "dep:rsa",
+    "dep:pkcs8",
+    "dep:sha1",
     "dep:sha2",
     "dep:base64",
+    "dep:rand",
     "chrono",
     "chrono/clock",
 ]
@@ -226,6 +229,12 @@ aws-sdk-s3 = { version = "1", optional = true, default-features = false, feature
 reqwest = { version = "0.12", features = ["json"], optional = true }
 rsa = { version = "0.9", features = ["sha2", "pem"], optional = true }
 sha2 = { version = "0.10", optional = true }
+# OCI: pass-phrase-protected PKCS#8 keys (`encryption` on the pkcs8 crate rsa
+# uses), the SHA-1 certificate fingerprint of a federation request, and the
+# session key pair of an instance principal.
+pkcs8 = { version = "0.10", features = ["encryption", "pem"], optional = true }
+sha1 = { version = "0.10", optional = true }
+rand = { version = "0.8", optional = true }
 base64 = { version = "0.22", optional = true }
 # Azure Blob Storage source: Shared Key signing and the List Blobs XML body.
 hmac = { version = "0.12", optional = true }
@@ -268,6 +277,8 @@ httpdate = "1"
 reqwest = "0.12"
 # Generate an ephemeral RSA key for the OCI signing unit test.
 rand = "0.8"
+# The OCI test writes a pass-phrase-protected key.
+pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
 
 [[bench]]
 name = "sdk_microbench"

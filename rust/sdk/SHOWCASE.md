@@ -595,6 +595,12 @@ let events = kafka::topic_as_stream(&consumer, ["bucket-events"]).payloads();
 let walker = oci_object_storage::list_objects_live(&client, "ns", "bucket", ListOptions::default(), events);
 ```
 
+The OCI live view acknowledges each event to the stream once the object it
+names has synced, so the consumer group's offset never passes an unprocessed
+event. `OciClient::from_instance_principal` runs as the compute instance itself
+(a session token from the identity service, renewed as it expires), and an
+`~/.oci/config` profile with a `pass_phrase` opens its encrypted key.
+
 The Kafka and Iggy targets take their producer as a `ContextKey`, like every
 other connector target: `provide_key(&PRODUCER, producer)` once, name the key
 in `mount_kafka_topic_target(&ctx, &PRODUCER, topic, options)`. `kafka_topic_target` / `iggy_topic_target` build the

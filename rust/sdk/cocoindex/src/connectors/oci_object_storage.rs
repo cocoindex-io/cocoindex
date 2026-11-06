@@ -5,7 +5,10 @@
 //!
 //! - [`OciClient`] — a clone-cheap connection handle. [`OciClient::connect`]
 //!   reads an `~/.oci/config` profile (the same file the OCI CLI / Python SDK
-//!   use) and signs every request with OCI's RSA-SHA256 HTTP Signature scheme.
+//!   use; the key may be pass-phrase protected) and signs every request with
+//!   OCI's RSA-SHA256 HTTP Signature scheme;
+//!   [`OciClient::from_instance_principal`] runs as the compute instance itself,
+//!   with a session token from the identity service that it renews as it expires.
 //! - [`list_objects`] returns an [`OciWalker`]; [`OciWalker::list`] /
 //!   [`OciWalker::items`] enumerate matching objects as [`OciFile`]s. Use each
 //!   [`OciFile::key`] with `Ctx::mount_each` so per-file memoization handles
@@ -26,8 +29,10 @@
 //! skipped by serde, while the public type still implements the shared async
 //! [`crate::resources::file::FileLike`] trait.
 //!
-//! Not yet supported (parity follow-ups): live bucket watching via OCI
-//! Events/Streaming, and pass-phrase-encrypted private keys.
+//! [`list_objects_live`] is the live view: an initial scan plus bucket events
+//! delivered by a [`LiveStream`] of OCI event payloads (an OCI Streaming topic
+//! read through the Kafka connector's `topic_as_stream(..).payloads()`), each
+//! acknowledged to the stream once the object it names has synced.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,14 +45,16 @@ use cocoindex_utils::fingerprint::Fingerprint;
 use rsa::RsaPrivateKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::pkcs1v15::SigningKey;
-use rsa::pkcs8::DecodePrivateKey;
+use rsa::pkcs8::{DecodePrivateKey, EncodePublicKey};
 use rsa::signature::{SignatureEncoding, Signer};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
 use crate::live_component::{
-    LiveComponentOperator, LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard,
+    LiveComponentOperator, LiveMapFeed, LiveMapSubscriber, LiveMapView, LiveStream,
+    LiveStreamSubscriber, ReadyHandle, SingleWatcherGuard,
 };
 use crate::resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
@@ -75,8 +82,8 @@ pub struct OciConfig {
     pub key_file: String,
     /// Region identifier, e.g. `us-ashburn-1`.
     pub region: String,
-    /// Optional key pass-phrase. Encrypted keys are not yet supported; a set
-    /// pass-phrase causes [`OciClient::from_config`] to error.
+    /// The key's pass-phrase, for a PKCS#8 encrypted key (`BEGIN ENCRYPTED
+    /// PRIVATE KEY`, as `oci setup config` writes one).
     pub pass_phrase: Option<String>,
 }
 
@@ -409,10 +416,245 @@ struct OciClientInner {
     host: String,
     /// `https://{host}`
     base_url: String,
-    /// `{tenancy}/{user}/{fingerprint}`
-    key_id: String,
-    signing_key: SigningKey<Sha256>,
+    auth: OciAuth,
     state_id: String,
+}
+
+/// What signs a request: the key id OCI knows the signer by, and the key.
+#[derive(Clone)]
+struct RequestSigner {
+    key_id: String,
+    signing_key: Arc<SigningKey<Sha256>>,
+}
+
+/// How the client authenticates.
+enum OciAuth {
+    /// An API key of a user: `{tenancy}/{user}/{fingerprint}` and its key.
+    ApiKey(RequestSigner),
+    /// The compute instance's own identity, through a session token.
+    InstancePrincipal(Box<InstancePrincipal>),
+}
+
+/// Where an instance principal gets its identity from.
+#[derive(Clone, Debug, Default)]
+pub struct InstancePrincipalOptions {
+    /// The instance metadata service, default `http://169.254.169.254/opc/v2`
+    /// (the `OCI_METADATA_BASE_URL` environment variable overrides the default,
+    /// as in the Python SDK).
+    pub metadata_base_url: Option<String>,
+    /// The identity service's federation endpoint, default
+    /// `https://auth.{region}.oraclecloud.com/v1/x509` for the instance's region.
+    pub federation_endpoint: Option<String>,
+}
+
+/// The default instance metadata service (IMDS v2) base URL.
+const DEFAULT_METADATA_BASE_URL: &str = "http://169.254.169.254/opc/v2";
+
+/// Refresh the session token this long before it expires (the Python SDK's
+/// `DEFAULT_EXPIRY_JITTER_SECONDS`).
+const SESSION_TOKEN_EXPIRY_MARGIN_SECS: i64 = 60;
+
+/// A compute instance's identity: the certificate and key the instance
+/// metadata service hands out, exchanged with the identity service for a
+/// session token that signs requests as `ST$<token>` with a session key of
+/// this process's own (the Python SDK's `InstancePrincipalsSecurityTokenSigner`).
+struct InstancePrincipal {
+    http: reqwest::Client,
+    metadata_base_url: String,
+    federation_endpoint: String,
+    tenancy: String,
+    session: tokio::sync::Mutex<Option<SessionToken>>,
+}
+
+/// A session token and the key that signs with it.
+struct SessionToken {
+    signer: RequestSigner,
+    /// The token's `exp` claim (Unix seconds).
+    expires_at: i64,
+}
+
+/// The identity material IMDS serves to an instance.
+struct InstanceIdentity {
+    leaf_cert_pem: String,
+    leaf_key: RsaPrivateKey,
+    intermediate_cert_pem: String,
+}
+
+/// The body of a PEM block: its base64 without the `BEGIN`/`END` lines and
+/// newlines, as the federation request wants certificates and keys
+/// (the Python SDK's `sanitize_certificate_string`).
+fn pem_body(pem: &str) -> String {
+    pem.lines()
+        .filter(|line| !line.starts_with("-----"))
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// A certificate's fingerprint as OCI's federation key id names it: SHA-1 over
+/// the DER certificate, upper-case hex, colon-separated.
+fn cert_fingerprint(cert_pem: &str) -> Result<String> {
+    let der = STANDARD
+        .decode(pem_body(cert_pem))
+        .map_err(|e| Error::engine(format!("OCI instance certificate is not PEM: {e}")))?;
+    Ok(Sha1::digest(&der)
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(":"))
+}
+
+/// The `exp` claim of a JWT, read without checking its signature (the token
+/// is OCI's; this process only needs to know when to renew it).
+fn jwt_expiry(token: &str) -> Result<i64> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let payload = token
+        .split('.')
+        .nth(1)
+        .ok_or_else(|| Error::engine("OCI session token is not a JWT"))?;
+    let payload = URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .map_err(|e| Error::engine(format!("OCI session token payload: {e}")))?;
+    let claims: serde_json::Value = serde_json::from_slice(&payload)
+        .map_err(|e| Error::engine(format!("OCI session token claims: {e}")))?;
+    claims
+        .get("exp")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| Error::engine("OCI session token has no exp claim"))
+}
+
+impl InstancePrincipal {
+    /// A text resource of the instance metadata service.
+    async fn metadata(&self, path: &str) -> Result<String> {
+        let url = format!("{}/{path}", self.metadata_base_url);
+        let resp = self
+            .http
+            .get(&url)
+            .header(reqwest::header::AUTHORIZATION, "Bearer Oracle")
+            .send()
+            .await
+            .map_err(|e| Error::engine(format!("OCI instance metadata {url}: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(Error::engine(format!(
+                "OCI instance metadata {url} failed: {}",
+                resp.status()
+            )));
+        }
+        resp.text()
+            .await
+            .map_err(|e| Error::engine(format!("OCI instance metadata {url}: {e}")))
+    }
+
+    async fn identity(&self) -> Result<InstanceIdentity> {
+        let leaf_cert_pem = self.metadata("identity/cert.pem").await?.trim().to_string();
+        let key_pem = self.metadata("identity/key.pem").await?;
+        let intermediate_cert_pem = self
+            .metadata("identity/intermediate.pem")
+            .await?
+            .trim()
+            .to_string();
+        Ok(InstanceIdentity {
+            leaf_cert_pem,
+            leaf_key: load_private_key(&key_pem, None)?,
+            intermediate_cert_pem,
+        })
+    }
+
+    /// Exchange the instance's certificate for a session token: a new session
+    /// key pair, and a federation request signed with the instance's key.
+    async fn federate(&self) -> Result<SessionToken> {
+        let identity = self.identity().await?;
+        let session_key = RsaPrivateKey::new(&mut rand::thread_rng(), 2048)
+            .map_err(|e| Error::engine(format!("generate OCI session key: {e}")))?;
+        let public_pem = session_key
+            .to_public_key()
+            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+            .map_err(|e| Error::engine(format!("encode OCI session public key: {e}")))?;
+        let body = serde_json::json!({
+            "certificate": pem_body(&identity.leaf_cert_pem),
+            "publicKey": pem_body(&public_pem),
+            "intermediateCertificates": [pem_body(&identity.intermediate_cert_pem)],
+        })
+        .to_string();
+        let url = reqwest::Url::parse(&self.federation_endpoint).map_err(|e| {
+            Error::engine(format!(
+                "OCI federation endpoint {}: {e}",
+                self.federation_endpoint
+            ))
+        })?;
+        let key_id = format!(
+            "{}/fed-x509/{}",
+            self.tenancy,
+            cert_fingerprint(&identity.leaf_cert_pem)?
+        );
+        let date = http_date_now();
+        let content_sha256 = STANDARD.encode(Sha256::digest(body.as_bytes()));
+        let content_length = body.len().to_string();
+        let request_target = format!("post {}", url.path());
+        let signer = RequestSigner {
+            key_id,
+            signing_key: Arc::new(SigningKey::<Sha256>::new(identity.leaf_key)),
+        };
+        let authorization = sign_headers(
+            &signer,
+            &[
+                ("date", &date),
+                ("(request-target)", &request_target),
+                ("content-length", &content_length),
+                ("content-type", "application/json"),
+                ("x-content-sha256", &content_sha256),
+            ],
+        )?;
+        let resp = self
+            .http
+            .post(url)
+            .header(reqwest::header::DATE, date)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::CONTENT_LENGTH, content_length)
+            .header("x-content-sha256", content_sha256)
+            .header(reqwest::header::AUTHORIZATION, authorization)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| Error::engine(format!("OCI federation request: {e}")))?;
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| Error::engine(format!("OCI federation response: {e}")))?;
+        if !status.is_success() {
+            return Err(Error::engine(format!(
+                "OCI federation request failed: {status} {text}"
+            )));
+        }
+        let token = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(str::to_string))
+            .ok_or_else(|| Error::engine("OCI federation response carries no token"))?;
+        let expires_at = jwt_expiry(&token)?;
+        Ok(SessionToken {
+            signer: RequestSigner {
+                key_id: format!("ST${token}"),
+                signing_key: Arc::new(SigningKey::<Sha256>::new(session_key)),
+            },
+            expires_at,
+        })
+    }
+
+    /// The current session's signer, renewed when the token is about to expire.
+    async fn signer(&self) -> Result<RequestSigner> {
+        let mut session = self.session.lock().await;
+        let now = chrono::Utc::now().timestamp();
+        if let Some(current) = session.as_ref()
+            && now <= current.expires_at - SESSION_TOKEN_EXPIRY_MARGIN_SECS
+        {
+            return Ok(current.signer.clone());
+        }
+        let renewed = self.federate().await?;
+        let signer = renewed.signer.clone();
+        *session = Some(renewed);
+        Ok(signer)
+    }
 }
 
 /// An OCI Object Storage connection. Clone-cheap (the underlying client and
@@ -442,30 +684,100 @@ impl OciClient {
 
     /// Build a client from an explicit [`OciConfig`].
     pub fn from_config(config: OciConfig) -> Result<Self> {
-        if config.pass_phrase.is_some() {
-            return Err(Error::engine(
-                "OCI pass-phrase-encrypted private keys are not yet supported; \
-                 use an unencrypted API key",
-            ));
-        }
         let pem = std::fs::read_to_string(&config.key_file)
             .map_err(|e| Error::engine(format!("read OCI key file {}: {e}", config.key_file)))?;
-        let key = load_private_key(&pem)?;
-        let signing_key = SigningKey::<Sha256>::new(key);
-        let host = format!("objectstorage.{}.oraclecloud.com", config.region);
-        let base_url = format!("https://{host}");
+        let key = load_private_key(&pem, config.pass_phrase.as_deref())?;
         let key_id = format!("{}/{}/{}", config.tenancy, config.user, config.fingerprint);
-        let state_id = format!("oci-objectstorage:{}", config.region);
-        Ok(Self {
+        Ok(Self::with_auth(
+            &config.region,
+            OciAuth::ApiKey(RequestSigner {
+                key_id,
+                signing_key: Arc::new(SigningKey::<Sha256>::new(key)),
+            }),
+        ))
+    }
+
+    /// Build a client that authenticates as the compute instance it runs on
+    /// (an *instance principal*): the instance's certificate from the metadata
+    /// service is exchanged for a session token, renewed as it expires. The
+    /// instance must be in a dynamic group with a policy that lets it read the
+    /// bucket. The Python SDK's `InstancePrincipalsSecurityTokenSigner`.
+    pub async fn from_instance_principal() -> Result<Self> {
+        Self::from_instance_principal_with_options(InstancePrincipalOptions::default()).await
+    }
+
+    /// [`from_instance_principal`](Self::from_instance_principal) with the
+    /// metadata and federation endpoints set explicitly.
+    pub async fn from_instance_principal_with_options(
+        options: InstancePrincipalOptions,
+    ) -> Result<Self> {
+        let metadata_base_url = options
+            .metadata_base_url
+            .or_else(|| {
+                std::env::var("OCI_METADATA_BASE_URL")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or_else(|| DEFAULT_METADATA_BASE_URL.to_string())
+            .trim_end_matches('/')
+            .to_string();
+        let http = reqwest::Client::new();
+        let mut principal = InstancePrincipal {
+            http,
+            metadata_base_url,
+            federation_endpoint: String::new(),
+            tenancy: String::new(),
+            session: tokio::sync::Mutex::new(None),
+        };
+        // The instance's region and tenancy, from its metadata document.
+        let instance: serde_json::Value =
+            serde_json::from_str(&principal.metadata("instance/").await?)
+                .map_err(|e| Error::engine(format!("OCI instance metadata document: {e}")))?;
+        let field = |name: &str| -> Result<String> {
+            instance
+                .get(name)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    Error::engine(format!("OCI instance metadata document has no {name:?}"))
+                })
+        };
+        let region = field("canonicalRegionName").or_else(|_| field("region"))?;
+        principal.tenancy = field("tenantId")?;
+        principal.federation_endpoint = options
+            .federation_endpoint
+            .unwrap_or_else(|| format!("https://auth.{region}.oraclecloud.com/v1/x509"));
+        // Fetch the first token now, so a misconfigured instance fails here
+        // rather than on the first object read.
+        let first = principal.federate().await?;
+        *principal.session.get_mut() = Some(first);
+        Ok(Self::with_auth(
+            &region,
+            OciAuth::InstancePrincipal(Box::new(principal)),
+        ))
+    }
+
+    fn with_auth(region: &str, auth: OciAuth) -> Self {
+        let host = format!("objectstorage.{region}.oraclecloud.com");
+        let base_url = format!("https://{host}");
+        let state_id = format!("oci-objectstorage:{region}");
+        Self {
             inner: Arc::new(OciClientInner {
                 http: reqwest::Client::new(),
                 host,
                 base_url,
-                key_id,
-                signing_key,
+                auth,
                 state_id,
             }),
-        })
+        }
+    }
+
+    /// The signer of the next request.
+    async fn signer(&self) -> Result<RequestSigner> {
+        match &self.inner.auth {
+            OciAuth::ApiKey(signer) => Ok(signer.clone()),
+            OciAuth::InstancePrincipal(principal) => principal.signer().await,
+        }
     }
 
     /// Override the Object Storage base URL (default the public OCI endpoint).
@@ -474,13 +786,27 @@ impl OciClient {
     pub fn with_base_url(self, base_url: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         let inner = self.inner.as_ref();
+        let auth = match &inner.auth {
+            OciAuth::ApiKey(signer) => OciAuth::ApiKey(signer.clone()),
+            OciAuth::InstancePrincipal(principal) => {
+                OciAuth::InstancePrincipal(Box::new(InstancePrincipal {
+                    http: principal.http.clone(),
+                    metadata_base_url: principal.metadata_base_url.clone(),
+                    federation_endpoint: principal.federation_endpoint.clone(),
+                    tenancy: principal.tenancy.clone(),
+                    // The session moves with the client: this one is consumed.
+                    session: tokio::sync::Mutex::new(
+                        principal.session.try_lock().ok().and_then(|mut s| s.take()),
+                    ),
+                }))
+            }
+        };
         Self {
             inner: Arc::new(OciClientInner {
                 http: inner.http.clone(),
                 host: inner.host.clone(),
                 base_url,
-                key_id: inner.key_id.clone(),
-                signing_key: inner.signing_key.clone(),
+                auth,
                 state_id: inner.state_id.clone(),
             }),
         }
@@ -504,8 +830,7 @@ impl OciClient {
         let path = object_path(namespace, bucket, object_name);
         let date = http_date_now();
         let authorization = build_authorization(
-            &self.inner.signing_key,
-            &self.inner.key_id,
+            &self.signer().await?,
             "HEAD",
             &path,
             &self.inner.host,
@@ -662,8 +987,7 @@ impl OciClient {
     ) -> Result<reqwest::Response> {
         let date = http_date_now();
         let authorization = build_authorization(
-            &self.inner.signing_key,
-            &self.inner.key_id,
+            &self.signer().await?,
             method.as_str(),
             path_and_query,
             &self.inner.host,
@@ -688,47 +1012,78 @@ impl OciClient {
     }
 }
 
-/// Load an RSA private key from PEM, accepting either PKCS#8
-/// (`BEGIN PRIVATE KEY`) or PKCS#1 (`BEGIN RSA PRIVATE KEY`) encodings.
-fn load_private_key(pem: &str) -> Result<RsaPrivateKey> {
+/// Load an RSA private key from PEM: PKCS#8 (`BEGIN PRIVATE KEY`), PKCS#1
+/// (`BEGIN RSA PRIVATE KEY`), or PKCS#8 encrypted (`BEGIN ENCRYPTED PRIVATE
+/// KEY`, as `oci setup config` writes) with its pass-phrase.
+fn load_private_key(pem: &str, pass_phrase: Option<&str>) -> Result<RsaPrivateKey> {
+    if pem.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----") {
+        let Some(pass_phrase) = pass_phrase else {
+            return Err(Error::engine(
+                "OCI private key is encrypted; set pass_phrase in the OCI config profile",
+            ));
+        };
+        return RsaPrivateKey::from_pkcs8_encrypted_pem(pem, pass_phrase).map_err(|e| {
+            Error::engine(format!(
+                "decrypt OCI private key (is the pass_phrase right?): {e}"
+            ))
+        });
+    }
+    if pem.contains("Proc-Type: 4,ENCRYPTED") {
+        return Err(Error::engine(
+            "OCI private key uses the legacy OpenSSL encryption; re-encode it as an \
+             encrypted PKCS#8 key (`openssl pkcs8 -topk8 -in key.pem -out key8.pem`)",
+        ));
+    }
     RsaPrivateKey::from_pkcs8_pem(pem)
         .or_else(|_| RsaPrivateKey::from_pkcs1_pem(pem))
         .map_err(|e| {
             Error::engine(format!(
-                "parse OCI private key (expected an unencrypted PKCS#8 or PKCS#1 PEM): {e}"
+                "parse OCI private key (expected a PKCS#8 or PKCS#1 PEM): {e}"
             ))
         })
 }
 
-/// The canonical signing string for an OCI `GET`/`HEAD`: the `(request-target)`,
-/// `host`, and `date` pseudo/real headers, one `name: value` per line.
-fn signing_string(method: &str, path_and_query: &str, host: &str, date: &str) -> String {
-    format!(
-        "(request-target): {} {}\nhost: {}\ndate: {}",
-        method.to_ascii_lowercase(),
-        path_and_query,
-        host,
-        date,
-    )
-}
-
-/// Build the OCI `Authorization: Signature ...` header value.
+/// Build the OCI `Authorization: Signature ...` header value of a `GET`/`HEAD`.
 fn build_authorization(
-    signing_key: &SigningKey<Sha256>,
-    key_id: &str,
+    signer: &RequestSigner,
     method: &str,
     path_and_query: &str,
     host: &str,
     date: &str,
 ) -> Result<String> {
-    let to_sign = signing_string(method, path_and_query, host, date);
-    let signature = signing_key
+    let request_target = format!("{} {path_and_query}", method.to_ascii_lowercase());
+    sign_headers(
+        signer,
+        &[
+            ("(request-target)", &request_target),
+            ("host", host),
+            ("date", date),
+        ],
+    )
+}
+
+/// Build the OCI `Authorization: Signature ...` header value over `headers`,
+/// signed in the order given (`name: value` lines joined by newlines).
+fn sign_headers(signer: &RequestSigner, headers: &[(&str, &str)]) -> Result<String> {
+    let to_sign = headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let signature = signer
+        .signing_key
         .try_sign(to_sign.as_bytes())
         .map_err(|e| Error::engine(format!("sign OCI request: {e}")))?;
     let sig_b64 = STANDARD.encode(signature.to_bytes());
+    let names = headers
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(" ");
     Ok(format!(
-        "Signature version=\"1\",keyId=\"{key_id}\",algorithm=\"rsa-sha256\",\
-         headers=\"(request-target) host date\",signature=\"{sig_b64}\""
+        "Signature version=\"1\",keyId=\"{}\",algorithm=\"rsa-sha256\",\
+         headers=\"{names}\",signature=\"{sig_b64}\"",
+        signer.key_id
     ))
 }
 
@@ -1030,11 +1385,6 @@ struct OciEventDetails {
     bucket_name: Option<String>,
 }
 
-/// A boxed event source: a stream of raw OCI event JSON payloads (one event per
-/// item). The caller wires this to its event delivery mechanism (an OCI
-/// Streaming/queue subscription, a webhook fan-in, …).
-pub type OciEventStream = futures::stream::BoxStream<'static, Vec<u8>>;
-
 /// A live view over an OCI bucket: an initial [`scan`](LiveMapView::scan) of
 /// matching objects plus a [`watch`](LiveMapFeed::watch) that turns bucket
 /// events into per-object updates/deletes. The Rust analogue of Python's
@@ -1045,7 +1395,10 @@ pub type OciEventStream = futures::stream::BoxStream<'static, Vec<u8>>;
 /// `delete`. Events are filtered by envelope type, namespace/bucket, the
 /// prefix + path matcher, and an `eventTime` cutoff (snapshot time minus
 /// [`OCI_LIVE_SKEW_SECS`]; missing/unparseable/future times pass through).
-/// Feed it to [`Ctx::mount_each_live`](crate::Ctx::mount_each_live).
+/// An event is acknowledged to its [`LiveStream`] once the update or delete it
+/// caused has synced (at once when it was filtered out), so a durable stream
+/// commits its position only past processed events. Feed it to
+/// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live).
 pub struct OciLiveWalker {
     client: OciClient,
     namespace: String,
@@ -1053,7 +1406,7 @@ pub struct OciLiveWalker {
     prefix: String,
     path_matcher: Arc<dyn FilePathMatcher>,
     max_file_size: Option<u64>,
-    events: tokio::sync::Mutex<Option<OciEventStream>>,
+    events: Box<dyn LiveStream<Vec<u8>>>,
     /// `eventTime` cutoff (Unix seconds), set at `scan` time.
     cutoff: tokio::sync::Mutex<i64>,
     watch_guard: SingleWatcherGuard,
@@ -1065,14 +1418,17 @@ pub struct OciLiveWalker {
     skip_scan: tokio::sync::Mutex<bool>,
 }
 
-/// Build a live view over an OCI bucket, driven by `events` (a stream of raw OCI
-/// event JSON payloads). See [`OciLiveWalker`].
+/// Build a live view over an OCI bucket, driven by `events`: a [`LiveStream`]
+/// of raw OCI event JSON payloads, typically an OCI Streaming topic the OCI
+/// Events service publishes the bucket's events to, read with the Kafka
+/// connector's `topic_as_stream(..).payloads()`. See [`OciLiveWalker`]; Python's
+/// `list_objects(..., live_stream=...)`.
 pub fn list_objects_live(
     client: &OciClient,
     namespace: impl Into<String>,
     bucket: impl Into<String>,
     options: ListOptions,
-    events: impl futures::Stream<Item = Vec<u8>> + Send + 'static,
+    events: impl LiveStream<Vec<u8>>,
 ) -> OciLiveWalker {
     OciLiveWalker {
         client: client.clone(),
@@ -1083,7 +1439,7 @@ pub fn list_objects_live(
             .path_matcher
             .unwrap_or_else(|| Arc::new(MatchAllFilePathMatcher)),
         max_file_size: options.max_file_size,
-        events: tokio::sync::Mutex::new(Some(Box::pin(events))),
+        events: Box::new(events),
         cutoff: tokio::sync::Mutex::new(0),
         watch_guard: SingleWatcherGuard::new("OciLiveWalker"),
         logic_version: None,
@@ -1111,54 +1467,55 @@ impl OciLiveWalker {
         self
     }
 
-    /// Process one event payload, dispatching an update/delete to `subscriber`.
-    /// Returns `Ok(())` for skipped/filtered/transient events (never aborts the
-    /// watch loop over a single bad event), matching Python's per-event
+    /// Process one event payload, dispatching an update/delete to `subscriber`;
+    /// the handle that acknowledges the event once that has synced. A skipped,
+    /// filtered or transiently failing event is acknowledged at once (never
+    /// aborts the watch over a single bad event), matching Python's per-event
     /// resilience.
     async fn handle_event(
         &self,
         bytes: &[u8],
         cutoff: i64,
         subscriber: &LiveMapSubscriber<String, OciFile>,
-    ) -> Result<()> {
+    ) -> Result<ReadyHandle> {
         let Ok(event) = serde_json::from_slice::<OciEvent>(bytes) else {
             tracing::debug!("oci live: skipping malformed event payload");
-            return Ok(());
+            return Ok(ReadyHandle::immediate());
         };
         // Envelope filter.
         let event_type = event.event_type.unwrap_or_default();
         if !event_type.starts_with("com.oraclecloud.objectstorage.") {
-            return Ok(());
+            return Ok(ReadyHandle::immediate());
         }
         let Some(data) = event.data else {
-            return Ok(());
+            return Ok(ReadyHandle::immediate());
         };
         let Some(object_name) = data.resource_name else {
-            return Ok(());
+            return Ok(ReadyHandle::immediate());
         };
         // Namespace + bucket filter (drop cross-bucket events without a HEAD).
         let details = data.additional_details.unwrap_or_default();
         if details.namespace.as_deref() != Some(self.namespace.as_str())
             || details.bucket_name.as_deref() != Some(self.bucket.as_str())
         {
-            return Ok(());
+            return Ok(ReadyHandle::immediate());
         }
         // Event-time cutoff: drop events that precede the scan snapshot. A
         // missing / unparseable / future-dated time falls through.
         if let Some(secs) = event.event_time.as_deref().and_then(parse_rfc3339_secs)
             && secs < cutoff
         {
-            return Ok(());
+            return Ok(ReadyHandle::immediate());
         }
         // Prefix + path-matcher filter.
         let Some(relative_key) = relative_key(&self.prefix, &object_name) else {
-            return Ok(());
+            return Ok(ReadyHandle::immediate());
         };
         if !self
             .path_matcher
             .is_file_included(&PathBuf::from(&relative_key))
         {
-            return Ok(());
+            return Ok(ReadyHandle::immediate());
         }
         // Re-read: the live object state wins over the event type.
         match self
@@ -1168,7 +1525,7 @@ impl OciLiveWalker {
         {
             Ok(Some(head)) => {
                 if self.max_file_size.is_some_and(|max| head.size > max) {
-                    return Ok(());
+                    return Ok(ReadyHandle::immediate());
                 }
                 let file = OciFile::new(
                     Some(self.client.clone()),
@@ -1183,16 +1540,14 @@ impl OciLiveWalker {
                     head.md5,
                     head.etag,
                 );
-                subscriber.update(relative_key, file).await?;
+                subscriber.start_update(relative_key, file).await
             }
-            Ok(None) => {
-                subscriber.delete(relative_key).await?;
-            }
+            Ok(None) => subscriber.start_delete(relative_key).await,
             Err(e) => {
                 tracing::warn!("oci live: HEAD {object_name} failed, skipping event: {e}");
+                Ok(ReadyHandle::immediate())
             }
         }
-        Ok(())
     }
 }
 
@@ -1230,13 +1585,6 @@ impl LiveMapFeed<String, OciFile> for OciLiveWalker {
 
     async fn watch(&self, subscriber: LiveMapSubscriber<String, OciFile>) -> Result<()> {
         let _watch_token = self.watch_guard.enter()?;
-        use futures::StreamExt;
-        let mut events = self
-            .events
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| Error::engine("oci live event stream already consumed"))?;
         let skip_scan = *self.skip_scan.lock().await;
         // Record the version only after a real scan (which has already committed
         // — `mark_ready` ran before `watch`), so a later run skips only when the
@@ -1254,10 +1602,42 @@ impl LiveMapFeed<String, OciFile> for OciLiveWalker {
         } else {
             *self.cutoff.lock().await
         };
-        while let Some(bytes) = events.next().await {
-            self.handle_event(&bytes, cutoff, &subscriber).await?;
-        }
-        Ok(())
+        self.events
+            .watch(&OciEventSubscriber {
+                walker: self,
+                map: &subscriber,
+                cutoff,
+            })
+            .await
+    }
+}
+
+/// Receives the bucket's event payloads from the [`LiveStream`] and turns each
+/// into an update or delete of the live map (Python's `_OCIStreamSubscriber`).
+struct OciEventSubscriber<'a> {
+    walker: &'a OciLiveWalker,
+    map: &'a LiveMapSubscriber<String, OciFile>,
+    cutoff: i64,
+}
+
+#[crate::async_trait]
+impl LiveStreamSubscriber<Vec<u8>> for OciEventSubscriber<'_> {
+    async fn send(&self, message: Vec<u8>) -> Result<ReadyHandle> {
+        self.walker
+            .handle_event(&message, self.cutoff, self.map)
+            .await
+    }
+
+    /// Readiness is the scan's, signalled before the watch starts; the stream's
+    /// own readiness is not consumed.
+    async fn mark_ready(&self) {}
+
+    async fn read_committed_state(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.map.read_committed_state(key).await
+    }
+
+    async fn write_committed_state(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.map.write_committed_state(key, &value.to_vec()).await
     }
 }
 
@@ -1314,34 +1694,21 @@ mod tests {
     }
 
     #[test]
-    fn signing_string_is_canonical() {
-        let s = signing_string(
-            "GET",
-            "/n/ns/b/bucket/o?fields=name&prefix=docs%2F",
-            "objectstorage.us-ashburn-1.oraclecloud.com",
-            "Tue, 02 Jun 2026 12:00:00 GMT",
-        );
-        assert_eq!(
-            s,
-            "(request-target): get /n/ns/b/bucket/o?fields=name&prefix=docs%2F\n\
-             host: objectstorage.us-ashburn-1.oraclecloud.com\n\
-             date: Tue, 02 Jun 2026 12:00:00 GMT"
-        );
-    }
-
-    #[test]
     fn authorization_header_signs_and_verifies() {
         // A small key keeps the test fast; signing/verification exercise the real
         // RSA-SHA256 path used against OCI.
         let mut rng = rand::thread_rng();
         let key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
-        let signing_key = SigningKey::<Sha256>::new(key.clone());
-        let key_id = "ocid1.tenancy/ocid1.user/aa:bb:cc";
+        let signer = RequestSigner {
+            key_id: "ocid1.tenancy/ocid1.user/aa:bb:cc".to_string(),
+            signing_key: Arc::new(SigningKey::<Sha256>::new(key.clone())),
+        };
+        let key_id = signer.key_id.as_str();
         let host = "objectstorage.us-ashburn-1.oraclecloud.com";
         let date = "Tue, 02 Jun 2026 12:00:00 GMT";
         let path = "/n/ns/b/bucket/o?fields=name";
 
-        let header = build_authorization(&signing_key, key_id, "GET", path, host, date).unwrap();
+        let header = build_authorization(&signer, "GET", path, host, date).unwrap();
         assert!(header.starts_with("Signature version=\"1\","));
         assert!(header.contains(&format!("keyId=\"{key_id}\"")));
         assert!(header.contains("algorithm=\"rsa-sha256\""));
@@ -1356,7 +1723,9 @@ mod tests {
         let sig_bytes = STANDARD.decode(sig_b64).unwrap();
         let signature = Signature::try_from(sig_bytes.as_slice()).unwrap();
         let verifying_key = VerifyingKey::<Sha256>::new(RsaPublicKey::from(&key));
-        let expected = signing_string("GET", path, host, date);
+        // The canonical string: `(request-target)` with the lower-cased method,
+        // then `host` and `date`, one `name: value` per line.
+        let expected = format!("(request-target): get {path}\nhost: {host}\ndate: {date}");
         verifying_key
             .verify(expected.as_bytes(), &signature)
             .unwrap();
