@@ -147,13 +147,13 @@ A pipeline that mounts one component per listed channel deletes a channel's outp
 Discord sends its rate limits with each response, rather than publishing fixed ones. The connector paces on them with no configuration:
 
 - each route is paced on the limits Discord last reported for it, per channel or server, as Discord counts them, under Discord's global limit of 50 requests a second per bot;
-- a 429 response is waited out for as long as Discord asks, and a 5xx or network error is retried with backoff;
+- a 429 response is waited out for as long as Discord asks, by every request when it's for the bot's global limit, and a 5xx or network error is retried with backoff;
 - a request gives up once its waits would pass 300 seconds in total, failing that channel's run (its outputs are kept);
 - after a rejected token (401), the App sends no more requests, since Discord bans the IP of a client that sends too many failing ones. Fix the token and start again.
 
 A wait over 60 seconds is logged as a warning, so a long one doesn't look like a hang.
 
-**Passing a [`rate_limiter`](../common_resources/rate_limiting)** adds a budget on top of that pacing, for a bot whose limits other tools share: one token per request, retries included.
+**Passing a [`rate_limiter`](../common_resources/rate_limiting)** adds a budget on top of that pacing, for a bot whose limits other tools share: one token per request, retries included, and a fresh one after waiting out the bot's global limit.
 
 ```python
 from cocoindex.resources.rate_limit import RateLimiter

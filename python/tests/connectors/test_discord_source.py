@@ -29,6 +29,7 @@ import os
 import re
 import ssl
 import time
+import types
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple, cast
@@ -162,6 +163,18 @@ def _rate_limited(retry_after: float) -> httpx.Response:
             "message": "You are being rate limited.",
             "retry_after": retry_after,
             "global": False,
+        },
+    )
+
+
+def _globally_rate_limited(retry_after: float) -> httpx.Response:
+    """A 429 for the bot's global limit, which covers every request."""
+    return httpx.Response(
+        429,
+        json={
+            "message": "You are being rate limited.",
+            "retry_after": retry_after,
+            "global": True,
         },
     )
 
@@ -493,16 +506,34 @@ async def _setup(
 @pytest.fixture
 def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     """The waits the connector asks for, recorded instead of slept: real 429
-    waits would pass pytest's timeout. ``time.monotonic`` isn't patched, so a
-    bucket wait comes out at about the bucket's reset."""
+    waits would pass pytest's timeout. The connector's clock,
+    ``_source.time.monotonic``, moves on as if each wait had been slept: a
+    waiter wakes at the time it went to sleep plus its wait, and the clock
+    is then at least that."""
     recorded: list[float] = []
+    # How far the connector's clock is ahead of the real one.
+    ahead = 0.0
+
+    def monotonic() -> float:
+        return time.monotonic() + ahead
 
     async def record(delay: float) -> None:
+        nonlocal ahead
+        wakes_at = monotonic() + delay
         recorded.append(delay)
         await _real_sleep(0)
+        ahead = max(ahead, wakes_at - time.monotonic())
 
     monkeypatch.setattr(asyncio, "sleep", record)
+    monkeypatch.setattr(_source, "time", types.SimpleNamespace(monotonic=monotonic))
     return recorded
+
+
+@pytest.fixture
+def clock(sleeps: list[float]) -> Callable[[], float]:
+    """The connector's clock under ``sleeps``, which moves on as it waits."""
+    monotonic: Callable[[], float] = getattr(_source, "time").monotonic
+    return monotonic
 
 
 class _RecordingLimiter:
@@ -516,6 +547,19 @@ class _RecordingLimiter:
 
     async def acquire(self, n: int = 1) -> None:
         self.acquired += n
+
+
+class _GatedLimiter:
+    """Stands in for a caller's ``RateLimiter``: hands out tokens once
+    ``gate`` is set, counting ``acquire()`` calls."""
+
+    def __init__(self) -> None:
+        self.acquired = 0
+        self.gate = asyncio.Event()
+
+    async def acquire(self, n: int = 1) -> None:
+        self.acquired += n
+        await self.gate.wait()
 
 
 # ---------------------------------------------------------------------------
@@ -886,10 +930,14 @@ class TestPacing:
             await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
         assert len(sleeps) == 2
         assert sleeps[0] == 0.5
-        assert 4.0 < sleeps[1] <= 4.5
+        # What's left of the reset after the first wait.
+        assert 3.9 < sleeps[1] <= 4.0
 
     async def test_concurrent_requests_share_the_bucket(
-        self, sleeps: list[float], monkeypatch: pytest.MonkeyPatch
+        self,
+        sleeps: list[float],
+        clock: Callable[[], float],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Channels listed together each send the server's active-thread
         # listing twice, all on one bucket and server ID. The bucket's state
@@ -902,8 +950,7 @@ class TestPacing:
             fake.add_channel(_raw_channel(channel_id))
         path = f"/guilds/{_GUILD}/threads/active"
         fake.buckets[path] = _FakeBucket(limit=5, reset_after=0.5)
-        # Time passes as the connector waits.
-        fake.clock = lambda: time.monotonic() + sum(sleeps)
+        fake.clock = clock
         app, _ = await _setup(fake)
         async with app:
             await asyncio.gather(*(_items(_channel(app, c)) for c in channel_ids))
@@ -948,16 +995,7 @@ class TestPacing:
         # A global limit covers every request the bot sends, and Discord
         # counts each 429 toward its ban on an IP.
         fake = _fake_with_channels()
-        fake.script[f"/channels/{_CHANNEL}"] = [
-            httpx.Response(
-                429,
-                json={
-                    "message": "You are being rate limited.",
-                    "retry_after": 2.0,
-                    "global": True,
-                },
-            )
-        ]
+        fake.script[f"/channels/{_CHANNEL}"] = [_globally_rate_limited(2.0)]
         app, ctx = await _setup(fake)
 
         async def after_the_429() -> Any:
@@ -973,6 +1011,88 @@ class TestPacing:
         assert all(1.9 < wait <= 2.0 for wait in sleeps)
         assert fake.count(f"/channels/{_CHANNEL}") == 2
         assert fake.count(f"/channels/{_OTHER_CHANNEL}") == 1
+
+    async def test_global_pause_extended_while_waiting(
+        self, sleeps: list[float], clock: Callable[[], float]
+    ) -> None:
+        fake = _fake_with_channels()
+        path = f"/channels/{_CHANNEL}"
+        limiter = _RecordingLimiter()
+        app, ctx = await _setup(fake, rate_limiter=cast(RateLimiter, limiter))
+        async with app:
+            # Another request's global 429 holds this one.
+            ctx._paused_until = clock() + 0.3
+            request = asyncio.create_task(ctx.get(_ROUTE_CHANNEL, _CHANNEL))
+            while not sleeps:
+                await _real_sleep(0)
+            # While it waits, a request already in flight draws another
+            # global 429, which extends the pause.
+            ctx._paused_until = clock() + 0.7
+            await request
+        # The rest of the extension is waited out too, before the request is
+        # sent, and with no token taken between the two waits.
+        assert len(sleeps) == 2
+        assert 0.29 < sleeps[0] <= 0.3
+        assert 0.35 < sleeps[1] < 0.45
+        assert fake.count(path) == 1
+        assert limiter.acquired == 1
+
+    async def test_tokens_taken_as_a_pause_begins(
+        self,
+        sleeps: list[float],
+        clock: Callable[[], float],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Requests waiting for their tokens when another request draws a
+        # global 429 would otherwise send during the pause, each drawing a
+        # 429 of its own.
+        # The real global limiter hands off to the Rust runtime, so the
+        # requests would reach the pause check at different times, and the
+        # first to wait would move the clock past the pause for the others.
+        monkeypatch.setattr(_source, "RateLimiter", _RecordingLimiter)
+        fake = _fake_with_channels()
+        channel_ids = ["1118", "1119", "1120"]
+        for channel_id in channel_ids:
+            fake.add_channel(_raw_channel(channel_id))
+        limiter = _GatedLimiter()
+        app, ctx = await _setup(fake, rate_limiter=cast(RateLimiter, limiter))
+        async with app:
+            requests = [
+                asyncio.create_task(ctx.get(_ROUTE_CHANNEL, channel_id))
+                for channel_id in channel_ids
+            ]
+            while limiter.acquired < len(channel_ids):
+                await _real_sleep(0)
+            # Another request draws a global 429 while these wait for tokens.
+            ctx._paused_until = clock() + 1.0
+            limiter.gate.set()
+            await asyncio.gather(*requests)
+        # Each waited out the pause and took fresh tokens after it.
+        assert len(sleeps) == len(channel_ids)
+        assert all(0.9 < wait <= 1.0 for wait in sleeps)
+        assert limiter.acquired == 2 * len(channel_ids)
+        assert all(fake.count(f"/channels/{c}") == 1 for c in channel_ids)
+
+    async def test_global_pause_past_the_cap(self, sleeps: list[float]) -> None:
+        # The request that draws it raises at its cap, and so does every
+        # other request, rather than waiting the whole pause.
+        fake = _fake_with_channels()
+        fake.script[f"/channels/{_CHANNEL}"] = [_globally_rate_limited(1000.0)]
+        app, ctx = await _setup(fake)
+        async with app:
+            with pytest.raises(_DiscordError, match=r"300 s cap on waits: HTTP 429"):
+                await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
+            with pytest.raises(
+                _DiscordError,
+                match=(
+                    rf"^Discord GET /channels/{_OTHER_CHANNEL} not sent: the bot's "
+                    r"global rate limit holds every request for 1000 s, past the "
+                    r"300 s cap on waits\.$"
+                ),
+            ):
+                await ctx.get(_ROUTE_CHANNEL, _OTHER_CHANNEL)
+        assert sleeps == []
+        assert fake.count(f"/channels/{_OTHER_CHANNEL}") == 0
 
     async def test_routes_without_headers_not_paced(self, sleeps: list[float]) -> None:
         app, ctx = await _setup(_fake_with_channels())

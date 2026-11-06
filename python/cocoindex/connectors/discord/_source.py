@@ -303,7 +303,8 @@ class DiscordApp:
     Requests are paced on the rate-limit headers Discord sends, under
     Discord's global limit of 50 requests a second per bot, with no
     configuration. ``rate_limiter``, when set, adds a budget on top, for a bot
-    whose limits other tools share: one token per request, retries included.
+    whose limits other tools share: one token per request, retries included,
+    and a fresh one after waiting out the bot's global limit.
 
     Discord's TLS certificate is verified against certifi's CA bundle, as
     httpx does by default; behind a corporate CA, set ``SSL_CERT_FILE`` to
@@ -491,13 +492,14 @@ class _ApiContext:
 
         Each attempt, retries included, waits for the route's bucket if it's
         used up, and for a pause a global 429 set, then takes a token from the
-        App's ``rate_limiter`` (if set) and from the global limiter. A 429
-        waits for Discord's ``retry_after``, every request waiting it out if
-        it's the bot's global limit, and a 5xx or a network error backs off exponentially;
-        those waits count toward a cap, and the error is raised once the next
-        wait would pass it, or at once for a certificate that failed
-        verification. Pacing doesn't count. Any other error raises at
-        once, and a 401 also stops every later request.
+        App's ``rate_limiter`` (if set) and from the global limiter, waiting
+        again, and for fresh tokens, if a pause began meanwhile. A 429 waits
+        for Discord's ``retry_after``, every request waiting it out if it's
+        the bot's global limit, and a 5xx or a network error backs off
+        exponentially; those waits count toward a cap, and the error is
+        raised once the next wait would pass it, or at once for a certificate
+        that failed verification. Pacing doesn't count. Any other error raises
+        at once, and a 401 also stops every later request.
         """
         path = route.format(id=major)
         total_waited = 0.0
@@ -509,12 +511,17 @@ class _ApiContext:
                     f"earlier (HTTP 401). {_TOKEN_HINT}"
                 )
             await self._wait_for_bucket(route, major, path)
-            await self._wait_for_global_pause(path)
-            if self._rate_limiter is not None:
-                await self._rate_limiter.acquire()
-            await self._global_limiter.acquire()
+            # A global 429 can come in while a request waits for its tokens:
+            # check the pause again after them, and take fresh tokens after a
+            # pause, so that its end doesn't send every waiter at once.
+            while True:
+                await self._wait_for_global_pause(path)
+                if self._rate_limiter is not None:
+                    await self._rate_limiter.acquire()
+                await self._global_limiter.acquire()
+                if self._paused_until <= time.monotonic():
+                    break
             wait_secs: float
-            paused = False
             try:
                 resp = await self._client.get(path, params=params)
             except httpx.TransportError as e:
@@ -537,12 +544,11 @@ class _ApiContext:
                 if status == 429:
                     wait_secs = _retry_after(resp)
                     if _is_global_limit(resp):
-                        # The bot's global limit covers every request, so all
-                        # of them wait it out, this one at its next attempt.
+                        # The bot's global limit covers every request, so the
+                        # others wait it out too.
                         self._paused_until = max(
                             self._paused_until, time.monotonic() + wait_secs
                         )
-                        paused = True
                 elif status >= 500:
                     wait_secs = next_backoff
                     next_backoff = min(next_backoff * 2, _RETRY_BACKOFF_MAX_SECS)
@@ -560,8 +566,7 @@ class _ApiContext:
                 reason,
                 wait_secs,
             )
-            if not paused:
-                await asyncio.sleep(wait_secs)
+            await asyncio.sleep(wait_secs)
             total_waited += wait_secs
 
     async def _wait_for_bucket(self, route: str, major: str | None, path: str) -> None:
@@ -584,29 +589,31 @@ class _ApiContext:
                     wait_secs,
                 )
             await asyncio.sleep(wait_secs)
-        # The reset has passed, so the next response says what the bucket has;
-        # a state recorded during the wait is newer, and stays.
-        if self._bucket_states.get(key) is state:
-            del self._bucket_states[key]
 
     async def _wait_for_global_pause(self, path: str) -> None:
-        """If a global 429 paused every request, wait until the pause ends."""
-        wait_secs = self._paused_until - time.monotonic()
-        if wait_secs <= 0:
-            return
-        if wait_secs > _LONG_WAIT_SECS:
-            _log.warning(
-                "Discord GET %s: the bot's global rate limit was reached; "
-                "waiting %.1fs",
-                path,
-                wait_secs,
-            )
-        await asyncio.sleep(wait_secs)
+        """If a global 429 paused every request, wait until the pause ends,
+        also when another one extends it meanwhile. A pause past the cap on
+        waits raises, as it does for the request whose 429 set it."""
+        while (wait_secs := self._paused_until - time.monotonic()) > 0:
+            if wait_secs > _RETRY_TOTAL_CAP_SECS:
+                raise _DiscordError(
+                    f"Discord GET {path} not sent: the bot's global rate limit "
+                    f"holds every request for {wait_secs:.0f} s, past the "
+                    f"{_RETRY_TOTAL_CAP_SECS:g} s cap on waits."
+                )
+            if wait_secs > _LONG_WAIT_SECS:
+                _log.warning(
+                    "Discord GET %s: the bot's global rate limit was reached; "
+                    "waiting %.1fs",
+                    path,
+                    wait_secs,
+                )
+            await asyncio.sleep(wait_secs)
 
     def _drop_spent_bucket_state(self, route: str, major: str | None) -> None:
         """Drop what the route's bucket has left for ``major`` unless it says
         to wait: the next request would go at once anyway. One that says to
-        wait is kept for the next request, which drops it after waiting."""
+        wait is kept for the next request, which waits for its reset."""
         bucket = self._route_buckets.get(route)
         if bucket is None:
             return
