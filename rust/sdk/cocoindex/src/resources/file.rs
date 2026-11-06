@@ -140,8 +140,10 @@ impl FilePath {
             return false;
         }
         let parts = self.parts();
+        // `has_root`, not `is_absolute`: on Windows `/docs/a.md` has a root
+        // but no drive, and pathlib anchors on the root alone.
         let anchored = pattern.starts_with('/');
-        if anchored && (!self.path.is_absolute() || parts.len() != pattern_parts.len() + 1) {
+        if anchored && (!self.path.has_root() || parts.len() != pattern_parts.len() + 1) {
             return false;
         }
         if parts.len() < pattern_parts.len() {
