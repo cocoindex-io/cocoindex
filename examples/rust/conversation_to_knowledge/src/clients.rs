@@ -1,16 +1,10 @@
-//! Shared clients (OpenAI LLM, fastembed embedder, SurrealDB graph) and the
-//! ContextKeys used to inject them into the pipeline.
-
-use std::path::PathBuf;
-use std::sync::Arc;
+//! Shared clients (OpenAI LLM, the SDK's embedder and chat client, SurrealDB
+//! graph) and the ContextKeys used to inject them into the pipeline.
 
 pub use cocoindex::connectors::surrealdb::Graph;
+pub use cocoindex::ops::api::ApiChatClient;
+pub use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::prelude::*;
-use fastembed::{
-    EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
-    UserDefinedEmbeddingModel, read_file_to_bytes,
-};
-use hf_hub::api::sync::ApiBuilder;
 use serde::de::DeserializeOwned;
 
 // ---------------------------------------------------------------------------
@@ -25,15 +19,13 @@ cocoindex::context_key!(
     detect_change
 );
 
-// LLM used to confirm entity-resolution pairs.
-cocoindex::context_key!(
-    pub static RESOLVER_LLM: LlmClient,
-    detect_change
-);
+// LLM used to confirm entity-resolution pairs. Each decision's memo key holds
+// the model, so no change detection on the key is needed.
+cocoindex::context_key!(pub static RESOLVER_LLM: ApiChatClient);
 
 // Local embedder for entity-resolution similarity.
 cocoindex::context_key!(
-    pub static EMBEDDER: Embedder,
+    pub static EMBEDDER: SentenceTransformerEmbedder,
     detect_change
 );
 
@@ -52,13 +44,22 @@ pub struct LlmClient {
     pub model: String,
 }
 
+/// The LLM API key: `OPENAI_API_KEY`, or `LLM_API_KEY` for another provider.
+pub fn llm_api_key() -> Result<String> {
+    std::env::var("OPENAI_API_KEY")
+        .or_else(|_| std::env::var("LLM_API_KEY"))
+        .map_err(|_| Error::engine("set OPENAI_API_KEY (or LLM_API_KEY)"))
+}
+
+/// The LLM API base URL (`LLM_BASE_URL`), OpenAI's by default.
+pub fn llm_base_url() -> String {
+    std::env::var("LLM_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into())
+}
+
 impl LlmClient {
     pub fn new(model: String) -> Result<Self> {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .or_else(|_| std::env::var("LLM_API_KEY"))
-            .map_err(|_| Error::engine("set OPENAI_API_KEY (or LLM_API_KEY)"))?;
-        let base_url =
-            std::env::var("LLM_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
+        let api_key = llm_api_key()?;
+        let base_url = llm_base_url();
         Ok(Self {
             http: reqwest::Client::new(),
             api_key,
@@ -109,90 +110,4 @@ impl MemoInput for LlmClient {
     fn write_memo_key(&self, writer: &mut cocoindex::memo::MemoKeyWriter<'_>) -> Result<()> {
         writer.write(&self.model)
     }
-}
-
-// ---------------------------------------------------------------------------
-// Embedder (local fastembed model)
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-pub struct Embedder {
-    model: Arc<TextEmbedding>,
-    pub model_name: String,
-}
-
-impl Embedder {
-    pub fn load(model_name: &str) -> Result<Self> {
-        let model = match model_name {
-            "Snowflake/snowflake-arctic-embed-xs" => load_snowflake_arctic_embed_xs()?,
-            "sentence-transformers/all-MiniLM-L6-v2" | "all-MiniLM-L6-v2" => {
-                TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
-                    .map_err(|e| Error::engine(format!("failed to load embedding model: {e}")))?
-            }
-            other => {
-                return Err(Error::engine(format!(
-                    "unsupported embedding model {other:?}; supported: Snowflake/snowflake-arctic-embed-xs, sentence-transformers/all-MiniLM-L6-v2"
-                )));
-            }
-        };
-        Ok(Self {
-            model: Arc::new(model),
-            model_name: model_name.to_string(),
-        })
-    }
-
-    /// Embed a batch of texts (normalized; dot product == cosine similarity).
-    pub async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let model = self.model.clone();
-        tokio::task::spawn_blocking(move || model.embed(texts, None))
-            .await
-            .map_err(|e| Error::engine(format!("embedding task panicked: {e}")))?
-            .map_err(|e| Error::engine(format!("embedding failed: {e}")))
-    }
-}
-
-impl MemoInput for Embedder {
-    fn write_memo_key(&self, writer: &mut cocoindex::memo::MemoKeyWriter<'_>) -> Result<()> {
-        writer.write(&self.model_name)
-    }
-}
-
-fn load_snowflake_arctic_embed_xs() -> Result<TextEmbedding> {
-    let cache_dir = std::env::var("HF_HOME")
-        .map(PathBuf::from)
-        .or_else(|_| std::env::var("FASTEMBED_CACHE_DIR").map(PathBuf::from))
-        .unwrap_or_else(|_| PathBuf::from(".fastembed_cache"));
-    let endpoint =
-        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
-    let repo = ApiBuilder::new()
-        .with_cache_dir(cache_dir)
-        .with_endpoint(endpoint)
-        .with_progress(true)
-        .build()
-        .map_err(|e| Error::engine(format!("failed to create Hugging Face client: {e}")))?
-        .model("Snowflake/snowflake-arctic-embed-xs".to_string());
-
-    let file = |path: &str| -> Result<Vec<u8>> {
-        let local_path = repo
-            .get(path)
-            .map_err(|e| Error::engine(format!("failed to download {path}: {e}")))?;
-        read_file_to_bytes(&local_path)
-            .map_err(|e| Error::engine(format!("failed to read {}: {e}", local_path.display())))
-    };
-
-    let model = UserDefinedEmbeddingModel::new(
-        file("onnx/model.onnx")?,
-        TokenizerFiles {
-            tokenizer_file: file("tokenizer.json")?,
-            config_file: file("config.json")?,
-            special_tokens_map_file: file("special_tokens_map.json")?,
-            tokenizer_config_file: file("tokenizer_config.json")?,
-        },
-    )
-    .with_pooling(Pooling::Cls);
-    TextEmbedding::try_new_from_user_defined(model, InitOptionsUserDefined::default())
-        .map_err(|e| Error::engine(format!("failed to load Snowflake embedding model: {e}")))
 }

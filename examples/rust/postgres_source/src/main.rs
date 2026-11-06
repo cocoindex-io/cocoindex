@@ -135,7 +135,7 @@ async fn app_main(ctx: Ctx) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn query(pool: &PgPool, embedder: &SentenceTransformerEmbedder, q: &str) -> Result<()> {
-    let vec = Embedder::embed(embedder, q).await?;
+    let vec = embedder.embed_batch(vec![q.to_string()]).await?.remove(0);
     let vec_lit = format!(
         "[{}]",
         vec.iter()
