@@ -288,7 +288,7 @@ async fn id_generator_returns_distinct_ids_for_repeated_dep() {
 
     let ids = app
         .update(|ctx| async move {
-            let mut id_gen = IdGenerator::new();
+            let id_gen = IdGenerator::new();
             let mut ids = Vec::new();
             for _ in 0..5 {
                 ids.push(id_gen.next_id(&ctx, &"same").await?);
@@ -313,7 +313,7 @@ async fn id_generator_is_stable_across_runs() {
         app.update(|ctx| async move {
             let mut results = Vec::new();
             for dep in ["A", "B"] {
-                let mut id_gen = IdGenerator::new();
+                let id_gen = IdGenerator::new();
                 let mut ids = Vec::new();
                 for _ in 0..3 {
                     ids.push(id_gen.next_id(&ctx, &dep).await?);
@@ -342,7 +342,7 @@ async fn id_generator_constructor_deps_split_sequences() {
         app.update(|ctx| async move {
             let mut results = Vec::new();
             for dep in ["A", "B"] {
-                let mut id_gen = IdGenerator::with_deps(&dep)?;
+                let id_gen = IdGenerator::with_deps(&dep)?;
                 let mut ids = Vec::new();
                 for _ in 0..3 {
                     ids.push(id_gen.next_id_default(&ctx).await?);
@@ -367,7 +367,7 @@ async fn uuid_generator_returns_distinct_uuids_for_repeated_dep() {
 
     let uuids = app
         .update(|ctx| async move {
-            let mut uuid_gen = UuidGenerator::new();
+            let uuid_gen = UuidGenerator::new();
             let mut uuids = Vec::new();
             for _ in 0..5 {
                 uuids.push(uuid_gen.next_uuid(&ctx, &"same").await?);
@@ -392,7 +392,7 @@ async fn uuid_generator_is_stable_across_runs() {
         app.update(|ctx| async move {
             let mut results = Vec::new();
             for dep in ["A", "B"] {
-                let mut uuid_gen = UuidGenerator::new();
+                let uuid_gen = UuidGenerator::new();
                 let mut uuids = Vec::new();
                 for _ in 0..3 {
                     uuids.push(uuid_gen.next_uuid(&ctx, &dep).await?);
@@ -419,7 +419,7 @@ async fn uuid_generator_constructor_deps_split_sequences() {
         app.update(|ctx| async move {
             let mut results = Vec::new();
             for dep in ["A", "B"] {
-                let mut uuid_gen = UuidGenerator::with_deps(&dep)?;
+                let uuid_gen = UuidGenerator::with_deps(&dep)?;
                 let mut uuids = Vec::new();
                 for _ in 0..3 {
                     uuids.push(uuid_gen.next_uuid_default(&ctx).await?);

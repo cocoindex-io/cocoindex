@@ -78,7 +78,7 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<RowData>> {
         })
         .await?;
 
-    let mut id_gen = IdGenerator::new();
+    let id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(texts.len());
     for ((chunk, chunk_text), vector) in chunks.iter().zip(texts).zip(embeddings) {
         let id = id_gen.next_id(&ctx, &chunk_text).await?;

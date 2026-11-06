@@ -262,7 +262,7 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
         .collect();
 
     // Deterministic per-paper UUIDs (stable across runs unlike Python's uuid4).
-    let mut uuid_gen = UuidGenerator::with_deps(&filename)?;
+    let uuid_gen = UuidGenerator::with_deps(&filename)?;
     let mut embeddings = Vec::new();
 
     // Title embedding (one row).

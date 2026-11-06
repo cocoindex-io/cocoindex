@@ -62,7 +62,7 @@ async fn process_image(ctx: &Ctx, file: FileEntry) -> Result<PointData> {
     let filename = file.key();
     let bytes = file.content()?;
     let vector = ctx.get_key(&EMBEDDER)?.embed(ctx, bytes).await?;
-    let mut id_gen = IdGenerator::new();
+    let id_gen = IdGenerator::new();
     let id = id_gen.next_id(&ctx, &filename).await?;
     Ok(PointData {
         id,

@@ -64,7 +64,7 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<CodeEmbedding>> 
     let codes: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
     let embeddings = ctx.get_key(&EMBEDDER)?.embed_batch(codes.clone()).await?;
 
-    let mut id_gen = IdGenerator::new();
+    let id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(chunks.len());
     for ((chunk, code), embedding) in chunks.iter().zip(codes).zip(embeddings) {
         let id = id_gen.next_id(&ctx, &code).await?;
