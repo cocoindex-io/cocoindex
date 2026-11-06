@@ -133,7 +133,8 @@ impl BigQueryConnection {
     /// Resolve credentials (see the module docs) and build a connection. No
     /// request is made until the first query.
     pub fn connect(config: BigQueryConfig) -> Result<Self> {
-        let (auth, auth_id, project_hint) = resolve_credentials(config.credentials_path.as_deref())?;
+        let (auth, auth_id, project_hint) =
+            resolve_credentials(config.credentials_path.as_deref())?;
         let project = resolve_project(config.project, project_hint)?;
         Ok(Self::build(auth, auth_id, project, config.location))
     }
@@ -294,7 +295,8 @@ impl BigQueryConnection {
             "timeoutMs": QUERY_TIMEOUT_MS,
         });
         if !params.is_empty() {
-            body["queryParameters"] = JsonValue::Array(params.iter().map(QueryParam::to_api).collect());
+            body["queryParameters"] =
+                JsonValue::Array(params.iter().map(QueryParam::to_api).collect());
         }
         if let Some(location) = &inner.location {
             body["location"] = JsonValue::from(location.as_str());
@@ -314,7 +316,10 @@ impl BigQueryConnection {
                 {
                     return Err(Error::engine(format!(
                         "bigquery query failed: {}",
-                        first.get("message").and_then(JsonValue::as_str).unwrap_or("unknown error")
+                        first
+                            .get("message")
+                            .and_then(JsonValue::as_str)
+                            .unwrap_or("unknown error")
                     )));
                 }
                 decode_rows(&response, &mut rows);
@@ -341,7 +346,10 @@ impl BigQueryConnection {
             .get("jobId")
             .and_then(JsonValue::as_str)
             .ok_or_else(|| Error::engine("bigquery query response has no jobId"))?;
-        let url = format!("{}/projects/{}/queries/{job_id}", inner.base_url, inner.project);
+        let url = format!(
+            "{}/projects/{}/queries/{job_id}",
+            inner.base_url, inner.project
+        );
         let mut query: Vec<(&str, String)> = vec![("timeoutMs", QUERY_TIMEOUT_MS.to_string())];
         if let Some(location) = job.get("location").and_then(JsonValue::as_str) {
             query.push(("location", location.to_string()));
@@ -495,7 +503,11 @@ fn load_credentials_file(path: &Path) -> Result<(Auth, String, Option<String>)> 
             .map(str::to_string)
             .ok_or_else(|| Error::engine(format!("bigquery: credentials file missing {key:?}")))
     };
-    let optional = |key: &str| json.get(key).and_then(JsonValue::as_str).map(str::to_string);
+    let optional = |key: &str| {
+        json.get(key)
+            .and_then(JsonValue::as_str)
+            .map(str::to_string)
+    };
     let token_uri = optional("token_uri").unwrap_or_else(|| DEFAULT_TOKEN_URI.to_string());
     match json.get("type").and_then(JsonValue::as_str) {
         Some("service_account") => {
@@ -560,7 +572,12 @@ fn unix_now() -> u64 {
 }
 
 /// Build and sign a service-account JWT assertion (RS256) for the BigQuery scope.
-fn make_jwt(client_email: &str, private_key_pem: &str, token_uri: &str, now: u64) -> Result<String> {
+fn make_jwt(
+    client_email: &str,
+    private_key_pem: &str,
+    token_uri: &str,
+    now: u64,
+) -> Result<String> {
     let header = json!({ "alg": "RS256", "typ": "JWT" });
     let claims = json!({
         "iss": client_email,
@@ -1246,7 +1263,9 @@ fn table_action_statements(
         let col = schema.columns().get(col_name);
         match (action, col) {
             (DiffAction::Delete, _) => {
-                statements.push(format!("ALTER TABLE {table} DROP COLUMN IF EXISTS `{col_name}`"));
+                statements.push(format!(
+                    "ALTER TABLE {table} DROP COLUMN IF EXISTS `{col_name}`"
+                ));
             }
             (DiffAction::Insert, Some(col)) => {
                 statements.push(format!(
@@ -1261,7 +1280,9 @@ fn table_action_statements(
                 ));
             }
             (DiffAction::Replace, Some(col)) => {
-                statements.push(format!("ALTER TABLE {table} DROP COLUMN IF EXISTS `{col_name}`"));
+                statements.push(format!(
+                    "ALTER TABLE {table} DROP COLUMN IF EXISTS `{col_name}`"
+                ));
                 statements.push(format!(
                     "ALTER TABLE {table} ADD COLUMN {}",
                     added_column_sql(col_name, col)
@@ -1273,7 +1294,11 @@ fn table_action_statements(
     statements
 }
 
-fn create_table_statements(key: &TableKey, schema: &TableSchema, if_not_exists: bool) -> Vec<String> {
+fn create_table_statements(
+    key: &TableKey,
+    schema: &TableSchema,
+    if_not_exists: bool,
+) -> Vec<String> {
     let pk: HashSet<&String> = schema.primary_key().iter().collect();
     let mut col_defs: Vec<String> = schema
         .ordered_columns()
@@ -1299,7 +1324,11 @@ fn create_table_statements(key: &TableKey, schema: &TableSchema, if_not_exists: 
 }
 
 fn column_sql(name: &str, col: &ColumnDef, is_pk: bool) -> String {
-    let not_null = if col.nullable && !is_pk { "" } else { " NOT NULL" };
+    let not_null = if col.nullable && !is_pk {
+        ""
+    } else {
+        " NOT NULL"
+    };
     format!("`{name}` {}{not_null}", col.bigquery_type)
 }
 
@@ -1725,14 +1754,14 @@ fn json_scalar_to_stable_key(value: &JsonValue) -> Result<StableKey> {
 /// separator (Python's `_PROJECT_RE`).
 fn validate_project_id(project: &str) -> Result<()> {
     let mut chars = project.chars();
-    let valid = chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphanumeric())
+    let valid = chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'));
     if valid {
         Ok(())
     } else {
-        Err(Error::engine(format!("invalid BigQuery project: {project}")))
+        Err(Error::engine(format!(
+            "invalid BigQuery project: {project}"
+        )))
     }
 }
 
@@ -1819,8 +1848,14 @@ mod tests {
         assert_eq!(col("name"), ColumnDef::new("STRING"));
         assert_eq!(col("data"), ColumnDef::new("BYTES").not_null());
         assert_eq!(col("elapsed"), ColumnDef::new("FLOAT64").not_null());
-        assert_eq!(col("payload"), ColumnDef::new("JSON").parse_json().not_null());
-        assert_eq!(col("embedding"), ColumnDef::new("ARRAY<FLOAT64>").not_null());
+        assert_eq!(
+            col("payload"),
+            ColumnDef::new("JSON").parse_json().not_null()
+        );
+        assert_eq!(
+            col("embedding"),
+            ColumnDef::new("ARRAY<FLOAT64>").not_null()
+        );
         assert_eq!(col("price"), ColumnDef::new("NUMERIC").not_null());
     }
 
@@ -1890,17 +1925,25 @@ mod tests {
             ..spec.clone()
         };
         assert!(
-            table_action_statements(&user.key, Some(&user), Some(DiffAction::Insert), &BTreeMap::new())
-                .is_empty()
+            table_action_statements(
+                &user.key,
+                Some(&user),
+                Some(DiffAction::Insert),
+                &BTreeMap::new()
+            )
+            .is_empty()
         );
     }
 
     #[test]
     fn merge_statement_uses_parse_json_and_named_params() {
         let row = json!({"id": 1, "payload": {"b": 2, "a": [1]}});
-        let (sql, params) =
-            merge_statement("`demo-project.analytics.events`", &schema(), &[row.as_object().unwrap().clone()])
-                .unwrap();
+        let (sql, params) = merge_statement(
+            "`demo-project.analytics.events`",
+            &schema(),
+            &[row.as_object().unwrap().clone()],
+        )
+        .unwrap();
         assert_eq!(
             sql,
             "MERGE `demo-project.analytics.events` AS target USING (SELECT @p0 AS `id`, \
@@ -1934,7 +1977,10 @@ mod tests {
         let schema = TableSchema::new([("id", ColumnDef::new("INT64"))], ["id"]).unwrap();
         let rows = [json!({"id": 1}), json!({"id": 2})].map(|v| v.as_object().unwrap().clone());
         let (sql, params) = merge_statement("`events`", &schema, &rows).unwrap();
-        assert!(sql.contains("USING (SELECT @p0 AS `id` UNION ALL SELECT @p1 AS `id`)"), "{sql}");
+        assert!(
+            sql.contains("USING (SELECT @p0 AS `id` UNION ALL SELECT @p1 AS `id`)"),
+            "{sql}"
+        );
         assert!(!sql.contains("WHEN MATCHED THEN UPDATE"), "{sql}");
         assert!(sql.contains("WHEN NOT MATCHED THEN INSERT"), "{sql}");
         assert_eq!(params.len(), 2);
@@ -2012,8 +2058,14 @@ mod tests {
     #[test]
     fn query_param_type_falls_back_to_string_for_unknown_types() {
         assert_eq!(query_param_type(&ColumnDef::new("GEOGRAPHY")), "STRING");
-        assert_eq!(query_param_type(&ColumnDef::new("json").parse_json()), "STRING");
-        assert_eq!(query_param_type(&ColumnDef::new("array<int64>")), "ARRAY<INT64>");
+        assert_eq!(
+            query_param_type(&ColumnDef::new("json").parse_json()),
+            "STRING"
+        );
+        assert_eq!(
+            query_param_type(&ColumnDef::new("array<int64>")),
+            "ARRAY<INT64>"
+        );
         assert_eq!(query_param_type(&ColumnDef::new("Numeric")), "NUMERIC");
     }
 
@@ -2074,7 +2126,15 @@ mod tests {
         });
         let mut rows = Vec::new();
         decode_rows(&response, &mut rows);
-        assert_eq!(rows, vec![json!({"id": 1, "score": 0.5, "ok": true, "name": "a"}).as_object().unwrap().clone()]);
+        assert_eq!(
+            rows,
+            vec![
+                json!({"id": 1, "score": 0.5, "ok": true, "name": "a"})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            ]
+        );
     }
 
     #[test]
@@ -2083,7 +2143,9 @@ mod tests {
         assert!(validate_project_id("domain.com:proj").is_ok());
         assert!(validate_project_id("-bad").is_err());
         assert!(validate_project_id("bad project").is_err());
-        assert!(TableSchema::new([("bad-column", ColumnDef::new("STRING"))], ["bad-column"]).is_err());
+        assert!(
+            TableSchema::new([("bad-column", ColumnDef::new("STRING"))], ["bad-column"]).is_err()
+        );
         assert!(TableSchema::new([("id", ColumnDef::new("STRING; DROP"))], ["id"]).is_err());
         assert!(TableSchema::new([("id", ColumnDef::new("STRING"))], ["other"]).is_err());
     }
