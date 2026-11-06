@@ -476,6 +476,17 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         # params on a per-call basis.
         kwargs = dict(self._kwargs)
         kwargs.update(extra)
+        extra_body = kwargs.get("extra_body")
+        # LiteLLM forwards extra_body verbatim, where null would override the
+        # encoding format selected below and can be rejected by the provider.
+        if (
+            isinstance(extra_body, _Mapping)
+            and "encoding_format" in extra_body
+            and extra_body["encoding_format"] is None
+        ):
+            extra_body = dict(extra_body)
+            del extra_body["encoding_format"]
+            kwargs["extra_body"] = extra_body
         if not self._model.startswith(("voyage/", "bedrock/")):
             kwargs.setdefault("encoding_format", "float")
             kwargs.setdefault("drop_params", True)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from collections import ChainMap
 from datetime import timedelta
 from types import SimpleNamespace
@@ -24,11 +25,13 @@ pytest.importorskip("litellm", reason="litellm not installed")
 # rather than failing collection where neither is installed.
 httpx = pytest.importorskip("httpx", reason="httpx not installed")
 
+from httpx import Request, Response  # noqa: E402
 from litellm.exceptions import (  # noqa: E402
     APIConnectionError,
     AuthenticationError,
     Timeout,
 )
+from openai import AsyncOpenAI  # noqa: E402
 
 import cocoindex as coco  # noqa: E402
 from cocoindex.ops.litellm import LiteLLMEmbedder, _aligned_embeddings  # noqa: E402
@@ -45,6 +48,53 @@ class _FakeHTTPError(Exception):
     def __init__(self, status_code: int, message: str | None = None) -> None:
         self.status_code = status_code
         super().__init__(message or f"HTTP {status_code}")
+
+
+@pytest.mark.asyncio
+async def test_litellm_omits_null_encoding_format_from_extra_body() -> None:
+    request_bodies: list[dict[str, Any]] = []
+    extra_body = {"encoding_format": None, "dimensions": 2}
+
+    def handle(request: Request) -> Response:
+        body = json.loads(request.content)
+        request_bodies.append(body)
+        if "encoding_format" in body and body["encoding_format"] is None:
+            return Response(400, json={"error": {"message": "Invalid encoding_format"}})
+        return Response(
+            200,
+            json={
+                "object": "list",
+                "model": "text-embedding-3-small",
+                "data": [{"object": "embedding", "embedding": [1.0, 2.0], "index": 0}],
+                "usage": {"prompt_tokens": 1, "total_tokens": 1},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as transport:
+        client = AsyncOpenAI(
+            base_url="https://embedding-test.invalid/v1",
+            api_key="test-key",
+            http_client=transport,
+            max_retries=0,
+        )
+        embedder = LiteLLMEmbedder(
+            "openai/text-embedding-3-small",
+            api_key="test-key",
+            client=client,
+            extra_body=extra_body,
+        )
+        vector = await embedder.embed("hello")
+
+    assert vector.tolist() == [1.0, 2.0]
+    assert request_bodies == [
+        {
+            "model": "text-embedding-3-small",
+            "input": ["hello"],
+            "dimensions": 2,
+            "encoding_format": "float",
+        }
+    ]
+    assert extra_body == {"encoding_format": None, "dimensions": 2}
 
 
 @pytest.mark.asyncio
