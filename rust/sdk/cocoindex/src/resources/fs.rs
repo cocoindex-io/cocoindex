@@ -583,7 +583,7 @@ impl DirTarget {
     }
 
     /// The target-state key of the entry `name` under this directory:
-    /// `[base_key, root, path]`, from which the handler rebuilds the path.
+    /// `[root, path]` (or `[base_key, root, path]` under a context directory), from which the handler rebuilds the path.
     fn entry_key(&self, name: &Path) -> Result<StableKey> {
         entry_key(&self.root, &self.sub.join(name))
     }
@@ -618,9 +618,11 @@ pub fn declare_file_with_options(
     )
 }
 
-/// `[base_key, root, path]`: the base directory's context-key name (empty when
-/// the root is a plain path), the root as written, and the entry's path
-/// relative to the root (empty for the root itself).
+/// `[root, path]` for a root that is a plain path, `[base_key, root, path]`
+/// for one under a context directory: the base directory's context-key name,
+/// the root as written, and the entry's path relative to the root (empty for
+/// the root itself). A plain root keeps the two-element key so states stored
+/// before context roots existed stay matched.
 fn entry_key(root: &FilePath, relative: &Path) -> Result<StableKey> {
     let to_str = |path: &Path| -> Result<Arc<str>> {
         path.to_str().map(Arc::from).ok_or_else(|| {
@@ -630,11 +632,18 @@ fn entry_key(root: &FilePath, relative: &Path) -> Result<StableKey> {
             ))
         })
     };
-    Ok(StableKey::Array(Arc::from([
-        StableKey::Str(Arc::from(root.base_key().unwrap_or(""))),
+    let root_and_path = [
         StableKey::Str(to_str(root.path())?),
         StableKey::Str(to_str(relative)?),
-    ])))
+    ];
+    Ok(StableKey::Array(match root.base_key() {
+        Some(base_key) => Arc::from(
+            std::iter::once(StableKey::Str(Arc::from(base_key)))
+                .chain(root_and_path)
+                .collect::<Vec<_>>(),
+        ),
+        None => Arc::from(root_and_path),
+    }))
 }
 
 /// Normalize an entry name: `.` segments drop out; the name must be relative,
@@ -708,7 +717,7 @@ fn dir_fingerprint() -> Fingerprint {
 }
 
 /// Directory target handler. Each entry is one leaf target state keyed by
-/// `[base_key, root, path]`, so one handler serves every directory target.
+/// `[root, path]` or `[base_key, root, path]`, so one handler serves every directory target.
 #[derive(Default)]
 struct FileHandler {
     sink: SinkCache<FsAction>,
@@ -766,16 +775,17 @@ impl TargetHandler<FsEntry> for FileHandler {
     }
 }
 
-/// The base key and path an `[base_key, root, path]` target-state key names.
+/// The base key and path a `[root, path]` or `[base_key, root, path]`
+/// target-state key names.
 fn entry_path(key: &StableKey) -> Result<(Option<String>, PathBuf)> {
     if let StableKey::Array(parts) = key
-        && let [
-            StableKey::Str(base_key),
-            StableKey::Str(root),
-            StableKey::Str(relative),
-        ] = &parts[..]
+        && let (base_key, [StableKey::Str(root), StableKey::Str(relative)]) = match &parts[..] {
+            [StableKey::Str(base_key), rest @ ..] if parts.len() == 3 => {
+                (Some(base_key.to_string()), rest)
+            }
+            rest => (None, rest),
+        }
     {
-        let base_key = (!base_key.is_empty()).then(|| base_key.to_string());
         let root = PathBuf::from(&**root);
         // A standalone file target is its own root (an empty relative part);
         // joining "" would add a trailing separator and name a directory.
@@ -882,7 +892,6 @@ mod tests {
 
     fn key(path: &str) -> StableKey {
         StableKey::Array(Arc::from([
-            StableKey::Str("".into()),
             StableKey::Str("unused".into()),
             StableKey::Str(path.into()),
         ]))
