@@ -530,8 +530,9 @@ class TestDiscordAppLifecycle:
 
     async def test_aclose(self) -> None:
         fake = _fake_with_channels()
+        # Used up, so the bucket's state outlives the request.
         fake.rate_limit_headers[f"/channels/{_CHANNEL}"] = _bucket_headers(
-            remaining=4, reset_after=1.0
+            remaining=0, reset_after=1.0
         )
         fake.fail[f"/channels/{_OTHER_CHANNEL}"] = (401, 0)
         app, ctx = await _setup(fake)
@@ -875,6 +876,40 @@ class TestPacing:
             await asyncio.gather(*(_items(_channel(app, c)) for c in channel_ids))
         assert fake.rate_limited == []
         assert fake.count(path) == 2 * len(channel_ids)
+
+    async def test_finished_requests_leave_nothing_behind(
+        self, sleeps: list[float]
+    ) -> None:
+        # Every thread is its own top-level ID, so a long-lived App that kept
+        # a lock and a bucket state per ID would keep one per thread it read.
+        fake = _fake_with_channels()
+        channel_path = f"/channels/{_CHANNEL}"
+        fake.rate_limit_headers[channel_path] = _bucket_headers(
+            remaining=4, reset_after=2.5
+        )
+        # Used up, but reset by the time the requests finish.
+        fake.rate_limit_headers[f"/channels/{_OTHER_CHANNEL}"] = _bucket_headers(
+            remaining=0, reset_after=0.0
+        )
+        app, ctx = await _setup(fake)
+        async with app:
+            await asyncio.gather(
+                *(
+                    ctx.get(_ROUTE_CHANNEL, channel_id)
+                    for channel_id in [_CHANNEL, _OTHER_CHANNEL] * 3
+                )
+            )
+            assert ctx._route_locks == {}
+            assert ctx._bucket_states == {}
+
+            # A state saying to wait is kept, so the next request still waits.
+            fake.rate_limit_headers[channel_path] = _bucket_headers(
+                remaining=0, reset_after=2.5
+            )
+            await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
+            assert ctx._route_locks == {}
+            assert list(ctx._bucket_states) == [("b", _CHANNEL)]
+        assert sleeps == []
 
     async def test_routes_without_headers_not_paced(self, sleeps: list[float]) -> None:
         app, ctx = await _setup(_fake_with_channels())

@@ -364,6 +364,17 @@ class _BucketState(NamedTuple):
     reset_at: float
 
 
+class _RouteLock:
+    """The lock that sends one route and top-level ID's requests one at a
+    time, and how many requests hold it or wait for it."""
+
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+
+
 class _ApiContext:
     """Per-App HTTP client and rate-limit state, owned by a ``DiscordApp``.
 
@@ -395,7 +406,7 @@ class _ApiContext:
         )
         self._route_buckets: dict[str, str] = {}
         self._bucket_states: dict[tuple[str, str | None], _BucketState] = {}
-        self._route_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
+        self._route_locks: dict[tuple[str, str | None], _RouteLock] = {}
         # Set by a 401. Discord bans an IP that gets 10,000 responses of 401,
         # 403 or 429 in 10 minutes, so a rejected token stops every request.
         self._token_rejected = False
@@ -430,9 +441,22 @@ class _ApiContext:
         Requests with the same route and top-level ID are sent one at a time:
         a bucket's state comes only from responses, so requests sent together
         would all see what it had left before any of them. Each is paced and
-        retried as :meth:`_get_paced` says."""
-        async with self._route_locks.setdefault((route, major), asyncio.Lock()):
-            return await self._get_paced(route, major, params)
+        retried as :meth:`_get_paced` says.
+
+        Every thread is its own top-level ID, so once a route and ID's last
+        request is done, its lock is dropped, and so is its bucket's state,
+        unless that says to wait for a reset."""
+        key = (route, major)
+        route_lock = self._route_locks.setdefault(key, _RouteLock())
+        route_lock.users += 1
+        try:
+            async with route_lock.lock:
+                return await self._get_paced(route, major, params)
+        finally:
+            route_lock.users -= 1
+            if route_lock.users == 0:
+                del self._route_locks[key]
+                self._drop_spent_bucket_state(route, major)
 
     async def _get_paced(
         self,
@@ -525,6 +549,20 @@ class _ApiContext:
         # The reset has passed, so the next response says what the bucket has;
         # a state recorded during the wait is newer, and stays.
         if self._bucket_states.get(key) is state:
+            del self._bucket_states[key]
+
+    def _drop_spent_bucket_state(self, route: str, major: str | None) -> None:
+        """Drop what the route's bucket has left for ``major`` unless it says
+        to wait: the next request would go at once anyway. One that says to
+        wait is kept for the next request, which drops it after waiting."""
+        bucket = self._route_buckets.get(route)
+        if bucket is None:
+            return
+        key = (bucket, major)
+        state = self._bucket_states.get(key)
+        if state is not None and (
+            state.remaining > 0 or state.reset_at <= time.monotonic()
+        ):
             del self._bucket_states[key]
 
     def _record_bucket(
