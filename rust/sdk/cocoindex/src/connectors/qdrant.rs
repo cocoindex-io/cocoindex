@@ -207,14 +207,15 @@ impl QdrantVectorDef {
 
     fn to_params(&self) -> VectorParams {
         let mut params = VectorParamsBuilder::new(self.vector_size(), self.distance.to_qdrant());
-        // Map the SDK element type to Qdrant's stored datatype. Float32 is
-        // Qdrant's default, so only f16 needs an explicit datatype. NOTE: the
-        // Python connector currently does *not* forward the schema dtype to
-        // `VectorParams(datatype=...)` — a latent Python bug that silently stores
-        // an f16 schema as f32. Rust honors the requested f16; Python should be
-        // fixed to match (tracked in the parity review).
-        if self.element_type() == VectorElementType::Float16 {
-            params = params.datatype(QdrantDatatype::Float16);
+        // Map the SDK element type to Qdrant's stored datatype. Qdrant has no
+        // 64-bit float vector, so `Float64` is stored as its default, f32.
+        // NOTE: the Python connector currently does *not* forward the schema
+        // dtype to `VectorParams(datatype=...)` — a latent Python bug that
+        // silently stores an f16 schema as f32. Rust honors the requested f16;
+        // Python should be fixed to match (tracked in the parity review).
+        match self.element_type() {
+            VectorElementType::Float32 | VectorElementType::Float64 => {}
+            VectorElementType::Float16 => params = params.datatype(QdrantDatatype::Float16),
         }
         if self.is_multivector() {
             params = params.multivector_config(MultiVectorConfigBuilder::new(

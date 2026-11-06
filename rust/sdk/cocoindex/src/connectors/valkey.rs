@@ -45,7 +45,8 @@ pub struct Valkey {
 /// Connection settings for [`Valkey::connect_with_config`] — the Rust analogue
 /// of Python's `create_client_config`. For anything these fields do not cover
 /// (client certificates, a username, a database number), build a
-/// `redis::Client` yourself and pass it to [`Valkey::from_client`].
+/// `redis::Client` yourself and pass it to [`Valkey::from_client`]. Its `Debug`
+/// output shows the password as redacted.
 ///
 /// ```
 /// use cocoindex::connectors::valkey::ClientConfig;
@@ -70,6 +71,19 @@ pub struct ClientConfig {
     /// Client name for the connection, visible in `CLIENT LIST` and monitoring
     /// dashboards. Defaults to `cocoindex_vector_store`; `None` sets no name.
     pub client_name: Option<String>,
+}
+
+/// Prints every field but the password, which is shown as redacted.
+impl std::fmt::Debug for ClientConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("use_tls", &self.use_tls)
+            .field("client_name", &self.client_name)
+            .finish()
+    }
 }
 
 impl Default for ClientConfig {
@@ -989,20 +1003,43 @@ mod tests {
         assert_eq!(ClientConfig::default().state_id(), "redis://localhost:6379");
     }
 
+    #[test]
+    fn client_config_debug_redacts_the_password() {
+        let config = ClientConfig {
+            password: Some("secret".to_string()),
+            ..ClientConfig::default()
+        };
+        let printed = format!("{config:?}");
+        assert!(!printed.contains("secret"), "{printed}");
+        assert!(
+            printed.contains(r#"password: Some("<redacted>")"#),
+            "{printed}"
+        );
+        assert!(printed.contains(r#"host: "localhost""#), "{printed}");
+
+        let printed = format!("{:?}", ClientConfig::default());
+        assert!(printed.contains("password: None"), "{printed}");
+    }
+
     #[tokio::test]
     async fn tls_connection_is_attempted_not_refused_as_unsupported() {
-        // Nothing listens on port 1: the attempt fails at the socket. Without
-        // TLS support compiled in, it would fail on the configuration instead.
         let config = ClientConfig {
             host: "127.0.0.1".to_string(),
             port: 1,
             use_tls: true,
             ..ClientConfig::default()
         };
+        // False when the `redis` crate is built without a TLS feature.
+        assert!(config.connection_info().addr.is_supported());
+
+        // Nothing listens on port 1: the attempt fails at the socket. Without
+        // TLS support compiled in, `redis` refuses before it opens one.
         let Err(err) = Valkey::connect_with_config(config).await else {
             panic!("connected to a closed port");
         };
-        assert!(err.to_string().contains("valkey connect"), "{err}");
+        let message = err.to_string();
+        assert!(message.contains("valkey connect"), "{message}");
+        assert!(!message.contains("without the tls feature"), "{message}");
     }
 
     #[test]
