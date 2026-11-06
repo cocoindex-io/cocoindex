@@ -143,7 +143,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = Embedder::embed(embedder, query).await?;
+    let query_vec = embedder.embed_batch(vec![query.to_string()]).await?.remove(0);
     let hits = qdrant::named_vector_search(conn, COLLECTION, "vector", query_vec, TOP_K).await?;
     for hit in hits {
         let filename = hit

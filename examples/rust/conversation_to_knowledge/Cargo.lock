@@ -792,9 +792,12 @@ dependencies = [
  "cocoindex_macros",
  "cocoindex_utils",
  "encoding_rs",
+ "fastembed",
  "futures",
  "globset",
+ "hf-hub",
  "linkme",
+ "reqwest 0.12.28",
  "rmp-serde",
  "rust_decimal",
  "rustc-hash",
@@ -804,6 +807,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "ureq",
  "uuid",
  "walkdir",
 ]
@@ -950,11 +954,8 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 name = "conversation_to_knowledge"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "cocoindex",
  "dotenvy",
- "fastembed",
- "hf-hub",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2317,19 +2318,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "629d8f3bbeda9d148036d6b0de0a3ab947abd08ce90626327fc3547a49d59d97"
 dependencies = [
  "dirs",
- "futures",
  "http",
  "indicatif",
  "libc",
  "log",
  "native-tls",
- "num_cpus",
  "rand 0.9.5",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror",
- "tokio",
  "ureq",
  "windows-sys 0.60.2",
 ]

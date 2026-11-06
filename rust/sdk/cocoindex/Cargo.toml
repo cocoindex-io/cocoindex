@@ -20,7 +20,7 @@ code_match = [
     "dep:cocoindex_ops_text",
 ]
 # Local sentence-transformer embeddings via fastembed (`ops::sentence_transformers`).
-fastembed = ["dep:fastembed"]
+fastembed = ["dep:fastembed", "dep:hf-hub", "dep:ureq"]
 # MemoInput leaves for ecosystem data types. Connector features below depend on
 # these public features rather than duplicating implementation cfg lists.
 # (`serde_json` is always available: the `__coco` CLI protocol needs it.)
@@ -144,6 +144,13 @@ cocoindex_code_match = { path = "../../code_match", optional = true }
 # Local sentence-transformer embeddings (`ops::sentence_transformers`); pulls in
 # the ONNX runtime, so it is gated behind the `fastembed` feature.
 fastembed = { version = "4", optional = true }
+# Downloads sentence-transformers ONNX exports that `fastembed`'s registry does
+# not list (`SentenceTransformerEmbedder::load` by Hugging Face repository name).
+# Same crate and version `fastembed` uses for its own downloads.
+hf-hub = { version = "0.4", optional = true, default-features = false, features = ["ureq"] }
+# `hf-hub`'s HTTP client, named only to tell a missing file (an HTTP status)
+# from a failed download in its errors.
+ureq = { version = "2", optional = true, default-features = false }
 thiserror = "2"
 bytes = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }

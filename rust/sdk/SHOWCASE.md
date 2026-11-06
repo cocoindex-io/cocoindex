@@ -364,9 +364,56 @@ before the first GPU function runs. Python's subprocess mode and dedicated GPU
 thread exist for the GIL and CUDA's fork rules, which a Rust body does not
 have, so there is no equivalent.
 
-The built-in `SentenceTransformerEmbedder::embed(&ctx, text)` already uses
-this pattern: concurrent cache misses are batched up to 64 texts and repeated
-texts are memoized.
+## Embed, transcribe and resolve entities with the built-in ops
+
+The model ops use the two patterns above, so a pipeline calls them per item
+and gets memoization and batching from the engine, as the Python ops do under
+`@coco.fn(memo=True)` over a `batching=True` body:
+
+- `SentenceTransformerEmbedder::embed(&ctx, text)` (feature `fastembed`) and
+  `ApiEmbedder::embed(&ctx, text)` (feature `embed_api`) memoize per text and
+  coalesce concurrent misses into batches of up to 64. `ApiEmbedder` also
+  takes `with_dimensions`, `with_timeout`, `with_max_inflight_requests` and a
+  per-call `embed_with_input_type(&ctx, text, "search_query")`, mirroring
+  Python's `LiteLLMEmbedder`; calls with different input types never share a
+  request.
+- `ImageEmbedder::embed(&ctx, bytes)` memoizes by image content and batches
+  the same way.
+- `ApiTranscriber::transcribe(&ctx, &file)` is memoized by the file's identity
+  and content, so an unchanged recording is never uploaded twice.
+- `LlmPairResolver` memoizes each `(entity, candidates)` decision, and
+  `resolve_entities(&ctx, names, &embedder, &resolver, ..)` embeds the names
+  through the batched path. Any `Embedder` is an `EntityEmbedder`.
+
+```rust
+cocoindex::context_key!(static EMBEDDER: ApiEmbedder, detect_change);
+
+#[cocoindex::function]
+async fn embed_chunks(ctx: &Ctx, chunks: Vec<String>) -> Result<Vec<Vec<f32>>> {
+    let embedder = ctx.get_key(&EMBEDDER)?;
+    ctx.map(chunks, {
+        let ctx = ctx.clone();
+        let embedder = embedder.clone();
+        move |chunk| {
+            let ctx = ctx.clone();
+            let embedder = embedder.clone();
+            async move { embedder.embed(&ctx, chunk).await }
+        }
+    })
+    .await
+}
+```
+
+Outside an update (a search query, a dimension probe) there is no `Ctx`: use
+the raw `embed_batch(texts)` of either embedder, which sends one request and
+memoizes nothing.
+
+`SentenceTransformerEmbedder::load(name_or_path)` accepts a `fastembed`
+registry name, a local directory holding a sentence-transformers ONNX export,
+or the Hugging Face repository of such an export, like Python's
+`model_name_or_path`. `fastembed` always normalizes its vectors and has no
+prompt registry or device selection, so Python's `normalize_embeddings`,
+`prompt_name` and `device` have no Rust counterpart.
 
 ## Mount processing components
 

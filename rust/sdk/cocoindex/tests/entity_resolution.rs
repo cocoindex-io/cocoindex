@@ -1,10 +1,16 @@
+//! Port of `python/tests/ops/test_entity_resolution.py`. `resolve_entities`
+//! takes the component [`Ctx`] (Python's is ambient), so every call runs
+//! inside an `App::update` on a throwaway environment.
+
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::future::Future;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cocoindex::{
-    CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
-    ResolutionEvent, ResolveOptions, resolve_entities, resolve_entities_with_events,
+    CanonicalSide, Ctx, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
+    ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,
+    resolve_entities_with_events,
 };
 
 #[derive(Default)]
@@ -14,7 +20,7 @@ struct ScriptedEmbedder {
 
 #[async_trait]
 impl EntityEmbedder for ScriptedEmbedder {
-    async fn embed_entity(&self, entity: &str) -> cocoindex::Result<Vec<f32>> {
+    async fn embed_entity(&self, _ctx: &Ctx, entity: &str) -> cocoindex::Result<Vec<f32>> {
         self.vectors
             .get(entity)
             .cloned()
@@ -28,10 +34,30 @@ struct ScriptedResolver {
     calls: Mutex<Vec<(String, Vec<String>)>>,
 }
 
+impl ScriptedResolver {
+    fn deciding(entity: &str, candidates: &[&str], decision: PairDecision) -> Arc<Self> {
+        Arc::new(Self {
+            decisions: HashMap::from([(
+                (
+                    entity.to_string(),
+                    candidates.iter().map(|c| (*c).to_string()).collect(),
+                ),
+                decision,
+            )]),
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn calls(&self) -> Vec<(String, Vec<String>)> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
 #[async_trait]
 impl PairResolver for ScriptedResolver {
     async fn resolve_pair(
         &self,
+        _ctx: &Ctx,
         entity: &str,
         candidates: &[String],
     ) -> cocoindex::Result<PairDecision> {
@@ -45,21 +71,65 @@ impl PairResolver for ScriptedResolver {
     }
 }
 
-fn embedder(items: &[(&str, &[f32])]) -> ScriptedEmbedder {
-    ScriptedEmbedder {
+fn embedder(items: &[(&str, &[f32])]) -> Arc<ScriptedEmbedder> {
+    Arc::new(ScriptedEmbedder {
         vectors: items
             .iter()
             .map(|(name, vec)| ((*name).to_string(), vec.to_vec()))
             .collect(),
-    }
+    })
+}
+
+/// Run `f` as the body of one update on a fresh environment.
+async fn in_update<T, F, Fut>(f: F) -> cocoindex::Result<T>
+where
+    F: FnOnce(Ctx) -> Fut + Send + 'static,
+    Fut: Future<Output = cocoindex::Result<T>> + Send + 'static,
+    T: serde::Serialize + for<'de> serde::Deserialize<'de> + Send + 'static,
+{
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = cocoindex::Environment::builder()
+        .db_path(tempdir.path().join("db"))
+        .build()
+        .await
+        .unwrap()
+        .app("entity_resolution")
+        .await
+        .unwrap();
+    app.update(f).await
+}
+
+/// `resolve_entities` over `entities` with the given embedder and resolver,
+/// inside one update.
+async fn resolve(
+    entities: &'static [&'static str],
+    embedder: Arc<ScriptedEmbedder>,
+    resolver: Arc<ScriptedResolver>,
+    is_existing: Option<fn(&str) -> bool>,
+    options: ResolveOptions,
+) -> cocoindex::Result<ResolvedEntities> {
+    in_update(move |ctx| async move {
+        resolve_entities(
+            &ctx,
+            entities.iter().copied(),
+            &*embedder,
+            &*resolver,
+            is_existing
+                .as_ref()
+                .map(|f| f as &(dyn Fn(&str) -> bool + Sync)),
+            options,
+        )
+        .await
+    })
+    .await
 }
 
 #[tokio::test]
 async fn empty_input_returns_empty_map() {
-    let result = resolve_entities(
-        Vec::<String>::new(),
-        &ScriptedEmbedder::default(),
-        &ScriptedResolver::default(),
+    let result = resolve(
+        &[],
+        Arc::new(ScriptedEmbedder::default()),
+        Arc::new(ScriptedResolver::default()),
         None,
         ResolveOptions::default(),
     )
@@ -71,11 +141,11 @@ async fn empty_input_returns_empty_map() {
 #[tokio::test]
 async fn no_candidates_seed_as_canonicals_without_resolver_call() {
     let embedder = embedder(&[("A", &[1.0, 0.0]), ("B", &[0.0, 1.0])]);
-    let resolver = ScriptedResolver::default();
-    let result = resolve_entities(
-        ["B", "A", "A"],
-        &embedder,
-        &resolver,
+    let resolver = Arc::new(ScriptedResolver::default());
+    let result = resolve(
+        &["B", "A", "A"],
+        embedder,
+        resolver.clone(),
         None,
         ResolveOptions::default(),
     )
@@ -88,24 +158,18 @@ async fn no_candidates_seed_as_canonicals_without_resolver_call() {
             .into_iter()
             .collect()
     );
-    assert!(resolver.calls.lock().unwrap().is_empty());
+    assert!(resolver.calls().is_empty());
 }
 
 #[tokio::test]
 async fn matched_candidate_maps_alias_to_canonical() {
     let embedder = embedder(&[("A", &[1.0, 0.0]), ("B", &[0.99, 0.01])]);
-    let resolver = ScriptedResolver {
-        decisions: HashMap::from([(
-            ("B".to_string(), vec!["A".to_string()]),
-            PairDecision::matched("A"),
-        )]),
-        calls: Mutex::new(Vec::new()),
-    };
+    let resolver = ScriptedResolver::deciding("B", &["A"], PairDecision::matched("A"));
 
-    let result = resolve_entities(
-        ["A", "B"],
-        &embedder,
-        &resolver,
+    let result = resolve(
+        &["A", "B"],
+        embedder,
+        resolver.clone(),
         None,
         ResolveOptions::default(),
     )
@@ -114,7 +178,7 @@ async fn matched_candidate_maps_alias_to_canonical() {
 
     assert_eq!(result.canonical_of("B").unwrap(), "A");
     assert_eq!(
-        *resolver.calls.lock().unwrap(),
+        resolver.calls(),
         vec![("B".to_string(), vec!["A".to_string()])]
     );
 }
@@ -126,21 +190,19 @@ async fn top_n_limits_candidate_list() {
         ("B", &[0.99, 0.01]),
         ("C", &[0.98, 0.02]),
     ]);
-    let resolver = ScriptedResolver::default();
+    let resolver = Arc::new(ScriptedResolver::default());
     let options = ResolveOptions {
         top_n: 1,
         ..ResolveOptions::default()
     };
 
-    resolve_entities(["A", "B", "C"], &embedder, &resolver, None, options)
+    resolve(&["A", "B", "C"], embedder, resolver.clone(), None, options)
         .await
         .unwrap();
 
     assert!(
         resolver
-            .calls
-            .lock()
-            .unwrap()
+            .calls()
             .iter()
             .all(|(_, candidates)| candidates.len() <= 1)
     );
@@ -149,20 +211,17 @@ async fn top_n_limits_candidate_list() {
 #[tokio::test]
 async fn pinned_existing_canonical_wins_over_new_side_decision() {
     let embedder = embedder(&[("A", &[1.0, 0.0]), ("B", &[0.99, 0.01])]);
-    let resolver = ScriptedResolver {
-        decisions: HashMap::from([(
-            ("B".to_string(), vec!["A".to_string()]),
-            PairDecision::matched_with("A", CanonicalSide::New),
-        )]),
-        calls: Mutex::new(Vec::new()),
-    };
-    let is_existing = |name: &str| name == "A";
+    let resolver = ScriptedResolver::deciding(
+        "B",
+        &["A"],
+        PairDecision::matched_with("A", CanonicalSide::New),
+    );
 
-    let result = resolve_entities(
-        ["A", "B"],
-        &embedder,
-        &resolver,
-        Some(&is_existing),
+    let result = resolve(
+        &["A", "B"],
+        embedder,
+        resolver,
+        Some(|name| name == "A"),
         ResolveOptions::default(),
     )
     .await
@@ -174,24 +233,17 @@ async fn pinned_existing_canonical_wins_over_new_side_decision() {
 #[tokio::test]
 async fn preferred_existing_can_repoint_non_existing_candidate() {
     let embedder = embedder(&[("A", &[1.0, 0.0]), ("B", &[0.99, 0.01])]);
-    let resolver = ScriptedResolver {
-        decisions: HashMap::from([(
-            ("B".to_string(), vec!["A".to_string()]),
-            PairDecision::matched("A"),
-        )]),
-        calls: Mutex::new(Vec::new()),
-    };
-    let is_existing = |name: &str| name == "B";
+    let resolver = ScriptedResolver::deciding("B", &["A"], PairDecision::matched("A"));
     let options = ResolveOptions {
         existing_policy: ExistingCanonicalPolicy::Preferred,
         ..ResolveOptions::default()
     };
 
-    let result = resolve_entities(
-        ["A", "B"],
-        &embedder,
-        &resolver,
-        Some(&is_existing),
+    let result = resolve(
+        &["A", "B"],
+        embedder,
+        resolver,
+        Some(|name| name == "B"),
         options,
     )
     .await
@@ -204,24 +256,18 @@ async fn preferred_existing_can_repoint_non_existing_candidate() {
 #[tokio::test]
 async fn invalid_resolver_match_is_rejected() {
     let embedder = embedder(&[("A", &[1.0, 0.0]), ("B", &[0.99, 0.01])]);
-    let resolver = ScriptedResolver {
-        decisions: HashMap::from([(
-            ("B".to_string(), vec!["A".to_string()]),
-            PairDecision::matched("Z"),
-        )]),
-        calls: Mutex::new(Vec::new()),
-    };
+    let resolver = ScriptedResolver::deciding("B", &["A"], PairDecision::matched("Z"));
 
-    let err = resolve_entities(
-        ["A", "B"],
-        &embedder,
-        &resolver,
+    let err = resolve(
+        &["A", "B"],
+        embedder,
+        resolver,
         None,
         ResolveOptions::default(),
     )
     .await
     .unwrap_err();
-    assert!(err.to_string().contains("not in candidates"));
+    assert!(err.to_string().contains("not in candidates"), "{err}");
 }
 
 #[tokio::test]
@@ -229,32 +275,32 @@ async fn on_resolution_delivers_one_event_per_entity_in_order() {
     // Two same-component aliases (A,B near each other) and one isolated entity
     // (C, far away). B matches A; C seeds on its own.
     let embedder = embedder(&[("A", &[1.0, 0.0]), ("B", &[0.99, 0.01]), ("C", &[0.0, 1.0])]);
-    let resolver = ScriptedResolver {
-        decisions: HashMap::from([(
-            ("B".to_string(), vec!["A".to_string()]),
-            PairDecision::matched("A"),
-        )]),
-        calls: Mutex::new(Vec::new()),
-    };
+    let resolver = ScriptedResolver::deciding("B", &["A"], PairDecision::matched("A"));
 
-    let collected: Mutex<Vec<ResolutionEvent>> = Mutex::new(Vec::new());
-    let cb = |event: &ResolutionEvent| collected.lock().unwrap().push(event.clone());
-
-    let result = resolve_entities_with_events(
-        ["C", "B", "A"],
-        &embedder,
-        &resolver,
-        None,
-        ResolveOptions::default(),
-        Some(&cb),
-    )
+    let collected: Arc<Mutex<Vec<ResolutionEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let result = in_update({
+        let collected = collected.clone();
+        move |ctx| async move {
+            let cb = |event: &ResolutionEvent| collected.lock().unwrap().push(event.clone());
+            resolve_entities_with_events(
+                &ctx,
+                ["C", "B", "A"],
+                &*embedder,
+                &*resolver,
+                None,
+                ResolveOptions::default(),
+                Some(&cb),
+            )
+            .await
+        }
+    })
     .await
     .unwrap();
 
     assert_eq!(result.canonical_of("B").unwrap(), "A");
     assert_eq!(result.canonical_of("C").unwrap(), "C");
 
-    let events = collected.into_inner().unwrap();
+    let events = collected.lock().unwrap().clone();
     // One event per distinct entity, delivered sorted by entity name.
     let names: Vec<&str> = events.iter().map(|e| e.entity.as_str()).collect();
     assert_eq!(names, ["A", "B", "C"]);
@@ -284,6 +330,7 @@ struct FailingResolver {
 impl PairResolver for FailingResolver {
     async fn resolve_pair(
         &self,
+        _ctx: &Ctx,
         entity: &str,
         _candidates: &[String],
     ) -> cocoindex::Result<PairDecision> {
@@ -299,18 +346,25 @@ async fn partial_failure_still_delivers_completed_events() {
     // "A" and "B" are close (one component): "A" is seeded, then resolving
     // "B" against it fails.
     let embedder = embedder(&[("A", &[1.0, 0.0]), ("B", &[0.999, 0.04])]);
-    let delivered = Mutex::new(Vec::new());
-    let on_resolution = |event: &ResolutionEvent| {
-        delivered.lock().unwrap().push(event.entity.clone());
-    };
-    let err = resolve_entities_with_events(
-        ["A", "B"],
-        &embedder,
-        &FailingResolver { failing: "B" },
-        None,
-        ResolveOptions::default(),
-        Some(&on_resolution),
-    )
+    let delivered: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let err = in_update({
+        let delivered = delivered.clone();
+        move |ctx| async move {
+            let on_resolution = |event: &ResolutionEvent| {
+                delivered.lock().unwrap().push(event.entity.clone());
+            };
+            resolve_entities_with_events(
+                &ctx,
+                ["A", "B"],
+                &*embedder,
+                &FailingResolver { failing: "B" },
+                None,
+                ResolveOptions::default(),
+                Some(&on_resolution),
+            )
+            .await
+        }
+    })
     .await
     .unwrap_err();
     assert!(err.to_string().contains("resolver unavailable"), "{err}");
@@ -320,10 +374,10 @@ async fn partial_failure_still_delivers_completed_events() {
 #[tokio::test]
 async fn embeddings_of_different_dimensions_are_rejected() {
     let embedder = embedder(&[("A", &[1.0, 0.0]), ("B", &[1.0, 0.0, 0.0])]);
-    let err = resolve_entities(
-        ["A", "B"],
-        &embedder,
-        &ScriptedResolver::default(),
+    let err = resolve(
+        &["A", "B"],
+        embedder,
+        Arc::new(ScriptedResolver::default()),
         None,
         ResolveOptions::default(),
     )
@@ -335,16 +389,16 @@ async fn embeddings_of_different_dimensions_are_rejected() {
 #[tokio::test]
 async fn a_zero_embedding_matches_nothing_instead_of_failing() {
     let embedder = embedder(&[("A", &[1.0, 0.0]), ("Z", &[0.0, 0.0])]);
-    let resolver = ScriptedResolver::default();
-    let result = resolve_entities(
-        ["A", "Z"],
-        &embedder,
-        &resolver,
+    let resolver = Arc::new(ScriptedResolver::default());
+    let result = resolve(
+        &["A", "Z"],
+        embedder,
+        resolver.clone(),
         None,
         ResolveOptions::default(),
     )
     .await
     .unwrap();
     assert_eq!(result.canonical_of("Z").unwrap(), "Z");
-    assert!(resolver.calls.lock().unwrap().is_empty());
+    assert!(resolver.calls().is_empty());
 }

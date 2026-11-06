@@ -61,7 +61,7 @@ struct PointData {
 async fn process_image(ctx: &Ctx, file: FileEntry) -> Result<PointData> {
     let filename = file.key();
     let bytes = file.content()?;
-    let vector = ctx.get_key(&EMBEDDER)?.embed(bytes).await?;
+    let vector = ctx.get_key(&EMBEDDER)?.embed(ctx, bytes).await?;
     let mut id_gen = IdGenerator::new();
     let id = id_gen.next_id(&ctx, &filename).await?;
     Ok(PointData {
@@ -105,7 +105,7 @@ async fn query_once(
     text_embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = Embedder::embed(text_embedder, query).await?;
+    let query_vec = text_embedder.embed_batch(vec![query.to_string()]).await?.remove(0);
     let hits = qdrant::vector_search(conn, COLLECTION, query_vec, TOP_K).await?;
     for hit in hits {
         let filename = hit
