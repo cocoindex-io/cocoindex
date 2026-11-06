@@ -48,7 +48,7 @@ pub use app::{
     Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle, UpdateOptions,
 };
 pub use batched::Batched;
-pub use ctx::{ContextKey, Ctx};
+pub use ctx::{ComponentMountHandle, ContextKey, Ctx};
 pub use entity_resolution::{
     CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
     ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,
@@ -73,8 +73,8 @@ pub use resources::id::{
 #[doc(hidden)]
 pub use linkme;
 pub use live_component::{
-    ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
-    LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
+    ExceptionContext, ExceptionHandler, ExceptionSource, LiveComponent, LiveComponentOperator,
+    LiveMapFeed, LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
 };
 #[doc(hidden)]
 pub use logic::{COCO_FN_LOGIC, FnLogicEntry};
@@ -114,7 +114,7 @@ pub use user_state::{IntoStateKey, StateHandle};
 
 // Re-export proc macros
 pub use cocoindex_macros::{
-    MemoInput, SchemaFields, app, function, lifespan, main, mount_each, use_mount,
+    MemoInput, SchemaFields, app, function, lifespan, main, mount, mount_each, use_mount,
 };
 pub use row_schema::{LogicalType, SchemaField, SchemaFields};
 

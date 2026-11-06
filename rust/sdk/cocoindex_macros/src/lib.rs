@@ -1,4 +1,5 @@
-//! Proc macros for cocoindex: `#[function]`, `#[app]`, `#[lifespan]`, `#[main]`.
+//! Proc macros for cocoindex: `#[function]`, `#[app]`, `#[lifespan]`, `#[main]`,
+//! `use_mount!`, `mount!`, `mount_each!`.
 
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
@@ -1334,6 +1335,26 @@ fn parse_grouped_call(expr: &Expr) -> syn::Result<(Path, Vec<Expr>)> {
 /// `key` if given, else the function's name.
 #[proc_macro]
 pub fn use_mount(input: TokenStream) -> TokenStream {
+    expand_single_mount(input, "use_mount", quote! { __use_mount_fp })
+}
+
+/// `mount!(my_fn(ctx, a, b))` or `mount!(key, my_fn(ctx, a, b))`.
+///
+/// Background mount, the Rust analogue of Python's `coco.mount`: creates a
+/// child component and runs `my_fn` under it on its own task, without waiting
+/// for it or taking its value. Evaluates to a
+/// `Result<ComponentMountHandle>`; `handle.ready().await` waits until the
+/// child's target states are synced. Arguments are fingerprinted for the
+/// component-memo fast-path exactly as in `use_mount!`, and the subpath is
+/// `key` if given, else the function's name.
+#[proc_macro]
+pub fn mount(input: TokenStream) -> TokenStream {
+    expand_single_mount(input, "mount", quote! { __mount_fp })
+}
+
+/// Shared expansion of `use_mount!` and `mount!`: the same grouped-call
+/// parse and component-memo fingerprint, dispatched to `Ctx::<method>`.
+fn expand_single_mount(input: TokenStream, name: &str, method: TokenStream2) -> TokenStream {
     let parsed = parse_macro_input!(input with Punctuated::<Expr, Token![,]>::parse_terminated);
     let elems: Vec<Expr> = parsed.into_iter().collect();
     let (key_expr, call) = match elems.as_slice() {
@@ -1342,7 +1363,7 @@ pub fn use_mount(input: TokenStream) -> TokenStream {
         _ => {
             return SynError::new(
                 Span::call_site(),
-                "use_mount! takes `my_fn(ctx, args...)` or `key, my_fn(ctx, args...)`",
+                format!("{name}! takes `my_fn(ctx, args...)` or `key, my_fn(ctx, args...)`"),
             )
             .to_compile_error()
             .into();
@@ -1384,7 +1405,7 @@ pub fn use_mount(input: TokenStream) -> TokenStream {
             ::std::vec![ #(#fp_parts),* ],
         )?;
         let __coco_key: ::std::string::String = #key_tokens;
-        __coco_parent.__use_mount_fp(
+        __coco_parent.#method(
             __coco_key,
             ::core::option::Option::Some(__coco_memo),
             move |__coco_child| async move {

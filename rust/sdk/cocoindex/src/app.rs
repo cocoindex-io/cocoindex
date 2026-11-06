@@ -22,6 +22,7 @@ use tokio::sync::watch;
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
+use crate::live_component::{ExceptionContext, ExceptionHandler};
 use crate::profile::{Action, BoxedProcessor, RustProfile, Value};
 use crate::stats::{ComponentStats, RunStats, UpdateStats, UpdateStatus};
 use crate::target_state::STATIC_ROOT_PROVIDERS;
@@ -63,6 +64,7 @@ pub(crate) struct EnvironmentInner {
     static_root_providers: StaticRootProviders,
     max_inflight_components: Option<usize>,
     shutdown_hooks: Mutex<Vec<ShutdownHook>>,
+    exception_handler: Option<ExceptionHandler>,
 }
 
 /// A teardown step registered with [`EnvironmentBuilder::on_shutdown`].
@@ -202,6 +204,7 @@ impl Environment {
                 state: self.inner.state.clone(),
                 context: self.inner.context.clone(),
                 static_root_providers: self.inner.static_root_providers.clone(),
+                exception_handler: self.inner.exception_handler.clone(),
             }),
         })
     }
@@ -229,6 +232,7 @@ pub struct EnvironmentBuilder {
     state: TypeMap,
     context: ContextStore,
     shutdown_hooks: Vec<ShutdownHook>,
+    exception_handler: Option<ExceptionHandler>,
 }
 
 impl EnvironmentBuilder {
@@ -241,6 +245,7 @@ impl EnvironmentBuilder {
             state: TypeMap::new(),
             context: ContextStore::default(),
             shutdown_hooks: Vec::new(),
+            exception_handler: None,
         }
     }
 
@@ -274,6 +279,25 @@ impl EnvironmentBuilder {
         Fut: Future<Output = ()> + Send + 'static,
     {
         self.shutdown_hooks.push(Box::new(move || Box::pin(hook())));
+        self
+    }
+
+    /// Route the failures of every background-mounted component in this
+    /// environment ([`Ctx::mount`], [`Ctx::mount_live`], `auto_refresh`, …)
+    /// through `handler`: the outermost handler of each component's chain,
+    /// which [`Ctx::with_exception_handler`] extends. The Rust analogue of
+    /// Python's `builder.set_exception_handler`. The handler returns `Ok(())`
+    /// to swallow a failure or `Err(_)` to propagate it to the mount's handle;
+    /// without one, a failure is logged.
+    ///
+    /// [`Ctx::mount`]: crate::Ctx::mount
+    /// [`Ctx::mount_live`]: crate::Ctx::mount_live
+    /// [`Ctx::with_exception_handler`]: crate::Ctx::with_exception_handler
+    pub fn exception_handler<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(&Error, &ExceptionContext) -> Result<()> + Send + Sync + 'static,
+    {
+        self.exception_handler = Some(Arc::new(handler));
         self
     }
 
@@ -360,6 +384,7 @@ impl EnvironmentBuilder {
                 static_root_providers: Arc::new(static_root_providers),
                 max_inflight_components: self.max_inflight_components,
                 shutdown_hooks: Mutex::new(self.shutdown_hooks),
+                exception_handler: self.exception_handler,
             }),
         })
     }
@@ -468,6 +493,8 @@ pub(crate) struct AppInner {
     pub(crate) state: Arc<TypeMap>,
     pub(crate) context: Arc<ContextStore>,
     pub(crate) static_root_providers: StaticRootProviders,
+    /// The environment's handler, the root of every component's handler chain.
+    pub(crate) exception_handler: Option<ExceptionHandler>,
 }
 
 #[derive(Clone)]

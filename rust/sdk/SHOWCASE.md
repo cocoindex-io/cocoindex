@@ -267,6 +267,63 @@ the component key and closure are deliberately dynamic and no automatic
 function/argument fingerprint is wanted. These methods always execute their
 closures; they still provide stable child ownership and reconciliation.
 
+`mount!` is the background form, like `coco.mount` in Python: the parent does
+not wait for the child and takes no value from it. The child runs on its own
+task, its target states sync when it finishes, and in live mode it refreshes
+independently. The handle waits for the child when the parent needs that:
+
+```rust
+let handle = mount!(process_file(ctx, file, target)).await?;
+// ... other work ...
+handle.ready().await?;
+```
+
+`ctx.mount(key, body)` is the dynamic form. A failing background child does not
+fail its parent or siblings: the failure is logged, or routed through the
+exception handlers in scope.
+
+### Nested component paths
+
+`ctx.with_subpath(&"process")` returns a context whose child mounts go under
+`process`, the Rust spelling of a `with coco.component_subpath("process"):`
+block. Chain calls for a multi-part prefix. `use_state` is not available on a
+subpath context, as in Python.
+
+```rust
+let process = ctx.with_subpath(&"process");
+for file in files {
+    let ctx = &process;
+    mount!(file.name(), process_file(ctx, file, target.clone())).await?;
+}
+```
+
+### Exception handlers
+
+A handler sees the failures of background-mounted components (`mount!`,
+`ctx.mount`, live components, `auto_refresh`). It returns `Ok(())` to swallow a
+failure or `Err(_)` to pass it to the next outer handler; when every handler
+returns `Err`, the last error reaches the mount's `handle.ready()`. Install
+one for the whole environment on the builder, like Python's
+`builder.set_exception_handler`, or for one scope with
+`ctx.with_exception_handler`, like `async with coco.exception_handler(...)`:
+
+```rust
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    Ok(builder.exception_handler(|err, exc| {
+        tracing::error!("{} failed at {}: {err}", exc.env_name, exc.stable_path);
+        Ok(())
+    }))
+}
+
+let scoped = ctx.with_exception_handler(|err, exc| match exc.source {
+    ExceptionSource::Component => Err(Error::user(DeadLetter(err.to_string()))),
+    ExceptionSource::Handler => Ok(()),
+});
+let handle = scoped.mount(&"child", process).await?;
+handle.ready().await?; // Err(DeadLetter) when the child fails
+```
+
 ## Read files and declare output files
 
 `walk_items` produces stable `(relative_path, FileEntry)` pairs ready for
