@@ -728,6 +728,27 @@ class TestGet:
                 await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
         assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0] + [30.0] * 8
 
+    async def test_certificate_failure_not_retried(self, sleeps: list[float]) -> None:
+        # A certificate that fails verification fails again, so retrying
+        # would only delay the error by up to the cap. httpx raises it as a
+        # ConnectError caused, through httpcore's, by the ssl error.
+        fake = _fake_with_channels()
+        path = f"/channels/{_CHANNEL}"
+        cause = httpx.ConnectError("certificate verify failed")
+        cause.__cause__ = ssl.SSLCertVerificationError(
+            1, "certificate verify failed: self-signed certificate"
+        )
+        error = httpx.ConnectError("certificate verify failed")
+        error.__cause__ = cause
+        fake.script[path] = [error]
+        app, ctx = await _setup(fake)
+        async with app:
+            with pytest.raises(httpx.ConnectError) as excinfo:
+                await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
+        assert excinfo.value is error
+        assert sleeps == []
+        assert fake.count(path) == 1
+
     async def test_pacing_waits_not_capped(self, sleeps: list[float]) -> None:
         fake = _fake_with_channels()
         path = f"/channels/{_CHANNEL}"

@@ -246,6 +246,17 @@ def _retry_after(resp: httpx.Response) -> float:
     return 1.0
 
 
+def _is_certificate_failure(error: BaseException) -> bool:
+    """Whether a transport error comes from a TLS certificate that failed
+    verification."""
+    cause: BaseException | None = error
+    while cause is not None:
+        if isinstance(cause, ssl.SSLCertVerificationError):
+            return True
+        cause = cause.__cause__ or cause.__context__
+    return False
+
+
 def _is_global_limit(resp: httpx.Response) -> bool:
     """Whether a 429 is the bot's global rate limit, which covers every
     request it sends, as the body's ``global`` says."""
@@ -489,7 +500,8 @@ class _ApiContext:
         waits for Discord's ``retry_after``, every request waiting it out if
         it's the bot's global limit, and a 5xx or a network error backs off exponentially;
         those waits count toward a cap, and the error is raised once the next
-        wait would pass it. Pacing doesn't count. Any other error raises at
+        wait would pass it, or at once for a certificate that failed
+        verification. Pacing doesn't count. Any other error raises at
         once, and a 401 also stops every later request.
         """
         path = route.format(id=major)
@@ -511,6 +523,9 @@ class _ApiContext:
             try:
                 resp = await self._client.get(path, params=params)
             except httpx.TransportError as e:
+                # A certificate that failed verification fails again.
+                if _is_certificate_failure(e):
+                    raise
                 wait_secs = next_backoff
                 if total_waited + wait_secs > _RETRY_TOTAL_CAP_SECS:
                     raise
