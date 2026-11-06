@@ -345,7 +345,51 @@ mount_each!(files, |file| render_file(ctx, file, target.clone())).await?;
 
 `DirTarget` is declarative: new and changed files are written, unchanged files
 are skipped, and files no longer declared by their owning components are
-removed during reconciliation.
+removed during reconciliation. A subdirectory is a target of its own
+(`declare_dir_target`), removed with its contents when no longer declared;
+`declare_file_with_options` creates a file's parent directories; the standalone
+`fs::declare_file` declares one file without a directory target; and a root
+under a `ContextKey<PathBuf>` (`FilePath::under_context_dir`) keeps its target
+keys when the tree moves between runs. `walk_dir(..).live()` follows the
+directory with the platform's native file events, polling where those are
+unavailable.
+
+## Read message streams and sign in to Google Drive
+
+The Kafka and Iggy sources yield a keyed map (`topic_as_map`: the latest
+message per key) or an append-only stream (`topic_as_stream`, several topics
+for Kafka) for `mount_each_live`. A Kafka message carries its key, value,
+headers, partition, offset and timestamp; SASL and TLS go through
+`KafkaConnectOptions`, and a `consumer_group` makes a live run resume from the
+offsets it committed:
+
+```rust
+let consumer = kafka::KafkaConsumer::connect_with_options(
+    &["broker:9093"],
+    kafka::KafkaConsumerOptions {
+        consumer_group: Some("my_app".into()),
+        connect: kafka::KafkaConnectOptions {
+            sasl: Some(kafka::KafkaSasl::ScramSha256 { username, password }),
+            tls: Some(kafka::KafkaTls::default()),
+        },
+    },
+)
+.await?;
+ctx.mount_each_live(&"orders", kafka::topic_as_map(&consumer, "orders"), |ctx, msg: KafkaMessage| async move {
+    /* msg.key, msg.value, msg.headers, msg.partition, msg.offset */
+    Ok(())
+})
+.await?;
+```
+
+The Kafka and Iggy targets take their producer as a `ContextKey`, like every
+other connector target: `provide_key(&PRODUCER, producer)` once, name the key
+in `mount_kafka_topic_target(&ctx, &PRODUCER, topic, options)`.
+
+A personal Google account signs in once with `UserAccount::sign_in`
+(`client_secret.json` of a Desktop-app OAuth client), to the same token file
+the Python SDK uses; `GoogleDriveClient::from_user_account` then reads Drive
+as that account and refreshes the token as it expires.
 
 ## Read blobs from Azure Blob Storage
 
