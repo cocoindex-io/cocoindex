@@ -58,7 +58,9 @@ impl TestEnv {
     /// # }
     /// ```
     pub async fn from_builder(builder: EnvironmentBuilder) -> Result<Self> {
-        let dir = tempfile::Builder::new().prefix("cocoindex_test_").tempdir()?;
+        let dir = tempfile::Builder::new()
+            .prefix("cocoindex_test_")
+            .tempdir()?;
         let env = builder.db_path(dir.path().join("db")).build().await?;
         Ok(Self { env, dir })
     }
