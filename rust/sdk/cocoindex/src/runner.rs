@@ -121,9 +121,10 @@ impl GPURunner {
     /// `coco.GPU(fraction)`. Calls whose fractions fit together run at once on
     /// the same GPU: two `fraction(0.5)` calls share one.
     ///
-    /// `fraction` must be in `(0, 1]`. The function is `const`, so with a
-    /// literal in `#[cocoindex::function(runner = ...)]` a bad value is a
-    /// compile error; called at runtime with a bad value, it panics.
+    /// `fraction` must be in `(0, 1]`: the function panics otherwise. It is
+    /// `const`, so a `const` holding a bad literal fails to compile; in
+    /// `#[cocoindex::function(runner = ...)]` the value is built on the first
+    /// call, where a bad value panics.
     pub const fn fraction(fraction: f32) -> Self {
         assert!(
             fraction > 0.0 && fraction <= 1.0,
