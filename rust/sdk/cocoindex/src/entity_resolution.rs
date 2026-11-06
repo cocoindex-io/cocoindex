@@ -174,19 +174,14 @@ impl VectorMatrix {
 fn dot(a: &[f32], b: &[f32]) -> f32 {
     const LANES: usize = 8;
     let mut lanes = [0.0f32; LANES];
-    let mut a_chunks = a.chunks_exact(LANES);
-    let mut b_chunks = b.chunks_exact(LANES);
-    for (x, y) in (&mut a_chunks).zip(&mut b_chunks) {
+    let (a_chunks, a_tail) = a.as_chunks::<LANES>();
+    let (b_chunks, b_tail) = b.as_chunks::<LANES>();
+    for (x, y) in a_chunks.iter().zip(b_chunks) {
         for lane in 0..LANES {
             lanes[lane] += x[lane] * y[lane];
         }
     }
-    let tail: f32 = a_chunks
-        .remainder()
-        .iter()
-        .zip(b_chunks.remainder())
-        .map(|(x, y)| x * y)
-        .sum();
+    let tail: f32 = a_tail.iter().zip(b_tail).map(|(x, y)| x * y).sum();
     lanes.iter().sum::<f32>() + tail
 }
 

@@ -428,6 +428,12 @@ impl PairResolver for ClusterResolver {
     }
 }
 
+/// Entities with their vectors, and the cluster each belongs to.
+struct Clustered {
+    entities: Vec<(String, Vec<f32>)>,
+    cluster_of: HashMap<String, usize>,
+}
+
 /// Clusters of near-identical unit vectors plus isolated ones, in a
 /// deterministic pseudo-random layout.
 fn clustered_vectors(
@@ -435,7 +441,7 @@ fn clustered_vectors(
     per_cluster: usize,
     isolated: usize,
     dimension: usize,
-) -> (Vec<(String, Vec<f32>)>, HashMap<String, usize>) {
+) -> Clustered {
     use rand::{Rng, SeedableRng};
     let mut rng = rand::rngs::StdRng::seed_from_u64(11);
     let mut unit = |base: Option<&[f32]>, noise: f32| -> Vec<f32> {
@@ -461,7 +467,10 @@ fn clustered_vectors(
         entities.push((name.clone(), unit(None, 1.0)));
         cluster_of.insert(name, clusters + index);
     }
-    (entities, cluster_of)
+    Clustered {
+        entities,
+        cluster_of,
+    }
 }
 
 /// The resolution loop as plainly as it can be written: entities in name
@@ -517,7 +526,10 @@ fn reference_resolution(
 #[tokio::test]
 async fn matrix_search_matches_the_reference_resolution() {
     // Over 256 entities, so the partition runs on blocking threads.
-    let (entities, cluster_of) = clustered_vectors(60, 5, 100, 48);
+    let Clustered {
+        entities,
+        cluster_of,
+    } = clustered_vectors(60, 5, 100, 48);
     let expected = reference_resolution(&entities, &cluster_of, 0.3, 5);
     assert!(
         expected.values().filter(|target| target.is_some()).count() >= 200,
