@@ -1300,10 +1300,11 @@ class DiscordThread:
         # messages expose: messages() and the text depend on them too, so a
         # change to the channel's message_fields, or a version that adds a
         # message field, reruns the thread. The API context isn't content.
-        message_fields = (
-            _MESSAGE_FIELDS if self._message_fields is None else self._message_fields
+        return (
+            self._data,
+            self._starter,
+            _exposed_fields(self._message_fields, _MESSAGE_FIELDS),
         )
-        return (self._data, self._starter, message_fields)
 
 
 # ============================================================================
@@ -1329,6 +1330,15 @@ def _normalize_fields(
             f"{param} {unknown} not found in {class_name} fields: {list(valid)}"
         )
     return tuple(sorted({*names, "id"}))
+
+
+def _exposed_fields(
+    selected: tuple[str, ...] | None, valid: tuple[str, ...]
+) -> tuple[str, ...]:
+    """The sorted names of the fields a normalized selection exposes, for a
+    memo key: every field listed keys as ``None`` does, and a later version
+    that adds a field changes the key only of selections that expose it."""
+    return tuple(sorted(valid)) if selected is None else selected
 
 
 def _archived_before(threads: list[dict[str, Any]]) -> str:
@@ -1404,8 +1414,8 @@ class DiscordChannel:
         return (
             "discord_channel",
             self._channel_id,
-            self._message_fields,
-            self._thread_fields,
+            _exposed_fields(self._message_fields, _MESSAGE_FIELDS),
+            _exposed_fields(self._thread_fields, _THREAD_FIELDS),
         )
 
     async def items(self) -> AsyncIterator[tuple[str, DiscordMessage | DiscordThread]]:

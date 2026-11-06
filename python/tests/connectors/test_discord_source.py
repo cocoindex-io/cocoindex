@@ -2250,6 +2250,9 @@ class TestThreadMemoKey:
         assert _thread_fingerprint(
             raw, message_fields=content_only
         ) == _thread_fingerprint(raw, message_fields=content_only)
+        # Every field, listed, exposes what the default does.
+        every_field = tuple(sorted(_source._MESSAGE_FIELDS))
+        assert _thread_fingerprint(raw, message_fields=every_field) == default
         # A later version that adds a message field changes the default too.
         monkeypatch.setattr(
             _source, "_MESSAGE_FIELDS", (*_source._MESSAGE_FIELDS, "poll")
@@ -2599,20 +2602,36 @@ class TestDiscordChannel:
         app = discord.DiscordApp(token="t")
         channel = _channel(app)
         assert channel.channel_id == _CHANNEL
-        assert channel.__coco_memo_key__() == ("discord_channel", _CHANNEL, None, None)
+        # The key holds the names of the fields exposed, sorted.
+        every_message_field = tuple(sorted(_source._MESSAGE_FIELDS))
+        every_thread_field = tuple(sorted(_source._THREAD_FIELDS))
+        assert channel.__coco_memo_key__() == (
+            "discord_channel",
+            _CHANNEL,
+            every_message_field,
+            every_thread_field,
+        )
 
         def key(**selection: Any) -> object:
             return _channel(app, **selection).__coco_memo_key__()
 
-        # Empty means every field, as None does.
+        # Empty means every field, as None does, and so does every field
+        # listed.
         assert key(message_fields=[], thread_fields=[]) == key()
+        assert (
+            key(
+                message_fields=list(_source._MESSAGE_FIELDS),
+                thread_fields=list(_source._THREAD_FIELDS),
+            )
+            == key()
+        )
         # Sorted, without duplicates, with id: selections that mean the same
         # give the same key.
         assert key(message_fields=["content", "author", "content"]) == (
             "discord_channel",
             _CHANNEL,
             ("author", "content", "id"),
-            None,
+            every_thread_field,
         )
         assert key(message_fields=["content", "author"]) == key(
             message_fields=["author", "content", "id"]
@@ -2620,7 +2639,7 @@ class TestDiscordChannel:
         assert key(thread_fields=("name",)) == (
             "discord_channel",
             _CHANNEL,
-            None,
+            every_message_field,
             ("id", "name"),
         )
         assert key(message_fields=["content"]) != key(
