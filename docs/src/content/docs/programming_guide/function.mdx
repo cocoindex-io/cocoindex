@@ -5,11 +5,16 @@ description: >
   detection, memoization, and execution pipeline — with async adapters, batching,
   and GPU-aware runners included.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 :::note[Prerequisite]
 Read [Core Concepts](./core_concepts) for change detection and function memoization, with diagrams.
 :::
 
 It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can decorate any Python function with `@coco.fn` when you want to add incremental capabilities to it. The decorated function is still a normal Python function: its signature stays the same, and you can call it normally.
+
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn
@@ -19,6 +24,22 @@ async def process_file(file: FileLike) -> str:
 # Can be called like any normal function
 result = await process_file(file)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function]
+async fn process_file(_ctx: &Ctx, file: FileEntry) -> Result<String> {
+    Ok(file.content_str()?.to_string())
+}
+
+// Called like any other function, with the component's `Ctx`.
+let text = process_file(&ctx, file).await?;
+```
+
+</Fragment>
+</LangTabs>
 
 `@coco.fn` preserves the sync/async nature of the underlying function. Decorating a sync function yields a sync function; decorating an async function yields an async function.
 
