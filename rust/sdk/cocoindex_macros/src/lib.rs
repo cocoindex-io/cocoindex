@@ -377,6 +377,10 @@ struct FunctionArgs {
     memo: bool,
     batching: bool,
     max_batch_size: Option<usize>,
+    /// `runner = <expr>`: a `cocoindex::GPURunner` const expression whose
+    /// resource every call (or physical batch) of the function holds while
+    /// its body runs.
+    runner: Option<Expr>,
     version: Option<u64>,
     memo_key: Vec<MemoKeyOverride>,
     logic_tracking: LogicTracking,
@@ -414,6 +418,7 @@ impl Parse for FunctionArgs {
         let mut memo = false;
         let mut batching = false;
         let mut max_batch_size = None;
+        let mut runner = None;
         let mut version = None;
         let mut memo_key = Vec::new();
         let mut logic_tracking = LogicTracking::Full;
@@ -442,6 +447,14 @@ impl Parse for FunctionArgs {
                         ));
                     }
                     max_batch_size = Some(value);
+                }
+                "runner" => {
+                    input.parse::<Token![=]>()?;
+                    let expr: Expr = input.parse()?;
+                    if runner.is_some() {
+                        return Err(SynError::new_spanned(&expr, "duplicate `runner` argument"));
+                    }
+                    runner = Some(expr);
                 }
                 "logic_tracking" => {
                     input.parse::<Token![=]>()?;
@@ -494,7 +507,7 @@ impl Parse for FunctionArgs {
                 _ => {
                     return Err(SynError::new(
                         name.span(),
-                        "unsupported function attribute argument. expected `memo`, `batching`, `max_batch_size = N`, `memo_key(...)`, `version = N`, or `logic_tracking = \"full\"|\"self\"|\"none\"`",
+                        "unsupported function attribute argument. expected `memo`, `batching`, `max_batch_size = N`, `runner = <GPURunner>`, `memo_key(...)`, `version = N`, or `logic_tracking = \"full\"|\"self\"|\"none\"`",
                     ));
                 }
             }
@@ -518,6 +531,7 @@ impl Parse for FunctionArgs {
             memo,
             batching,
             max_batch_size,
+            runner,
             version,
             memo_key,
             logic_tracking,
@@ -889,6 +903,38 @@ fn gen_owned_param_clones(params: &[ParamInfo]) -> Vec<TokenStream2> {
         .collect()
 }
 
+/// Name of the `const` holding a function's `runner = ...` value.
+fn runner_const_name(fn_name: &Ident) -> Ident {
+    format_ident!("__COCO_RUNNER_{}", fn_name.to_string().to_uppercase())
+}
+
+/// The `const` item for `runner = <expr>`, or nothing. A `const` item makes
+/// `GPURunner::fraction(x)` with a bad literal a compile error.
+fn gen_runner_const(fn_name: &Ident, args: &FunctionArgs) -> TokenStream2 {
+    match &args.runner {
+        Some(expr) => {
+            let name = runner_const_name(fn_name);
+            quote! {
+                #[doc(hidden)]
+                const #name: ::cocoindex::GPURunner = #expr;
+            }
+        }
+        None => quote! {},
+    }
+}
+
+/// Wrap a body's future so it runs under the function's runner, if it has
+/// one; `body` is the statements of an `async move` block.
+fn gen_runner_wrap(fn_name: &Ident, args: &FunctionArgs, body: TokenStream2) -> TokenStream2 {
+    if args.runner.is_none() {
+        return body;
+    }
+    let name = runner_const_name(fn_name);
+    quote! {
+        #name.run(async move { #body }).await
+    }
+}
+
 fn expand_batching_function(
     func: &ItemFn,
     args: &FunctionArgs,
@@ -917,6 +963,13 @@ fn expand_batching_function(
     let max_batch_size = match args.max_batch_size {
         Some(max_batch_size) => quote! { ::core::option::Option::Some(#max_batch_size) },
         None => quote! { ::core::option::Option::None },
+    };
+    let runner_const = gen_runner_const(fn_name, args);
+    let runner = if args.runner.is_some() {
+        let name = runner_const_name(fn_name);
+        quote! { ::core::option::Option::Some(#name) }
+    } else {
+        quote! { ::core::option::Option::None }
     };
 
     let batch_impl_args = batching.batch_impl_params.iter().map(|param| match param {
@@ -1008,12 +1061,14 @@ fn expand_batching_function(
         #[doc(hidden)]
         pub const #hash_const_name: u64 = #hash_const_value;
         #logic_registration
+        #runner_const
 
         static #batch_static_name: ::std::sync::LazyLock<::cocoindex::batched::__ScheduledBatched<#item_ty, #output_ty>> =
             ::std::sync::LazyLock::new(|| {
                 ::cocoindex::batched::__ScheduledBatched::__new(
                     #hash_const_name,
                     #max_batch_size,
+                    #runner,
                 )
             });
 
@@ -1073,6 +1128,24 @@ fn expand_batching_function(
 /// values group compatible calls into a physical batch. With `memo`, they must
 /// also implement `MemoInput` because they form part of each item's memo key,
 /// unless `memo_key(...)` transforms or skips their memo identity.
+///
+/// A batching body may return `Error::retry_with_smaller_batch(cause)`: the
+/// batch is halved and each half re-run, down to single items, where `cause`
+/// becomes that item's own failure.
+///
+/// **With `runner`** — hold a share of a GPU while the body runs
+/// (Python's `runner=coco.GPU`). Each call, or each physical batch with
+/// `batching`, waits for the GPU pool, runs with `cocoindex::current_gpu()`
+/// set, and releases its share afterwards:
+/// ```ignore
+/// #[cocoindex::function(memo, batching, max_batch_size = 16, runner = cocoindex::GPU)]
+/// async fn embed(ctx: &Ctx, texts: Vec<String>) -> Result<Vec<Vec<f32>>> { ... }
+///
+/// #[cocoindex::function(runner = cocoindex::GPURunner::fraction(0.5))]
+/// async fn infer(ctx: &Ctx, image: &Image) -> Result<Label> { ... }
+/// ```
+/// The value is a `const` expression of type `cocoindex::GPURunner`, and the
+/// function must be `async`.
 ///
 /// Optional `version` parameter forces cache invalidation:
 /// ```ignore
@@ -1146,6 +1219,14 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         );
     }
 
+    if args.runner.is_some() && func.sig.asyncness.is_none() {
+        return TokenStream::from(
+            SynError::new(func.sig.ident.span(), "`runner` requires an async function")
+                .to_compile_error(),
+        );
+    }
+    let runner_const = gen_runner_const(fn_name, &args);
+
     if args.batching {
         return match expand_batching_function(
             &func,
@@ -1180,10 +1261,17 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
             args.logic_tracking,
             // Bind the scoped context as `&Ctx`, matching the signature (and
             // the non-memo wrapper), so the body reads the same either way.
-            quote! {
-                move |__coco_scoped_ctx| async move {
-                    let #ctx_ident = &__coco_scoped_ctx;
-                    #body
+            {
+                let run_body = gen_runner_wrap(
+                    fn_name,
+                    &args,
+                    quote! {
+                        let #ctx_ident = &__coco_scoped_ctx;
+                        #body
+                    },
+                );
+                quote! {
+                    move |__coco_scoped_ctx| async move { #run_body }
                 }
             },
         ) {
@@ -1195,6 +1283,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
             #[doc(hidden)]
             pub const #hash_const_name: u64 = #hash_const_value;
             #logic_registration
+            #runner_const
 
             #(#attrs)*
             #vis #sig #wrapper_body
@@ -1218,10 +1307,19 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let expanded = if let Some(ctx_ident) = ctx_opt {
             if track_logic {
+                let run_body = gen_runner_wrap(
+                    fn_name,
+                    &args,
+                    quote! {
+                        let #ctx_ident = &__coco_scoped_ctx;
+                        #body
+                    },
+                );
                 quote! {
                     #[doc(hidden)]
                     pub const #hash_const_name: u64 = #hash_const_value;
                     #logic_registration
+                    #runner_const
 
                     #(#attrs)*
                     #vis #sig {
@@ -1230,10 +1328,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                             ::core::stringify!(#fn_name),
                             #hash_const_name,
                             #propagate_children_fn_logic,
-                            move |__coco_scoped_ctx| async move {
-                                let #ctx_ident = &__coco_scoped_ctx;
-                                #body
-                            },
+                            move |__coco_scoped_ctx| async move { #run_body },
                         ).await
                     }
                 }
@@ -1241,12 +1336,14 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // `logic_tracking = "none"`: run the body without recording this
                 // function's logic dependency. The hash const is still emitted so
                 // `use_mount!`/`mount_each!` can reference it.
+                let run_body = gen_runner_wrap(fn_name, &args, quote! { #body });
                 quote! {
                     #[doc(hidden)]
                     pub const #hash_const_name: u64 = #hash_const_value;
+                    #runner_const
 
                     #(#attrs)*
-                    #vis #sig #body
+                    #vis #sig { #run_body }
                 }
             }
         } else {
@@ -2143,6 +2240,26 @@ mod tests {
         assert!(args.memo);
         assert!(args.batching);
         assert_eq!(args.max_batch_size, Some(32));
+    }
+
+    #[test]
+    fn parse_function_args_accepts_runner() {
+        let args = FunctionArgs::parse(quote!(memo, runner = cocoindex::GPU)).unwrap();
+        assert!(args.memo);
+        assert!(args.runner.is_some());
+
+        let args = FunctionArgs::parse(quote!(
+            batching,
+            runner = cocoindex::GPURunner::fraction(0.5),
+            max_batch_size = 4
+        ))
+        .unwrap();
+        assert!(args.batching);
+        assert_eq!(args.max_batch_size, Some(4));
+        assert!(args.runner.is_some());
+
+        let err = FunctionArgs::parse(quote!(runner = GPU, runner = GPU)).unwrap_err();
+        assert!(err.to_string().contains("duplicate `runner`"));
     }
 
     #[test]

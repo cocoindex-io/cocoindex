@@ -34,6 +34,7 @@ pub(crate) mod profile;
 pub mod registry;
 pub mod resources;
 pub mod row_schema;
+pub mod runner;
 #[cfg(any(feature = "doris", feature = "sqlite", feature = "surrealdb"))]
 pub(crate) mod sql_ident;
 pub mod statediff;
@@ -67,6 +68,9 @@ pub use resources::fs::{
 pub use resources::id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
     generate_uuid_default,
+};
+pub use runner::{
+    GPU, GPURunner, configure_gpu_pool, current_gpu, current_gpu_fraction, current_gpus,
 };
 // Re-exported so `#[cocoindex::function]` output can register each function's
 // logic fingerprint without the user crate needing a direct `linkme` dependency.

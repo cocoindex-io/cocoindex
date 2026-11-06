@@ -31,6 +31,9 @@ pub use crate::resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,
 };
+pub use crate::runner::{
+    GPU, GPURunner, configure_gpu_pool, current_gpu, current_gpu_fraction, current_gpus,
+};
 pub use crate::statediff::{
     DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, TrackingRecordTransition,
     diff, resolve_system_transition,
