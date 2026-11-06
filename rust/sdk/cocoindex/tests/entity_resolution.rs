@@ -402,3 +402,146 @@ async fn a_zero_embedding_matches_nothing_instead_of_failing() {
     assert_eq!(result.canonical_of("Z").unwrap(), "Z");
     assert!(resolver.calls().is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// The matrix search gives the same resolution as a plain scalar search
+// ---------------------------------------------------------------------------
+
+/// Resolves to a candidate of the entity's own cluster, if listed.
+struct ClusterResolver {
+    cluster_of: HashMap<String, usize>,
+}
+
+#[async_trait]
+impl PairResolver for ClusterResolver {
+    async fn resolve_pair(
+        &self,
+        _ctx: &Ctx,
+        entity: &str,
+        candidates: &[String],
+    ) -> cocoindex::Result<PairDecision> {
+        let cluster = self.cluster_of[entity];
+        Ok(candidates
+            .iter()
+            .find(|candidate| self.cluster_of[candidate.as_str()] == cluster)
+            .map_or_else(PairDecision::no_match, PairDecision::matched))
+    }
+}
+
+/// Clusters of near-identical unit vectors plus isolated ones, in a
+/// deterministic pseudo-random layout.
+fn clustered_vectors(
+    clusters: usize,
+    per_cluster: usize,
+    isolated: usize,
+    dimension: usize,
+) -> (Vec<(String, Vec<f32>)>, HashMap<String, usize>) {
+    use rand::{Rng, SeedableRng};
+    let mut rng = rand::rngs::StdRng::seed_from_u64(11);
+    let mut unit = |base: Option<&[f32]>, noise: f32| -> Vec<f32> {
+        let mut vec: Vec<f32> = (0..dimension)
+            .map(|k| base.map_or(0.0, |b| b[k]) + rng.gen_range(-noise..noise))
+            .collect();
+        let norm = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
+        vec.iter_mut().for_each(|v| *v /= norm);
+        vec
+    };
+    let mut entities = Vec::new();
+    let mut cluster_of = HashMap::new();
+    for cluster in 0..clusters {
+        let base = unit(None, 1.0);
+        for member in 0..per_cluster {
+            let name = format!("c{cluster:03}-m{member:02}");
+            entities.push((name.clone(), unit(Some(&base), 0.02)));
+            cluster_of.insert(name, cluster);
+        }
+    }
+    for index in 0..isolated {
+        let name = format!("iso-{index:03}");
+        entities.push((name.clone(), unit(None, 1.0)));
+        cluster_of.insert(name, clusters + index);
+    }
+    (entities, cluster_of)
+}
+
+/// The resolution loop as plainly as it can be written: entities in name
+/// order, each searched against every earlier one with a scalar cosine, no
+/// components, no matrix.
+fn reference_resolution(
+    entities: &[(String, Vec<f32>)],
+    cluster_of: &HashMap<String, usize>,
+    max_distance: f32,
+    top_n: usize,
+) -> std::collections::BTreeMap<String, Option<String>> {
+    let mut sorted: Vec<&(String, Vec<f32>)> = entities.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let cosine = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+    let canonical = |dedup: &std::collections::BTreeMap<String, Option<String>>, name: &str| {
+        let mut current = name.to_string();
+        while let Some(Some(next)) = dedup.get(&current) {
+            current = next.clone();
+        }
+        current
+    };
+    let mut dedup = std::collections::BTreeMap::new();
+    let mut indexed: Vec<&(String, Vec<f32>)> = Vec::new();
+    for entity in &sorted {
+        let (name, vec) = entity;
+        let mut scored: Vec<(f32, String)> = indexed
+            .iter()
+            .map(|(other, other_vec)| (cosine(vec, other_vec), canonical(&dedup, other)))
+            .filter(|(score, other)| *score >= 1.0 - max_distance && other != name)
+            .collect();
+        scored.sort_by(|(a_score, a), (b_score, b)| {
+            b_score.total_cmp(a_score).then_with(|| a.cmp(b))
+        });
+        let mut candidates: Vec<String> = Vec::new();
+        for (_, other) in scored {
+            if !candidates.contains(&other) {
+                candidates.push(other);
+                if candidates.len() >= top_n {
+                    break;
+                }
+            }
+        }
+        let matched = candidates
+            .iter()
+            .find(|candidate| cluster_of[candidate.as_str()] == cluster_of[name])
+            .cloned();
+        dedup.insert(name.clone(), matched);
+        indexed.push(entity);
+    }
+    dedup
+}
+
+#[tokio::test]
+async fn matrix_search_matches_the_reference_resolution() {
+    // Over 256 entities, so the partition runs on blocking threads.
+    let (entities, cluster_of) = clustered_vectors(60, 5, 100, 48);
+    let expected = reference_resolution(&entities, &cluster_of, 0.3, 5);
+    assert!(
+        expected.values().filter(|target| target.is_some()).count() >= 200,
+        "the data must exercise matches"
+    );
+
+    let embedder = Arc::new(ScriptedEmbedder {
+        vectors: entities.iter().cloned().collect(),
+    });
+    let resolver = Arc::new(ClusterResolver { cluster_of });
+    let names: Vec<String> = entities.iter().map(|(name, _)| name.clone()).collect();
+    let resolved = in_update(move |ctx| async move {
+        resolve_entities(
+            &ctx,
+            names.iter(),
+            &*embedder,
+            &*resolver,
+            None,
+            ResolveOptions::default(),
+        )
+        .await
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(resolved.to_map(), expected);
+}
