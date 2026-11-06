@@ -58,7 +58,7 @@
 //!
 //! # Modules
 //!
-//! - [`app`]: [`Environment`], [`App`], updates, previews and dropping state.
+//! - [`mod@app`]: [`Environment`], [`App`], updates, previews and dropping state.
 //! - [`ctx`]: [`Ctx`], the handle a component uses to mount children, memoize
 //!   work, read context and declare target states.
 //! - [`memo`]: [`MemoInput`], the identity of a memoized argument.
@@ -99,7 +99,7 @@
 //! | `lancedb` | [`connectors::lancedb`] target (embedded) | |
 //! | `qdrant` | [`connectors::qdrant`] target | `protoc` |
 //! | `turbopuffer` | [`connectors::turbopuffer`] target | |
-//! | `zvec` | [`connectors::zvec`] target (embedded) | the prebuilt `libzvec_c_api`, downloaded by `zvec-rust-sys` (network) |
+//! | `zvec` | `connectors::zvec` target (embedded) | the prebuilt `libzvec_c_api`, downloaded by `zvec-rust-sys` (network) |
 //! | `valkey` | [`connectors::valkey`] target (Valkey/Redis with RediSearch) | OpenSSL headers on Linux (native TLS) |
 //! | `neo4j` | [`connectors::neo4j`] graph target | |
 //! | `falkordb` | [`connectors::falkordb`] graph target | |
