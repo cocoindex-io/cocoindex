@@ -3348,7 +3348,14 @@ async fn dir_target_writes_skips_unchanged_and_reconciles_orphans() {
     app.update(move |ctx| async move {
         let t = DirTarget::mount(&ctx, &out1)?;
         t.declare_file(&ctx, "a.txt", b"AAA")?;
-        t.declare_file(&ctx, "sub/b.txt", b"BBB")?;
+        t.declare_file_with_options(
+            &ctx,
+            "sub/b.txt",
+            b"BBB",
+            cocoindex::resources::fs::FileOptions {
+                create_parent_dirs: true,
+            },
+        )?;
         Ok(())
     })
     .await

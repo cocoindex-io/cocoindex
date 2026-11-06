@@ -20,6 +20,9 @@
 
 use cocoindex::resources::fs::FileEntry;
 use cocoindex::connectors::iggy::{self, IggyProducer};
+use cocoindex::Environment;
+
+cocoindex::context_key!(static PRODUCER: IggyProducer);
 use cocoindex::prelude::*;
 use iggy::prelude::{
     CompressionAlgorithm, Consumer, Identifier, IggyExpiry, MaxTopicSize, MessageClient,
@@ -99,14 +102,17 @@ async fn ensure_stream_topic(producer: &IggyProducer, stream: &str, topic: &str)
 async fn index(producer: IggyProducer, stream: String, topic: String) -> Result<()> {
     ensure_stream_topic(&producer, &stream, &topic).await?;
 
-    let app = App::builder("CsvToIggyRust")
+    // The producer is provided under a `ContextKey`; the target names the key.
+    let app = Environment::builder()
         .db_path(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&PRODUCER, producer)
         .build()
+        .await?
+        .app("CsvToIggyRust")
         .await?;
 
     let stats = app
         .run(move |ctx| {
-            let producer = producer.clone();
             let stream = stream.clone();
             let topic = topic.clone();
             async move {
@@ -118,7 +124,7 @@ async fn index(producer: IggyProducer, stream: String, topic: String) -> Result<
                     })),
                 };
                 let target =
-                    iggy::mount_iggy_topic_target(&ctx, &producer, stream, topic, options)?;
+                    iggy::mount_iggy_topic_target(&ctx, &PRODUCER, stream, topic, options)?;
 
                 let files = cocoindex::resources::fs::walk_items("./data", &["**/*.csv"])?;
                 println!("found {} CSV file(s)", files.len());

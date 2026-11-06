@@ -24,6 +24,9 @@
 
 use cocoindex::resources::fs::FileEntry;
 use cocoindex::connectors::kafka::{self, KafkaProducer};
+use cocoindex::Environment;
+
+cocoindex::context_key!(static PRODUCER: KafkaProducer);
 use cocoindex::prelude::*;
 use rskafka::client::ClientBuilder;
 use rskafka::client::partition::UnknownTopicHandling;
@@ -73,19 +76,22 @@ async fn index(producer: KafkaProducer, topic: String) -> Result<()> {
     // The topic is user-managed; create it up front if absent (idempotent).
     producer.ensure_topic(&topic, 1).await?;
 
-    let app = App::builder("CsvToKafkaRust")
+    // The producer is provided under a `ContextKey`; the target names the key.
+    let app = Environment::builder()
         .db_path(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&PRODUCER, producer)
         .build()
+        .await?
+        .app("CsvToKafkaRust")
         .await?;
 
     let stats = app
         .run(move |ctx| {
-            let producer = producer.clone();
             let topic = topic.clone();
             async move {
                 let target = kafka::mount_kafka_topic_target(
                     &ctx,
-                    &producer,
+                    &PRODUCER,
                     topic,
                     kafka::KafkaTopicOptions::default(),
                 )?;

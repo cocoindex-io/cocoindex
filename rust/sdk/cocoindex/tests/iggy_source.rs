@@ -16,12 +16,32 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cocoindex::connectors::iggy::{self, IggyConsumer, IggyProducer};
-use cocoindex::{App, Result, UpdateOptions};
+use cocoindex::{App, Environment, Result, UpdateOptions};
 use iggy::prelude::{
     CompressionAlgorithm, Identifier, IggyExpiry, MaxTopicSize, StreamClient, TopicClient,
 };
 
 const PARTITION: u32 = 0;
+const GROUP: &str = "cocoindex-test";
+
+cocoindex::context_key!(static PRODUCER: IggyProducer);
+
+/// An app over `db_path` with the producer provided under `PRODUCER`.
+async fn app_with_producer(name: &str, db_path: &std::path::Path, producer: &IggyProducer) -> App {
+    Environment::builder()
+        .db_path(db_path)
+        .provide_key(&PRODUCER, producer.clone())
+        .build()
+        .await
+        .unwrap()
+        .app(name)
+        .await
+        .unwrap()
+}
+
+/// Live runs share the process-wide cancellation the resume test uses to stop
+/// its runs, so they take turns.
+static LIVE_RUNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn ensure_stream_topic(producer: &IggyProducer, stream: &str, topic: &str) {
     let client = producer.client();
@@ -56,20 +76,15 @@ async fn declare(
         .into_iter()
         .map(|(k, v)| (k.to_string(), format!("{k}={v}")))
         .collect();
-    let app = App::builder("IggySourcePopulate")
-        .db_path(db_path)
-        .build()
-        .await
-        .unwrap();
+    let app = app_with_producer("IggySourcePopulate", db_path, &producer).await;
     app.run(move |ctx| {
-        let producer = producer.clone();
         let stream = stream.clone();
         let topic = topic.clone();
         let messages = messages.clone();
         async move {
             let target = iggy::mount_iggy_topic_target(
                 &ctx,
-                &producer,
+                &PRODUCER,
                 stream,
                 topic,
                 iggy::IggyTopicOptions {
@@ -147,7 +162,7 @@ async fn iggy_source_catch_up_scan_compacts_log() -> Result<()> {
             let consumer = consumer.clone();
             let stream = stream.clone();
             async move {
-                let feed = iggy::topic_as_map(&consumer, stream, topic, key_fn());
+                let feed = iggy::topic_as_map(&consumer, GROUP, stream, topic, key_fn());
                 ctx.mount_each_live(&"messages", feed, move |_ctx, value: Vec<u8>| {
                     let processed = processed.clone();
                     async move {
@@ -194,6 +209,7 @@ async fn iggy_source_live_watch_tails_new_messages() -> Result<()> {
     let pop_db = tmp.path().join("populate_db");
     declare(&producer, &pop_db, &stream, topic, vec![("k1", "v1")]).await;
 
+    let _live = LIVE_RUNS.lock().await;
     let consumer = IggyConsumer::connect(&conn).await?;
     let processed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -217,7 +233,7 @@ async fn iggy_source_live_watch_tails_new_messages() -> Result<()> {
                     let consumer = consumer.clone();
                     let stream = stream.clone();
                     async move {
-                        let feed = iggy::topic_as_map(&consumer, stream, topic, key_fn());
+                        let feed = iggy::topic_as_map(&consumer, GROUP, stream, topic, key_fn());
                         ctx.mount_each_live(&"messages", feed, move |_ctx, value: Vec<u8>| {
                             let processed = processed.clone();
                             async move {
@@ -309,7 +325,7 @@ async fn iggy_source_stream_reads_all_payloads_keyless() -> Result<()> {
             let consumer = consumer.clone();
             let stream = stream.clone();
             async move {
-                let feed = iggy::topic_as_stream(&consumer, stream, topic);
+                let feed = iggy::topic_as_stream(&consumer, GROUP, stream, topic);
                 ctx.mount_each_live(&"stream", feed, move |_ctx, value: Vec<u8>| {
                     let processed = processed.clone();
                     async move {
@@ -394,18 +410,19 @@ async fn iggy_source_stream_reads_all_partitions() -> Result<()> {
         let producer = producer.clone();
         let stream = stream.clone();
         let pid = *pid;
-        let app = App::builder("IggyMpartPopulate")
-            .db_path(tmp.path().join(format!("pop_{i}")))
-            .build()
-            .await?;
+        let app = app_with_producer(
+            "IggyMpartPopulate",
+            &tmp.path().join(format!("pop_{i}")),
+            &producer,
+        )
+        .await;
         app.run(move |ctx| {
-            let producer = producer.clone();
             let stream = stream.clone();
             let value = value.clone();
             async move {
                 let target = iggy::mount_iggy_topic_target(
                     &ctx,
-                    &producer,
+                    &PRODUCER,
                     stream,
                     topic,
                     iggy::IggyTopicOptions {
@@ -436,7 +453,7 @@ async fn iggy_source_stream_reads_all_partitions() -> Result<()> {
             let consumer = consumer.clone();
             let stream = stream.clone();
             async move {
-                let feed = iggy::topic_as_stream(&consumer, stream, topic);
+                let feed = iggy::topic_as_stream(&consumer, GROUP, stream, topic);
                 ctx.mount_each_live(&"stream", feed, move |_ctx, value: Vec<u8>| {
                     let processed = processed.clone();
                     async move {
@@ -462,5 +479,224 @@ async fn iggy_source_stream_reads_all_partitions() -> Result<()> {
         "the keyless stream should read one message from each of the {} partitions",
         pids.len()
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn iggy_source_consumer_group_resumes_from_stored_offset() -> Result<()> {
+    let Ok(conn) = std::env::var("IGGY_CONNECTION_STRING") else {
+        eprintln!("skipping live Iggy consumer-group test; IGGY_CONNECTION_STRING is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let stream = format!("coco_src_group_{nonce}");
+    let topic = "rows";
+
+    let producer = IggyProducer::connect(&conn).await?;
+    ensure_stream_topic(&producer, &stream, topic).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let pop_db = tmp.path().join("populate_db");
+    declare(&producer, &pop_db, &stream, topic, vec![("k1", "v1")]).await;
+
+    let consumer = IggyConsumer::connect(&conn).await?;
+    let source_db = tmp.path().join("source_db");
+    let _live = LIVE_RUNS.lock().await;
+
+    // A live run: processes everything (the catch-up scan), stores the group's
+    // offset on the server, then stops. Stopping goes through the engine's
+    // process-wide cancellation, the path Ctrl-C takes, which keeps the app's
+    // state (`drop_state` would wipe it).
+    let run_live = |processed: Arc<Mutex<Vec<String>>>, until: Vec<&'static str>| {
+        let consumer = consumer.clone();
+        let stream = stream.clone();
+        let source_db = source_db.clone();
+        async move {
+            let app = App::builder("IggySourceGroup")
+                .db_path(&source_db)
+                .build()
+                .await?;
+            let handle = app.start_update_with_options(
+                UpdateOptions {
+                    full_reprocess: false,
+                    live: true,
+                    ..UpdateOptions::default()
+                },
+                {
+                    let processed = processed.clone();
+                    move |ctx| {
+                        let processed = processed.clone();
+                        let consumer = consumer.clone();
+                        let stream = stream.clone();
+                        async move {
+                            let feed = iggy::topic_as_map_with_options(
+                                &consumer,
+                                GROUP,
+                                stream,
+                                topic,
+                                key_fn(),
+                                iggy::IggySourceOptions {
+                                    partition: PARTITION,
+                                    poll: iggy::IggyPollOptions {
+                                        batch_length: 1,
+                                        poll_interval: Duration::from_millis(50),
+                                        ..Default::default()
+                                    },
+                                    is_deletion: None,
+                                },
+                            );
+                            ctx.mount_each_live(&"messages", feed, move |_ctx, value: Vec<u8>| {
+                                let processed = processed.clone();
+                                async move {
+                                    processed
+                                        .lock()
+                                        .unwrap()
+                                        .push(String::from_utf8_lossy(&value).into_owned());
+                                    Ok(())
+                                }
+                            })
+                            .await
+                        }
+                    }
+                },
+            )?;
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let got = processed.lock().unwrap().clone();
+                if until.iter().all(|v| got.iter().any(|g| g == v)) {
+                    break;
+                }
+                if Instant::now() > deadline {
+                    panic!("live run did not process {until:?} in time; processed={got:?}");
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            // A little grace so the offset store after the batch lands.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            cocoindex_core::engine::runtime::cancel_all();
+            let _ = tokio::time::timeout(Duration::from_secs(10), handle.result()).await;
+            cocoindex_core::engine::runtime::reset_global_cancellation();
+            Ok::<_, cocoindex::Error>(())
+        }
+    };
+
+    let first: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    run_live(first.clone(), vec!["k1=v1"]).await?;
+    assert_eq!(first.lock().unwrap().clone(), vec!["k1=v1".to_string()]);
+
+    // A message arrives while no run is live; the next live run resumes from
+    // the group's stored offset: it replays only the new message.
+    declare(
+        &producer,
+        &pop_db,
+        &stream,
+        topic,
+        vec![("k1", "v1"), ("k2", "v2")],
+    )
+    .await;
+    let second: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    run_live(second.clone(), vec!["k2=v2"]).await?;
+    assert_eq!(
+        second.lock().unwrap().clone(),
+        vec!["k2=v2".to_string()],
+        "a live run with a consumer group resumes from the stored offset"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn iggy_source_init_retries_wait_for_a_late_topic() -> Result<()> {
+    let Ok(conn) = std::env::var("IGGY_CONNECTION_STRING") else {
+        eprintln!("skipping live Iggy init-retry test; IGGY_CONNECTION_STRING is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let stream = format!("coco_src_late_{nonce}");
+    let topic = "rows";
+    let producer = IggyProducer::connect(&conn).await?;
+    let consumer = IggyConsumer::connect(&conn).await?;
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Without retries a missing topic is an error at once.
+    let app = App::builder("IggySourceLateNoRetry")
+        .db_path(tmp.path().join("db0"))
+        .build()
+        .await?;
+    let err = app
+        .run({
+            let consumer = consumer.clone();
+            let stream = stream.clone();
+            move |ctx| {
+                let consumer = consumer.clone();
+                let stream = stream.clone();
+                async move {
+                    let feed = iggy::topic_as_stream(&consumer, GROUP, stream, topic);
+                    ctx.mount_each_live(&"stream", feed, |_ctx, _value: Vec<u8>| async { Ok(()) })
+                        .await
+                }
+            }
+        })
+        .await
+        .expect_err("a missing topic without init retries is an error");
+    assert!(err.to_string().contains("not found"), "{err}");
+
+    // With retries the source waits for the topic the producer creates.
+    let create = {
+        let producer = producer.clone();
+        let stream = stream.clone();
+        let pop_db = tmp.path().join("pop");
+        async move {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            ensure_stream_topic(&producer, &stream, topic).await;
+            declare(&producer, &pop_db, &stream, topic, vec![("k1", "v1")]).await;
+        }
+    };
+    let processed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let app = App::builder("IggySourceLateRetry")
+        .db_path(tmp.path().join("db1"))
+        .build()
+        .await?;
+    let read = app.run({
+        let processed = processed.clone();
+        let consumer = consumer.clone();
+        let stream = stream.clone();
+        move |ctx| {
+            let processed = processed.clone();
+            let consumer = consumer.clone();
+            let stream = stream.clone();
+            async move {
+                let feed = iggy::topic_as_stream_with_options(
+                    &consumer,
+                    GROUP,
+                    stream,
+                    topic,
+                    iggy::IggyPollOptions {
+                        init_retries: 20,
+                        init_retry_interval: Duration::from_millis(200),
+                        ..Default::default()
+                    },
+                );
+                ctx.mount_each_live(&"stream", feed, move |_ctx, value: Vec<u8>| {
+                    let processed = processed.clone();
+                    async move {
+                        processed
+                            .lock()
+                            .unwrap()
+                            .push(String::from_utf8_lossy(&value).into_owned());
+                        Ok(())
+                    }
+                })
+                .await
+            }
+        }
+    });
+    let (_, result) = tokio::join!(create, read);
+    result?;
+    assert_eq!(processed.lock().unwrap().clone(), vec!["k1=v1".to_string()]);
     Ok(())
 }

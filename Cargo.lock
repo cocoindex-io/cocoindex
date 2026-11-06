@@ -1952,6 +1952,8 @@ dependencies = [
  "rskafka",
  "rust_decimal",
  "rustc-hash",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1964,6 +1966,7 @@ dependencies = [
  "ureq",
  "uuid",
  "walkdir",
+ "webpki-roots 1.0.9",
  "wiremock",
  "zvec-rust",
 ]
@@ -9431,8 +9434,10 @@ dependencies = [
  "parking_lot",
  "rand 0.8.7",
  "rsasl",
+ "rustls",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 

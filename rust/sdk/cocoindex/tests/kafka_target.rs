@@ -19,9 +19,24 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::connectors::kafka;
-use cocoindex::{App, Result};
+use cocoindex::{App, Environment, Result};
 use rskafka::client::partition::UnknownTopicHandling;
 use rskafka::client::{Client, ClientBuilder};
+
+cocoindex::context_key!(static PRODUCER: kafka::KafkaProducer);
+
+/// An app over `db_path` with the producer provided under `PRODUCER`.
+async fn app(name: &str, db_path: &std::path::Path, producer: &kafka::KafkaProducer) -> App {
+    Environment::builder()
+        .db_path(db_path)
+        .provide_key(&PRODUCER, producer.clone())
+        .build()
+        .await
+        .unwrap()
+        .app(name)
+        .await
+        .unwrap()
+}
 
 /// Consume every record on partition 0 from the beginning. Returns the decoded
 /// `(key, value)` pairs in log order plus the high watermark.
@@ -98,19 +113,14 @@ async fn kafka_target_produces_skips_updates_and_tombstones_when_available() -> 
         let topic = topic.clone();
         let db_path = db_path.clone();
         async move {
-            let app = App::builder("KafkaTargetTest")
-                .db_path(&db_path)
-                .build()
-                .await
-                .unwrap();
+            let app = app("KafkaTargetTest", &db_path, &producer).await;
             app.run(move |ctx| {
-                let producer = producer.clone();
                 let topic = topic.clone();
                 let messages = messages.clone();
                 async move {
                     let target = kafka::mount_kafka_topic_target(
                         &ctx,
-                        &producer,
+                        &PRODUCER,
                         topic,
                         kafka::KafkaTopicOptions::default(),
                     )?;
@@ -187,13 +197,8 @@ async fn kafka_target_custom_delete_value_when_available() -> Result<()> {
         let topic = topic.clone();
         let db_path = db_path.clone();
         async move {
-            let app = App::builder("KafkaCustomDeleteTest")
-                .db_path(&db_path)
-                .build()
-                .await
-                .unwrap();
+            let app = app("KafkaCustomDeleteTest", &db_path, &producer).await;
             app.run(move |ctx| {
-                let producer = producer.clone();
                 let topic = topic.clone();
                 let messages = messages.clone();
                 async move {
@@ -202,7 +207,7 @@ async fn kafka_target_custom_delete_value_when_available() -> Result<()> {
                             format!("deleted:{key}").into_bytes()
                         })),
                     };
-                    let target = kafka::mount_kafka_topic_target(&ctx, &producer, topic, options)?;
+                    let target = kafka::mount_kafka_topic_target(&ctx, &PRODUCER, topic, options)?;
                     for (k, v) in &messages {
                         target.declare_message(&ctx, k, v)?;
                     }

@@ -50,15 +50,31 @@ surrealdb = [
     "chrono",
     "rust_decimal",
 ]
-kafka = ["dep:rskafka", "dep:crc32fast", "chrono"]
+# Kafka source and target (pure-Rust `rskafka`); TLS via rustls with the
+# Mozilla roots, client-side PEM parsing via `rustls-pki-types`.
+kafka = [
+    "dep:rskafka",
+    "rskafka/transport-tls",
+    "dep:crc32fast",
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:webpki-roots",
+    "chrono",
+]
 iggy = ["dep:iggy"]
 amazon_s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+# Google Drive source: service accounts and a personal account signed in with
+# OAuth (`UserAccount`); `tokio/net` serves the sign-in's loopback redirect.
 google_drive = [
     "dep:reqwest",
     "dep:rsa",
     "dep:sha2",
     "dep:base64",
     "chrono",
+    "tokio/net",
+    "tokio/io-util",
+    "tokio/time",
+    "tokio/macros",
 ]
 # OCI Object Storage source: REST API + RSA-SHA256 HTTP Signature request
 # signing (no official Oracle Rust SDK). Reuses the google_drive crypto/HTTP
@@ -184,6 +200,11 @@ rskafka = { version = "0.6", default-features = false, optional = true }
 # Key-to-partition hashing for the Kafka target, matching librdkafka's default
 # `consistent_random` partitioner used by the Python connector.
 crc32fast = { version = "1", optional = true }
+# TLS for the Kafka connection (`KafkaTls`): the rustls config rskafka takes,
+# the Mozilla root store, and PEM parsing for a private CA / client certificate.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
+rustls-pki-types = { version = "1", features = ["std"], optional = true }
+webpki-roots = { version = "1", optional = true }
 # Apache Iggy message-streaming target (pure-Rust client; TCP/QUIC/HTTP).
 iggy = { version = "0.10", optional = true }
 # Amazon S3 (and S3-compatible, e.g. MinIO) object source.
