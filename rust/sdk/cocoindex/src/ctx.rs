@@ -303,6 +303,8 @@ impl ContextStore {
     /// time via `HostCtx` (the environment's [`ContextStore`]) so connection
     /// identity in target keys stays a stable key while the live pool/client is
     /// resolved only when the sink runs (see `design_connectors.md` §5.5).
+    // Used only by feature-gated connectors (postgres/sqlite today).
+    #[allow(dead_code)]
     pub(crate) fn resolve<T: Send + Sync + 'static>(&self, db_key: &str) -> Option<Arc<T>> {
         self.values
             .get(db_key)
@@ -812,16 +814,6 @@ impl Ctx {
     /// Try to get a shared resource. Returns None if not provided.
     pub fn try_get<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.state.state.get::<T>()
-    }
-
-    /// Resolve a provided resource by a [`ContextKey`]'s name, when only the
-    /// name travels (a `FilePath` base key). No change-dependency is recorded:
-    /// the name alone cannot tell whether the key detects changes.
-    pub(crate) fn resolve_context_by_name<T: Send + Sync + 'static>(
-        &self,
-        name: &str,
-    ) -> Option<Arc<T>> {
-        self.state.context.resolve::<T>(name)
     }
 
     /// Try to get a shared resource by named [`ContextKey`].

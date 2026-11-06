@@ -137,10 +137,9 @@ async fn live_map_stable_keys_round_trip() {
     let lm = created.lock().unwrap().take().unwrap();
     let mut entries = lm.scan().await.unwrap();
     entries.sort();
-    assert_eq!(
-        entries,
-        vec![(composite, 42), (StableKey::Str(Arc::from("plain")), 1)]
-    );
+    let mut expected = vec![(composite, 42), (StableKey::Str(Arc::from("plain")), 1)];
+    expected.sort();
+    assert_eq!(entries, expected);
 }
 
 mod live {

@@ -662,10 +662,10 @@ ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
 .await?;
 ```
 
-`FilePath` mirrors Python's: `parents`, `matches` (pathlib `match` semantics),
-`is_relative_to`, and `FilePath::with_base_key(&SOURCE_DIR, "docs/a.md")` for
-a base directory the environment provides under a `ContextKey<PathBuf>`,
-resolved with `path.resolve_in(&ctx)?`. `FileLike::read_text_with(Some("latin1"),
+`FilePath` mirrors Python's: `parents`, `matches` (pathlib `match` semantics)
+and `is_relative_to`, next to `FilePath::under_context_dir(&ctx, &SOURCE_DIR,
+"docs/a.md")` for a base directory the environment provides under a
+`ContextKey<PathBuf>`. `FileLike::read_text_with(Some("latin1"),
 DecodeErrors::Strict)` is Python's `read_text(encoding=, errors=)`.
 
 ## In-memory `LiveMap`

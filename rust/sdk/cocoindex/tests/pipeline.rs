@@ -464,45 +464,6 @@ async fn named_context_key_accepts_non_serializable_resource() {
     .unwrap();
 }
 
-/// A `FilePath` whose base is a `ContextKey<PathBuf>` resolves through the
-/// directory the environment provides, as Python's `FilePath(base_dir=KEY)`.
-#[tokio::test]
-async fn file_path_with_base_key_resolves_through_the_environment() {
-    use cocoindex::FilePath;
-    use std::path::PathBuf;
-
-    let key = ContextKey::<PathBuf>::new("pipeline/file_path_base_dir");
-    let dir = tempfile::tempdir().unwrap();
-    let source_dir = dir.path().join("source");
-    let app = Environment::builder()
-        .db_path(dir.path().join("lmdb"))
-        .provide_key(&key, source_dir.clone())
-        .build()
-        .await
-        .unwrap()
-        .app("file_path_base_key")
-        .await
-        .unwrap();
-
-    let unprovided = ContextKey::<PathBuf>::new("pipeline/file_path_base_dir_unprovided");
-    app.update(move |ctx| async move {
-        let path = FilePath::with_base_key(&key, "docs/a.md");
-        assert_eq!(path.resolve_in(&ctx)?, source_dir.join("docs/a.md"));
-        // The base key, not the directory, is the memo identity.
-        assert_eq!(path.base_key(), Some("pipeline/file_path_base_dir"));
-        let missing = FilePath::with_base_key(&unprovided, "docs/a.md");
-        assert!(matches!(
-            missing.resolve_in(&ctx),
-            Err(cocoindex::Error::MissingContext(name)) if name == "pipeline/file_path_base_dir_unprovided"
-        ));
-        // Paths without a key base resolve as before.
-        assert_eq!(FilePath::new("x/y.md").resolve_in(&ctx)?, PathBuf::from("x/y.md"));
-        Ok(())
-    })
-    .await
-    .unwrap();
-}
-
 #[test]
 fn duplicate_named_context_key_panics() {
     let _first = ContextKey::<i32>::new("pipeline/duplicate_context_key");

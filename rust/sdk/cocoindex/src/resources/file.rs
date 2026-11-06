@@ -13,17 +13,14 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Serialize, Serializer, ser::SerializeTuple};
 use tokio::sync::Mutex;
 
-use crate::ctx::{ContextKey, Ctx};
 use crate::error::{Error, Result};
 
 /// A file path with an optional stable base key.
 ///
 /// The resolved location may move, while [`FilePath::memo_key`] stays stable
-/// when callers supply the same logical base key. The base is either a
-/// directory resolved up front ([`FilePath::with_base_dir`]) or a
-/// [`ContextKey`] whose directory the environment provides
-/// ([`FilePath::with_base_key`], resolved by [`FilePath::resolve_in`]), as
-/// Python's `FilePath(path, base_dir=SOURCE_DIR)`.
+/// when callers supply the same logical base key ([`FilePath::with_base_dir`],
+/// or `FilePath::under_context_dir` for a directory the environment provides
+/// under a `ContextKey`, as Python's `FilePath(path, base_dir=SOURCE_DIR)`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct FilePath {
     base_key: Option<Arc<str>>,
@@ -52,18 +49,6 @@ impl FilePath {
         }
     }
 
-    /// A path under the directory the environment provides for `base`
-    /// (`builder.provide_key(&SOURCE_DIR, dir)`). The key's name is the stable
-    /// base key, so the memo key does not change when the directory moves.
-    /// Resolve with [`FilePath::resolve_in`].
-    pub fn with_base_key(base: &ContextKey<PathBuf>, path: impl Into<PathBuf>) -> Self {
-        Self {
-            base_key: Some(Arc::from(base.name())),
-            base_dir: None,
-            path: path.into(),
-        }
-    }
-
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -72,31 +57,10 @@ impl FilePath {
         self.base_key.as_deref()
     }
 
-    /// The full path for a base-less path or one built with
-    /// [`FilePath::with_base_dir`]. A path built with [`FilePath::with_base_key`]
-    /// needs the environment: use [`FilePath::resolve_in`].
     pub fn resolve(&self) -> PathBuf {
         match &self.base_dir {
             Some(base) => base.join(&self.path),
             None => self.path.clone(),
-        }
-    }
-
-    /// The full path, resolving a [`FilePath::with_base_key`] base through the
-    /// directory provided for its key in `ctx`'s environment (cf. Python
-    /// `FilePath.resolve()`, which reads the key with `use_context`).
-    ///
-    /// # Errors
-    /// [`Error::MissingContext`] when the base key has no provided directory.
-    pub fn resolve_in(&self, ctx: &Ctx) -> Result<PathBuf> {
-        match (&self.base_dir, &self.base_key) {
-            (None, Some(key)) => {
-                let base: Arc<PathBuf> = ctx
-                    .resolve_context_by_name(key)
-                    .ok_or_else(|| Error::MissingContext(key.to_string()))?;
-                Ok(base.join(&self.path))
-            }
-            _ => Ok(self.resolve()),
         }
     }
 
@@ -978,23 +942,6 @@ mod tests {
         // `*` does not cross a separator, and an invalid pattern never matches.
         assert!(!p.matches("docs/*"));
         assert!(!p.matches("[invalid"));
-    }
-
-    #[test]
-    fn file_path_with_base_key_preserves_the_key_without_a_directory() {
-        let key = ContextKey::<PathBuf>::new("file/with_base_key_test_dir");
-        let p = FilePath::with_base_key(&key, "a/b.md");
-        assert_eq!(p.base_key(), Some("file/with_base_key_test_dir"));
-        assert_eq!(
-            p.parent().unwrap().base_key(),
-            Some("file/with_base_key_test_dir")
-        );
-        // The memo key is the base-keyed form, the same as a resolved base.
-        let resolved = FilePath::with_base_dir("file/with_base_key_test_dir", "/tmp/x", "a/b.md");
-        assert_eq!(
-            rmp_serde::to_vec(&p.memo_key()).unwrap(),
-            rmp_serde::to_vec(&resolved.memo_key()).unwrap()
-        );
     }
 
     #[test]
