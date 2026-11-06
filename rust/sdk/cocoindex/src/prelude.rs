@@ -1,6 +1,7 @@
 //! Convenience re-exports for cocoindex pipelines.
 
 pub use crate::ctx::{ComponentMountHandle, Ctx};
+pub use crate::deps::{DataDep, LogicDep, PropagatedCallback};
 pub use crate::entity_resolution::{
     CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
     ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,

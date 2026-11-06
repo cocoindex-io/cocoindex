@@ -27,6 +27,11 @@
 //! a function. Their closure body is not logic-tracked. When a manual memo block
 //! must invalidate after its enclosing `#[cocoindex::function]` changes, include
 //! that function's generated `__COCO_FN_HASH_<NAME>` constant in the manual key.
+//!
+//! Dependencies beyond the arguments are declared with `deps = ...` on the
+//! attribute (a value every call depends on), [`Ctx::use_logic_dep`] (a value
+//! decided per call) and [`Ctx::use_data_dep`] (data the body reads while it
+//! runs); see [`crate::deps`].
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
@@ -42,6 +47,7 @@ use cocoindex_utils::fingerprint::{Fingerprint, Fingerprinter};
 use serde::{Deserialize, Serialize};
 
 use crate::ctx::Ctx;
+use crate::deps::validate_data_deps;
 use crate::error::{Error, Result};
 use crate::profile::Value;
 use crate::resources::file::FileLike;
@@ -758,10 +764,20 @@ where
         .context
         .validate_memo_states(&cached_context_states)
         .await?;
+    let states_valid =
+        state_decisions.iter().all(|decision| decision.memo_valid) && context_validation.memo_valid;
+    // Data dependencies the entry recorded (`use_data_dep`): validated only
+    // when the states still allow a reuse.
+    let data_deps = match guard.cached() {
+        Some(cached) if states_valid && !cached.data_deps.is_empty() => {
+            Some(validate_data_deps(cached.data_deps.to_vec(), "memoized function").await?)
+        }
+        _ => None,
+    };
 
     if let Some(cached) = guard.cached()
-        && state_decisions.iter().all(|decision| decision.memo_valid)
-        && context_validation.memo_valid
+        && states_valid
+        && data_deps.as_ref().is_none_or(|dd| dd.can_reuse)
     {
         let states_changed = state_decisions
             .iter()
@@ -777,15 +793,19 @@ where
         // through this frame so the caller's `logic_tracking` applies as on a
         // miss.
         guard.join_cached_logic_deps(&fn_ctx);
-        if states_changed || context_validation.states_changed {
+        if states_changed
+            || context_validation.states_changed
+            || data_deps.as_ref().is_some_and(|dd| dd.states_changed)
+        {
             guard.update_memo_states(MemoStatesPayload {
                 positional: memo_states_for_resolve,
                 by_context_fp: context_validation.states,
-                // The SDK records no data dependencies (`use_data_dep` has no
-                // Rust API yet), so an entry it refreshes holds none.
-                data_deps: Vec::new(),
+                data_deps: data_deps.map(|dd| dd.records).unwrap_or_default(),
             });
         }
+        // After the refresh, so the records re-offered to a caller stored
+        // later are the refreshed ones.
+        guard.join_cached_data_deps(&fn_ctx);
         return Ok(value);
     }
 
@@ -795,6 +815,7 @@ where
     let memo_states = MemoStatesPayload {
         positional: memo_states_for_resolve,
         by_context_fp: fn_ctx.collect_context_initial_states(comp_ctx.app_ctx().env()),
+        // The entry's records come from the frame (`build_fn_call_memo`).
         data_deps: Vec::new(),
     };
     // Recorded after `resolve`, which snapshots the frame's dependency
@@ -860,8 +881,16 @@ pub fn fn_logic_fingerprint(
     module_path: &str,
     fn_name: &str,
     code_hash: u64,
+    deps_fp: Option<Fingerprint>,
 ) -> Result<Fingerprint> {
-    crate::ctx::fn_logic_fingerprint(module_path, fn_name, code_hash)
+    crate::ctx::fn_logic_fingerprint(module_path, fn_name, code_hash, deps_fp)
+}
+
+/// The fingerprint of a `#[cocoindex::function(deps = ...)]` value, for
+/// generated wrappers.
+#[doc(hidden)]
+pub fn deps_fingerprint<T: MemoInput + ?Sized>(value: &T) -> Result<Fingerprint> {
+    memo_value_fingerprint(value)
 }
 
 pub(crate) fn memo_input_fingerprint<T: MemoInput + ?Sized>(

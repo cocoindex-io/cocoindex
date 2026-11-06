@@ -199,7 +199,88 @@ async fn fetch(_ctx: &Ctx, entry: &Entry, client: &ApiClient) -> Result<String> 
 Only skip an argument when changes to it cannot affect the result, or when the
 equivalent dependency is tracked through a context key. Use `ctx.memo(...)`
 for a memoized block within a function; prefer `#[function(memo)]` for a whole
-function because the macro tracks its logic automatically.
+function because the macro tracks its logic automatically (a manual block is
+not logic-tracked).
+
+## Declare dependencies beyond the arguments
+
+`deps = <expr>` declares a value the function's logic depends on but that is
+not visible in its arguments, such as a prompt string at module scope. It is
+fingerprinted once per process and folded into the logic fingerprint, so a
+change invalidates dependent memos exactly as a body edit does:
+
+```rust
+const SYSTEM_PROMPT: &str = "Summarize the document in three sentences.";
+
+#[cocoindex::function(memo, deps = SYSTEM_PROMPT)]
+async fn summarize(_ctx: &Ctx, text: &str) -> Result<String> {
+    llm_call(SYSTEM_PROMPT, text).await
+}
+```
+
+`LogicDep` declares a dependency decided per call: a tree walk's `visit_file`
+depends on the parser of *that file's* language, and a new parser release
+should re-run only the files it parsed. Construct it before the app runs and
+record it with `ctx.use_logic_dep(...)`:
+
+```rust
+static RUST_PARSER: LazyLock<LogicDep> =
+    LazyLock::new(|| LogicDep::new(&("rust-parser", 2)).unwrap());
+
+#[cocoindex::function]
+async fn visit_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<Symbol>> {
+    if file.path.extension() == Some("rs".as_ref()) {
+        ctx.use_logic_dep(&RUST_PARSER)?;
+    }
+    parse_symbols(&file)
+}
+```
+
+`DataDep` (experimental) records data a body reads that is not among its
+arguments: a kind, declared once with a validator, and one read recorded per
+call as a key and the state observed. The next probe validates each record
+from the stored key and state alone:
+
+```rust
+static FILE: LazyLock<DataDep<String, (u64, Fingerprint)>> = LazyLock::new(|| {
+    DataDep::new("file", |path: String, (mtime, digest): (u64, Fingerprint)| async move {
+        let now = modified_nanos(&path)?;
+        if now == mtime {
+            return MemoStateDecision::new(&(mtime, digest), true);
+        }
+        let current = Fingerprint::from_bytes(&std::fs::read(&path)?);
+        MemoStateDecision::new(&(now, current), current == digest)
+    })
+    .unwrap()
+});
+
+#[cocoindex::function(memo)]
+async fn agent_session(ctx: &Ctx, task: &str) -> Result<String> {
+    let path = pick_file(task);
+    let mtime = modified_nanos(&path)?;
+    let data = std::fs::read(&path)?;
+    ctx.use_data_dep(&FILE, &path, &(mtime, Fingerprint::from_bytes(&data)))?;
+    Ok(run_agent(task, data).await?)
+}
+```
+
+`ctx.logic_propagated_to_callers(f)` carries a callback's logic through
+`logic_tracking = "self"` layers: the function that hands the callback down
+wraps it, and every memo entry between a call site and that function records
+the callback's logic:
+
+```rust
+#[cocoindex::function]
+async fn walk(ctx: &Ctx, files: Vec<FileEntry>) -> Result<()> {
+    let visit = Arc::new(ctx.logic_propagated_to_callers(
+        |ctx: Ctx, file: FileEntry| async move { visit_file(&ctx, file).await },
+    )?);
+    for file in files {
+        accept(ctx, file, &visit).await?; // a `"self"`-tracked library function
+    }
+    Ok(())
+}
+```
 
 ## Batch item-shaped calls
 

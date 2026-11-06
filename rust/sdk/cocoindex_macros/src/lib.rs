@@ -381,6 +381,9 @@ struct FunctionArgs {
     version: Option<u64>,
     memo_key: Vec<MemoKeyOverride>,
     logic_tracking: LogicTracking,
+    /// `deps = <expr>`: a value the function's logic depends on, folded into
+    /// its logic fingerprint (Python's `@coco.fn(deps=...)`).
+    deps: Option<Expr>,
 }
 
 /// `logic_tracking` mode, mirroring Python's `@coco.fn(logic_tracking=...)`.
@@ -418,6 +421,7 @@ impl Parse for FunctionArgs {
         let mut version = None;
         let mut memo_key = Vec::new();
         let mut logic_tracking = LogicTracking::Full;
+        let mut deps = None;
 
         while !input.is_empty() {
             let name: Ident = input.parse()?;
@@ -478,6 +482,14 @@ impl Parse for FunctionArgs {
                         }
                     }
                 }
+                "deps" => {
+                    input.parse::<Token![=]>()?;
+                    let expr: Expr = input.parse()?;
+                    if deps.is_some() {
+                        return Err(SynError::new(name.span(), "duplicate `deps` argument"));
+                    }
+                    deps = Some(expr);
+                }
                 "version" => {
                     input.parse::<Token![=]>()?;
                     let version_literal: LitInt = input.parse()?;
@@ -495,7 +507,7 @@ impl Parse for FunctionArgs {
                 _ => {
                     return Err(SynError::new(
                         name.span(),
-                        "unsupported function attribute argument. expected `memo`, `batching`, `max_batch_size = N`, `memo_key(...)`, `version = N`, or `logic_tracking = \"full\"|\"self\"|\"none\"`",
+                        "unsupported function attribute argument. expected `memo`, `batching`, `max_batch_size = N`, `memo_key(...)`, `version = N`, `deps = <expr>`, or `logic_tracking = \"full\"|\"self\"|\"none\"`",
                     ));
                 }
             }
@@ -514,6 +526,12 @@ impl Parse for FunctionArgs {
                 "`max_batch_size` requires `batching`",
             ));
         }
+        if deps.is_some() && logic_tracking == LogicTracking::None {
+            return Err(SynError::new(
+                Span::call_site(),
+                "`deps` requires logic tracking; with `logic_tracking = \"none\"` the function's logic is not tracked at all, so the deps value would be silently ignored",
+            ));
+        }
 
         Ok(Self {
             memo,
@@ -522,6 +540,7 @@ impl Parse for FunctionArgs {
             version,
             memo_key,
             logic_tracking,
+            deps,
         })
     }
 }
@@ -643,15 +662,31 @@ fn gen_function_memo_key(
     }}
 }
 
+/// The generated items that carry one `#[function]`'s logic identity, shared
+/// by the memo, batching and plain wrappers.
+struct FnLogicTokens {
+    /// `__COCO_FN_HASH_<NAME>`: the body hash const.
+    hash_const_name: Ident,
+    /// The const's value: the body hash, or `0` for `logic_tracking = "none"`.
+    hash_const_value: TokenStream2,
+    /// The link-time logic registration (and the `deps` static), if tracked.
+    logic_registration: TokenStream2,
+    /// An expression for the `deps` fingerprint: `Option<Fingerprint>`, may
+    /// use `?`.
+    deps_fp: TokenStream2,
+}
+
 fn gen_memo_wrapper_block(
     fn_name: &Ident,
-    hash_const_name: &Ident,
+    logic: &FnLogicTokens,
     ctx_ident: &Ident,
     params: &[ParamInfo],
     overrides: &[MemoKeyOverride],
     logic_tracking: LogicTracking,
     body_closure: TokenStream2,
 ) -> syn::Result<TokenStream2> {
+    let hash_const_name = &logic.hash_const_name;
+    let deps_fp = &logic.deps_fp;
     let propagate_children_fn_logic = logic_tracking == LogicTracking::Full;
     validate_memo_key_overrides(
         overrides,
@@ -686,6 +721,7 @@ fn gen_memo_wrapper_block(
                 ::core::module_path!(),
                 ::core::stringify!(#fn_name),
                 #hash_const_name,
+                #deps_fp,
             )?)
         }
     } else {
@@ -893,12 +929,16 @@ fn gen_owned_param_clones(params: &[ParamInfo]) -> Vec<TokenStream2> {
 fn expand_batching_function(
     func: &ItemFn,
     args: &FunctionArgs,
-    hash_const_name: &Ident,
-    hash_const_value: &TokenStream2,
-    logic_registration: &TokenStream2,
+    logic: &FnLogicTokens,
     track_logic: bool,
     propagate_children_fn_logic: bool,
 ) -> syn::Result<TokenStream2> {
+    let FnLogicTokens {
+        hash_const_name,
+        hash_const_value,
+        logic_registration,
+        deps_fp,
+    } = logic;
     let batching = parse_batching_signature(func)?;
     let fn_name = &func.sig.ident;
     let vis = &func.vis;
@@ -968,7 +1008,7 @@ fn expand_batching_function(
         key_params.extend(extra_params.iter().cloned());
         gen_memo_wrapper_block(
             fn_name,
-            hash_const_name,
+            logic,
             ctx_ident,
             &key_params,
             &args.memo_key,
@@ -989,6 +1029,7 @@ fn expand_batching_function(
                         ::core::module_path!(),
                         ::core::stringify!(#fn_name),
                         #hash_const_name,
+                        #deps_fp,
                         #propagate_children_fn_logic,
                         move |__coco_scoped_ctx| async move {
                             #schedule_call
@@ -1121,9 +1162,33 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
     // fingerprint computation. `linkme` is reached through the re-export so the
     // user crate needs no direct dependency. Omitted entirely for
     // `logic_tracking = "none"`.
+    // `deps = <expr>`: the value's fingerprint is computed once per process
+    // (Python evaluates `deps=` once, when the decorator is applied) and folded
+    // into the logic fingerprint, so a change to it moves the function's logic
+    // exactly as a body edit does. The static initializer cannot see the
+    // function's parameters, so a per-call value cannot slip in here.
+    let deps_static_name = format_ident!("__COCO_FN_DEPS_{}", fn_name.to_string().to_uppercase());
+    let (deps_static, deps_entry, deps_fp) = match &args.deps {
+        Some(deps) => (
+            quote! {
+                #[doc(hidden)]
+                pub static #deps_static_name: ::cocoindex::FnDeps = ::cocoindex::FnDeps::new(
+                    || ::cocoindex::memo::deps_fingerprint(&(#deps)),
+                );
+            },
+            quote! { ::core::option::Option::Some(&#deps_static_name) },
+            quote! { ::core::option::Option::Some(#deps_static_name.get()?) },
+        ),
+        None => (
+            quote! {},
+            quote! { ::core::option::Option::None },
+            quote! { ::core::option::Option::None },
+        ),
+    };
     let logic_slice_name = format_ident!("__COCO_FN_LOGIC_{}", fn_name.to_string().to_uppercase());
     let logic_registration = if track_logic {
         quote! {
+            #deps_static
             #[::cocoindex::linkme::distributed_slice(::cocoindex::COCO_FN_LOGIC)]
             #[linkme(crate = ::cocoindex::linkme)]
             #[doc(hidden)]
@@ -1131,6 +1196,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 module: ::core::module_path!(),
                 name: ::core::stringify!(#fn_name),
                 code_hash: #code_hash,
+                deps: #deps_entry,
             };
         }
     } else {
@@ -1147,13 +1213,17 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         );
     }
 
+    let logic = FnLogicTokens {
+        hash_const_name,
+        hash_const_value,
+        logic_registration,
+        deps_fp,
+    };
     if args.batching {
         return match expand_batching_function(
             &func,
             &args,
-            &hash_const_name,
-            &hash_const_value,
-            &logic_registration,
+            &logic,
             track_logic,
             propagate_children_fn_logic,
         ) {
@@ -1162,6 +1232,12 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         };
     }
 
+    let FnLogicTokens {
+        hash_const_name,
+        hash_const_value,
+        logic_registration,
+        deps_fp,
+    } = &logic;
     if args.memo {
         // memo: wrap body in ctx.memo()
         let (ctx_ident, params) = match parse_fn_params(&func) {
@@ -1174,7 +1250,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         let body = &func.block;
         let wrapper_body = match gen_memo_wrapper_block(
             fn_name,
-            &hash_const_name,
+            &logic,
             &ctx_ident,
             &params,
             &args.memo_key,
@@ -1230,6 +1306,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                             ::core::module_path!(),
                             ::core::stringify!(#fn_name),
                             #hash_const_name,
+                            #deps_fp,
                             #propagate_children_fn_logic,
                             move |__coco_scoped_ctx| async move {
                                 let #ctx_ident = &__coco_scoped_ctx;
@@ -2202,6 +2279,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_function_args_accepts_deps_expression() {
+        let args = FunctionArgs::parse(quote!(memo, deps = (PROMPT, MODEL))).unwrap();
+        assert!(args.deps.is_some());
+        let err = FunctionArgs::parse(quote!(memo, deps = A, deps = B)).unwrap_err();
+        assert!(err.to_string().contains("duplicate `deps`"));
+    }
+
+    #[test]
+    fn deps_requires_logic_tracking() {
+        let err =
+            FunctionArgs::parse(quote!(memo, deps = PROMPT, logic_tracking = "none")).unwrap_err();
+        assert!(err.to_string().contains("`deps` requires logic tracking"));
+        assert!(FunctionArgs::parse(quote!(deps = PROMPT, logic_tracking = "self")).is_ok());
+    }
+
+    #[test]
     fn parse_function_args_rejects_bad_version() {
         let err = FunctionArgs::parse(quote!(memo, version = "x")).unwrap_err();
         let msg = err.to_string();
@@ -2385,28 +2478,20 @@ mod tests {
         let hash_const_name = format_ident!("__COCO_FN_HASH_EMBED");
         let first_hash = compute_code_hash(&first.block, None);
         let second_hash = compute_code_hash(&second.block, None);
-        let first_expanded = expand_batching_function(
-            &first,
-            &args,
-            &hash_const_name,
-            &quote!(#first_hash),
-            &quote!(),
-            true,
-            true,
-        )
-        .unwrap()
-        .to_string();
-        let second_expanded = expand_batching_function(
-            &second,
-            &args,
-            &hash_const_name,
-            &quote!(#second_hash),
-            &quote!(),
-            true,
-            true,
-        )
-        .unwrap()
-        .to_string();
+        let logic_tokens = |hash: u64| FnLogicTokens {
+            hash_const_name: hash_const_name.clone(),
+            hash_const_value: quote!(#hash),
+            logic_registration: quote!(),
+            deps_fp: quote!(::core::option::Option::None),
+        };
+        let first_expanded =
+            expand_batching_function(&first, &args, &logic_tokens(first_hash), true, true)
+                .unwrap()
+                .to_string();
+        let second_expanded =
+            expand_batching_function(&second, &args, &logic_tokens(second_hash), true, true)
+                .unwrap()
+                .to_string();
         let key_part = "write_key_fingerprint_part (& mut __coco_key , & __COCO_FN_HASH_EMBED)";
         assert!(first_expanded.contains(key_part));
         assert!(second_expanded.contains(key_part));
