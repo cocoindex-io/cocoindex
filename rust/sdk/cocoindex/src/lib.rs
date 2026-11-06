@@ -18,7 +18,10 @@ pub mod error;
     feature = "surrealdb",
     feature = "neo4j",
     feature = "falkordb",
-    feature = "lancedb"
+    feature = "lancedb",
+    feature = "zvec",
+    feature = "bigquery",
+    feature = "snowflake"
 ))]
 mod finite;
 pub mod inspect;
@@ -35,7 +38,13 @@ pub mod registry;
 pub mod resources;
 pub mod row_schema;
 pub mod runner;
-#[cfg(any(feature = "doris", feature = "sqlite", feature = "surrealdb"))]
+#[cfg(any(
+    feature = "doris",
+    feature = "sqlite",
+    feature = "surrealdb",
+    feature = "bigquery",
+    feature = "snowflake"
+))]
 pub(crate) mod sql_ident;
 pub mod statediff;
 mod stats;
@@ -49,7 +58,7 @@ pub use app::{
     Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle, UpdateOptions,
 };
 pub use batched::Batched;
-pub use ctx::{ContextKey, Ctx};
+pub use ctx::{ComponentMountHandle, ContextKey, Ctx};
 pub use entity_resolution::{
     CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
     ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,
@@ -77,8 +86,8 @@ pub use runner::{
 #[doc(hidden)]
 pub use linkme;
 pub use live_component::{
-    ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
-    LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
+    ExceptionContext, ExceptionHandler, ExceptionSource, LiveComponent, LiveComponentOperator,
+    LiveMapFeed, LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
 };
 #[doc(hidden)]
 pub use logic::{COCO_FN_LOGIC, FnLogicEntry};
@@ -118,7 +127,7 @@ pub use user_state::{IntoStateKey, StateHandle};
 
 // Re-export proc macros
 pub use cocoindex_macros::{
-    MemoInput, SchemaFields, app, function, lifespan, main, mount_each, use_mount,
+    MemoInput, SchemaFields, app, function, lifespan, main, mount, mount_each, use_mount,
 };
 pub use row_schema::{LogicalType, SchemaField, SchemaFields};
 

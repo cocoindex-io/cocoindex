@@ -1,5 +1,5 @@
 {
-  "alt": "Four photos in images/, including the 1927 Solvay conference and a newly added Carter_welcomes_Reagan.jpg, are split into faces with face_recognition (dlib) and stored as 128-d points in the face_embeddings collection in Qdrant, 36 faces with 29 from Solvay; querying with einplanck3.jpg finds Einstein's face in the Solvay photo at a distance around 0.46, with its bounding box.",
+  "alt": "Four photos in images/, including the 1927 Solvay conference and a newly added Carter_welcomes_Reagan.jpg, are split into faces with face_recognition (dlib) and stored as 128-d points in the face_embeddings collection in Qdrant, 36 faces with 29 from Solvay; querying with einplanck3.jpg encodes its first face, Max Planck, and returns his face in the Solvay photo third, at a distance of 0.472, with its bounding box.",
   "needs": ["Docker (for Qdrant)", "Python 3.11+", "CMake (to build dlib for face_recognition)"],
   "run": [
     { "note": "Start Qdrant", "cmd": "docker run -d -p 6333:6333 -p 6334:6334 qdrant/qdrant" },

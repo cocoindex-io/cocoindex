@@ -554,3 +554,265 @@ async fn doris_from_row_round_trips_a_row() -> cocoindex::Result<()> {
         .await;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// `with_vector_schema` / `with_column_type`: the per-call overrides of Python's
+// `from_class(column_overrides=...)`.
+// ---------------------------------------------------------------------------
+
+#[cfg(any(
+    feature = "doris",
+    feature = "lancedb",
+    feature = "postgres",
+    feature = "sqlite"
+))]
+#[derive(cocoindex::SchemaFields)]
+#[allow(dead_code)]
+struct OverrideRow {
+    id: i64,
+    title: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+#[cfg(any(
+    feature = "doris",
+    feature = "lancedb",
+    feature = "postgres",
+    feature = "sqlite"
+))]
+fn vector_schema(
+    element_type: cocoindex::VectorElementType,
+    size: usize,
+) -> cocoindex::VectorSchema {
+    cocoindex::VectorSchema { element_type, size }
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn postgres_overrides_resolve_vector_and_column_types() -> cocoindex::Result<()> {
+    use cocoindex::VectorElementType as E;
+    use cocoindex::connectors::postgres::{ColumnDef, TableSchema};
+
+    let derived = || TableSchema::from_row::<OverrideRow>(["id"]);
+    let explicit = |embedding: &str, title: &str| {
+        TableSchema::new(
+            [
+                ("id", ColumnDef::new("bigint")),
+                ("title", ColumnDef::new(title)),
+                ("embedding", ColumnDef::new(embedding)),
+            ],
+            ["id"],
+        )
+    };
+
+    // The provider decides both the dimension and the pgvector type.
+    for (element_type, want) in [
+        (E::Float32, "vector(8)"),
+        (E::Float64, "vector(8)"),
+        (E::Float16, "halfvec(8)"),
+    ] {
+        let got = derived()?
+            .with_vector_schema("embedding", &vector_schema(element_type, 8))
+            .await?;
+        assert_eq!(got, explicit(want, "text")?, "{element_type:?}");
+    }
+
+    let got = derived()?
+        .with_vector_dim("embedding", 8)?
+        .with_column_type("title", "varchar(200)")?;
+    assert_eq!(got, explicit("vector(8)", "varchar(200)")?);
+    // An override can also turn a vector column into another type.
+    let got = derived()?.with_column_type("embedding", "jsonb")?;
+    assert_eq!(got, explicit("jsonb", "text")?);
+
+    let zero = vector_schema(E::Float32, 0);
+    assert!(
+        derived()?
+            .with_vector_schema("embedding", &zero)
+            .await
+            .is_err()
+    );
+    let eight = vector_schema(E::Float32, 8);
+    assert!(
+        derived()?
+            .with_vector_schema("title", &eight)
+            .await
+            .is_err()
+    );
+    assert!(
+        derived()?
+            .with_vector_schema("missing", &eight)
+            .await
+            .is_err()
+    );
+    assert!(derived()?.with_column_type("missing", "text").is_err());
+    assert!(derived()?.with_column_type("title", "text; drop").is_err());
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_overrides_resolve_vector_and_column_types() -> cocoindex::Result<()> {
+    use cocoindex::VectorElementType as E;
+    use cocoindex::connectors::sqlite::{ColumnDef, TableSchema};
+
+    let derived = || TableSchema::from_row::<OverrideRow>(["id"]);
+    let explicit = |title: &str| {
+        TableSchema::new(
+            [
+                ("id", ColumnDef::new("INTEGER").not_null()),
+                ("title", ColumnDef::new(title).not_null()),
+                ("embedding", ColumnDef::new("float[8]").not_null()),
+            ],
+            ["id"],
+        )
+    };
+
+    // sqlite-vec columns are float[N] whatever the provider's element type.
+    for element_type in [E::Float32, E::Float16, E::Float64] {
+        let got = derived()?
+            .with_vector_schema("embedding", &vector_schema(element_type, 8))
+            .await?;
+        assert_eq!(got, explicit("TEXT")?, "{element_type:?}");
+    }
+    let got = derived()?
+        .with_vector_dim("embedding", 8)?
+        .with_column_type("title", "VARCHAR(20)")?;
+    assert_eq!(got, explicit("VARCHAR(20)")?);
+
+    let eight = vector_schema(E::Float32, 8);
+    assert!(
+        derived()?
+            .with_vector_schema("embedding", &vector_schema(E::Float32, 0))
+            .await
+            .is_err()
+    );
+    assert!(
+        derived()?
+            .with_vector_schema("title", &eight)
+            .await
+            .is_err()
+    );
+    assert!(derived()?.with_column_type("missing", "TEXT").is_err());
+    Ok(())
+}
+
+#[cfg(feature = "doris")]
+#[tokio::test]
+async fn doris_overrides_resolve_vector_and_column_types() -> cocoindex::Result<()> {
+    use cocoindex::VectorElementType as E;
+    use cocoindex::connectors::doris::{ColumnDef, TableSchema};
+
+    let derived = || TableSchema::from_row::<OverrideRow>(["id"]);
+    let explicit = |title: &str, embedding: ColumnDef| {
+        TableSchema::new(
+            [
+                ("id", ColumnDef::new("BIGINT").not_null()),
+                ("title", ColumnDef::new(title).not_null()),
+                ("embedding", embedding),
+            ],
+            ["id"],
+        )
+    };
+
+    for element_type in [E::Float32, E::Float16, E::Float64] {
+        let got = derived()?
+            .with_vector_schema("embedding", &vector_schema(element_type, 8))
+            .await?;
+        assert_eq!(got, explicit("TEXT", ColumnDef::vector(8))?);
+    }
+    let got = derived()?
+        .with_vector_dim("embedding", 8)?
+        .with_column_type("title", "VARCHAR(20)")?;
+    assert_eq!(got, explicit("VARCHAR(20)", ColumnDef::vector(8))?);
+    // A type override makes the column a plain column: no vector dimension is
+    // left to resolve.
+    let got = derived()?.with_column_type("embedding", "JSON")?;
+    assert_eq!(got, explicit("TEXT", ColumnDef::new("JSON").not_null())?);
+
+    let eight = vector_schema(E::Float32, 8);
+    assert!(
+        derived()?
+            .with_vector_schema("embedding", &vector_schema(E::Float32, 0))
+            .await
+            .is_err()
+    );
+    assert!(
+        derived()?
+            .with_vector_schema("title", &eight)
+            .await
+            .is_err()
+    );
+    assert!(derived()?.with_column_type("missing", "TEXT").is_err());
+    Ok(())
+}
+
+#[cfg(feature = "lancedb")]
+#[tokio::test]
+async fn lancedb_overrides_resolve_vector_and_column_types() -> cocoindex::Result<()> {
+    use cocoindex::VectorElementType as E;
+    use cocoindex::connectors::lancedb::{ColumnDef, ColumnType, TableSchema};
+
+    let derived = || TableSchema::from_row::<OverrideRow>(["id"]);
+    let explicit = |id: ColumnType, embedding: ColumnType| {
+        TableSchema::new(
+            [
+                ("id", ColumnDef::new(id)),
+                ("title", ColumnDef::new(ColumnType::Text)),
+                ("embedding", ColumnDef::new(embedding)),
+            ],
+            ["id"],
+        )
+    };
+
+    for (element_type, want) in [
+        (E::Float32, ColumnType::Vector(8)),
+        (E::Float64, ColumnType::Vector(8)),
+        (E::Float16, ColumnType::HalfVector(8)),
+    ] {
+        let got = derived()?
+            .with_vector_schema("embedding", &vector_schema(element_type, 8))
+            .await?;
+        assert_eq!(got, explicit(ColumnType::Int64, want)?, "{element_type:?}");
+    }
+    let got = derived()?
+        .with_vector_dim("embedding", 8)?
+        .with_column_type("id", ColumnType::Int32)?;
+    assert_eq!(got, explicit(ColumnType::Int32, ColumnType::Vector(8))?);
+
+    let eight = vector_schema(E::Float32, 8);
+    assert!(
+        derived()?
+            .with_vector_schema("embedding", &vector_schema(E::Float32, 0))
+            .await
+            .is_err()
+    );
+    assert!(
+        derived()?
+            .with_vector_schema("title", &eight)
+            .await
+            .is_err()
+    );
+    assert!(
+        derived()?
+            .with_column_type("missing", ColumnType::Text)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[cfg(feature = "turbopuffer")]
+#[test]
+fn turbopuffer_rejects_f64_vectors() {
+    use cocoindex::connectors::turbopuffer::VectorDef;
+    use cocoindex::{VectorElementType, VectorSchema};
+
+    let message = VectorDef::new(VectorSchema {
+        element_type: VectorElementType::Float64,
+        size: 4,
+    })
+    .expect_err("turbopuffer has no f64 vector type")
+    .to_string();
+    assert!(message.contains("f64"), "{message}");
+}

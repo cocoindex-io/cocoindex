@@ -284,3 +284,86 @@ async fn valkey_adopts_untracked_existing_index_when_available() {
     second.drop_state().await.unwrap();
     assert!(!index_exists(&uri, &index_name).await);
 }
+
+/// A connection made from a `ClientConfig`, and one made from a caller-built
+/// `redis::Client`, both carry a target: the first is named on the server, and
+/// each writes the documents declared through it.
+#[tokio::test]
+async fn valkey_connects_with_a_client_config_and_a_caller_built_client_when_available() {
+    if try_connect().await.is_none() {
+        eprintln!("skipping live Valkey connection test; VALKEY_URI is not set or unavailable");
+        return;
+    }
+    let uri = std::env::var("VALKEY_URI").unwrap();
+    let info: redis::ConnectionInfo = uri.parse().unwrap();
+    let redis::ConnectionAddr::Tcp(host, port) = info.addr.clone() else {
+        eprintln!("skipping live Valkey connection test; VALKEY_URI is not a plain TCP address");
+        return;
+    };
+
+    let client_name = format!("coco_test_{}", nonce());
+    let from_config = valkey::Valkey::connect_with_config(valkey::ClientConfig {
+        host: host.clone(),
+        port,
+        password: info.redis.password.clone(),
+        client_name: Some(client_name.clone()),
+        ..valkey::ClientConfig::default()
+    })
+    .await
+    .expect("connecting with a ClientConfig should succeed");
+    assert_eq!(from_config.state_id(), format!("redis://{host}:{port}"));
+
+    let observer = redis::Client::open(uri.as_str()).unwrap();
+    let mut conn = observer.get_multiplexed_async_connection().await.unwrap();
+    let clients: String = redis::cmd("CLIENT")
+        .arg("LIST")
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+    assert!(
+        clients.contains(&format!("name={client_name}")),
+        "the configured client name is set on the connection: {clients}"
+    );
+
+    let from_client = valkey::Valkey::from_client("valkey-under-test", &observer)
+        .await
+        .expect("wrapping a redis::Client should succeed");
+    assert_eq!(from_client.state_id(), "valkey-under-test");
+
+    for (label, vk) in [("config", from_config), ("client", from_client)] {
+        let index_name = format!("idx_{label}_{}", nonce());
+        let tmp = tempfile::tempdir().unwrap();
+        let app = Environment::builder()
+            .db_path(tmp.path().join("db"))
+            .provide_key(&VK, vk)
+            .build()
+            .await
+            .unwrap()
+            .app("ValkeyConnectionTest")
+            .await
+            .unwrap();
+        app.run({
+            let index_name = index_name.clone();
+            move |ctx| {
+                let index_name = index_name.clone();
+                async move {
+                    let index =
+                        valkey::mount_index_target(&ctx, &VK, index_name, schema().await).await?;
+                    index.declare_document(&ctx, doc("d1", vec![0.1, 0.2, 0.3], "hello"))?;
+                    Ok(())
+                }
+            }
+        })
+        .await
+        .expect("declaring a document over the connection should succeed");
+        assert_eq!(
+            hget(&uri, &format!("{index_name}:d1"), "text")
+                .await
+                .as_deref(),
+            Some("hello"),
+            "connection made from a {label}"
+        );
+        app.drop_state().await.unwrap();
+        assert!(!index_exists(&uri, &index_name).await);
+    }
+}

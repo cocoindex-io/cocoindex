@@ -10,7 +10,7 @@
 //!
 //! `sqlite-vec` virtual tables are supported via [`Vec0TableDef`] (the table is
 //! created with `CREATE VIRTUAL TABLE … USING vec0(…)`); this requires the
-//! `vec0` extension to be available in the SQLite build at runtime.
+//! `vec0` extension at runtime, which [`Database::connect_with_vec`] loads.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -23,6 +23,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use crate::ctx::{ContextKey, Ctx};
 use crate::error::{Error, Result};
+use crate::resources::schema::VectorSchemaProvider;
 use crate::sql_ident::validate_ident;
 use crate::statediff::{
     CompositeTrackingRecord, DiffAction, ManagedBy, MutualTrackingRecord, diff, diff_composite,
@@ -49,9 +50,30 @@ impl Database {
     /// Open (creating if missing) a SQLite database at `path`. SQLite is a
     /// single-writer engine, so the pool is capped at one connection.
     pub async fn connect(path: &str) -> Result<Self> {
-        let options = SqliteConnectOptions::new()
+        Self::connect_with(path, Self::connect_options(path)).await
+    }
+
+    /// [`connect`](Self::connect), loading the `sqlite-vec` extension into the
+    /// connection so [`Vec0TableDef`] tables work (Python's
+    /// `connect(database, load_vec=True)`). `vec_extension` is the loadable
+    /// library, as SQLite's extension loader takes it: a path with or without
+    /// the platform suffix, or a bare name such as `"vec0"` to search the
+    /// system library path. Fails when the library cannot be loaded.
+    ///
+    /// Python finds the library inside its `sqlite-vec` package; a Rust build
+    /// has no such package, so the caller names the library.
+    pub async fn connect_with_vec(path: &str, vec_extension: &str) -> Result<Self> {
+        let options = Self::connect_options(path).extension(vec_extension.to_string());
+        Self::connect_with(path, options).await
+    }
+
+    fn connect_options(path: &str) -> SqliteConnectOptions {
+        SqliteConnectOptions::new()
             .filename(path)
-            .create_if_missing(true);
+            .create_if_missing(true)
+    }
+
+    async fn connect_with(path: &str, options: SqliteConnectOptions) -> Result<Self> {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(options)
@@ -168,6 +190,39 @@ impl TableSchema {
             .into_iter()
             .map(|f| (f.name.clone(), sqlite_column_def(&f)));
         Self::new(columns, primary_key)
+    }
+
+    /// Resolve a vector field derived from a row from a
+    /// [`VectorSchemaProvider`], typically the embedder that fills it (Python's
+    /// `column_overrides={"embedding": embedder}`). `sqlite-vec` columns are
+    /// `float[N]` whatever the element type. For an embedder held in the
+    /// context, pass `ctx.get_key(&EMBEDDER)?`.
+    pub async fn with_vector_schema(
+        self,
+        field_name: &str,
+        provider: &(impl VectorSchemaProvider + ?Sized),
+    ) -> Result<Self> {
+        let schema =
+            crate::row_schema::provided_vector_schema("SQLite", field_name, provider).await?;
+        self.with_vector_dim(field_name, schema.size)
+    }
+
+    /// Replace the SQLite type of one column of a schema derived from a row
+    /// (Python's `column_overrides={"col": SqliteType("…")}`), keeping its
+    /// nullability.
+    pub fn with_column_type(
+        mut self,
+        field_name: &str,
+        sqlite_type: impl Into<String>,
+    ) -> Result<Self> {
+        let sqlite_type = sqlite_type.into();
+        validate_sqlite_type(&sqlite_type)?;
+        let def = self
+            .columns
+            .get_mut(field_name)
+            .ok_or_else(|| crate::row_schema::unknown_column_error("SQLite", field_name))?;
+        def.sqlite_type = sqlite_type;
+        Ok(self)
     }
 
     /// Resolve or override the dimension of a vector field derived from a row.

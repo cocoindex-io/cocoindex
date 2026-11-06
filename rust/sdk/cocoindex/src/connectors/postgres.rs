@@ -21,6 +21,7 @@ use sqlx::postgres::PgPoolOptions;
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
+use crate::resources::schema::{VectorElementType, VectorSchemaProvider};
 use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
 };
@@ -161,7 +162,56 @@ impl TableSchema {
     }
 
     /// Resolve or override the dimension of a vector field derived from a row.
-    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+    pub fn with_vector_dim(self, field_name: &str, dim: usize) -> Result<Self> {
+        self.set_vector_column(field_name, dim, None)
+    }
+
+    /// Resolve a vector field derived from a row from a
+    /// [`VectorSchemaProvider`], typically the embedder that fills it (Python's
+    /// `column_overrides={"embedding": embedder}`). The column becomes
+    /// `halfvec(N)` for `f16` elements and `vector(N)` otherwise. For an
+    /// embedder held in the context, pass `ctx.get_key(&EMBEDDER)?`.
+    pub async fn with_vector_schema(
+        self,
+        field_name: &str,
+        provider: &(impl VectorSchemaProvider + ?Sized),
+    ) -> Result<Self> {
+        let schema =
+            crate::row_schema::provided_vector_schema("Postgres", field_name, provider).await?;
+        let base = match schema.element_type {
+            VectorElementType::Float16 => "halfvec",
+            VectorElementType::Float32 | VectorElementType::Float64 => "vector",
+        };
+        self.set_vector_column(field_name, schema.size, Some(base))
+    }
+
+    /// Replace the Postgres type of one column of a schema derived from a row
+    /// (Python's `column_overrides={"col": PgType("…")}`), keeping its
+    /// nullability.
+    pub fn with_column_type(
+        mut self,
+        field_name: &str,
+        pg_type: impl Into<String>,
+    ) -> Result<Self> {
+        let pg_type = pg_type.into();
+        validate_pg_type(&pg_type)?;
+        let def = self
+            .columns
+            .get_mut(field_name)
+            .ok_or_else(|| crate::row_schema::unknown_column_error("Postgres", field_name))?;
+        def.pg_type = pg_type;
+        self.unresolved_vector_columns.remove(field_name);
+        Ok(self)
+    }
+
+    /// Set the dimension of the vector column `field_name`, and its pgvector
+    /// type base when `base` is given.
+    fn set_vector_column(
+        mut self,
+        field_name: &str,
+        dim: usize,
+        base: Option<&'static str>,
+    ) -> Result<Self> {
         if dim == 0 {
             return Err(crate::row_schema::zero_vector_dimension_error(
                 "Postgres", field_name,
@@ -171,9 +221,9 @@ impl TableSchema {
             .columns
             .get_mut(field_name)
             .ok_or_else(|| crate::row_schema::unknown_vector_field_error("Postgres", field_name))?;
-        let base = pgvector_type_base(&def.pg_type)
+        let current_base = pgvector_type_base(&def.pg_type)
             .ok_or_else(|| crate::row_schema::not_vector_field_error("Postgres", field_name))?;
-        def.pg_type = format!("{base}({dim})");
+        def.pg_type = format!("{}({dim})", base.unwrap_or(current_base));
         self.unresolved_vector_columns.remove(field_name);
         Ok(self)
     }

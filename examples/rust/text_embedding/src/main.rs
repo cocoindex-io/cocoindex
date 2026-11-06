@@ -123,13 +123,14 @@ async fn app_main(ctx: Ctx) -> Result<()> {
 }
 
 async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let vector_dim = ctx.get_key(&EMBEDDER)?.dimension();
+    // The embedder reports the dimension of the `embedding` column.
     let table = postgres::mount_table_target(
         &ctx,
         &DB,
         TABLE,
         postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
-            .with_vector_dim("embedding", vector_dim)?,
+            .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+            .await?,
         Some(PG_SCHEMA),
     )
     .await?;

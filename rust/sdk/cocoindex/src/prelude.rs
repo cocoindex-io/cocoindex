@@ -1,6 +1,6 @@
 //! Convenience re-exports for cocoindex pipelines.
 
-pub use crate::ctx::Ctx;
+pub use crate::ctx::{ComponentMountHandle, Ctx};
 pub use crate::entity_resolution::{
     CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
     ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,
@@ -8,8 +8,8 @@ pub use crate::entity_resolution::{
 };
 pub use crate::error::{Error, Result};
 pub use crate::live_component::{
-    ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
-    LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
+    ExceptionContext, ExceptionHandler, ExceptionSource, LiveComponent, LiveComponentOperator,
+    LiveMapFeed, LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
 };
 pub use crate::resources::chunk::{Chunk, TextPosition};
 pub use crate::resources::embedder::Embedder;
@@ -52,6 +52,6 @@ pub use crate::{
     UpdateOptions,
 };
 
-pub use crate::{app, function, lifespan, main, mount_each, use_mount};
+pub use crate::{app, function, lifespan, main, mount, mount_each, use_mount};
 
 pub use serde::{Deserialize, Serialize};

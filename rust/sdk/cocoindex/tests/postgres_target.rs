@@ -1239,3 +1239,108 @@ async fn postgres_schema_evolution_retype_and_pk_change_when_available() -> Resu
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Derived-schema overrides: the embedder supplies the vector schema.
+// ---------------------------------------------------------------------------
+
+cocoindex::context_key!(
+    static EMBEDDER: cocoindex::VectorSchema, key = "postgres_target_test_embedder"
+);
+
+#[derive(Clone, Serialize, SchemaFields)]
+struct ProviderRow {
+    id: i64,
+    title: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+/// `with_vector_schema` takes the dimension and the pgvector type from the
+/// provider held in the context, and `with_column_type` replaces one derived
+/// column type; both reach the created table.
+#[tokio::test]
+async fn postgres_from_row_resolves_vector_from_context_provider_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres provider-schema test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_provider_test_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+    if let Err(e) = sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
+        .execute(db.pool())
+        .await
+    {
+        eprintln!("skipping live Postgres provider-schema test; pgvector is unavailable: {e}");
+        return Ok(());
+    }
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .provide_key(
+            &EMBEDDER,
+            cocoindex::VectorSchema {
+                element_type: cocoindex::VectorElementType::Float16,
+                size: 3,
+            },
+        )
+        .build()
+        .await?
+        .app("PostgresProviderSchemaE2ETest")
+        .await?;
+
+    app.run({
+        let schema = schema.clone();
+        move |ctx| async move {
+            let table_schema = postgres::TableSchema::from_row::<ProviderRow>(["id"])?
+                .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+                .await?
+                .with_column_type("title", "varchar(40)")?;
+            let table =
+                postgres::mount_table_target(&ctx, &PG, "docs", table_schema, Some(&schema))
+                    .await?;
+            table.declare_row(
+                &ctx,
+                &ProviderRow {
+                    id: 1,
+                    title: "first".to_string(),
+                    embedding: vec![0.0, 1.0, 0.0],
+                },
+            )?;
+            Ok(())
+        }
+    })
+    .await?;
+
+    let types: Vec<(String, String)> = sqlx::query_as(
+        "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod) \
+         FROM pg_attribute a \
+         WHERE a.attrelid = format('%I.%I', $1::text, 'docs')::regclass \
+           AND a.attnum > 0 AND NOT a.attisdropped \
+         ORDER BY a.attname",
+    )
+    .bind(&schema)
+    .fetch_all(db.pool())
+    .await
+    .map_err(|e| cocoindex::Error::engine(format!("postgres column types: {e}")))?;
+    assert_eq!(
+        types,
+        vec![
+            ("embedding".to_string(), "halfvec(3)".to_string()),
+            ("id".to_string(), "bigint".to_string()),
+            ("title".to_string(), "character varying(40)".to_string()),
+        ]
+    );
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}

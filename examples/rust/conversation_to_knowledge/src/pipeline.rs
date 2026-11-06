@@ -247,27 +247,6 @@ impl entity_resolution::PairResolver for LlmEntityResolver {
     }
 }
 
-fn session_schema() -> Result<surrealdb::TableSchema> {
-    surrealdb::TableSchema::new([
-        ("youtube_id", surrealdb::ColumnDef::new("string")),
-        ("name", surrealdb::ColumnDef::new("string")),
-        (
-            "description",
-            surrealdb::ColumnDef::new("string").nullable(),
-        ),
-        ("transcript", surrealdb::ColumnDef::new("string")),
-        ("date", surrealdb::ColumnDef::new("string").nullable()),
-    ])
-}
-
-fn statement_schema() -> Result<surrealdb::TableSchema> {
-    surrealdb::TableSchema::new([("statement", surrealdb::ColumnDef::new("string"))])
-}
-
-fn entity_schema() -> Result<surrealdb::TableSchema> {
-    surrealdb::TableSchema::new([("name", surrealdb::ColumnDef::new("string"))])
-}
-
 // ---------------------------------------------------------------------------
 // Phase 3: declare the desired knowledge graph target state
 // ---------------------------------------------------------------------------
@@ -277,24 +256,41 @@ pub async fn create_knowledge_base(
     processed: &[ProcessedSession],
     dedups: &HashMap<String, HashMap<String, Option<String>>>,
 ) -> Result<()> {
-    let session_target =
-        surrealdb::mount_table_target_with_schema(ctx, &GRAPH, "session", Some(session_schema()?))
-            .await?;
+    let session_target = surrealdb::mount_table_target_with_schema(
+        ctx,
+        &GRAPH,
+        "session",
+        Some(surrealdb::TableSchema::from_row::<SessionRow>()?),
+    )
+    .await?;
     let statement_target = surrealdb::mount_table_target_with_schema(
         ctx,
         &GRAPH,
         "statement",
-        Some(statement_schema()?),
+        Some(surrealdb::TableSchema::from_row::<StatementRow>()?),
     )
     .await?;
-    let person_target =
-        surrealdb::mount_table_target_with_schema(ctx, &GRAPH, PERSON, Some(entity_schema()?))
-            .await?;
-    let tech_target =
-        surrealdb::mount_table_target_with_schema(ctx, &GRAPH, TECH, Some(entity_schema()?))
-            .await?;
-    let org_target =
-        surrealdb::mount_table_target_with_schema(ctx, &GRAPH, ORG, Some(entity_schema()?)).await?;
+    let person_target = surrealdb::mount_table_target_with_schema(
+        ctx,
+        &GRAPH,
+        PERSON,
+        Some(surrealdb::TableSchema::from_row::<EntityRow>()?),
+    )
+    .await?;
+    let tech_target = surrealdb::mount_table_target_with_schema(
+        ctx,
+        &GRAPH,
+        TECH,
+        Some(surrealdb::TableSchema::from_row::<EntityRow>()?),
+    )
+    .await?;
+    let org_target = surrealdb::mount_table_target_with_schema(
+        ctx,
+        &GRAPH,
+        ORG,
+        Some(surrealdb::TableSchema::from_row::<EntityRow>()?),
+    )
+    .await?;
     let session_statement_target = surrealdb::mount_relation_target(
         ctx,
         &GRAPH,
@@ -341,19 +337,21 @@ pub async fn create_knowledge_base(
         session_target.declare_record(
             ctx,
             ps.session_id,
-            &serde_json::json!({
-                "youtube_id": &ps.youtube_id,
-                "name": &ps.name,
-                "description": &ps.description,
-                "transcript": &ps.transcript,
-                "date": &ps.date,
-            }),
+            &SessionRow {
+                youtube_id: ps.youtube_id.clone(),
+                name: ps.name.clone(),
+                description: ps.description.clone(),
+                transcript: ps.transcript.clone(),
+                date: ps.date.clone(),
+            },
         )?;
         for st in &ps.statements {
             statement_target.declare_record(
                 ctx,
                 st.id,
-                &serde_json::json!({ "statement": &st.raw.statement }),
+                &StatementRow {
+                    statement: st.raw.statement.clone(),
+                },
             )?;
             session_statement_target.declare_relation(ctx, ps.session_id, st.id)?;
         }
@@ -364,11 +362,7 @@ pub async fn create_knowledge_base(
         let dedup = dedups.get(*kind).cloned().unwrap_or_default();
         for (name, upstream) in &dedup {
             if upstream.is_none() {
-                entity_target(kind).declare_record(
-                    ctx,
-                    name,
-                    &serde_json::json!({ "name": name }),
-                )?;
+                entity_target(kind).declare_record(ctx, name, &EntityRow { name: name.clone() })?;
             }
         }
     }
