@@ -507,7 +507,10 @@ pub fn build_vector_search_query(
         .join(".");
     validate_ident(vector_field, "vector field")?;
 
-    let (distance_fn, order) = match options.metric.as_str() {
+    // Doris function names are case-insensitive, so match the metric that way:
+    // an upper-case distance must still sort ascending.
+    let metric = options.metric.to_ascii_lowercase();
+    let (distance_fn, order) = match metric.as_str() {
         "l2_distance" => ("l2_distance_approximate", "ASC"),
         "inner_product" => ("inner_product_approximate", "DESC"),
         metric => {
@@ -550,7 +553,9 @@ pub fn build_vector_search_query(
         "SELECT {select}, {distance_fn}(`{vector_field}`, [{vector_literal}]) as _distance\n\
          FROM {quoted_table}"
     );
-    if let Some(where_clause) = &options.where_clause {
+    if let Some(where_clause) = &options.where_clause
+        && !where_clause.is_empty()
+    {
         query.push_str("\nWHERE ");
         query.push_str(where_clause);
     }

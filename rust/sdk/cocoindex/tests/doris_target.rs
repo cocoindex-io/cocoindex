@@ -555,11 +555,35 @@ fn doris_vector_search_query_orders_other_metrics_by_their_name() -> Result<()> 
         "{distance}"
     );
     assert!(distance.contains("ORDER BY _distance ASC"), "{distance}");
+    // Doris function names are case-insensitive; the order must not depend
+    // on the spelling.
+    let upper = with_metric("COSINE_DISTANCE")?;
+    assert!(upper.contains("ORDER BY _distance ASC"), "{upper}");
+    let upper_l2 = with_metric("L2_DISTANCE")?;
+    assert!(
+        upper_l2.contains("l2_distance_approximate(`embedding`"),
+        "{upper_l2}"
+    );
     let similarity = with_metric("cosine_similarity")?;
     assert!(
         similarity.contains("ORDER BY _distance DESC"),
         "{similarity}"
     );
+    Ok(())
+}
+
+#[test]
+fn doris_vector_search_query_skips_an_empty_filter() -> Result<()> {
+    let query = doris::build_vector_search_query(
+        "docs",
+        "embedding",
+        &[1.0],
+        &doris::VectorSearchOptions {
+            where_clause: Some(String::new()),
+            ..Default::default()
+        },
+    )?;
+    assert!(!query.contains("WHERE"), "{query}");
     Ok(())
 }
 
