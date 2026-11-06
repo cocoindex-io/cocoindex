@@ -280,3 +280,7 @@ name = "state_store_read"
 harness = false
 # Run with: cargo bench -p cocoindex --features bench-support
 required-features = ["bench-support"]
+
+[[bench]]
+name = "entity_resolution"
+harness = false
