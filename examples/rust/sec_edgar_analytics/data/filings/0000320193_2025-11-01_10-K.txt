@@ -1,0 +1,18 @@
+APPLE INC. FORM 10-K ANNUAL REPORT
+
+Item 1A. Risk Factors
+
+Cybersecurity threats are a material risk. A data breach or ransomware attack
+on our systems could disrupt operations and harm our reputation. We continue to
+invest in security to defend against cyber attacks.
+
+Our supply chain is concentrated in a few regions; logistics disruptions or
+component shortages could materially affect results.
+
+Climate change and related environmental regulation may increase our costs and
+affect demand. We have committed to reducing carbon emissions across operations.
+
+We increasingly rely on artificial intelligence and machine learning in our
+products; failure to keep pace could harm our competitive position.
+
+Contact for investor relations: ir.contact@example.com, (555) 010-2003.
