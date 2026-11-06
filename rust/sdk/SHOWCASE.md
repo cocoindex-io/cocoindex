@@ -630,6 +630,69 @@ library. `cargo run` and `cargo test` find it; a binary that runs on its own
 needs it on the library path, or a `build.rs` that calls
 `zvec_rust_build::configure()`.
 
+## Declare rows inside the per-file component
+
+The Python examples pass the target into the memoized per-item function, so
+each item's rows are owned by its own component and sync, update and clean up
+with that item. The Rust examples do the same: a target handle is `Clone` but
+not `MemoInput`, so `memo_key(table = skip)` leaves it out of the memo key.
+`Ctx::map` futures may borrow the caller's state, so the per-chunk function
+shares one `IdGenerator` (its `next_id` takes `&self`).
+
+```rust
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_file(ctx: &Ctx, file: &FileEntry, table: &postgres::TableTarget) -> Result<()> {
+    let text = file.read_text().await?;
+    let chunks = RecursiveSplitter::new()?.split(&text, 2000);
+    let filename = file.key();
+    let id_gen = IdGenerator::new();
+    ctx.map(chunks, async |chunk| {
+        process_chunk(ctx, chunk, &text, &filename, &id_gen, &table).await
+    })
+    .await?;
+    Ok(())
+}
+
+// A live directory source: one component per file, kept in sync under `-L`.
+let files = walk_dir(sourcedir).recursive(true).live();
+ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
+    let table = table.clone();
+    async move { process_file(&ctx, &file, &table).await }
+})
+.await?;
+```
+
+`FilePath` mirrors Python's: `parents`, `matches` (pathlib `match` semantics),
+`is_relative_to`, and `FilePath::with_base_key(&SOURCE_DIR, "docs/a.md")` for
+a base directory the environment provides under a `ContextKey<PathBuf>`,
+resolved with `path.resolve_in(&ctx)?`. `FileLike::read_text_with(Some("latin1"),
+DecodeErrors::Strict)` is Python's `read_text(encoding=, errors=)`.
+
+## In-memory `LiveMap`
+
+`LiveMap<K, V>` bridges a producing and a consuming part of a live pipeline.
+`K` is any `LiveMapKey` (`String`, `i64`, `u64` or a `StableKey`), as Python's
+`LiveMap[K, V]` takes any stable key.
+
+```rust
+let lm: LiveMap<i64, String> = LiveMap::create(&ctx).await?;
+lm.declare_entry(&ctx, 7, "seven".to_string())?;           // producer side
+ctx.mount_each_live(&"entries", lm.clone(), process_entry).await?; // consumer side
+```
+
+## Structural code matching
+
+`ops::code` (feature `code_match`) parses once and matches by-example
+patterns; `render_match` renders a match with the head lines of its enclosing
+scopes as context, as a `SourceView` of source-grounded segments.
+
+```rust
+let ast = CodeAst::new(source, "python")?;
+let matches = ast.matches(r"return \X")?;
+let view = render_match(&ast, &matches[0]);
+println!("{}", view.text);  // frames + the matched code
+```
+
 ## Derive connector schemas from row types
 
 `SchemaFields` keeps the Rust row and connector schema in one place. A bare
