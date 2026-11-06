@@ -1,0 +1,10 @@
+{
+  "alt": "Eight posts in a Discord support forum for a self-hosted photo library go through an LLM that extracts each thread's question and answer; the three posts about long video uploads that never finish behind a proxy are merged by entity resolution into one FAQ.md entry asked 3 times, the library-move entry gives the maintainer's corrected answer, the unanswered question about original file names is listed under Open questions, and \"Show us your setup\", which asks nothing, gets no entry; answering the file-names post sends only that thread back to the LLM.",
+  "needs": ["Discord bot in your server (Message Content intent on)", "Python 3.11+", "OPENAI_API_KEY (or LLM_MODEL and RESOLUTION_LLM_MODEL with their provider's key)"],
+  "run": [
+    { "note": "Configure (set the API key, DISCORD_BOT_TOKEN and DISCORD_CHANNEL_IDS in .env) and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Optional: fill a forum with made-up support posts through its webhook", "cmd": "python seed_server.py" },
+    { "note": "Build FAQ.md (re-run after the threads change)", "cmd": "cocoindex update main" },
+    { "note": "Read it", "cmd": "cat FAQ.md" }
+  ]
+}
