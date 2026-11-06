@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use cocoindex::{App, LiveMap, LiveMapView, PreviewAction};
+use cocoindex::{App, LiveMap, LiveMapView, PreviewAction, StableKey};
 
 /// Smoke test: `LiveMap::create` mounts its backing container target and
 /// `declare_entry` declares entries that sync (run the entry sink) when the
@@ -16,9 +16,9 @@ fn live_map_create_and_declare() {
         .unwrap();
 
     app.update_blocking(|ctx| async move {
-        let lm: LiveMap<String> = LiveMap::create(&ctx).await?;
-        lm.declare_entry(&ctx, "a", "alpha".to_string())?;
-        lm.declare_entry(&ctx, "b", "beta".to_string())?;
+        let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
+        lm.declare_entry(&ctx, "a".to_string(), "alpha".to_string())?;
+        lm.declare_entry(&ctx, "b".to_string(), "beta".to_string())?;
         Ok(())
     })
     .unwrap();
@@ -32,15 +32,15 @@ async fn live_map_preview_applies_nothing() {
     let app = App::open("live_map_preview", dir.path().join("lmdb"))
         .await
         .unwrap();
-    let created: Arc<Mutex<Option<LiveMap<String>>>> = Arc::new(Mutex::new(None));
+    let created: Arc<Mutex<Option<LiveMap<String, String>>>> = Arc::new(Mutex::new(None));
 
     let actions = app
         .preview({
             let created = created.clone();
             move |ctx| async move {
-                let lm: LiveMap<String> = LiveMap::create(&ctx).await?;
-                lm.declare_entry(&ctx, "a", "alpha".to_string())?;
-                lm.declare_entry(&ctx, "b", "beta".to_string())?;
+                let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
+                lm.declare_entry(&ctx, "a".to_string(), "alpha".to_string())?;
+                lm.declare_entry(&ctx, "b".to_string(), "beta".to_string())?;
                 *created.lock().unwrap() = Some(lm);
                 Ok(())
             }
@@ -79,6 +79,69 @@ async fn live_map_preview_applies_nothing() {
     assert!(lm.scan().await.unwrap().is_empty());
 }
 
+/// `K` is any stable key, as Python's `LiveMap[K, V]`: an `i64` key round-trips
+/// through the engine (declare → reconcile → sink) and comes back as an `i64`.
+#[tokio::test]
+async fn live_map_integer_keys_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::open("live_map_int_keys", dir.path().join("lmdb"))
+        .await
+        .unwrap();
+    let created: Arc<Mutex<Option<LiveMap<i64, String>>>> = Arc::new(Mutex::new(None));
+    app.update({
+        let created = created.clone();
+        move |ctx| async move {
+            let lm: LiveMap<i64, String> = LiveMap::create(&ctx).await?;
+            lm.declare_entry(&ctx, 7, "seven".to_string())?;
+            lm.declare_entry(&ctx, -2, "minus two".to_string())?;
+            *created.lock().unwrap() = Some(lm);
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+    let lm = created.lock().unwrap().take().unwrap();
+    let mut entries = lm.scan().await.unwrap();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec![(-2, "minus two".to_string()), (7, "seven".to_string())]
+    );
+}
+
+/// `StableKey` itself is a key type, so composite keys work too.
+#[tokio::test]
+async fn live_map_stable_keys_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::open("live_map_stable_keys", dir.path().join("lmdb"))
+        .await
+        .unwrap();
+    let created: Arc<Mutex<Option<LiveMap<StableKey, i64>>>> = Arc::new(Mutex::new(None));
+    let composite = StableKey::Array(Arc::from([
+        StableKey::Str(Arc::from("doc")),
+        StableKey::Int(3),
+    ]));
+    app.update({
+        let created = created.clone();
+        let composite = composite.clone();
+        move |ctx| async move {
+            let lm: LiveMap<StableKey, i64> = LiveMap::create(&ctx).await?;
+            lm.declare_entry(&ctx, composite, 42)?;
+            lm.declare_entry(&ctx, StableKey::Str(Arc::from("plain")), 1)?;
+            *created.lock().unwrap() = Some(lm);
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+    let lm = created.lock().unwrap().take().unwrap();
+    let mut entries = lm.scan().await.unwrap();
+    entries.sort();
+    let mut expected = vec![(composite, 42), (StableKey::Str(Arc::from("plain")), 1)];
+    expected.sort();
+    assert_eq!(entries, expected);
+}
+
 mod live {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -90,7 +153,7 @@ mod live {
 
     /// Declares every entry of `source`; re-runs its full pass on `trigger`.
     struct Producer {
-        lm: LiveMap<String>,
+        lm: LiveMap<String, String>,
         source: Arc<Mutex<Vec<(String, String)>>>,
         trigger: Arc<Notify>,
     }
@@ -118,7 +181,7 @@ mod live {
     /// Consumes the map; runs its full pass twice, so its `mount_each_live`
     /// child is mounted again and the map is watched a second time.
     struct Consumer {
-        lm: LiveMap<String>,
+        lm: LiveMap<String, String>,
         seen: Arc<Mutex<Vec<String>>>,
         remounted: Arc<Notify>,
     }
@@ -171,7 +234,7 @@ mod live {
                     ..UpdateOptions::default()
                 },
                 move |ctx| async move {
-                    let lm: LiveMap<String> = LiveMap::create(&ctx).await?;
+                    let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
                     ctx.mount_live(
                         &"producer",
                         Producer {

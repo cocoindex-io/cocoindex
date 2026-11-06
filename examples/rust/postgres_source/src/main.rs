@@ -10,7 +10,7 @@
 //! Parallels the Python example:
 //!   - source rows: `postgres::read_table::<SourceProduct>(db, "source_products")`
 //!     (parity for Python's `PgTableSource(...).fetch_rows()`)
-//!   - per-row compute (memo) : `#[cocoindex::function(memo)]` (skips unchanged rows)
+//!   - per-row compute (memo) : `#[cocoindex::function(memo)]` declaring its output row (cf. `@coco.fn(memo=True)`)
 //!   - output store           : `postgres::TableTarget` + `declare_vector_index`
 //!   - embeddings             : `SentenceTransformerEmbedder` all-MiniLM-L6-v2 (same model as Python)
 //!
@@ -72,8 +72,15 @@ struct OutputProduct {
 
 /// Compute the derived fields + embedding for one source row. Memoized by the
 /// row content, so unchanged rows skip the embedding work on re-runs.
-#[cocoindex::function(memo)]
-async fn process_product(ctx: &Ctx, product: SourceProduct) -> Result<OutputProduct> {
+/// Derive and embed one product, declaring its output row (cf. Python `process_product`).
+/// Memoized on the source row: an unchanged row keeps its output without re-running.
+/// The table target is one per app, so it is not part of the memo key.
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_product(
+    ctx: &Ctx,
+    product: SourceProduct,
+    table: postgres::TableTarget,
+) -> Result<()> {
     let full_description = format!(
         "Category: {}\nName: {}\n\n{}",
         product.product_category, product.product_name, product.description
@@ -83,15 +90,18 @@ async fn process_product(ctx: &Ctx, product: SourceProduct) -> Result<OutputProd
         .get_key(&EMBEDDER)?
         .embed(ctx, &full_description)
         .await?;
-    Ok(OutputProduct {
-        product_category: product.product_category.clone(),
-        product_name: product.product_name.clone(),
-        description: product.description.clone(),
-        price: product.price,
-        amount: product.amount,
-        total_value,
-        embedding,
-    })
+    table.declare_row(
+        ctx,
+        &OutputProduct {
+            product_category: product.product_category.clone(),
+            product_name: product.product_name.clone(),
+            description: product.description.clone(),
+            price: product.price,
+            amount: product.amount,
+            total_value,
+            embedding,
+        },
+    )
 }
 
 fn output_schema() -> Result<postgres::TableSchema> {
@@ -115,18 +125,15 @@ async fn app_main(ctx: Ctx) -> Result<()> {
     let products: Vec<SourceProduct> = postgres::read_table(source_db, "source_products").await?;
     println!("read {} source product(s)", products.len());
 
-    let outputs = mount_each!(
+    // One processing component per source row: each row's output syncs and
+    // cleans up with that row (cf. Python `coco.mount_each(process_product, source.fetch_rows().items(..), target_table)`).
+    mount_each!(
         products
             .into_iter()
             .map(|p| (format!("{}|{}", p.product_category, p.product_name), p)),
-        |product| process_product(ctx, product)
+        |product| process_product(ctx, product, target)
     )
     .await?;
-
-    for output in &outputs {
-        target.declare_row(&ctx, output)?;
-    }
-    println!("wrote {} output row(s)", outputs.len());
     Ok(())
 }
 

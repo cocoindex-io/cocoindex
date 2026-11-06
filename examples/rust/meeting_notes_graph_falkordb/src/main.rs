@@ -185,7 +185,7 @@ async fn build_graph(ctx: &Ctx, input_dir: &str) -> Result<()> {
     let files = fs::walk(input_dir, &["**/*.md"])?;
     let mut meetings = Vec::new();
     let mut canonical_people = BTreeSet::new();
-    let mut id_gen = IdGenerator::new();
+    let id_gen = IdGenerator::new();
 
     for file in files {
         let note_file = file.relative_path().to_string_lossy().to_string();

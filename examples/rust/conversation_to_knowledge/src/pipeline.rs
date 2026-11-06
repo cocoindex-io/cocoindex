@@ -126,7 +126,7 @@ pub async fn process_session(ctx: &Ctx, source: SessionSource) -> Result<Process
     let extraction = extract_statements(&ctx, &step2).await?;
 
     let key = source.key();
-    let mut id_gen = IdGenerator::with_deps(&key)?;
+    let id_gen = IdGenerator::with_deps(&key)?;
     let session_id = id_gen.next_id_default(&ctx).await? as i64;
 
     let mut statements = Vec::with_capacity(extraction.statements.len());

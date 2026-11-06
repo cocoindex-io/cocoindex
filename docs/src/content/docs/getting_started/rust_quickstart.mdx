@@ -35,6 +35,7 @@ cocoindex = { git = "https://github.com/cocoindex-io/cocoindex", features = [
     "postgres",
     "text",
     "fastembed",
+    "fs_live",
 ] }
 dotenvy = "0.15"
 serde = { version = "1", features = ["derive"] }
@@ -56,6 +57,7 @@ Start `src/main.rs` with the imports, constants, and two typed context keys:
 
 ```rust title="src/main.rs"
 use std::path::PathBuf;
+use std::time::Duration;
 
 use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
@@ -95,58 +97,64 @@ dimension is intentionally absent because it will come from the loaded model.
 
 ## Process one file
 
-Add a processing function that splits one file and embeds its chunks:
+Add the per-chunk and per-file processing functions. The per-file function is
+memoized and takes the table target, and each chunk declares its own row:
 
 ```rust title="src/main.rs"
 #[cocoindex::function]
-async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
-    let filename = file.key();
-    let text = file.content_str()?;
+async fn process_chunk(
+    ctx: &Ctx,
+    chunk: Chunk,
+    text: &str,
+    filename: &str,
+    id_gen: &IdGenerator,
+    table: &postgres::TableTarget,
+) -> Result<()> {
+    let chunk_text = chunk.text(text);
+    let id = i64::try_from(id_gen.next_id(ctx, chunk_text).await?)
+        .map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
+    table.declare_row(
+        ctx,
+        &DocEmbedding {
+            id,
+            filename: filename.to_string(),
+            chunk_start: chunk.start.char_offset as i32,
+            chunk_end: chunk.end.char_offset as i32,
+            text: chunk_text.to_string(),
+            embedding: ctx.get_key(&EMBEDDER)?.embed(ctx, chunk_text).await?,
+        },
+    )
+}
+
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_file(ctx: &Ctx, file: &FileEntry, table: &postgres::TableTarget) -> Result<()> {
+    let text = file.read_text().await?;
     let chunks = RecursiveSplitter::new()?.split_with(
         &text,
         RecursiveChunkConfig {
-            chunk_size: 2_000,
+            chunk_size: 2000,
             min_chunk_size: None,
             chunk_overlap: Some(500),
             language: Some("markdown".to_string()),
         },
     );
-
-    let texts: Vec<String> = chunks
-        .iter()
-        .map(|chunk| chunk.text(&text).to_string())
-        .collect();
-    let embedder = ctx.get_key(&EMBEDDER)?.clone();
-    let embedding_ctx = ctx.clone();
-    let embeddings = ctx
-        .map(texts.clone(), move |chunk_text| {
-            let embedder = embedder.clone();
-            let ctx = embedding_ctx.clone();
-            async move { embedder.embed(&ctx, chunk_text).await }
-        })
-        .await?;
-
-    let mut id_gen = IdGenerator::new();
-    let mut rows = Vec::with_capacity(texts.len());
-    for ((chunk, chunk_text), embedding) in chunks.iter().zip(texts).zip(embeddings) {
-        let id = i64::try_from(id_gen.next_id(ctx, &chunk_text).await?)
-            .map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
-        rows.push(DocEmbedding {
-            id,
-            filename: filename.clone(),
-            chunk_start: chunk.start.char_offset as i32,
-            chunk_end: chunk.end.char_offset as i32,
-            text: chunk_text,
-            embedding,
-        });
-    }
-    Ok(rows)
+    let filename = file.key();
+    let id_gen = IdGenerator::new();
+    ctx.map(chunks, async |chunk| {
+        process_chunk(ctx, chunk, &text, &filename, &id_gen, &table).await
+    })
+    .await?;
+    Ok(())
 }
 ```
 
-`SentenceTransformerEmbedder::embed` is item-shaped at the call site, but its
-implementation automatically groups concurrent cache misses into batches of
-up to 64. Repeated texts are served from CocoIndex's memo store.
+`memo` caches `process_file` by its logic and its `MemoInput` arguments. The
+file's content freshness is part of that key, so an unchanged file keeps its
+rows without re-chunking. The table target is the same for every file, so
+`memo_key(table = skip)` leaves it out. `SentenceTransformerEmbedder::embed`
+is item-shaped at the call site, but its implementation groups concurrent
+cache misses into batches of up to 64, and repeated texts are served from
+CocoIndex's memo store.
 
 ## Declare the table and rows
 
@@ -154,18 +162,18 @@ Now add the app's main processing function:
 
 ```rust title="src/main.rs"
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let schema = postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
-        .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
-        .await?;
-    let table = postgres::mount_table_target(
+    // The embedder reports the dimension of the `embedding` column.
+    let target_table = postgres::mount_table_target(
         &ctx,
         &DB,
         TABLE,
-        schema,
+        postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+            .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+            .await?,
         Some(PG_SCHEMA),
     )
     .await?;
-    table.declare_vector_index(
+    target_table.declare_vector_index(
         &ctx,
         "embedding",
         postgres::VectorIndexOptions {
@@ -174,23 +182,27 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         },
     )?;
 
-    let files = walk_items(&sourcedir, &["**/*.md"])?;
-    let rows_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
-
-    for rows in rows_by_file {
-        for row in rows {
-            table.declare_row(&ctx, &row)?;
-        }
-    }
-    Ok(())
+    let files = walk_dir(sourcedir)
+        .recursive(true)
+        .path_matcher(PatternFilePathMatcher::include(["**/*.md"])?)
+        .live()
+        .poll_interval(Duration::from_secs(1));
+    ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
+        let target_table = target_table.clone();
+        async move { process_file(&ctx, &file, &target_table).await }
+    })
+    .await
 }
 ```
 
-`mount_each!` gives every relative file path its own stable processing
-component. It also fingerprints `process_file` and its arguments, so an
-unchanged file can skip the entire component on the next run. If a file or
-chunk disappears, the rows its component used to own are removed during table
-reconciliation.
+`mount_each_live` gives every file its own processing component, keyed by its
+relative path. Each component owns the rows it declares, so when a file
+changes only its rows are reconciled, and when it disappears its rows are
+removed. The walker is a live source: in live mode (`UpdateOptions { live:
+true, .. }`, or `cocoindex update -L` once the app is registered with the
+`cocoindex` CLI as in the full example) it keeps watching the directory and
+mounts, re-runs or removes a file's component as the directory changes. In a
+plain `app.run` it scans once and returns.
 
 ## Build the environment and run
 

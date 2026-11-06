@@ -1743,7 +1743,9 @@ impl Ctx {
         I: IntoIterator,
         T: Send + 'static,
         F: Fn(I::Item) -> Fut,
-        Fut: Future<Output = Result<T>> + Send + 'static,
+        // The futures are awaited in place, so they may borrow from the caller
+        // (the source text, a shared `IdGenerator`, the target): `async |x| ...`.
+        Fut: Future<Output = Result<T>> + Send,
     {
         self.check_cancellation()?;
         let deadline = self.deadline;

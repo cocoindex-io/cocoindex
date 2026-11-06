@@ -69,8 +69,8 @@ pub use entity_resolution::{
 pub use error::{Error, Result};
 pub use memo::MemoInput;
 pub use resources::file::{
-    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
-    MatchAllFilePathMatcher, PatternFilePathMatcher,
+    DecodeErrors, FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher,
+    FileSourceItem, MatchAllFilePathMatcher, PatternFilePathMatcher,
 };
 pub use resources::fs::{
     DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
@@ -108,8 +108,13 @@ pub mod __private {
 }
 pub use resources::chunk::{Chunk, TextPosition};
 pub use resources::embedder::Embedder;
-pub use resources::live_map::LiveMap;
+pub use resources::live_map::{LiveMap, LiveMapKey};
 pub use resources::rate_limit::RateLimiter;
+pub use resources::view::{SegmentKind, SourceView, ViewSegment};
+// The content/memo fingerprint type: `memo::key_fingerprint_result`,
+// `FileMetadata::content_fingerprint` and `FileLike::content_fingerprint`
+// return it, and `MemoInput` accepts a precomputed one.
+pub use cocoindex_utils::fingerprint::Fingerprint;
 pub use resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,

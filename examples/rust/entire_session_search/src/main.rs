@@ -195,7 +195,7 @@ async fn declare_chunks(
     info: &SessionInfo,
     emb_table: &postgres::TableTarget,
 ) -> Result<()> {
-    let mut id_gen = IdGenerator::new();
+    let id_gen = IdGenerator::new();
     let mut ids = Vec::with_capacity(chunks.len());
     for chunk in &chunks {
         ids.push(id_gen.next_id(ctx, &chunk.text).await? as i64);

@@ -70,7 +70,7 @@ async fn process_file(ctx: &Ctx, file: AzureBlobFile) -> Result<Vec<DocEmbedding
     let embeddings = ctx.get_key(&EMBEDDER)?.embed_batch(texts.clone()).await?;
 
     let filename = file.key();
-    let mut id_gen = IdGenerator::new();
+    let id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(texts.len());
     for (chunk_text, embedding) in texts.into_iter().zip(embeddings) {
         let id = id_gen.next_id(ctx, &chunk_text).await?;
