@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cocoindex::connectors::oci_object_storage::{
-    ListOptions, OciClient, OciConfig, OciFile, list_objects_live,
+    self, ListOptions, OciClient, OciConfig, OciFile, list_objects_live,
 };
 use cocoindex::resources::file::PatternFilePathMatcher;
 use cocoindex::{App, LiveMapView, Result, UpdateOptions};
@@ -411,5 +411,52 @@ async fn oci_live_view_scan_failure_propagates() -> Result<()> {
         result.is_err(),
         "a failed ListObjects scan should propagate as an error, got {result:?}"
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oci_file_exists_heads_once_and_caches_the_verdict() -> Result<()> {
+    let server = MockServer::start().await;
+    // The listing names both objects; "gone.txt" has since been deleted.
+    Mock::given(method("GET"))
+        .and(path("/n/ns/b/bucket/o"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "objects": [
+                {"name": "here.txt", "size": 4, "timeModified": "2020-01-01T00:00:00Z"},
+                {"name": "gone.txt", "size": 4, "timeModified": "2020-01-01T00:00:00Z"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/n/ns/b/bucket/o/here.txt"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-length", "4"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/n/ns/b/bucket/o/gone.txt"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let client = client_for(&server.uri(), &tmp.path().join("key.pem"));
+    let files = oci_object_storage::list_objects(
+        &client,
+        "ns".to_string(),
+        "bucket".to_string(),
+        ListOptions::default(),
+    )
+    .list()
+    .await?;
+    let by_name = |name: &str| files.iter().find(|f| f.key() == name).unwrap().clone();
+
+    let here = by_name("here.txt");
+    assert!(here.exists().await?);
+    assert!(here.exists().await?, "the verdict is cached: one HEAD");
+    let gone = by_name("gone.txt");
+    assert!(!gone.exists().await?);
+    assert!(!gone.exists().await?);
     Ok(())
 }

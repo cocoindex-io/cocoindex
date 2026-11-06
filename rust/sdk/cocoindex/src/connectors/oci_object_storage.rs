@@ -221,6 +221,9 @@ pub struct OciFile {
     client: Option<OciClient>,
     #[serde(skip, default = "default_file_cache")]
     cache: Arc<FileContentCache>,
+    /// The verdict of [`exists`](Self::exists), kept for this handle's lifetime.
+    #[serde(skip, default)]
+    exists: Arc<tokio::sync::OnceCell<bool>>,
 }
 
 impl OciFile {
@@ -245,7 +248,34 @@ impl OciFile {
             etag,
             client,
             cache: Arc::new(FileContentCache::with_metadata(metadata)),
+            exists: Arc::new(tokio::sync::OnceCell::new()),
         }
+    }
+
+    /// Whether this object currently exists in OCI.
+    ///
+    /// Performs a `HEAD` on the first call; the verdict is kept for the lifetime
+    /// of this [`OciFile`] (not refreshed: fetch the object again for a fresh
+    /// probe). Expected use: call `exists()` first and branch on the result,
+    /// instead of letting [`read`](Self::read) fail on a 404.
+    pub async fn exists(&self) -> Result<bool> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| Error::engine("OCI file is not attached to an OciClient"))?;
+        self.exists
+            .get_or_try_init(|| async {
+                let head = client
+                    .head_object_if_exists(
+                        &self.file_path.namespace,
+                        &self.file_path.bucket,
+                        &self.file_path.object_name,
+                    )
+                    .await?;
+                Ok::<_, Error>(head.is_some())
+            })
+            .await
+            .copied()
     }
 
     /// Attach a client so the file can be read.
