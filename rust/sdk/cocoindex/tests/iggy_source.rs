@@ -41,7 +41,7 @@ async fn app_with_producer(name: &str, db_path: &std::path::Path, producer: &Igg
 
 /// Live runs share the process-wide cancellation the resume test uses to stop
 /// its runs, so they take turns.
-static LIVE_RUNS: Mutex<()> = Mutex::new(());
+static LIVE_RUNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn ensure_stream_topic(producer: &IggyProducer, stream: &str, topic: &str) {
     let client = producer.client();
@@ -209,7 +209,7 @@ async fn iggy_source_live_watch_tails_new_messages() -> Result<()> {
     let pop_db = tmp.path().join("populate_db");
     declare(&producer, &pop_db, &stream, topic, vec![("k1", "v1")]).await;
 
-    let _live = LIVE_RUNS.lock().unwrap();
+    let _live = LIVE_RUNS.lock().await;
     let consumer = IggyConsumer::connect(&conn).await?;
     let processed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -503,7 +503,7 @@ async fn iggy_source_consumer_group_resumes_from_stored_offset() -> Result<()> {
 
     let consumer = IggyConsumer::connect(&conn).await?;
     let source_db = tmp.path().join("source_db");
-    let _live = LIVE_RUNS.lock().unwrap();
+    let _live = LIVE_RUNS.lock().await;
 
     // A live run: processes everything (the catch-up scan), stores the group's
     // offset on the server, then stops. Stopping goes through the engine's

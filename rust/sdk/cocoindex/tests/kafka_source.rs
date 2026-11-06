@@ -124,7 +124,7 @@ fn values(processed: &Processed) -> Vec<String> {
 
 /// Live runs share the process-wide cancellation the resume test uses to stop
 /// its runs, so they take turns.
-static LIVE_RUNS: Mutex<()> = Mutex::new(());
+static LIVE_RUNS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Mount the feed `make_feed` builds with `mount_each_live` in a catch-up run,
 /// recording every processed message.
@@ -220,7 +220,7 @@ async fn kafka_source_live_watch_tails_new_records() -> Result<()> {
     // One record exists before the source starts (picked up by the catch-up scan).
     declare(&producer, &pop_db, &topic, vec![("k1", "v1")]).await;
 
-    let _live = LIVE_RUNS.lock().unwrap();
+    let _live = LIVE_RUNS.lock().await;
     let consumer = kafka::KafkaConsumer::connect(&broker_refs).await?;
     let processed: Processed = Arc::new(Mutex::new(Vec::new()));
 
@@ -429,7 +429,7 @@ async fn kafka_source_consumer_group_resumes_from_committed_offsets() -> Result<
     )
     .await?;
     let source_db = tmp.path().join("source_db");
-    let _live = LIVE_RUNS.lock().unwrap();
+    let _live = LIVE_RUNS.lock().await;
 
     // A live run: processes everything (the catch-up scan), commits offsets,
     // then stops. Stopping goes through the engine's process-wide

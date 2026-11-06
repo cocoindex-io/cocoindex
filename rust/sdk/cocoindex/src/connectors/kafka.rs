@@ -911,8 +911,10 @@ impl TopicReader {
             // A partition without a scan snapshot or cursor starts at its
             // earliest retained record, not offset 0, which retention may have
             // removed.
-            if !offsets.contains_key(&(topic.clone(), id)) {
-                offsets.insert((topic.clone(), id), earliest_offset(&pc).await?);
+            if let std::collections::btree_map::Entry::Vacant(slot) =
+                offsets.entry((topic.clone(), id))
+            {
+                slot.insert(earliest_offset(&pc).await?);
             }
             clients.push((topic, id, pc));
         }

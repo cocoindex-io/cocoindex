@@ -1256,15 +1256,13 @@ fn url_decode(value: &str) -> String {
     while i < bytes.len() {
         match bytes[i] {
             b'+' => out.push(b' '),
-            b'%' if i + 2 < bytes.len() + 0 && i + 2 <= bytes.len() - 1 => {
-                match u8::from_str_radix(&value[i + 1..i + 3], 16) {
-                    Ok(b) => {
-                        out.push(b);
-                        i += 2;
-                    }
-                    Err(_) => out.push(b'%'),
+            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&value[i + 1..i + 3], 16) {
+                Ok(b) => {
+                    out.push(b);
+                    i += 2;
                 }
-            }
+                Err(_) => out.push(b'%'),
+            },
             b => out.push(b),
         }
         i += 1;

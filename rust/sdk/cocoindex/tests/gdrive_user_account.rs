@@ -38,7 +38,7 @@ fn percent_decode(v: &str) -> String {
     let bytes = v.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() + 0 && i + 2 <= bytes.len() - 1 {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
             out.push(u8::from_str_radix(&v[i + 1..i + 3], 16).unwrap());
             i += 3;
         } else {
