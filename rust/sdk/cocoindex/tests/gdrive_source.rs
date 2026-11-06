@@ -18,6 +18,7 @@ fn drive_file(file_id: &str, name: &str, mime_type: &str) -> DriveFile {
         mime_type: mime_type.to_string(),
         size: 12,
         modified_time: "2026-01-02T03:04:05Z".to_string(),
+        md5_checksum: None,
     })
 }
 
@@ -42,7 +43,8 @@ async fn gdrive_source_lists_recursively_and_filters_mime_types() {
                     "name": "root.txt",
                     "mimeType": "text/plain",
                     "size": "7",
-                    "modifiedTime": "2026-01-02T00:00:00Z"
+                    "modifiedTime": "2026-01-02T00:00:00Z",
+                    "md5Checksum": "9e107d9d372bb6826bd81d3542a419d6"
                 }
             ]
         })))
@@ -95,6 +97,14 @@ async fn gdrive_source_lists_recursively_and_filters_mime_types() {
     assert_eq!(files[0].key(), "txt-1");
     assert_eq!(files[0].path(), "root.txt");
     assert_eq!(files[0].size, 7);
+    assert_eq!(
+        files[0].md5_checksum.as_deref(),
+        Some("9e107d9d372bb6826bd81d3542a419d6")
+    );
+    assert!(
+        files[1].md5_checksum.is_none(),
+        "a Google-native document has no md5Checksum"
+    );
     assert_eq!(files[1].path(), "nested/nested-doc");
     assert_eq!(files[1].size, 0);
     assert_eq!(files[1].file_path().resolve(), "doc-1");
