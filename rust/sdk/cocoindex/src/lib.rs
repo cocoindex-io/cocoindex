@@ -18,7 +18,8 @@ pub mod error;
     feature = "surrealdb",
     feature = "neo4j",
     feature = "falkordb",
-    feature = "lancedb"
+    feature = "lancedb",
+    feature = "zvec"
 ))]
 mod finite;
 pub mod inspect;

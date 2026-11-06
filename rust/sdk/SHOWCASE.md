@@ -290,6 +290,76 @@ mount_each!(files, |file| render_file(ctx, file, target.clone())).await?;
 are skipped, and files no longer declared by their owning components are
 removed during reconciliation.
 
+## Read blobs from Azure Blob Storage
+
+The `azure_blob` feature lists and reads the blobs of a container over the Blob
+service REST API, with an account key, a SAS token or a Microsoft Entra ID
+access token. `AzureBlobFile` implements `FileLike` and `MemoInput`: a memoized
+function runs again only for a blob whose content changed.
+
+```rust
+use cocoindex::connectors::azure_blob::{self, AzureBlobFile, ContainerClient, Credential, ListOptions};
+
+#[cocoindex::function(memo)]
+async fn index_blob(ctx: &Ctx, file: AzureBlobFile) -> Result<usize> {
+    Ok(file.read_text().await?.len())
+}
+
+let client = ContainerClient::new(
+    "https://myaccount.blob.core.windows.net",
+    "docs",
+    Credential::AccountKey(account_key),
+)?;
+let files = azure_blob::list_blobs(
+    &client,
+    ListOptions { prefix: "handbook".to_string(), ..Default::default() },
+)
+.items()
+.await?;
+mount_each!(files, |file| index_blob(ctx, file)).await?;
+```
+
+A prefix names a folder: `"handbook"` lists the blobs under `handbook/`, keyed
+by the rest of their names. `azure_blob::get_blob` fetches one blob and
+`azure_blob::read` reads one by name. The end-to-end reference is
+[`examples/rust/azure_blob_embedding`](../../examples/rust/azure_blob_embedding).
+
+## Store documents in an embedded Zvec collection
+
+The `zvec` feature declares a [Zvec](https://github.com/alibaba/zvec) collection
+and its documents as target states. Zvec runs in the process, with no server.
+The collection schema comes from the row type, with dense vector and full-text
+search fields.
+
+```rust
+use cocoindex::connectors::zvec::{self, CollectionSchema, ConnectOptions, ManagedConnection, ZvecFtsType};
+
+cocoindex::context_key!(static ZVEC: ManagedConnection);
+
+#[derive(Serialize, SchemaFields)]
+struct Doc {
+    id: String,
+    body: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+// At startup: provide the connection with `.provide_key(&ZVEC, conn.clone())`.
+let conn = zvec::connect("./zvec_data", ConnectOptions::default())?;
+
+// In the app: the collection and its documents follow what is declared.
+let schema = CollectionSchema::from_row::<Doc>(["id"])?
+    .with_vector_dim("embedding", 384)?
+    .with_fts("body", ZvecFtsType::default())?;
+let docs = zvec::mount_collection_target(&ctx, &ZVEC, "docs", schema).await?;
+docs.declare_row(&ctx, &doc)?;
+```
+
+The `zvec-rust` build script downloads the prebuilt `libzvec_c_api` shared
+library. `cargo run` and `cargo test` find it; a binary that runs on its own
+needs it on the library path, or a `build.rs` that calls
+`zvec_rust_build::configure()`.
+
 ## Derive connector schemas from row types
 
 `SchemaFields` keeps the Rust row and connector schema in one place. A bare

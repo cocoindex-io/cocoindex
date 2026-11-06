@@ -71,6 +71,17 @@ oci_object_storage = [
     "chrono",
     "chrono/clock",
 ]
+# Azure Blob Storage source: Blob service REST API over reqwest, with Shared
+# Key (HMAC-SHA256) request signing, SAS-token or bearer-token auth.
+azure_blob = [
+    "dep:reqwest",
+    "dep:hmac",
+    "dep:sha2",
+    "dep:base64",
+    "dep:quick-xml",
+    "chrono",
+    "chrono/clock",
+]
 lancedb = [
     "dep:lancedb",
     "dep:arrow-array",
@@ -93,6 +104,9 @@ neo4j = ["dep:neo4rs", "chrono"]
 falkordb = ["dep:redis", "chrono"]
 # Valkey/Redis (RediSearch) vector-search target. Reuses the `redis` crate.
 valkey = ["dep:redis"]
+# Zvec embedded vector-database target, through the `zvec-rust` bindings to the
+# zvec C API. Its build script downloads the prebuilt `libzvec_c_api`.
+zvec = ["dep:zvec-rust", "dep:base64", "chrono", "rust_decimal"]
 # Extra core store hooks for the `state_store_read` bench (its
 # `required-features`). Never enabled by production dependents.
 bench-support = ["cocoindex_core/bench-support"]
@@ -163,6 +177,11 @@ reqwest = { version = "0.12", features = ["json"], optional = true }
 rsa = { version = "0.9", features = ["sha2", "pem"], optional = true }
 sha2 = { version = "0.10", optional = true }
 base64 = { version = "0.22", optional = true }
+# Azure Blob Storage source: Shared Key signing and the List Blobs XML body.
+hmac = { version = "0.12", optional = true }
+quick-xml = { version = "0.42", optional = true, features = ["serialize"] }
+# Zvec target (safe bindings to the zvec C API).
+zvec-rust = { version = "0.8", optional = true }
 # Native LanceDB target (LanceDB core is Rust). Arrow versions track lancedb's.
 lancedb = { version = "0.26", default-features = false, optional = true }
 arrow-array = { version = "57", optional = true }
@@ -190,6 +209,13 @@ glob = "0.3"
 rskafka = { version = "0.6", default-features = false }
 # Hermetic mock HTTP server for the Google Drive source integration test.
 wiremock = "0.6"
+# The Azure Blob source test signs requests itself (Shared Key), to check the
+# connector's signature in its fake Blob service and to load Azurite.
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+httpdate = "1"
+reqwest = "0.12"
 # Generate an ephemeral RSA key for the OCI signing unit test.
 rand = "0.8"
 
