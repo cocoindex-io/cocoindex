@@ -690,6 +690,58 @@ async fn chat_client_extract_deserializes_and_memoizes() {
     assert_eq!(body["response_format"]["type"], "json_object");
 }
 
+cocoindex::context_key!(static CHAT: ApiChatClient, detect_change);
+
+static CHAT_BODY_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Reads the chat client from a `detect_change` key and calls nothing, so
+/// only the key's memo identity decides whether the body runs again.
+#[cocoindex::function(memo)]
+async fn uses_chat_client(ctx: &Ctx, text: &str) -> cocoindex::Result<String> {
+    let client = ctx.get_key(&CHAT)?;
+    CHAT_BODY_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok(format!("{}:{text}", client.model()))
+}
+
+/// `ApiChatClient` is a `MemoInput`, so it can sit in a `detect_change` key:
+/// changing the model reruns memoized work, an unchanged client does not.
+#[tokio::test]
+async fn chat_client_in_a_detect_change_key_invalidates_on_model_change() {
+    use std::sync::atomic::Ordering;
+    let tempdir = tempfile::tempdir().unwrap();
+    let run = |model: &'static str| {
+        let db = tempdir.path().join("db");
+        async move {
+            let app = cocoindex::Environment::builder()
+                .db_path(db)
+                .provide_key(&CHAT, ApiChatClient::new(model))
+                .build()
+                .await
+                .unwrap()
+                .app("chat_detect_change")
+                .await
+                .unwrap();
+            app.update(|ctx| async move { uses_chat_client(&ctx, "hi").await })
+                .await
+                .unwrap()
+        }
+    };
+
+    assert_eq!(run("model-a").await, "model-a:hi");
+    assert_eq!(run("model-a").await, "model-a:hi");
+    assert_eq!(
+        CHAT_BODY_CALLS.load(Ordering::SeqCst),
+        1,
+        "unchanged client: memo hit"
+    );
+    assert_eq!(run("model-b").await, "model-b:hi");
+    assert_eq!(
+        CHAT_BODY_CALLS.load(Ordering::SeqCst),
+        2,
+        "a new model reruns the body"
+    );
+}
+
 #[tokio::test]
 async fn chat_client_extract_rejects_an_answer_of_another_shape() {
     let Some(server) = mock_server().await else {

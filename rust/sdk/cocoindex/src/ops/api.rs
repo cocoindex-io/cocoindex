@@ -678,12 +678,18 @@ impl ApiChatClient {
     }
 }
 
-/// The memo identity of a client's answers: the model and the endpoint.
-fn client_identity(client: &ApiChatClient) -> (&str, &str) {
-    (&client.model, &client.endpoint.base_url)
+/// A client's memo identity is the model and the endpoint: what can change an
+/// answer. The key, timeout and in-flight cap cannot, and are absent. So a
+/// `detect_change` context key holding a client invalidates memoized work
+/// when the model or endpoint changes.
+#[async_trait]
+impl MemoInput for ApiChatClient {
+    fn write_memo_key(&self, writer: &mut crate::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&(&self.model, &self.endpoint.base_url))
+    }
 }
 
-#[crate::function(memo, memo_key(client = client_identity))]
+#[crate::function(memo)]
 async fn chat_json_memoized(
     ctx: &Ctx,
     client: &ApiChatClient,
