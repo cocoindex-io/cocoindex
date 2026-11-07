@@ -226,6 +226,20 @@ pub fn use_mount_async<'py>(
     })
 }
 
+/// Whether the update's selector leaves out a mount at `stable_path`, so that
+/// the caller prepares nothing for it. See `ComponentProcessorContext::skips_mount`.
+#[pyfunction]
+pub fn skips_mount(
+    stable_path: PyStablePath,
+    comp_ctx: PyComponentProcessorContext,
+    fn_ctx: &PyFnCallContext,
+) -> PyResult<bool> {
+    comp_ctx
+        .0
+        .skips_mount(&fn_ctx.0, &stable_path.0)
+        .into_py_result()
+}
+
 #[pyfunction]
 #[pyo3(signature = (processor, stable_path, comp_ctx, fn_ctx, handler_callback=None))]
 pub fn mount_async<'py>(

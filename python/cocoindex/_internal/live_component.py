@@ -333,6 +333,9 @@ class LiveComponentOperator:
             child_path = child_path.concat(part)
 
         controller = self._require_controller()
+        # Asked before anything is prepared, as in `coco.mount`.
+        if controller.skips_subpath(child_path):
+            return ComponentMountHandle([])
         # Slice F: branch on processor type. A LiveComponent class triggers
         # the nested-mount path — we install a fresh inner controller at the
         # child path under the parent's `update_full_lock`, then spawn the

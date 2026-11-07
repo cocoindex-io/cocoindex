@@ -748,20 +748,27 @@ impl<Prof: EngineProfile> Committer<Prof> {
         let app_store = self.app_store.clone();
         let component_path = self.component_path.clone();
         let selector = self.component_ctx.component_selector().cloned();
+        let left_out_children = self.component_ctx.left_out_children_flag();
         Box::new(move |wtxn| {
             let app_store = app_store.clone();
             let component_path = component_path.clone();
             let declared_children = declared_children.clone();
             let selector = selector.clone();
+            let left_out_children = left_out_children.clone();
             Box::pin(async move {
-                reconcile_child_existence(
+                let kept_unselected = reconcile_child_existence(
                     wtxn,
                     &app_store,
                     &component_path,
                     declared_children.as_deref(),
                     selector.as_ref(),
                 )
-                .await
+                .await?;
+                // Only ever set: a re-run of this body finds the same children.
+                if kept_unselected {
+                    left_out_children.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(())
             })
         })
     }
@@ -863,6 +870,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         for relative_path in tombstones {
             let stable_path = self.component_path.concat(relative_path.as_ref());
             if selector.is_some_and(|selector| !selector.covers(&stable_path)) {
+                self.component_ctx.mark_left_out_children();
                 continue;
             }
             let component = self.component_ctx.component().get_child(stable_path);
@@ -1099,6 +1107,18 @@ enum PreCommitOutcome<Prof: EngineProfile> {
 /// write batch fails, so one `AppStore::precommit` call can run it — and
 /// with it `pre_commit` and every `TargetHandler::reconcile` — more than
 /// once.
+/// A change to a container target state takes the target states of all its
+/// children with it, and the selector leaves some of them unrun: nothing would
+/// declare theirs again. Refused before anything is applied, so that a selective
+/// update can't delete the data of the components it leaves alone.
+fn bail_container_change_under_selector(stable_path: &StablePath, change: &str) -> Result<()> {
+    client_bail!(
+        "the component at {stable_path} needs a {change} of a container target state, which \
+         also affects child components that component_selector leaves out. Run an update \
+         without component_selector"
+    )
+}
+
 struct PreCommitCaptures<Prof: EngineProfile> {
     app_store: AppStore,
     stable_path: StablePath,
@@ -1174,6 +1194,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     process_token: u128,
     stable_path: &StablePath,
     full_reprocess: bool,
+    limited_by_selector: bool,
     processor_name: Option<&str>,
     contained_target_state_paths: &HashSet<TargetStatePath>,
     target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
@@ -1458,6 +1479,17 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     .as_ref()
                     .and_then(|item| item.provider_generation.clone());
 
+                if limited_by_selector
+                    && child_provider.is_some()
+                    && prev_item.is_some()
+                    && matches!(
+                        recon_output.child_invalidation,
+                        Some(ChildInvalidation::Destructive | ChildInvalidation::Lossy)
+                    )
+                {
+                    bail_container_change_under_selector(stable_path, "rebuild")?;
+                }
+
                 if let Some(child_provider) = &child_provider {
                     // A state created this pass mints a fresh generation for
                     // its children, not the shared default: tracking left
@@ -1614,6 +1646,9 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 })?
                 .reconcile(target_state_key, None, &prev_states, prev_may_be_missing)?;
             if let Some(recon_output) = recon_output {
+                if limited_by_selector && item.provider_generation.is_some() {
+                    bail_container_change_under_selector(stable_path, "removal")?;
+                }
                 actions_by_sinks
                     .entry(recon_output.sink)
                     .or_default()
@@ -1787,6 +1822,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     let comp_mode = comp_ctx.mode();
     let full_reprocess = comp_ctx.full_reprocess();
+    // A preview applies nothing, so it can show such a change.
+    let limited_by_selector = comp_ctx.update_leaves_out_components()
+        && comp_ctx.app_store().write_scope() == WriteScope::Persisted;
     let process_token = comp_ctx.app_ctx().env().process_token();
 
     let mut pending_fulfillments: Vec<(TargetStateProvider<Prof>, Prof::TargetHdl)> = Vec::new();
@@ -1944,6 +1982,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             process_token,
                             &c.stable_path,
                             full_reprocess,
+                            limited_by_selector,
                             c.processor_name.as_deref(),
                             &c.contained_target_state_paths,
                             &c.target_states_providers,

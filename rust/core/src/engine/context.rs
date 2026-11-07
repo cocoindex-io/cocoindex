@@ -12,12 +12,12 @@ use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
 use crate::prelude::*;
 
-use crate::state::component_selector::ComponentSelector;
+use crate::state::component_selector::{ComponentSelection, ComponentSelector};
 use crate::state::stable_path::StableKey;
 
 pub(crate) static TARGET_ID_KEY: LazyLock<StableKey> =
     LazyLock::new(|| StableKey::Symbol("cocoindex/_internal/target_id".into()));
-use crate::state::stable_path_set::ChildStablePathSet;
+use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 use crate::state::target_state_path::{
     TargetProviderDeps, TargetStatePath, TargetStateProviderGeneration,
 };
@@ -773,9 +773,9 @@ pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     /// `mount_inner_live`'s self-built parent context).
     pub on_error: Option<crate::engine::component::OnError>,
     pub preview_collector: Option<PreviewActionCollector<Prof>>,
-    /// The selector this run is under, narrowed by
-    /// [`ComponentSelector::scoped_to`]: `None` without a selector and inside a
-    /// selected subtree. See [`ComponentProcessorContext::component_selector`].
+    /// The selector this run is under, scoped by
+    /// [`ComponentSelector::scoped_to`]. See
+    /// [`ComponentProcessorContext::component_selector`].
     pub component_selector: Option<ComponentSelector>,
 }
 
@@ -858,6 +858,11 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     /// This run's in-flight token and the lender its children borrow from;
     /// see [`crate::engine::admission`].
     admission: Admission,
+
+    /// This run's selector left out a child it mounted or one the store holds,
+    /// so this subtree is not up to date when the run ends. Set by a mount, by
+    /// the commit's existence reconciliation and by its GC sweep.
+    left_out_children: Arc<AtomicBool>,
 
     /// Logic fingerprints accumulated from function calls and child components.
     logic_deps: Mutex<HashSet<Fingerprint>>,
@@ -990,6 +995,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 app_store,
                 operation_generation,
                 admission,
+                left_out_children: Arc::new(AtomicBool::new(false)),
                 logic_deps: Mutex::new(HashSet::new()),
                 data_deps: Mutex::new(DataDeps::default()),
                 target_provider_deps: Mutex::new(TargetProviderDeps::new()),
@@ -1336,15 +1342,65 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
-    /// The selector this run is under: `Some` means this run may leave
-    /// components below it unrun, so that its subtree is not up to date when it
-    /// ends. A delete has none: it is reached only for a path a selector covers,
-    /// and removes everything below.
+    /// The selector this run is under. A delete has none: it is reached only
+    /// for a path a selector covers, and removes everything below.
     pub(crate) fn component_selector(&self) -> Option<&ComponentSelector> {
         match self.processing_state() {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.component_selector.as_ref(),
             ComponentProcessingAction::Delete(_) => None,
         }
+    }
+
+    /// The update this run belongs to leaves some components out, wherever this
+    /// run is: inside a selected subtree too. A change this run makes can reach
+    /// those components through what they share, as a container target state.
+    /// A delete does not count: the component it removes is selected and gone,
+    /// so nothing can declare under its containers any more.
+    pub(crate) fn update_leaves_out_components(&self) -> bool {
+        self.component_selector()
+            .is_some_and(|selector| !selector.selects_everything())
+    }
+
+    pub(crate) fn mark_left_out_children(&self) {
+        self.inner.left_out_children.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn left_out_children(&self) -> bool {
+        self.inner.left_out_children.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn left_out_children_flag(&self) -> Arc<AtomicBool> {
+        self.inner.left_out_children.clone()
+    }
+
+    /// Record a mount at `path` that the selector leaves out. It counts as a
+    /// mount of this run, so a second mount at the path is an error as usual,
+    /// and a directory it lies under counts as declared.
+    pub(crate) fn record_skipped_mount(&self, path: &StablePath) -> Result<()> {
+        self.mark_left_out_children();
+        let sub_path = path.as_ref().strip_parent(self.stable_path().as_ref())?;
+        self.update_building_state(|building_state| {
+            building_state
+                .child_path_set
+                .add_child(sub_path, StablePathSet::Skipped)
+        })
+    }
+
+    /// Whether the selector leaves out a mount at `path`, recording it if so.
+    /// For a host that wants to know before it prepares the mount: building a
+    /// processor can run user code, and costs per item. [`Component::mount`]
+    /// and `mount_live_prepare` decide alike for one that does not ask.
+    pub fn skips_mount(&self, fn_ctx: &FnCallContext, path: &StablePath) -> Result<bool> {
+        let Some(selector) = self.component_selector() else {
+            return Ok(false);
+        };
+        if selector.classify(path) != ComponentSelection::Unselected {
+            return Ok(false);
+        }
+        // Even a skipped child rules out memoizing the function that mounted it.
+        fn_ctx.update(|inner| inner.has_child_components = true);
+        self.record_skipped_mount(path)?;
+        Ok(true)
     }
 
     pub fn live(&self) -> bool {

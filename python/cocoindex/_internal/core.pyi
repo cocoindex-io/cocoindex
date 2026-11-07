@@ -390,6 +390,7 @@ class LiveComponentController:
         self, key: StableKey, value: bytes
     ) -> Coroutine[Any, Any, None]: ...
     def start(self, process_live_fut: Any) -> None: ...
+    def skips_subpath(self, stable_path: StablePath) -> bool: ...
     def mount_inner_live_async(
         self, stable_path: StablePath
     ) -> Coroutine[
@@ -398,6 +399,11 @@ class LiveComponentController:
     @property
     def is_live(self) -> bool: ...
 
+def skips_mount(
+    stable_path: StablePath,
+    comp_ctx: ComponentProcessorContext,
+    fn_ctx: FnCallContext,
+) -> bool: ...
 def mount_live_async(
     stable_path: StablePath,
     comp_ctx: ComponentProcessorContext,
