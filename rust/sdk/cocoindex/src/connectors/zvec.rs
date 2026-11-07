@@ -173,6 +173,36 @@ impl ManagedConnection {
         run_blocking(move || conn.open_existing_blocking(&name)).await
     }
 
+    /// Open the collection `name`, creating it from `schema` if it does not
+    /// exist, and return its handle (cached like [`open_existing`]'s). The
+    /// system-managed collection target does this itself; call it to set up a
+    /// user-managed collection, which CocoIndex only writes documents to.
+    ///
+    /// [`open_existing`]: Self::open_existing
+    pub async fn open_or_create(
+        &self,
+        name: &str,
+        schema: &CollectionSchema,
+    ) -> Result<Arc<Collection>> {
+        validate_collection_name(name)?;
+        schema.validate()?;
+        let conn = self.clone();
+        let name = name.to_string();
+        let schema = schema.clone();
+        run_blocking(move || conn.open_or_create_blocking(&name, &schema)).await
+    }
+
+    /// Permanently delete the collection `name` from disk, closing its cached
+    /// handle first. A missing collection is not an error. Fails while a handle
+    /// from [`open_existing`](Self::open_existing) or
+    /// [`open_or_create`](Self::open_or_create) is still alive.
+    pub async fn destroy(&self, name: &str) -> Result<()> {
+        validate_collection_name(name)?;
+        let conn = self.clone();
+        let name = name.to_string();
+        run_blocking(move || conn.destroy_blocking(&name)).await
+    }
+
     /// Release all cached collection handles (dropping their write locks).
     pub async fn close(&self) -> Result<()> {
         let conn = self.clone();
@@ -218,10 +248,14 @@ impl ManagedConnection {
     }
 
     /// Open the collection, creating it from `schema` if it does not exist.
-    fn open_or_create_blocking(&self, name: &str, schema: &CollectionSchema) -> Result<()> {
+    fn open_or_create_blocking(
+        &self,
+        name: &str,
+        schema: &CollectionSchema,
+    ) -> Result<Arc<Collection>> {
         let mut open = self.lock_open();
-        if open.contains_key(name) {
-            return Ok(());
+        if let Some(collection) = open.get(name) {
+            return Ok(collection.clone());
         }
         let path = self.collection_path(name);
         let collection = if path.exists() {
@@ -234,8 +268,9 @@ impl ManagedConnection {
             )
             .map_err(|e| zvec_err(format_args!("create collection {name:?}"), e))?
         };
-        open.insert(name.to_string(), Arc::new(collection));
-        Ok(())
+        let collection = Arc::new(collection);
+        open.insert(name.to_string(), collection.clone());
+        Ok(collection)
     }
 
     /// Permanently delete a collection from disk.
@@ -300,6 +335,16 @@ pub enum ScalarType {
     Float,
     Double,
     String,
+    /// An array of booleans (`ARRAY_BOOL`), for a `Vec<bool>` field.
+    ArrayBool,
+    ArrayInt32,
+    /// An array of 64-bit integers (`ARRAY_INT64`), for a `Vec<i64>` field.
+    ArrayInt64,
+    ArrayUint32,
+    ArrayUint64,
+    ArrayFloat,
+    /// An array of 64-bit floats (`ARRAY_DOUBLE`), for a `Vec<f64>` field.
+    ArrayDouble,
 }
 
 impl ScalarType {
@@ -313,6 +358,13 @@ impl ScalarType {
             ScalarType::Float => DataType::Float,
             ScalarType::Double => DataType::Double,
             ScalarType::String => DataType::String,
+            ScalarType::ArrayBool => DataType::ArrayBool,
+            ScalarType::ArrayInt32 => DataType::ArrayInt32,
+            ScalarType::ArrayInt64 => DataType::ArrayInt64,
+            ScalarType::ArrayUint32 => DataType::ArrayUint32,
+            ScalarType::ArrayUint64 => DataType::ArrayUint64,
+            ScalarType::ArrayFloat => DataType::ArrayFloat,
+            ScalarType::ArrayDouble => DataType::ArrayDouble,
         }
     }
 
@@ -327,6 +379,13 @@ impl ScalarType {
             "float" => ScalarType::Float,
             "double" => ScalarType::Double,
             "string" => ScalarType::String,
+            "array_bool" => ScalarType::ArrayBool,
+            "array_int32" => ScalarType::ArrayInt32,
+            "array_int64" => ScalarType::ArrayInt64,
+            "array_uint32" => ScalarType::ArrayUint32,
+            "array_uint64" => ScalarType::ArrayUint64,
+            "array_float" => ScalarType::ArrayFloat,
+            "array_double" => ScalarType::ArrayDouble,
             _ => return None,
         })
     }
@@ -494,7 +553,8 @@ fn column_from_field(field: SchemaField) -> Result<Column> {
             let data_type = ScalarType::from_name(name).ok_or_else(|| {
                 Error::engine(format!(
                     "zvec field {:?} has unsupported type {name:?}; expected one of bool, int32, \
-                     int64, uint32, uint64, float, double, string",
+                     int64, uint32, uint64, float, double, string, or array_<type> for all but \
+                     string",
                     field.name
                 ))
             })?;
@@ -776,6 +836,19 @@ enum FieldValue {
     Double(f64),
     String(String),
     Vector(Vec<f32>),
+    ArrayBool(Vec<bool>),
+    ArrayInt32(Vec<i32>),
+    ArrayInt64(Vec<i64>),
+    ArrayUint32(Vec<u32>),
+    ArrayUint64(Vec<u64>),
+    ArrayFloat(Vec<f32>),
+    ArrayDouble(Vec<f64>),
+}
+
+/// The elements of a JSON array converted one by one, or `None` when the value
+/// is not an array or an element does not convert.
+fn json_array<T>(value: &JsonValue, convert: impl Fn(&JsonValue) -> Option<T>) -> Option<Vec<T>> {
+    value.as_array()?.iter().map(convert).collect()
 }
 
 /// A declared document: its id and its non-null fields.
@@ -855,6 +928,25 @@ fn scalar_value(
         ScalarType::Float => value.as_f64().map(|v| FieldValue::Float(v as f32)),
         ScalarType::Double => value.as_f64().map(FieldValue::Double),
         ScalarType::String => value.as_str().map(|s| FieldValue::String(s.to_string())),
+        ScalarType::ArrayBool => json_array(value, JsonValue::as_bool).map(FieldValue::ArrayBool),
+        ScalarType::ArrayInt32 => {
+            json_array(value, |v| v.as_i64().and_then(|v| i32::try_from(v).ok()))
+                .map(FieldValue::ArrayInt32)
+        }
+        ScalarType::ArrayInt64 => json_array(value, JsonValue::as_i64).map(FieldValue::ArrayInt64),
+        ScalarType::ArrayUint32 => {
+            json_array(value, |v| v.as_u64().and_then(|v| u32::try_from(v).ok()))
+                .map(FieldValue::ArrayUint32)
+        }
+        ScalarType::ArrayUint64 => {
+            json_array(value, JsonValue::as_u64).map(FieldValue::ArrayUint64)
+        }
+        ScalarType::ArrayFloat => {
+            json_array(value, |v| v.as_f64().map(|v| v as f32)).map(FieldValue::ArrayFloat)
+        }
+        ScalarType::ArrayDouble => {
+            json_array(value, JsonValue::as_f64).map(FieldValue::ArrayDouble)
+        }
     };
     converted.ok_or_else(|| value_mismatch(col, &format!("{data_type:?}"), value))
 }
@@ -953,6 +1045,13 @@ fn build_doc(state: &DocState) -> Result<Doc> {
             FieldValue::Double(v) => doc.add_f64(name, *v),
             FieldValue::String(v) => doc.add_string(name, v),
             FieldValue::Vector(v) => doc.add_vector_f32(name, v),
+            FieldValue::ArrayBool(v) => doc.add_array_bool(name, v),
+            FieldValue::ArrayInt32(v) => doc.add_array_i32(name, v),
+            FieldValue::ArrayInt64(v) => doc.add_array_i64(name, v),
+            FieldValue::ArrayUint32(v) => doc.add_array_u32(name, v),
+            FieldValue::ArrayUint64(v) => doc.add_array_u64(name, v),
+            FieldValue::ArrayFloat(v) => doc.add_array_f32(name, v),
+            FieldValue::ArrayDouble(v) => doc.add_array_f64(name, v),
         }
         .map_err(|e| {
             zvec_err(
