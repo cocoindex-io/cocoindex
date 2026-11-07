@@ -24,9 +24,13 @@
 //! ```no_run
 //! use cocoindex::prelude::*;
 //!
+//! // One processing component per file: it declares that file's output, so
+//! // the output is synced, and removed, with the file.
 //! #[cocoindex::function(memo)]
-//! async fn upper(_ctx: &Ctx, file: FileEntry) -> Result<(String, String)> {
-//!     Ok((file.key(), file.content_str()?.to_uppercase()))
+//! async fn upper(ctx: &Ctx, file: FileEntry, target: DirTarget) -> Result<()> {
+//!     let text = file.content_str()?.to_uppercase();
+//!     target.declare_file(ctx, &file.key(), text.as_bytes())?;
+//!     Ok(())
 //! }
 //!
 //! #[tokio::main]
@@ -34,12 +38,9 @@
 //!     let app = App::open("upper_case", "./.cocoindex_db").await?;
 //!     let stats = app
 //!         .run(|ctx| async move {
-//!             let target = mount_dir_target(&ctx, "./output")?;
+//!             let target = DirTarget::mount(&ctx, "./output")?;
 //!             let files = walk_items("./input", &["**/*.txt"])?;
-//!             let outputs = mount_each!(files, |file| upper(ctx, file)).await?;
-//!             for (name, text) in &outputs {
-//!                 target.declare_file(&ctx, name, text.as_bytes())?;
-//!             }
+//!             mount_each!(files, |file| upper(ctx, file, target)).await?;
 //!             Ok(())
 //!         })
 //!         .await?;
