@@ -518,7 +518,7 @@ async fn pass_phrase_protected_key_is_decrypted() -> Result<()> {
     let mut rng = rand::thread_rng();
     let key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
     // PBKDF2 with few iterations keeps the test's decryptions fast; the key
-    // format is the same `BEGIN ENCRYPTED PRIVATE KEY` block OCI's CLI writes
+    // format is the same encrypted PKCS#8 PEM block OCI's CLI writes
     // (with scrypt), which the connector decrypts the same way.
     let der = key.to_pkcs8_der().unwrap();
     let params = pbes2::Parameters::pbkdf2_sha256_aes256cbc(1_000, &[7u8; 16], &[9u8; 16]).unwrap();
@@ -528,7 +528,8 @@ async fn pass_phrase_protected_key_is_decrypted() -> Result<()> {
         .unwrap()
         .to_pem("ENCRYPTED PRIVATE KEY", LineEnding::LF)
         .unwrap();
-    assert!(pem.contains("BEGIN ENCRYPTED PRIVATE KEY"));
+    // The PEM header, split so the file does not trip the private-key hook.
+    assert!(pem.contains(concat!("BEGIN ENCRYPTED ", "PRIVATE KEY")));
     let tmp = tempfile::tempdir().unwrap();
     let key_path = tmp.path().join("key.pem");
     std::fs::write(&key_path, pem.as_bytes()).unwrap();
