@@ -5,6 +5,10 @@ description: >
   Write documents to zvec, an embedded in-process vector database. Covers
   collection setup, declaring documents with dense and sparse vectors plus
   scalar and full-text fields, schema-from-class type mapping, and lifecycle management.
+rust_description: >
+  Write documents to zvec, an embedded in-process vector database. Covers
+  collection setup, declaring documents with dense vectors plus scalar, array
+  and full-text fields, schema-from-row type mapping, and lifecycle management.
 ---
 The `zvec` connector writes documents to [zvec](https://zvec.org), an embedded, in-process vector database. zvec runs inside your application (no server or daemon) and stores each collection in a directory on disk.
 
@@ -33,6 +37,8 @@ The module is compiled with the `zvec` Cargo feature of the `cocoindex` crate. I
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 :::note[Installation]
 zvec is an optional dependency:
 
@@ -40,6 +46,8 @@ zvec is an optional dependency:
 pip install cocoindex[zvec]
 ```
 :::
+
+</Lang>
 
 ## Connection setup
 
@@ -75,7 +83,7 @@ let conn = zvec::connect(tempdir.path().join("zvec"), ConnectOptions::default())
 **Parameters:**
 
 - `base_path` — Directory under which collections are stored. Created if missing.
-- `enable_mmap` — Whether zvec uses memory-mapped I/O for data files.
+- <Lang only="python">`enable_mmap`</Lang><Lang only="rust">`options.enable_mmap`</Lang> — Whether zvec uses memory-mapped I/O for data files.
 
 ### ManagedConnection
 
@@ -83,10 +91,10 @@ A handle to the base directory. zvec takes an exclusive write lock per open coll
 
 **Methods:**
 
+<Lang only="python">
+
 - `collection_path(name)` — Path to a collection's directory.
 - `close()` — Release all open collection handles (drops their write locks).
-
-The Rust `ManagedConnection` has the same two methods, `collection_path(name)` and `close().await`, plus `base_path()` and `open_existing(name).await`, which returns a cached `zvec_rust::Collection` handle for queries. Drop that handle before a run that destroys the collection.
 
 For a lifespan, use `managed_connection()`, which closes handles on exit:
 
@@ -96,7 +104,24 @@ def managed_connection(
 ) -> Iterator[ManagedConnection]
 ```
 
-The Rust SDK has no `managed_connection()`: call `conn.close().await?` on shutdown.
+</Lang>
+
+<Lang only="rust">
+
+- `base_path()` — The directory under which collections are stored.
+- `collection_path(name)` — Path to a collection's directory.
+- `open_existing(name).await` — Open an existing collection and return its cached `zvec_rust::Collection` handle, for queries.
+- `open_or_create(name, &schema).await` — Open the collection, creating it from a `CollectionSchema` if it does not exist, and return its cached handle. A system-managed collection target does this itself; call it to set up a user-managed collection.
+- `destroy(name).await` — Permanently delete the collection from disk, closing its cached handle first. A missing collection is not an error.
+- `close().await` — Release all cached collection handles (drops their write locks).
+
+A collection with a live handle cannot be destroyed: drop the handles from `open_existing` and `open_or_create` before `destroy`, and before a run that destroys the collection (a schema change, or the target no longer declared).
+
+</Lang>
+
+<RustNote>
+There is no `managed_connection()` context manager: call `conn.close().await?` on shutdown.
+</RustNote>
 
 ## As target
 
@@ -106,7 +131,17 @@ The `zvec` connector tracks which documents should exist in a collection and aut
 
 #### Setting up a connection
 
+<Lang only="python">
+
 Create a `ContextKey[zvec.ManagedConnection]` to identify your connection, then provide it in your lifespan:
+
+</Lang>
+
+<Lang only="rust">
+
+Declare a context key for a `ManagedConnection` to identify your connection, then provide the connection at startup:
+
+</Lang>
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed documents. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
@@ -199,12 +234,26 @@ let target = zvec::mount_collection_target_with_options(
 
 **Parameters:**
 
+<Lang only="python">
+
 - `db` — A `ContextKey[ManagedConnection]` identifying the connection.
 - `collection_name` — Name of the collection (a subdirectory under the connection's base path).
 - `schema` — Schema definition (see [Collection schema](#collection-schema-from-python-class)).
 - `managed_by` — Whether CocoIndex manages the collection lifecycle (`"system"`, creating and destroying it) or assumes it already exists (`"user"`, documents only).
 
 **Returns:** A pending `CollectionTarget`. Use `await zvec.mount_collection_target(ZVEC_DB, collection_name, schema)` to resolve.
+
+</Lang>
+
+<Lang only="rust">
+
+- `db` — The context key of the `ManagedConnection`.
+- `collection_name` — Name of the collection (a subdirectory under the connection's base path).
+- `schema` — Schema definition (see [Collection schema](#collection-schema-from-a-row-struct)).
+
+The `*_with_options` variants take a `ManagedTargetOptions`: `ManagedTargetOptions::system_managed()` (the default) creates and destroys the collection, and `ManagedTargetOptions::user_managed()` assumes it already exists and writes documents only. Create a user-managed collection with `conn.open_or_create(name, &schema)`.
+
+</Lang>
 
 #### Documents (child states)
 
@@ -232,11 +281,25 @@ target.declare_row(&ctx, &doc)?;
 </Fragment>
 </LangTabs>
 
-The primary-key value becomes the document `id` (converted to `str`). In Rust, `row` is any `Serialize` value that serializes to an object with the schema's columns; extra fields are dropped and missing ones are null.
+<Lang only="python">
+
+The primary-key value becomes the document `id` (converted to `str`).
 
 ### Collection schema: from Python class
 
 Define the collection structure using a Python class (dataclass, NamedTuple, or Pydantic model):
+
+</Lang>
+
+<Lang only="rust">
+
+The primary-key value becomes the document `id` (converted to a string). `row` is any `Serialize` value that serializes to an object with the schema's columns; extra fields are dropped and missing ones are null.
+
+### Collection schema: from a row struct
+
+Define the collection structure using a struct that derives `SchemaFields`:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/zvec.rs */}
 <LangTabs>
@@ -269,12 +332,18 @@ impl CollectionSchema {
 }
 ```
 
-The Rust row type is a struct that derives `SchemaFields` (and `Serialize`). Python's `column_overrides` become builder calls on the derived schema: `with_vector_dim` for a vector dimension, `with_vector_def` for the index, `with_column_type` for a scalar type, `with_fts` for a full-text field. The zvec schema has no `with_vector_schema`; take the dimension from the embedder and pass it to `with_vector_dim`.
+The row type is a struct that derives `SchemaFields` (and `Serialize`). Per-column overrides are builder calls on the derived schema: `with_vector_dim` for a vector dimension, `with_vector_def` for the index, `with_column_type` for a scalar or array type, `with_fts` for a full-text field.
 
 </Fragment>
 </LangTabs>
 
+<RustNote>
+The zvec schema has no `with_vector_schema`: take the dimension from the embedder and pass it to `with_vector_dim`.
+</RustNote>
+
 **Parameters:**
+
+<Lang only="python">
 
 - `record_type` — A record type whose fields define the document structure.
 - `primary_key` — Exactly one column name. Its value becomes the document `id`.
@@ -286,8 +355,21 @@ zvec documents have a single string `id`, so `primary_key` must name exactly one
 Because the id is `str(value)`, some key types are ambiguous: in a union or `Any` column, `1` and `"1"` get the same id, and `bytes` become the text `b'...'`. Creating a new collection raises a `ValueError` when the key column is typed `Any`, `object`, a union or `bytes`. A collection that CocoIndex already tracks keeps working. Use a `str` or `int` key column, and convert the value yourself if needed.
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+- `T` — A `SchemaFields` struct whose fields define the document structure.
+- `primary_key` — Exactly one column name. Its value becomes the document `id`.
+
+:::note[Single primary key]
+zvec documents have a single string `id`, so `primary_key` must name exactly one column. Its value is converted to a string to form the id. Composite primary keys are not supported. The key column must be a `String`, `Uuid` or integer column, and not an `Option`; `from_row` returns an error otherwise.
+:::
+
+</Lang>
+
 :::note[At least one vector field]
-zvec is a vector database: every collection must declare at least one vector field (dense or sparse).
+zvec is a vector database: every collection must declare at least one vector field<Lang only="python"> (dense or sparse)</Lang>.
 :::
 
 **Example:**
@@ -331,29 +413,62 @@ fn simple_schema() -> CollectionSchema {
 }
 ```
 
-`#[coco(vector = N)]` fixes the dimension in the struct; a bare `#[coco(vector)]` leaves it to `with_vector_dim`. The primary key must be one `String`, `Uuid` or integer column, and not an `Option`.
+`#[coco(vector = N)]` fixes the dimension in the struct; a bare `#[coco(vector)]` leaves it to `with_vector_dim`.
 
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 Scalar Python types map to zvec field types as follows:
 
-| Python Type | Rust Type | zvec `DataType` |
-|-------------|-----------|-----------------|
-| `bool` | `bool` | `BOOL` |
-| `int` | `i64` (`i16`, `i32`: `INT32`) | `INT64` |
-| `float` | `f64` (`f32`: `FLOAT`) | `DOUBLE` |
-| `str` | `String` | `STRING` |
-| `bytes` | `Vec<u8>` | `STRING` (base64) |
-| `uuid.UUID` | `Uuid` | `STRING` |
-| `decimal.Decimal` | `Decimal` | `STRING` |
-| `datetime.date` / `time` / `datetime` | `NaiveDate`, `NaiveTime`, `DateTime` | `STRING` (ISO format) |
-| `datetime.timedelta` | `Duration` | `DOUBLE` (total seconds) |
-| `list[str]` / `list[int]` / `list[float]` / `list[bool]` | (no Rust counterpart; see below) | `ARRAY_STRING` / `ARRAY_INT64` / `ARRAY_DOUBLE` / `ARRAY_BOOL` |
-| other `list`, `dict`, nested structs | other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `STRING` (JSON) |
-| `NDArray` (with vector schema) | `Vec<f32>` with `#[coco(vector)]` | `VECTOR_FP32` (float32) or `VECTOR_FP16` (float16) |
+| Python Type | zvec `DataType` |
+|-------------|-----------------|
+| `bool` | `BOOL` |
+| `int` | `INT64` |
+| `float` | `DOUBLE` |
+| `str` | `STRING` |
+| `bytes` | `STRING` (base64) |
+| `uuid.UUID` | `STRING` |
+| `decimal.Decimal` | `STRING` |
+| `datetime.date` / `time` / `datetime` | `STRING` (ISO format) |
+| `datetime.timedelta` | `DOUBLE` (total seconds) |
+| `list[str]` / `list[int]` / `list[float]` / `list[bool]` | `ARRAY_STRING` / `ARRAY_INT64` / `ARRAY_DOUBLE` / `ARRAY_BOOL` |
+| other `list`, `dict`, nested structs | `STRING` (JSON) |
+| `NDArray` (with vector schema) | `VECTOR_FP32` (float32) or `VECTOR_FP16` (float16) |
 
-Scalar fields get an invert index by default so they can be used in query filters. The primary-key column maps to the document `id` and is not stored as a separate field. The Rust SDK stores every `Vec<T>` other than `Vec<u8>` and a vector as a JSON string: it has no `ARRAY_*` mapping. It writes `float32` dense vectors only: a `#[coco(vector = N, half)]` field is an error, because the `zvec-rust` bindings have no float16 setter. For smaller storage, keep a float32 vector and set `quantize`.
+</Lang>
+
+<Lang only="rust">
+
+Rust field types map to zvec field types as follows:
+
+| Rust Type | zvec `DataType` |
+|-----------|-----------------|
+| `bool` | `BOOL` |
+| `i16`, `i32` | `INT32` |
+| `i64` | `INT64` |
+| `f32` | `FLOAT` |
+| `f64` | `DOUBLE` |
+| `String` | `STRING` |
+| `Vec<u8>` | `STRING` (base64) |
+| `Uuid` | `STRING` |
+| `Decimal` | `STRING` |
+| `NaiveDate`, `NaiveTime`, `DateTime` | `STRING` (ISO format) |
+| `Duration` | `DOUBLE` (total seconds) |
+| `Vec<bool>`, `Vec<i64>`, `Vec<f64>`, … with `#[coco(type = "array_bool")]`, `"array_int64"`, `"array_double"`, … | `ARRAY_BOOL`, `ARRAY_INT64`, `ARRAY_DOUBLE`, … |
+| other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `STRING` (JSON) |
+| `Vec<f32>` with `#[coco(vector)]` | `VECTOR_FP32` |
+
+An array field is opt-in: a `Vec<T>` without a `type` attribute or a `with_column_type` override is stored as a JSON string. The array types are `array_bool`, `array_int32`, `array_int64`, `array_uint32`, `array_uint64`, `array_float` and `array_double`.
+
+</Lang>
+
+Scalar fields get an invert index by default so they can be used in query filters. The primary-key column maps to the document `id` and is not stored as a separate field.
+
+<RustNote>
+There is no array of strings (`ARRAY_STRING`): a `Vec<String>` is stored as a JSON string. Only float32 dense vectors are written: a `#[coco(vector = N, half)]` field is an error, because the `zvec-rust` bindings have no float16 setter. For smaller storage, keep a float32 vector and set `quantize`.
+</RustNote>
 
 #### ZvecType
 
@@ -390,14 +505,33 @@ let schema = CollectionSchema::from_row::<TypedDoc>(["id"])?.with_column_type(
 )?;
 ```
 
-`ScalarType` has `Bool`, `Int32`, `Int64`, `Uint32`, `Uint64`, `Float`, `Double` and `String`. A `#[coco(type = "int32")]` attribute on the field selects the type too (the names are case-insensitive), but keeps the index. Python's encoder has no counterpart: put `#[serde(serialize_with = "…")]` on the field.
+`ScalarType` has `Bool`, `Int32`, `Int64`, `Uint32`, `Uint64`, `Float`, `Double` and `String`, and the array types `ArrayBool`, `ArrayInt32`, `ArrayInt64`, `ArrayUint32`, `ArrayUint64`, `ArrayFloat` and `ArrayDouble`. A `#[coco(type = "int32")]` attribute on the field selects the type too (the names are case-insensitive), but keeps the index. Array fields take the same attribute:
+
+```rust
+#[derive(Clone, Serialize, SchemaFields)]
+struct ArrayDoc {
+    id: String,
+    #[coco(type = "array_int64")]
+    ints: Vec<i64>,
+    #[coco(type = "array_double")]
+    floats: Vec<f64>,
+    #[coco(type = "array_bool")]
+    flags: Vec<bool>,
+    #[coco(vector = 4)]
+    embedding: Vec<f32>,
+}
+```
 
 </Fragment>
 </LangTabs>
 
+<RustNote>
+`ZvecType` has no encoder: put `#[serde(serialize_with = "…")]` on the field to change how its value is written.
+</RustNote>
+
 #### ZvecFtsType
 
-Mark a `str` field as full-text (FTS) indexed. The field is stored as a `STRING` field with a zvec FTS index, so you can run full-text match queries against it directly through zvec. Requires zvec >= 0.5.
+Mark a string field as full-text (FTS) indexed. The field is stored as a `STRING` field with a zvec FTS index, so you can run full-text match queries against it directly through zvec. Requires zvec >= 0.5.
 
 {/* Rust: rust/sdk/cocoindex/tests/zvec_target.rs */}
 <LangTabs>
@@ -435,15 +569,39 @@ let schema =
 </Fragment>
 </LangTabs>
 
-`ZvecFtsType` options: `tokenizer_name` (e.g. `"standard"`, `"jieba"`), `filters` (token filters applied after tokenization, default `("lowercase",)`), and `extra_params`. The connector writes the field and its FTS index; querying it (for example with `zvec.Query(field_name=..., fts=zvec.Fts(match_string=...))`) happens directly against zvec, since this connector only handles the write path. In Rust, query through `conn.open_existing(name).await?` and the re-exported `zvec_rust` API.
+<Lang only="python">
+
+`ZvecFtsType` options: `tokenizer_name` (e.g. `"standard"`, `"jieba"`), `filters` (token filters applied after tokenization, default `("lowercase",)`), and `extra_params`. The connector writes the field and its FTS index; querying it (for example with `zvec.Query(field_name=..., fts=zvec.Fts(match_string=...))`) happens directly against zvec, since this connector only handles the write path.
+
+</Lang>
+
+<Lang only="rust">
+
+The connector writes the field and its FTS index; querying it happens directly against zvec, since this connector only handles the write path. Query through the handle from `conn.open_existing(name).await?` and the re-exported `zvec_rust` API.
+
+</Lang>
 
 ### Vectors
 
-A collection can declare multiple named vector fields, dense and sparse, in one schema. zvec supports querying across them with reranking at read time.
+A collection can declare multiple named vector fields<Lang only="python">, dense and sparse,</Lang> in one schema. zvec supports querying across them with reranking at read time.
+
+<RustNote>
+Sparse vectors and float16 dense vectors are not supported: the `zvec-rust` bindings have no document setter for them, so the connector writes float32 dense vectors only.
+</RustNote>
 
 #### Dense vectors
 
+<Lang only="python">
+
 A NumPy `ndarray` field with a `VectorSchema` becomes a dense vector. The element dtype selects the zvec type: `float32` → `VECTOR_FP32`, `float16` → `VECTOR_FP16`. zvec's dense index only accepts these two; for smaller storage, keep a float32 vector and set `quantize`. Tune the HNSW index with `ZvecVectorDef`:
+
+</Lang>
+
+<Lang only="rust">
+
+A `Vec<f32>` field marked `#[coco(vector)]` becomes a dense vector (`VECTOR_FP32`). For smaller storage, set `quantize`. Tune the HNSW index with `ZvecVectorDef`:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/tests/zvec_target.rs */}
 <LangTabs>
@@ -491,11 +649,13 @@ let schema = CollectionSchema::from_row::<VectorDoc>(["id"])?
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 `ZvecVectorDef` options: `metric` (`"cosine"`, `"ip"`, `"l2"`) and `quantize` (`"none"`, `"fp16"`, `"int8"`, `"int4"`).
 
 #### Sparse vectors
 
-Mark a `dict[int, float]` field (mapping dimension → weight) as sparse with `ZvecVectorDef(sparse=True)`. The Rust SDK has no sparse vectors: the `zvec-rust` bindings have no document setter for them, so the Rust connector writes float32 dense vectors only.
+Mark a `dict[int, float]` field (mapping dimension → weight) as sparse with `ZvecVectorDef(sparse=True)`.
 
 ```python
 @dataclass
@@ -503,6 +663,8 @@ class Doc:
     id: str
     sparse: Annotated[dict[int, float], ZvecVectorDef(sparse=True)]
 ```
+
+</Lang>
 
 ## Full example
 

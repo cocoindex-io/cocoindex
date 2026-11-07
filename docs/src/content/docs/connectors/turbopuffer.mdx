@@ -6,9 +6,9 @@ description: >
   per-namespace distance metric, and schemaless attributes — configured via
   VectorDef and NamespaceSchema.
 ---
-The `turbopuffer` connector provides utilities for writing rows to [Turbopuffer](https://turbopuffer.com/) namespaces, with support for both single and named vectors.
-
 import LangTabs from '../../../components/LangTabs.astro';
+
+The `turbopuffer` connector provides utilities for writing rows to [Turbopuffer](https://turbopuffer.com/) namespaces, with support for both single and named vectors.
 
 {/* Rust: examples/rust/text_embedding_turbopuffer/src/main.rs */}
 <LangTabs>
@@ -27,10 +27,10 @@ use cocoindex::connectors::turbopuffer::{
 };
 ```
 
-The module is compiled with the `turbopuffer` Cargo feature of the `cocoindex` crate.
-
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 :::note[Dependencies]
 This connector requires additional dependencies. Install with:
@@ -41,9 +41,19 @@ pip install cocoindex[turbopuffer]
 
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+:::note[Dependencies]
+The module is compiled with the `turbopuffer` Cargo feature of the `cocoindex` crate.
+:::
+
+</Lang>
+
 ## Connection setup
 
-Turbopuffer uses a single client object that owns the API key and region. Construct one using `AsyncTurbopuffer`:
+Turbopuffer uses a single client object that owns the API key and region. Construct one using <Lang only="python">`AsyncTurbopuffer`</Lang><Lang only="rust">`TurbopufferConnection`</Lang>:
 
 {/* Rust: examples/rust/text_embedding_turbopuffer/src/main.rs */}
 <LangTabs>
@@ -75,7 +85,15 @@ fn connect() -> Result<TurbopufferConnection> {
 </Fragment>
 </LangTabs>
 
-`turbopuffer.AsyncTurbopuffer` is re-exported from the [Turbopuffer Python SDK](https://github.com/turbopuffer/turbopuffer-python); importing it directly via `from turbopuffer import AsyncTurbopuffer` works too. The Rust SDK speaks the Turbopuffer HTTP API itself and uses no Turbopuffer crate.
+<Lang only="python">
+
+`turbopuffer.AsyncTurbopuffer` is re-exported from the [Turbopuffer Python SDK](https://github.com/turbopuffer/turbopuffer-python); importing it directly via `from turbopuffer import AsyncTurbopuffer` works too.
+
+</Lang>
+
+<RustNote>
+The connector speaks the Turbopuffer HTTP API itself and uses no Turbopuffer crate, so there is no client type from a Turbopuffer SDK to construct.
+</RustNote>
 
 ## As target
 
@@ -85,7 +103,7 @@ The `turbopuffer` connector provides target state APIs for writing rows to names
 
 #### Setting up a connection
 
-Create a `ContextKey[AsyncTurbopuffer]` to identify your client, then provide it in your lifespan:
+Create a <Lang only="python">`ContextKey[AsyncTurbopuffer]`</Lang><Lang only="rust">`ContextKey<TurbopufferConnection>`</Lang> to identify your client, then provide it in your lifespan:
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed namespaces. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
@@ -173,6 +191,8 @@ pub async fn mount_namespace_target(
 
 **Parameters:**
 
+<Lang only="python">
+
 - `db` — A `ContextKey[AsyncTurbopuffer]` identifying the client to use.
 - `namespace_name` — Name of the namespace.
 - `schema` — Schema definition specifying vector configuration and distance metric (see [Namespace schema](#namespace-schema)).
@@ -180,9 +200,31 @@ pub async fn mount_namespace_target(
 
 **Returns:** A pending `NamespaceTarget`. Use the convenience wrapper `await turbopuffer.mount_namespace_target(TPUF, namespace_name, schema)` to resolve.
 
+</Lang>
+
+<Lang only="rust">
+
+- `ctx` — The current component's `Ctx`.
+- `conn` — A `ContextKey<TurbopufferConnection>` identifying the connection to use.
+- `namespace` — Name of the namespace: ASCII letters, digits, `-`, `_` and `.`.
+- `schema` — Schema definition specifying vector configuration and distance metric (see [Namespace schema](#namespace-schema)).
+- `options` — `ManagedTargetOptions` on the `_with_options` variants; `ManagedTargetOptions::user_managed()` assumes the namespace exists.
+
+</Lang>
+
 #### Rows (child states)
 
+<Lang only="python">
+
 Once a `NamespaceTarget` is resolved, declare rows to be upserted using `turbopuffer.Row`:
+
+</Lang>
+
+<Lang only="rust">
+
+Once a `NamespaceTarget` is resolved, declare rows to be upserted with `declare_row` or `declare_named_row`:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/turbopuffer.rs */}
 <LangTabs>
@@ -214,7 +256,7 @@ impl NamespaceTarget {
     pub fn declare_row(
         &self,
         ctx: &Ctx,
-        id: impl Into<String>,
+        id: impl Into<RowId>,
         vector: Vec<f32>,
         attributes: Map<String, JsonValue>,
     ) -> Result<()>
@@ -223,7 +265,7 @@ impl NamespaceTarget {
     pub fn declare_named_row<I, K>(
         &self,
         ctx: &Ctx,
-        id: impl Into<String>,
+        id: impl Into<RowId>,
         vectors: I,
         attributes: Map<String, JsonValue>,
     ) -> Result<()>
@@ -231,16 +273,33 @@ impl NamespaceTarget {
         I: IntoIterator<Item = (K, Vec<f32>)>,
         K: Into<String>
 }
+
+pub enum RowId {
+    Str(String),
+    Int(u64),
+}
 ```
 
-The Rust SDK has no `Row` type: the id, the vector(s) and the attributes are separate arguments. The id is a `String`; the attributes are a `serde_json::Map<String, Value>`. A vector with a NaN or infinite element is rejected.
+The id, the vector(s) and the attributes are separate arguments. The id is a `RowId`, built from a `String`, a `&str` or a `u64`; the attributes are a `serde_json::Map<String, Value>`. A vector with a NaN or infinite element is rejected.
 
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 - `id` — Document id (string or integer).
 - `vector` — For an unnamed-vector schema, pass a single sequence. For a named-vectors schema, pass a dict mapping vector field name to its sequence.
 - `attributes` — Non-vector attributes (text, tags, metadata, etc.). Turbopuffer infers attribute types from the data.
+
+</Lang>
+
+<Lang only="rust">
+
+- `id` — Document id (string or unsigned integer).
+- `vector` / `vectors` — For an unnamed-vector schema, pass one `Vec<f32>` to `declare_row`. For a named-vectors schema, pass `(name, vector)` pairs to `declare_named_row`.
+- `attributes` — Non-vector attributes (text, tags, metadata, etc.). Turbopuffer infers attribute types from the data.
+
+</Lang>
 
 ### Namespace schema
 
@@ -288,17 +347,32 @@ impl NamespaceSchema {
 pub enum DistanceMetric { CosineDistance, EuclideanSquared }
 ```
 
-The Rust schema has one constructor per shape instead of one `create` with a union argument. `from_row` turns each `#[coco(vector)]` field of a row struct into a named vector; the other fields stay schemaless attributes. Every constructor takes the distance explicitly.
+`from_row` turns each `#[coco(vector)]` field of a row struct into a named vector; the other fields stay schemaless attributes. `with_vector_dim` sets the dimension of one such field.
 
 </Fragment>
 </LangTabs>
 
+<RustNote>
+The Rust schema has one constructor per shape instead of one `create` with a union argument, and every constructor takes the distance explicitly.
+</RustNote>
+
 **Parameters:**
+
+<Lang only="python">
 
 - `vectors` — Either:
   - A single `VectorDef` for an unnamed vector (stored under turbopuffer's default `"vector"` field).
   - A dict mapping vector names to `VectorDef` for named vectors.
 - `distance` — Distance metric applied to all vector columns in the namespace. Turbopuffer applies a single distance metric per namespace.
+
+</Lang>
+
+<Lang only="rust">
+
+- The vector shape — `new`, `from_vector_schema` and `from_vector_provider` declare an unnamed vector (stored under turbopuffer's default `"vector"` field); `named` and `from_row` declare named vectors.
+- `distance` — Distance metric applied to all vector columns in the namespace. Turbopuffer applies a single distance metric per namespace.
+
+</Lang>
 
 #### VectorDef
 
@@ -331,7 +405,17 @@ impl VectorDef {
 </Fragment>
 </LangTabs>
 
-The `schema` field accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema`. The dtype on the `VectorSchema` (must be `np.dtype(np.float32)` or `np.dtype(np.float16)`) controls turbopuffer's vector type — `[N]f32` or `[N]f16`. In Rust, `VectorSchema::f32(n)` and `VectorSchema::f16(n)` select the same two types, and `VectorDef::from_provider(&embedder).await?` resolves one from an embedder.
+<Lang only="python">
+
+The `schema` field accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema`. The dtype on the `VectorSchema` (must be `np.dtype(np.float32)` or `np.dtype(np.float16)`) controls turbopuffer's vector type — `[N]f32` or `[N]f16`.
+
+</Lang>
+
+<Lang only="rust">
+
+The `schema` field is an explicit `VectorSchema`. Its dtype controls turbopuffer's vector type: `VectorSchema::f32(n)` gives `[N]f32` and `VectorSchema::f16(n)` gives `[N]f16`. `VectorDef::from_provider(&embedder).await?` resolves the schema from a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), typically the embedder.
+
+</Lang>
 
 #### Single (unnamed) vector
 
@@ -449,10 +533,21 @@ target.declare_named_row(
 
 Turbopuffer applies a single `distance_metric` per namespace. Supported values:
 
+<Lang only="python">
+
 - `"cosine_distance"` — Cosine distance (default).
 - `"euclidean_squared"` — Squared Euclidean distance.
 
-In Rust these are `DistanceMetric::CosineDistance` and `DistanceMetric::EuclideanSquared`; every constructor takes the metric explicitly.
+</Lang>
+
+<Lang only="rust">
+
+- `DistanceMetric::CosineDistance` — Cosine distance.
+- `DistanceMetric::EuclideanSquared` — Squared Euclidean distance.
+
+Every constructor takes the metric explicitly; there is no default.
+
+</Lang>
 
 ### Example
 
@@ -592,13 +687,23 @@ See `examples/rust/text_embedding_turbopuffer` for the full program.
 
 ## Row IDs
 
-Turbopuffer rows are identified by `str` or `int`. UUIDs should be passed as strings. In Rust, the id is always a `String` (`impl Into<String>`).
+<Lang only="python">
+
+Turbopuffer rows are identified by `str` or `int`. UUIDs should be passed as strings.
+
+</Lang>
+
+<Lang only="rust">
+
+Turbopuffer rows are identified by a string or an unsigned integer: the id argument is `impl Into<RowId>`, so a `String` or `&str` becomes `RowId::Str` and a `u64` becomes `RowId::Int`. UUIDs should be passed as strings. An integer id must fit in an `i64` (at most `i64::MAX`); a larger one is rejected when the row is declared.
+
+</Lang>
 
 ## Attributes
 
-Row attributes are schemaless; turbopuffer infers attribute types from the values you write. Supported scalar types include `string`, `int`, `uint`, `float`, `bool`, `uuid`, and `datetime`, plus their array variants. See [Turbopuffer's schema reference](https://turbopuffer.com/docs/write#schema) for the full list. In Rust, the attributes are a `serde_json::Map<String, Value>`.
+Row attributes are schemaless; turbopuffer infers attribute types from the values you write. Supported scalar types include `string`, `int`, `uint`, `float`, `bool`, `uuid`, and `datetime`, plus their array variants. See [Turbopuffer's schema reference](https://turbopuffer.com/docs/write#schema) for the full list.<Lang only="rust"> The attributes are a `serde_json::Map<String, Value>`.</Lang>
 
-Reserved attribute names depend on the schema; putting any reserved name in `Row.attributes` raises a `ValueError`:
+Reserved attribute names depend on the schema; putting any reserved name in <Lang only="python">`Row.attributes` raises a `ValueError`</Lang><Lang only="rust">the attributes makes `declare_row` / `declare_named_row` return an error</Lang>:
 
 - `id` is always reserved — it's the row id.
 - For an unnamed-vector schema, `vector` is also reserved (it's the wire-level vector field).
@@ -606,7 +711,7 @@ Reserved attribute names depend on the schema; putting any reserved name in `Row
 
 ## Vector search
 
-The connector focuses on writing rows. For vector search, use the turbopuffer client directly:
+The connector focuses on writing rows. For vector search, use the turbopuffer client directly<Lang only="rust"> or the connector's search helpers</Lang>:
 
 {/* Rust: rust/sdk/cocoindex/tests/turbopuffer_target.rs, examples/rust/text_embedding_turbopuffer/src/main.rs */}
 <LangTabs>
@@ -632,7 +737,7 @@ let hits =
     turbopuffer::vector_search_by_field(conn, namespace, "vector", query_vec, TOP_K).await?;
 ```
 
-The Rust SDK has two search helpers, `vector_search` and `vector_search_by_field`; each returns `Vec<TurbopufferHit>` with a `distance` and the row's `attributes`.
+The connector has two search helpers, `vector_search` and `vector_search_by_field`; each returns `Vec<TurbopufferHit>` with a `distance` and the row's `attributes`.
 
 </Fragment>
 </LangTabs>
