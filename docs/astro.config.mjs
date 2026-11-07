@@ -10,6 +10,7 @@ import remarkCodeTitles from './scripts/remark-code-titles.mjs';
 import remarkExampleImages from './scripts/remark-example-images.mjs';
 import remarkMermaid from '@cocoindex/brand/remark-mermaid';
 import remarkLinkChecker from './scripts/remark-link-checker.mjs';
+import rehypeLangHeadingIds from './scripts/rehype-lang-heading-ids.mjs';
 import { redirects } from './src/data/redirects.ts';
 // One shared Shiki theme (the readability-tuned --code-* palette) so docs and
 // blog highlight code identically — single source of truth (GUIDELINE §5.5).
@@ -55,7 +56,8 @@ export default defineConfig({
   ],
   markdown: {
     // Astro 7 and MDX share this processor and its plugin pipeline.
-    processor: unified({ remarkPlugins }),
+    // rehypeLangHeadingIds: heading ids per SDK language (see the plugin).
+    processor: unified({ remarkPlugins, rehypePlugins: [rehypeLangHeadingIds] }),
     shikiConfig: { theme: docsCodeTheme, wrap: false, langs: [bamlGrammar] },
   },
   redirects,
