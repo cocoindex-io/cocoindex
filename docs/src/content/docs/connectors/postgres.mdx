@@ -294,7 +294,7 @@ async fn app_main(ctx: Ctx) -> Result<()> {
     let source_db = ctx.get_key(&SOURCE_DB)?;
     let products: Vec<SourceProduct> = postgres::read_table(source_db, "source_products").await?;
 
-    let outputs = mount_each!(
+    let outputs = use_mount_each!(
         products
             .into_iter()
             .map(|p| (format!("{}|{}", p.product_category, p.product_name), p)),

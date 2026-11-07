@@ -124,7 +124,7 @@ async fn app_main(ctx: Ctx, prefix: String) -> Result<()> {
         client.container_name()
     );
 
-    let rows_by_file = mount_each!(
+    let rows_by_file = use_mount_each!(
         files.into_iter().map(|f| (f.key(), f)),
         |file| process_file(ctx, file)
     )

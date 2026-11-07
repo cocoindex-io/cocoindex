@@ -34,7 +34,7 @@ async fn fixture_app(ctx: Ctx) -> Result<()> {
     let target = mount_dir_target(&ctx, env_path("FIXTURE_OUT")?)?;
     let files = walk_items(env_path("FIXTURE_SRC")?, &["*.txt"])?;
     let count = files.len();
-    let outputs = mount_each!(files, |file| upper(ctx, file)).await?;
+    let outputs = use_mount_each!(files, |file| upper(ctx, file)).await?;
     for (name, text) in &outputs {
         target.declare_file(&ctx, name, text.as_bytes())?;
     }

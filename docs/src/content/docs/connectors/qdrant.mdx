@@ -866,7 +866,7 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     .await?;
 
     let files = walk_items(&sourcedir, &["**/*.md"])?;
-    let points_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
+    let points_by_file = use_mount_each!(files, |file| process_file(ctx, file)).await?;
 
     for points in &points_by_file {
         for p in points {

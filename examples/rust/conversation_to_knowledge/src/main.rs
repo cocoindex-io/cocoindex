@@ -119,7 +119,7 @@ async fn app_main(ctx: Ctx, input_dir: PathBuf) -> Result<()> {
 
     // Phase 1: per-session fetch + extract (memoized, concurrent).
     let processed: Vec<ProcessedSession> =
-        mount_each!(sources.into_iter().map(|s| (s.key(), s)), |source| {
+        use_mount_each!(sources.into_iter().map(|s| (s.key(), s)), |source| {
             pipeline::process_session(ctx, source)
         })
         .await?;

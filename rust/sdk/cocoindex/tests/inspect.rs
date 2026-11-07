@@ -34,7 +34,7 @@ async fn run_app(root: &Path) -> (Environment, App) {
     app.update(move |ctx| async move {
         let target = mount_dir_target(&ctx, out)?;
         let files = walk_items(src, &["*.txt"])?;
-        let outputs = mount_each!(files, |file| upper(ctx, file)).await?;
+        let outputs = use_mount_each!(files, |file| upper(ctx, file)).await?;
         for (name, text) in &outputs {
             target.declare_file(&ctx, name, text.as_bytes())?;
         }
@@ -47,6 +47,12 @@ async fn run_app(root: &Path) -> (Environment, App) {
 
 fn child(key: &str) -> StablePath {
     StablePath::root().concat_part(key.into_stable_key())
+}
+
+/// The path of the `use_mount_each!(files, |file| upper(ctx, file))` child
+/// for `name`: `upper/<name>`, the function name being the prefix.
+fn upper_child(name: &str) -> StablePath {
+    child("upper").concat_part(name.into_stable_key())
 }
 
 fn paths_of(details: &[StablePathDetail]) -> Vec<String> {
@@ -69,18 +75,32 @@ async fn stable_paths_of_a_run() {
         .iter()
         .map(ToString::to_string)
         .collect();
-    assert_eq!(paths, ["/", "/\"upper/a.txt\"", "/\"upper/b.txt\""]);
+    assert_eq!(
+        paths,
+        [
+            "/",
+            "/\"upper\"",
+            "/\"upper\"/\"a.txt\"",
+            "/\"upper\"/\"b.txt\""
+        ]
+    );
 
     let infos: Vec<_> = inspect::iter_stable_paths(&app)
         .await
         .try_collect()
         .await
         .unwrap();
-    assert_eq!(infos.len(), 3);
-    assert!(
-        infos
-            .iter()
-            .all(|info| info.node_type == StablePathNodeType::Component)
+    assert_eq!(infos.len(), 4);
+    // `upper` is the directory between the root and the per-file components.
+    let node_types: Vec<_> = infos.iter().map(|info| info.node_type).collect();
+    assert_eq!(
+        node_types,
+        [
+            StablePathNodeType::Component,
+            StablePathNodeType::Directory,
+            StablePathNodeType::Component,
+            StablePathNodeType::Component,
+        ]
     );
 
     let by_name: Vec<_> = inspect::iter_stable_paths_by_name(&env, APP_NAME)
@@ -104,7 +124,12 @@ async fn details_of_stable_paths() {
         .unwrap();
     assert_eq!(
         paths_of(&details),
-        ["/", "/\"upper/a.txt\"", "/\"upper/b.txt\""]
+        [
+            "/",
+            "/\"upper\"",
+            "/\"upper\"/\"a.txt\"",
+            "/\"upper\"/\"b.txt\""
+        ]
     );
 
     // The root component owns both files of the directory target.
@@ -139,14 +164,14 @@ async fn details_of_stable_paths() {
     assert_eq!(files, ["a.txt", "b.txt"]);
 
     // A mounted component: memoized, no target states of its own.
-    let a = &details[1];
+    let a = &details[2];
     assert_eq!(a.processor_name, "mount:upper");
     assert!(a.has_memoization);
     assert_eq!(a.target_state_count, 0);
     assert!(a.target_state_items.is_empty());
 
     // One path at a time reads the same records as the stream.
-    let a_path = child("upper/a.txt");
+    let a_path = upper_child("a.txt");
     let one = inspect::get_stable_path_detail(&app, &a_path)
         .await
         .unwrap()
@@ -182,7 +207,7 @@ async fn query_adds_children_and_parents() {
     let dir = tempfile::tempdir().unwrap();
     let (env, app) = run_app(dir.path()).await;
     let root = StablePath::root();
-    let a_path = child("upper/a.txt");
+    let a_path = upper_child("a.txt");
 
     let alone = inspect::query_stable_path_details(&app, &root, StablePathQuery::default())
         .await
@@ -196,15 +221,13 @@ async fn query_adds_children_and_parents() {
     let children = inspect::query_stable_path_details(&app, &root, with_children)
         .await
         .unwrap();
-    assert_eq!(
-        paths_of(&children),
-        ["/", "/\"upper/a.txt\"", "/\"upper/b.txt\""]
-    );
+    // Direct children only: the per-file components sit below `upper`.
+    assert_eq!(paths_of(&children), ["/", "/\"upper\""]);
     // A leaf has no children to add.
     let leaf = inspect::query_stable_path_details(&app, &a_path, with_children)
         .await
         .unwrap();
-    assert_eq!(paths_of(&leaf), ["/\"upper/a.txt\""]);
+    assert_eq!(paths_of(&leaf), ["/\"upper\"/\"a.txt\""]);
 
     let with_parents = StablePathQuery {
         include_parents: true,
@@ -213,7 +236,10 @@ async fn query_adds_children_and_parents() {
     let parents = inspect::query_stable_path_details(&app, &a_path, with_parents)
         .await
         .unwrap();
-    assert_eq!(paths_of(&parents), ["/", "/\"upper/a.txt\""]);
+    assert_eq!(
+        paths_of(&parents),
+        ["/", "/\"upper\"", "/\"upper\"/\"a.txt\""]
+    );
     assert_eq!(parents[0].target_state_count, 2);
 
     let by_name = inspect::query_stable_path_details_by_name(&env, APP_NAME, &a_path, with_parents)
@@ -264,7 +290,8 @@ async fn target_states_with_their_owner() {
     let out_dir = out.clone();
     app.update(move |ctx| async move {
         let target = mount_dir_target(&ctx, out_dir)?;
-        let outputs = mount_each!(walk_items(src, &["*.txt"])?, |file| upper(ctx, file)).await?;
+        let outputs =
+            use_mount_each!(walk_items(src, &["*.txt"])?, |file| upper(ctx, file)).await?;
         for (name, text) in &outputs {
             target.declare_file(&ctx, name, text.as_bytes())?;
         }
@@ -281,7 +308,7 @@ async fn target_states_with_their_owner() {
     assert_eq!(readable, [expected("a.txt")]);
     assert_eq!(
         inspect::list_stable_paths(&app).await.unwrap().len(),
-        2,
+        3,
         "the component of the removed file is gone too"
     );
 }

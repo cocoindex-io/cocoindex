@@ -450,15 +450,23 @@ arguments in a component-memo fingerprint:
 ```rust
 let summary = use_mount!(summarize(ctx, document)).await?;
 
-let outputs = mount_each!(files, |file| process_file(ctx, file, target)).await?;
+mount_each!(files, |file| process_file(ctx, file, target)).await?;
+
+let outputs = use_mount_each!(files, |file| summarize_file(ctx, file)).await?;
 ```
 
-`mount_each!` accepts `(key, value)` items, creates one child component per
-key, and runs them concurrently. Without an explicit prefix, the entry
-function's name is used; the prefixed form is
+`mount_each!` accepts `(key, value)` items and mounts one background child
+component per key at `prefix/key`, like `coco.mount_each` in Python: children
+are mounted as the items are read, run on their own tasks under the app's
+`max_inflight_components` limit (1024 by default, or
+`COCOINDEX_MAX_INFLIGHT_COMPONENTS`), and the macro returns one handle whose
+`ready()` waits for all of them. `use_mount_each!` is the foreground form that
+returns each child's value in input order. Without an explicit prefix, the
+entry function's name is used; the prefixed form is
 `mount_each!("documents", files, |file| process_file(ctx, file))`.
 
-Use `ctx.scope(key, body)` or `ctx.mount_each(items, key_fn, body)` only when
+Use `ctx.scope(key, body)`, `ctx.mount_each(items, key_fn, body)` or
+`ctx.use_mount_each(items, key_fn, body)` only when
 the component key and closure are deliberately dynamic and no automatic
 function/argument fingerprint is wanted. These methods always execute their
 closures; they still provide stable child ownership and reconciliation.
@@ -480,10 +488,13 @@ exception handlers in scope.
 
 ### Nested component paths
 
-`ctx.with_subpath(&"process")` returns a context whose child mounts go under
+`ctx.with_subpath("process")` returns a context whose child mounts go under
 `process`, the Rust spelling of a `with coco.component_subpath("process"):`
 block. Chain calls for a multi-part prefix. `use_state` is not available on a
 subpath context, as in Python.
+
+A mount key is a string or any other `IntoStableKey`: an integer, a UUID,
+bytes, or a `StableKey` such as a symbol, as Python's component keys are.
 
 ```rust
 let process = ctx.with_subpath(&"process");

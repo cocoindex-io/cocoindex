@@ -170,7 +170,7 @@ async for key, file in source.items():
 
 ```rust
 let files = source.list_files().await?;
-let rows_by_file = mount_each!(files.into_iter().map(|file| (file.key(), file)), |file| {
+let rows_by_file = use_mount_each!(files.into_iter().map(|file| (file.key(), file)), |file| {
     process_file(ctx, file)
 })
 .await?;

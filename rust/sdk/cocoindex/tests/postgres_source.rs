@@ -255,7 +255,7 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
                             .try_collect()
                             .await?;
                         let outs = ctx
-                            .mount_each(
+                            .use_mount_each(
                                 rows,
                                 |r| format!("{}|{}", r.category, r.name),
                                 |child, r| async move { process(&child, &r).await },

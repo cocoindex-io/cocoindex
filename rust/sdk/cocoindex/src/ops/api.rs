@@ -747,7 +747,7 @@ async fn resolve_pair_memoized(
     candidates: &[String],
     resolver: &LlmPairResolver,
 ) -> Result<PairDecision> {
-    resolver.request_decision(ctx, &entity, &candidates).await
+    resolver.request_decision(ctx, entity, candidates).await
 }
 
 impl LlmPairResolver {

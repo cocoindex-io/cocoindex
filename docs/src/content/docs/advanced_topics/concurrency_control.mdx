@@ -52,9 +52,7 @@ You can also set the limit via the `COCOINDEX_MAX_INFLIGHT_COMPONENTS` environme
 export COCOINDEX_MAX_INFLIGHT_COMPONENTS=4
 ```
 
-**Precedence:** `AppConfig` value > environment variable > default (1024).
-
-The Rust SDK reads no `COCOINDEX_MAX_INFLIGHT_COMPONENTS` variable: set the limit on the builder.
+**Precedence:** `AppConfig` value (in Rust, the builder's `max_inflight_components`) > environment variable > default (1024). Rust reads the variable when an app is created.
 
 ## Nested mounts: a parent lends its slot
 
