@@ -1110,6 +1110,59 @@ pub async fn collect_memo_arg_state<T: MemoInput + ?Sized>(
     value.memo_state(prev).await
 }
 
+/// Wraps a `#[cocoindex::function(memo)]` argument so the generated code can
+/// pick its memo identity by method resolution (autoref specialization): an
+/// argument whose type implements [`MemoInput`] uses its identity and state
+/// (`MemoArgKeyViaMemoInput`, `MemoArgStateViaMemoInput`); any other
+/// `Serialize` argument, such as a target handle, uses its serialized value
+/// and has no state (`MemoArgKeyViaSerialize`, `MemoArgStateViaSerialize`).
+#[doc(hidden)]
+pub struct MemoArg<'a, T: ?Sized>(pub &'a T);
+
+#[doc(hidden)]
+pub trait MemoArgKeyViaMemoInput {
+    fn __coco_write_memo_key(&self, fingerprinter: &mut Fingerprinter) -> Result<()>;
+}
+
+impl<T: MemoInput + ?Sized> MemoArgKeyViaMemoInput for &MemoArg<'_, T> {
+    fn __coco_write_memo_key(&self, fingerprinter: &mut Fingerprinter) -> Result<()> {
+        write_key_fingerprint_part_for_arg(fingerprinter, self.0)
+    }
+}
+
+#[doc(hidden)]
+pub trait MemoArgKeyViaSerialize {
+    fn __coco_write_memo_key(&self, fingerprinter: &mut Fingerprinter) -> Result<()>;
+}
+
+impl<T: Serialize + ?Sized> MemoArgKeyViaSerialize for MemoArg<'_, T> {
+    fn __coco_write_memo_key(&self, fingerprinter: &mut Fingerprinter) -> Result<()> {
+        write_key_fingerprint_part(fingerprinter, self.0)
+    }
+}
+
+#[doc(hidden)]
+pub trait MemoArgStateViaMemoInput {
+    fn __coco_memo_state_input(&self) -> Option<&dyn MemoInput>;
+}
+
+impl<T: MemoInput> MemoArgStateViaMemoInput for &MemoArg<'_, T> {
+    fn __coco_memo_state_input(&self) -> Option<&dyn MemoInput> {
+        Some(self.0)
+    }
+}
+
+#[doc(hidden)]
+pub trait MemoArgStateViaSerialize {
+    fn __coco_memo_state_input(&self) -> Option<&dyn MemoInput>;
+}
+
+impl<T: Serialize + ?Sized> MemoArgStateViaSerialize for MemoArg<'_, T> {
+    fn __coco_memo_state_input(&self) -> Option<&dyn MemoInput> {
+        None
+    }
+}
+
 /// Whether any of `children` has memo state, for the [`crate::MemoInput`]
 /// derive.
 #[doc(hidden)]
@@ -1176,6 +1229,10 @@ fn system_time_nanos(time: SystemTime) -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use super::{
+        MemoArgKeyViaMemoInput as _, MemoArgKeyViaSerialize as _, MemoArgStateViaMemoInput as _,
+    };
 
     #[derive(Clone)]
     struct Tracked {
@@ -1232,6 +1289,28 @@ mod tests {
 
     fn previous_state(decision: &MemoStateDecision) -> MemoStateValue {
         decision.state.clone()
+    }
+
+    /// The `#[function(memo)]` argument key picks the `MemoInput` identity
+    /// whenever the type has one, unsized slices included, so the key of a
+    /// `MemoInput` argument is what it was before the `Serialize` fallback.
+    #[test]
+    fn memo_arg_key_prefers_memo_input_identity() {
+        fn via_arg_path<T: MemoInput + ?Sized>(value: &T) -> Fingerprint {
+            let mut fp = Fingerprinter::default();
+            write_key_fingerprint_part_for_arg(&mut fp, value).unwrap();
+            fp.into_fingerprint()
+        }
+        let slice: &[u32] = &[1, 2, 3];
+        let mut fp = Fingerprinter::default();
+        (&&MemoArg(slice)).__coco_write_memo_key(&mut fp).unwrap();
+        assert_eq!(fp.into_fingerprint(), via_arg_path(slice));
+
+        let mut serde_fp = Fingerprinter::default();
+        write_key_fingerprint_part(&mut serde_fp, slice).unwrap();
+        assert_ne!(via_arg_path(slice), serde_fp.into_fingerprint());
+
+        assert!((&&MemoArg(&vec![1u32])).__coco_memo_state_input().is_some());
     }
 
     #[test]

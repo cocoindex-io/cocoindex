@@ -671,8 +671,11 @@ fn gen_key_write_for_param(
         None if param.is_str_ref => Some(quote! {
             ::cocoindex::memo::write_key_fingerprint_part(&mut #fingerprinter, #default_arg)?;
         }),
+        // `MemoInput` identity when the type has one, else its serialized
+        // value (a target handle), picked by autoref specialization.
         None => Some(quote! {
-            ::cocoindex::memo::write_key_fingerprint_part_for_arg(&mut #fingerprinter, #default_arg)?;
+            (&&::cocoindex::memo::MemoArg(#default_arg))
+                .__coco_write_memo_key(&mut #fingerprinter)?;
         }),
     }
 }
@@ -687,15 +690,20 @@ fn gen_state_collect_for_param(
         return quote! {};
     }
     let ident = &param.ident;
-    let default_arg = quote! { &#ident };
+    // Only a `MemoInput` argument can carry state; a `Serialize`-only one
+    // takes no state slot, like a `MemoInput` whose state is `None`.
     quote! {
-        let __coco_prev_state = #prev_states_ident
-            .as_ref()
-            .and_then(|__coco_previous_states| __coco_previous_states.get(#states_ident.len()));
-        if let Some(__coco_state) =
-            ::cocoindex::memo::collect_memo_arg_state(#default_arg, __coco_prev_state).await?
+        if let ::core::option::Option::Some(__coco_input) =
+            (&&::cocoindex::memo::MemoArg(&#ident)).__coco_memo_state_input()
         {
-            #states_ident.push(__coco_state);
+            let __coco_prev_state = #prev_states_ident
+                .as_ref()
+                .and_then(|__coco_previous_states| __coco_previous_states.get(#states_ident.len()));
+            if let ::core::option::Option::Some(__coco_state) =
+                ::cocoindex::memo::collect_memo_arg_state(__coco_input, __coco_prev_state).await?
+            {
+                #states_ident.push(__coco_state);
+            }
         }
     }
 }
@@ -778,6 +786,11 @@ fn gen_memo_wrapper_block(
     // clones nothing; on a miss the parameters move into the body closure,
     // which is created only then.
     Ok(quote! {{
+        #[allow(unused_imports)]
+        use ::cocoindex::memo::{
+            MemoArgKeyViaMemoInput as _, MemoArgKeyViaSerialize as _,
+            MemoArgStateViaMemoInput as _, MemoArgStateViaSerialize as _,
+        };
         let #key_ident = #memo_key;
         let __coco_probe = ::cocoindex::memo::MemoProbe::begin(
             #ctx_ident,
@@ -1177,6 +1190,12 @@ fn expand_batching_function(
 /// whole function because it includes the function's logic hash and arguments
 /// in the key automatically.
 ///
+/// Each argument is keyed by its `cocoindex::MemoInput` identity, with that
+/// type's state validation (a file's mtime and content). An argument whose type
+/// is not `MemoInput` but is `Serialize`, such as a target handle, is keyed by
+/// its serialized value and has no state validation, as Python memoizes a
+/// target on its key.
+///
 /// Customize individual argument keys with `memo_key(...)`. A transform
 /// function replaces the argument's default `cocoindex::MemoInput` identity
 /// and suppresses its type-owned external-state validation. `skip` (or `None`)
@@ -1203,9 +1222,9 @@ fn expand_batching_function(
 /// let embedding: Vec<f32> = embed(ctx, text).await?;
 /// ```
 /// Additional parameters must implement `Serialize` because their serialized
-/// values group compatible calls into a physical batch. With `memo`, they must
-/// also implement `MemoInput` because they form part of each item's memo key,
-/// unless `memo_key(...)` transforms or skips their memo identity.
+/// values group compatible calls into a physical batch. With `memo`, they are
+/// also part of each item's memo key, by their `MemoInput` identity when they
+/// have one, unless `memo_key(...)` transforms or skips it.
 ///
 /// A batching body may return `Error::retry_with_smaller_batch(cause)`: the
 /// batch is halved and each half re-run, down to single items, where `cause`

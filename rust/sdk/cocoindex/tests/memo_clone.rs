@@ -178,3 +178,43 @@ fn has_memo_state_follows_the_elements() {
     );
     assert!(vec![file].has_memo_state());
 }
+
+// ---------------------------------------------------------------------------
+// A target handle as a memoized argument
+// ---------------------------------------------------------------------------
+
+static RENDER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// A target handle is `Serialize` (its stable identity) but not `MemoInput`:
+/// a memoized function keys it by its serialized value, as Python memoizes a
+/// target on its key.
+#[cocoindex::function(memo)]
+async fn render(ctx: &Ctx, name: &str, target: &DirTarget) -> Result<()> {
+    RENDER_CALLS.fetch_add(1, Ordering::SeqCst);
+    target.declare_file(ctx, &format!("{name}.txt"), name.as_bytes())
+}
+
+#[tokio::test]
+async fn memo_function_takes_a_target_handle() {
+    let (app, dir) = temp_app("memo_target_arg").await;
+    let run = |out: std::path::PathBuf| {
+        let app = app.clone();
+        async move {
+            app.update(move |ctx| async move {
+                let target = DirTarget::mount(&ctx, &out)?;
+                render(&ctx, "a", &target).await
+            })
+            .await
+            .unwrap()
+        }
+    };
+    let out = dir.path().join("out");
+    run(out.clone()).await;
+    run(out.clone()).await;
+    assert_eq!(RENDER_CALLS.load(Ordering::SeqCst), 1, "same target: a hit");
+    assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"a");
+
+    // A different target is a different key.
+    run(dir.path().join("other")).await;
+    assert_eq!(RENDER_CALLS.load(Ordering::SeqCst), 2);
+}
