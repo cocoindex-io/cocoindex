@@ -1,16 +1,17 @@
 //! Progress display for `update`: per-component lines and a status line,
-//! redrawn on stderr when it is a terminal, using the engine's own line
-//! formats (`cocoindex_core::engine::progress_display`).
+//! redrawn on stderr when it is a terminal.
 
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
 
 use cocoindex::cli::protocol::ComponentStatsWire;
-use cocoindex_core::engine::progress_display::{format_component_line, format_status_line};
 use cocoindex_core::engine::stats::ProcessingStatsGroup;
 
 const MIN_REDRAW: Duration = Duration::from_millis(100);
+
+/// Spinner characters (braille pattern), cycled on each redraw.
+const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 pub struct Renderer {
     enabled: bool,
@@ -32,6 +33,52 @@ fn group(stats: &ComponentStatsWire) -> ProcessingStatsGroup {
         num_deletes: stats.num_deletes,
         num_reprocesses: stats.num_reprocesses,
         num_errors: stats.num_errors,
+    }
+}
+
+/// One component's line: its counts, and a spinner while work is in flight.
+fn format_component_line(name: &str, group: &ProcessingStatsGroup, spinner_idx: usize) -> String {
+    let total = group.num_execution_starts;
+    let in_flight = group.num_in_progress();
+    let mut line = if in_flight > 0 {
+        let spinner = SPINNER_CHARS[spinner_idx % SPINNER_CHARS.len()];
+        format!("{spinner}  {name}: {total} total, {in_flight} in-flight")
+    } else {
+        format!("✅ {name}: {total} total")
+    };
+    let parts: Vec<String> = [
+        (group.num_adds, "added"),
+        (group.num_reprocesses, "reprocessed"),
+        (group.num_deletes, "deleted"),
+        (group.num_unchanged, "unchanged"),
+        (group.num_errors, "⚠️ errors"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, label)| format!("{count} {label}"))
+    .collect();
+    if !parts.is_empty() {
+        line.push_str(" | ");
+        line.push_str(&parts.join(", "));
+    }
+    line
+}
+
+/// The elapsed line, and for a live update whether it has caught up.
+fn format_status_line(
+    live: bool,
+    ready: bool,
+    elapsed: Duration,
+    ready_elapsed: Option<Duration>,
+) -> String {
+    let elapsed_secs = elapsed.as_secs_f64();
+    if !live {
+        format!("⏳ Elapsed: {elapsed_secs:.1}s")
+    } else if ready {
+        let ready_secs = ready_elapsed.map_or(0.0, |d| d.as_secs_f64());
+        format!("⏳ Ready (took {ready_secs:.1}s) | Watching for changes...")
+    } else {
+        format!("⏳ Elapsed: {elapsed_secs:.1}s | Catching up...")
     }
 }
 
