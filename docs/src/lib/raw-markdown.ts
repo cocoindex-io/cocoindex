@@ -24,6 +24,7 @@ import type { CollectionEntry } from 'astro:content';
 import { getCollection, getEntry } from 'astro:content';
 import { DOCS_BASE, GITHUB_REPO, docSlug, docTitle, pageUrl, LLMS_TXT_URL, SKILL_MD_URL } from '../consts';
 import { findExample } from '../data/examples';
+import { type Lang, DEFAULT_LANG, langPrefix, pageRegistry, stripOtherLanguage } from './lang';
 import { FENCE, INLINE_CODE, MDX_COMMENT } from './fence.mjs';
 
 const SENT = '\x00'; // sentinel: cannot occur in source text
@@ -61,8 +62,8 @@ const memo = import.meta.env.DEV ? null : new Map<string, string>();
 // resolved against it and emitted as root-relative page URLs (/docs/<slug>/),
 // the form remark-link-checker gives the HTML pages; the .md twins serve the
 // body verbatim, and index pages sit one level shallower than their source.
-export function mdxToMarkdown(body: string, srcDir = ''): string {
-  const key = `${srcDir}\u0000${body ?? ''}`;
+export function mdxToMarkdown(body: string, srcDir = '', lang?: Lang): string {
+  const key = `${lang ?? ''}\u0000${srcDir}\u0000${body ?? ''}`;
   const cached = memo?.get(key);
   if (cached !== undefined) return cached;
 
@@ -73,6 +74,10 @@ export function mdxToMarkdown(body: string, srcDir = ''): string {
   s = protect(s, FENCE, fences, 'F');
   const inlines: string[] = [];
   s = protect(s, INLINE_CODE, inlines, 'C');
+
+  // 1b. Keep only this language's content (code is behind sentinels, so a
+  //     literal `<Lang>` inside a code sample is safe).
+  if (lang) s = stripOtherLanguage(s, lang);
 
   // 2. Strip ESM import lines (require `from` so we never eat prose starting
   //    with the word "import"), MDX `export …` scaffolding, and MDX comments.
@@ -124,9 +129,16 @@ export function mdxToMarkdown(body: string, srcDir = ''): string {
 // Single source for the docs-page route map, shared by the HTML route
 // ([...slug].astro) and the Markdown twin ([...slug].md.ts) so the two can
 // never enumerate different page sets.
+// One path per (page, language): `/docs/<route>/` for Python and
+// `/docs/rust/<route>/` for Rust, for each language the page lists.
 export async function docStaticPaths() {
-  const docs = await getCollection('docs');
-  return docs.map((doc) => ({ params: { slug: docSlug(doc.id) }, props: { doc } }));
+  const { entries } = await pageRegistry();
+  return entries.flatMap((entry) =>
+    entry.languages.map((lang) => ({
+      params: { slug: `${langPrefix(lang)}${entry.route}` },
+      props: { doc: entry.doc, lang, route: entry.route },
+    })),
+  );
 }
 
 // Shared top-of-page banner for every agent-facing .md twin: v1 guard, then
@@ -155,15 +167,21 @@ export function docSrcDir(doc: CollectionEntry<'docs'>): string {
   return dir === '.' ? '' : dir;
 }
 
-export function buildDocMarkdown(doc: CollectionEntry<'docs'>): string {
-  const slug = docSlug(doc.id);
-  const title = docTitle(doc.id, doc.data.title);
+export function buildDocMarkdown(
+  doc: CollectionEntry<'docs'>,
+  lang: Lang = DEFAULT_LANG,
+  route: string = docSlug(doc.id),
+): string {
+  const data = doc.data as Record<string, unknown>;
+  const rustTitle = lang === 'rust' && typeof data.rust_title === 'string' ? data.rust_title : undefined;
+  const title = docTitle(doc.id, rustTitle ?? doc.data.title);
+  const slug = `${langPrefix(lang)}${route}`;
   const guard = buildGuard(
     slug,
     `**CocoIndex v1.** This page documents CocoIndex **v1** — a ground-up redesign ` +
       `from v0. When writing code, ignore any v0 flow-builder DSL or deprecated decorators.`,
   );
-  return `# ${title}\n\n${guard}\n\n${mdxToMarkdown(doc.body, docSrcDir(doc))}\n`;
+  return `# ${title}\n\n${guard}\n\n${mdxToMarkdown(doc.body, docSrcDir(doc), lang)}\n`;
 }
 
 // Full Markdown body for an example walkthrough's /examples/<slug>.md twin.
