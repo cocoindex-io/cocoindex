@@ -12,7 +12,6 @@ use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
 use crate::prelude::*;
 
-use crate::state::component_selector::ComponentSelector;
 use crate::state::stable_path::StableKey;
 
 pub(crate) static TARGET_ID_KEY: LazyLock<StableKey> =
@@ -773,10 +772,6 @@ pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     /// `mount_inner_live`'s self-built parent context).
     pub on_error: Option<crate::engine::component::OnError>,
     pub preview_collector: Option<PreviewActionCollector<Prof>>,
-    /// The selector this run is under, narrowed by
-    /// [`ComponentSelector::scoped_to`]: `None` without a selector and inside a
-    /// selected subtree. See [`ComponentProcessorContext::component_selector`].
-    pub component_selector: Option<ComponentSelector>,
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
@@ -815,7 +810,6 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
         live: bool,
         on_error: Option<crate::engine::component::OnError>,
         preview_collector: Option<PreviewActionCollector<Prof>>,
-        component_selector: Option<ComponentSelector>,
     ) -> Self {
         Self::Build(ComponentBuildContext {
             state: Mutex::new(Some(ComponentBuildingState {
@@ -831,7 +825,6 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
             live,
             on_error,
             preview_collector,
-            component_selector,
         })
     }
 
@@ -1332,17 +1325,6 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     pub(crate) fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
-            ComponentProcessingAction::Delete(_) => None,
-        }
-    }
-
-    /// The selector this run is under: `Some` means this run may leave
-    /// components below it unrun, so that its subtree is not up to date when it
-    /// ends. A delete has none: it is reached only for a path a selector covers,
-    /// and removes everything below.
-    pub(crate) fn component_selector(&self) -> Option<&ComponentSelector> {
-        match self.processing_state() {
-            ComponentProcessingAction::Build(build_ctx) => build_ctx.component_selector.as_ref(),
             ComponentProcessingAction::Delete(_) => None,
         }
     }

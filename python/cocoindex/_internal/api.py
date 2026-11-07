@@ -327,16 +327,12 @@ async def _mount_live_component(
     """
     from .live_component import _process_live_wrapper
 
-    mounted = await core.mount_live_async(
+    controller, readiness_handle = await core.mount_live_async(
         child_path,
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
         parent_ctx._core_processor_ctx.live,
     )
-    if mounted is None:
-        # The update's component selector leaves this component out.
-        return ComponentMountHandle([])
-    controller, readiness_handle = mounted
 
     operator = LiveComponentOperator(controller, instance, parent_ctx._env, child_path)
 
