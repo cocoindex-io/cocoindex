@@ -343,7 +343,6 @@ class App:
         preview: bool = False,
         *,
         deadline: DeadlineContext,
-        component_selector: list[StablePath] | None = None,
     ) -> StoredValue | list[Any]: ...
     def update_async(
         self,
@@ -354,7 +353,6 @@ class App:
         host_ctx: Any = None,
         *,
         deadline: DeadlineContext,
-        component_selector: list[StablePath] | None = None,
     ) -> UpdateHandle: ...
     def drop(
         self,
@@ -392,9 +390,7 @@ class LiveComponentController:
     def start(self, process_live_fut: Any) -> None: ...
     def mount_inner_live_async(
         self, stable_path: StablePath
-    ) -> Coroutine[
-        Any, Any, tuple[LiveComponentController, ComponentMountHandle] | None
-    ]: ...
+    ) -> Coroutine[Any, Any, tuple[LiveComponentController, ComponentMountHandle]]: ...
     @property
     def is_live(self) -> bool: ...
 
@@ -403,9 +399,7 @@ def mount_live_async(
     comp_ctx: ComponentProcessorContext,
     fn_ctx: FnCallContext,
     live: bool,
-) -> Coroutine[
-    Any, Any, tuple[LiveComponentController, ComponentMountHandle] | None
-]: ...
+) -> Coroutine[Any, Any, tuple[LiveComponentController, ComponentMountHandle]]: ...
 
 # --- TargetActionSink ---
 class TargetActionSink:

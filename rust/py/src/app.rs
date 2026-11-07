@@ -6,7 +6,6 @@ use cocoindex_core::engine::{
     runtime::get_runtime,
     stats::{ProcessingStats, VersionedProcessingStats},
 };
-use cocoindex_core::state::component_selector::ComponentSelector;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -14,7 +13,7 @@ use tokio::sync::watch;
 
 use crate::{
     component::PyComponentProcessor, deadline::PyDeadlineContext, environment::PyEnvironment,
-    stable_path::PyStablePath, target_state_codec::PyTargetAction, value::PyStoredValue,
+    target_state_codec::PyTargetAction, value::PyStoredValue,
 };
 
 fn snapshot_to_py<'py>(
@@ -234,10 +233,6 @@ impl PyStatsGroupHandle {
     }
 }
 
-fn component_selector_from_py(paths: Vec<PyStablePath>) -> ComponentSelector {
-    ComponentSelector::new(paths.into_iter().map(|path| path.0))
-}
-
 #[pyclass(name = "App")]
 pub struct PyApp(pub Arc<App<PyEngineProfile>>);
 
@@ -264,8 +259,7 @@ impl PyApp {
         Ok(Self(Arc::new(app)))
     }
 
-    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, live=false, preview=false, *, deadline, component_selector=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, live=false, preview=false, *, deadline))]
     pub fn update_async(
         &self,
         root_processor: PyComponentProcessor,
@@ -274,14 +268,12 @@ impl PyApp {
         live: bool,
         preview: bool,
         deadline: PyDeadlineContext,
-        component_selector: Option<Vec<PyStablePath>>,
     ) -> PyResult<PyUpdateHandle> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             full_reprocess,
             live,
             deadline: deadline.0,
-            component_selector: component_selector.map(component_selector_from_py),
         };
         let host_ctx = Arc::new(host_ctx);
         let preview_collector = if preview {
@@ -298,7 +290,7 @@ impl PyApp {
         Ok(uh)
     }
 
-    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, report_to_stdout=false, refresh_interval_secs=None, live=false, preview=false, *, deadline, component_selector=None))]
+    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, report_to_stdout=false, refresh_interval_secs=None, live=false, preview=false, *, deadline))]
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &self,
@@ -311,14 +303,12 @@ impl PyApp {
         live: bool,
         preview: bool,
         deadline: PyDeadlineContext,
-        component_selector: Option<Vec<PyStablePath>>,
     ) -> PyResult<Py<PyAny>> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             full_reprocess,
             live,
             deadline: deadline.0,
-            component_selector: component_selector.map(component_selector_from_py),
         };
         let host_ctx = Arc::new(host_ctx);
         let preview_collector = if preview {

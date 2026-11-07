@@ -9,7 +9,6 @@ use crate::engine::live_component::{LIVE_COMPONENT_DRAIN_TIMEOUT_SECS, LiveCompo
 
 use crate::engine::environment::{AppRegistration, Environment};
 use crate::engine::runtime::get_runtime;
-use crate::state::component_selector::ComponentSelector;
 use crate::state::stable_path::StablePath;
 use tokio::sync::watch;
 
@@ -22,9 +21,6 @@ pub struct AppUpdateOptions {
     pub live: bool,
     /// Deadline for the root processor and for observing the update result.
     pub deadline: DeadlineContext,
-    /// If set, run only the selected components (and what reaches them),
-    /// leaving every other component as it is.
-    pub component_selector: Option<ComponentSelector>,
 }
 
 impl Default for AppUpdateOptions {
@@ -33,7 +29,6 @@ impl Default for AppUpdateOptions {
             full_reprocess: false,
             live: false,
             deadline: DeadlineContext::NONE,
-            component_selector: None,
         }
     }
 }
@@ -150,12 +145,6 @@ impl<Prof: EngineProfile> App<Prof> {
             // failed" with "the whole update failed", which is too strict;
             // tombstones survive for retry on the next reconcile.)
             None,
-            // The root always runs: a parent has to run to reach what is
-            // selected below it.
-            ComponentSelector::scoped_to(
-                options.component_selector.as_ref(),
-                self.root_component.stable_path(),
-            ),
         )?;
 
         let root_component = self.root_component.clone();

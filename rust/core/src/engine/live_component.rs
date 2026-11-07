@@ -13,7 +13,6 @@ use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::TargetStateProvider;
 use crate::prelude::*;
-use crate::state::component_selector::{ComponentSelector, MountDecision};
 use crate::state::stable_path::{StableKey, StablePath};
 use crate::state::target_state_path::TargetStatePath;
 use crate::state_store::AppStore;
@@ -44,31 +43,21 @@ pub struct MountLivePending<Prof: EngineProfile> {
     parent_ctx: ComponentProcessorContext<Prof>,
     providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     live: bool,
-    component_selector: Option<ComponentSelector>,
 }
 
 /// Mount a live component. Split into two phases:
 /// - `prepare` (sync): registers the child component, borrows fn_ctx
 /// - `complete` (async): cancels existing live state, creates controller
-///
-/// `None` when the running update's selector leaves the component out: it does
-/// not start, and any incarnation already running keeps running.
 pub fn mount_live_prepare<Prof: EngineProfile>(
     parent_ctx: &ComponentProcessorContext<Prof>,
     fn_ctx: &FnCallContext,
     child_stable_path: StablePath,
     live: bool,
-) -> Result<Option<MountLivePending<Prof>>> {
+) -> Result<MountLivePending<Prof>> {
     // 1. Mount (or get existing) child component.
     let child = parent_ctx
         .component()
         .mount_child(fn_ctx, child_stable_path.clone())?;
-
-    let component_selector =
-        match ComponentSelector::for_mount(parent_ctx.component_selector(), &child_stable_path) {
-            MountDecision::Skip => return Ok(None),
-            MountDecision::Run(component_selector) => component_selector,
-        };
 
     // Register the child in the parent's child_path_set and get providers
     // in a single lock acquisition.
@@ -87,13 +76,12 @@ pub fn mount_live_prepare<Prof: EngineProfile>(
             .clone())
     })?;
 
-    Ok(Some(MountLivePending {
+    Ok(MountLivePending {
         child,
         parent_ctx: parent_ctx.clone(),
         providers,
         live,
-        component_selector,
-    }))
+    })
 }
 
 impl<Prof: EngineProfile> MountLivePending<Prof> {
@@ -104,7 +92,6 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             parent_ctx,
             providers,
             live,
-            component_selector,
         } = self;
 
         // 2. If existing live state, cancel and drain it (with 30s timeout).
@@ -205,7 +192,6 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             parent_ctx.full_reprocess(),
             live,
             parent_ctx.preview_collector().cloned(),
-            component_selector,
             parent_ctx.app_store().clone(),
             providers,
             parent_ctx.admission().lender().clone(),
@@ -498,10 +484,6 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     /// The mounting run's preview collector: in a preview, this component's
     /// runs preview too rather than apply.
     preview_collector: Option<PreviewActionCollector<Prof>>,
-    /// The selector this component's runs are under, as in
-    /// [`ComponentProcessorContext::component_selector`]. It holds for the whole
-    /// update, live events included.
-    component_selector: Option<ComponentSelector>,
     /// The mounting run's store handle, which persists nothing in a preview
     /// (see [`ComponentProcessorContext::app_store`]).
     app_store: AppStore,
@@ -533,7 +515,6 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         full_reprocess: bool,
         live: bool,
         preview_collector: Option<PreviewActionCollector<Prof>>,
-        component_selector: Option<ComponentSelector>,
         app_store: AppStore,
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         lender: Lender,
@@ -547,7 +528,6 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             full_reprocess,
             live,
             preview_collector,
-            component_selector,
             app_store,
             providers,
             lender,
@@ -658,7 +638,6 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.live,
                 on_error.clone(),
                 self.preview_collector.clone(),
-                self.component_selector.clone(),
             ),
             self.app_store.clone(),
         );
@@ -688,11 +667,6 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         processor: Prof::ComponentProc,
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
-        if let MountDecision::Skip =
-            ComponentSelector::for_mount(self.component_selector.as_ref(), &subpath)
-        {
-            return Ok(ComponentExecutionHandle::finished());
-        }
         self.dispatch(
             subpath,
             Op::Update {
@@ -717,20 +691,11 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// A preview deletes nothing: like the deletes of the components an update
     /// no longer mounts, a live delete is not previewed (the tombstone never
     /// persists, and the drain task skips the op).
-    ///
-    /// Under a selector, only a covered path is deleted: an ancestor of a
-    /// selected path holds unselected descendants too (the same call as
-    /// `reconcile_child_existence` makes for a child no longer declared).
     pub async fn delete(
         &self,
         subpath: StablePath,
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
-        if let Some(selector) = &self.component_selector
-            && !selector.covers(&subpath)
-        {
-            return Ok(ComponentExecutionHandle::finished());
-        }
         // Synchronously remove the existence entry and write a tombstone,
         // matching the prior implementation's contract.
         if let Some((parent_ref, child_key)) = subpath.as_ref().split_parent() {
@@ -828,7 +793,6 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let full_reprocess = self.full_reprocess;
         let live = self.live;
         let preview_collector = self.preview_collector.clone();
-        let component_selector = self.component_selector.clone();
         let app_store = self.app_store.clone();
         let lender = self.lender.clone();
         let share = self.share.clone();
@@ -848,7 +812,6 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 full_reprocess,
                 live,
                 preview_collector,
-                component_selector,
                 app_store,
                 lender,
                 share,
@@ -963,13 +926,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// Cancellation contract: returns `Err(<cancelled>)` if the controller's
     /// token fires before or during the lock acquire / mount. The Python
     /// wrapper maps this to `MountOutcome.cancelled` if needed.
-    ///
-    /// `None` when the selector leaves the child out (see
-    /// [`mount_live_prepare`]).
-    pub async fn mount_inner_live(
-        &self,
-        child_path: StablePath,
-    ) -> Result<Option<MountLiveResult<Prof>>> {
+    pub async fn mount_inner_live(&self, child_path: StablePath) -> Result<MountLiveResult<Prof>> {
         // Cancellable lock acquisition: shutdown breaks out within one poll.
         let _full_guard = tokio::select! {
             biased;
@@ -1004,7 +961,6 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.live,
                 None,
                 self.preview_collector.clone(),
-                self.component_selector.clone(),
             ),
             self.app_store.clone(),
         );
@@ -1014,12 +970,10 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // next `update_full`'s tombstone scan can see this child and
         // reconcile its target states on parent re-runs that don't
         // re-issue this `operator.update` call.
-        let Some(pending) = mount_live_prepare(&parent_ctx, &fn_ctx, child_path, self.live)? else {
-            return Ok(None);
-        };
+        let pending = mount_live_prepare(&parent_ctx, &fn_ctx, child_path, self.live)?;
         let result = pending.complete().await?;
 
-        Ok(Some(result))
+        Ok(result)
         // _full_guard drops here, releasing update_full_lock.
     }
 }
@@ -1144,7 +1098,6 @@ async fn drain_task_body<Prof: EngineProfile>(
     full_reprocess: bool,
     live: bool,
     preview_collector: Option<PreviewActionCollector<Prof>>,
-    component_selector: Option<ComponentSelector>,
     app_store: AppStore,
     lender: Lender,
     share: LiveShare,
@@ -1215,7 +1168,6 @@ async fn drain_task_body<Prof: EngineProfile>(
             full_reprocess,
             live,
             &preview_collector,
-            component_selector.as_ref(),
             &app_store,
             &lender,
             &share,
@@ -1276,7 +1228,6 @@ async fn run_op<Prof: EngineProfile>(
     full_reprocess: bool,
     live: bool,
     preview_collector: &Option<PreviewActionCollector<Prof>>,
-    component_selector: Option<&ComponentSelector>,
     app_store: &AppStore,
     lender: &Lender,
     share: &LiveShare,
@@ -1303,8 +1254,6 @@ async fn run_op<Prof: EngineProfile>(
                     live,
                     on_error.clone(),
                     preview_collector.clone(),
-                    // `update` already skipped an unselected subpath.
-                    ComponentSelector::scoped_to(component_selector, subpath),
                 ),
                 app_store.clone(),
             );
