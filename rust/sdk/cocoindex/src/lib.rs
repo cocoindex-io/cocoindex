@@ -81,7 +81,8 @@ pub use resources::id::{
     generate_uuid_default,
 };
 pub use runner::{
-    GPU, GPURunner, configure_gpu_pool, current_gpu, current_gpu_fraction, current_gpus,
+    GPU, GPURunner, Runner, RunnerBody, RunnerOutput, configure_gpu_pool, current_gpu,
+    current_gpu_fraction, current_gpus,
 };
 // Re-exported so `#[cocoindex::function]` output can register each function's
 // logic fingerprint without the user crate needing a direct `linkme` dependency.

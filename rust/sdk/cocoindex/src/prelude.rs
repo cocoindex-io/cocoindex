@@ -34,7 +34,8 @@ pub use crate::resources::schema::{
 };
 pub use crate::resources::view::{SegmentKind, SourceView, ViewSegment};
 pub use crate::runner::{
-    GPU, GPURunner, configure_gpu_pool, current_gpu, current_gpu_fraction, current_gpus,
+    GPU, GPURunner, Runner, RunnerBody, RunnerOutput, configure_gpu_pool, current_gpu,
+    current_gpu_fraction, current_gpus,
 };
 pub use crate::statediff::{
     DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, TrackingRecordTransition,

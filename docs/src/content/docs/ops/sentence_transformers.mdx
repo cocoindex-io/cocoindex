@@ -484,4 +484,4 @@ embedder = SentenceTransformerEmbedder(
 )
 ```
 
-The Rust embedder always normalizes: `fastembed` L2-normalizes its output, so `normalize_embeddings` has no Rust counterpart. Python's `prompt_name` and `device` have none either: `fastembed` has no prompt registry (prepend the model's query or document prefix to the text yourself) and runs on the execution providers compiled into the binary.
+The Rust embedder always normalizes: `fastembed` L2-normalizes its output, so `normalize_embeddings` has no Rust counterpart. Python's `prompt_name` has none either: `fastembed` has no prompt registry, so prepend the model's query or document prefix to the text yourself. Python's `device` is `SentenceTransformerEmbedder::load_with(name_or_path, execution_providers)`: the ONNX Runtime execution providers to try, such as `CUDAExecutionProvider::default().build()` from the `ort` crate, which the binary must enable through `ort`'s `cuda` feature; without any, the model runs on the CPU. As in Python (`runner=coco.GPU`), each batch runs under the GPU runner, so one inference runs at a time per GPU in the pool.

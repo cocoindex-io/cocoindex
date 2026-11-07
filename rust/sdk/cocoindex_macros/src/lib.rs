@@ -378,9 +378,9 @@ struct FunctionArgs {
     memo: bool,
     batching: bool,
     max_batch_size: Option<usize>,
-    /// `runner = <expr>`: a `cocoindex::GPURunner` const expression whose
-    /// resource every call (or physical batch) of the function holds while
-    /// its body runs.
+    /// `runner = <expr>`: an expression of a type implementing
+    /// `cocoindex::Runner`, under which every call (or physical batch) of
+    /// the function runs its body.
     runner: Option<Expr>,
     version: Option<u64>,
     memo_key: Vec<MemoKeyOverride>,
@@ -940,20 +940,22 @@ fn gen_owned_param_clones(params: &[ParamInfo]) -> Vec<TokenStream2> {
         .collect()
 }
 
-/// Name of the `const` holding a function's `runner = ...` value.
+/// Name of the `static` holding a function's `runner = ...` value.
 fn runner_const_name(fn_name: &Ident) -> Ident {
     format_ident!("__COCO_RUNNER_{}", fn_name.to_string().to_uppercase())
 }
 
-/// The `const` item for `runner = <expr>`, or nothing. A `const` item makes
-/// `GPURunner::fraction(x)` with a bad literal a compile error.
+/// The `static` item for `runner = <expr>`, or nothing: the runner, of any
+/// type implementing `cocoindex::Runner`, built on the function's first call
+/// and shared by every call.
 fn gen_runner_const(fn_name: &Ident, args: &FunctionArgs) -> TokenStream2 {
     match &args.runner {
         Some(expr) => {
             let name = runner_const_name(fn_name);
             quote! {
                 #[doc(hidden)]
-                const #name: ::cocoindex::GPURunner = #expr;
+                static #name: ::std::sync::LazyLock<::std::sync::Arc<dyn ::cocoindex::Runner>> =
+                    ::std::sync::LazyLock::new(|| ::std::sync::Arc::new(#expr));
             }
         }
         None => quote! {},
@@ -968,7 +970,7 @@ fn gen_runner_wrap(fn_name: &Ident, args: &FunctionArgs, body: TokenStream2) -> 
     }
     let name = runner_const_name(fn_name);
     quote! {
-        #name.run(async move { #body }).await
+        ::cocoindex::runner::__run_under(&**#name, async move { #body }).await
     }
 }
 
@@ -1008,7 +1010,7 @@ fn expand_batching_function(
     let runner_const = gen_runner_const(fn_name, args);
     let runner = if args.runner.is_some() {
         let name = runner_const_name(fn_name);
-        quote! { ::core::option::Option::Some(#name) }
+        quote! { ::core::option::Option::Some(::std::sync::Arc::clone(&*#name)) }
     } else {
         quote! { ::core::option::Option::None }
     };
@@ -1186,8 +1188,10 @@ fn expand_batching_function(
 /// #[cocoindex::function(runner = cocoindex::GPURunner::fraction(0.5))]
 /// async fn infer(ctx: &Ctx, image: &Image) -> Result<Label> { ... }
 /// ```
-/// The value is a `const` expression of type `cocoindex::GPURunner`, and the
-/// function must be `async`.
+/// The value is an expression of any type implementing `cocoindex::Runner`
+/// (`cocoindex::GPU`, `cocoindex::GPURunner::fraction(..)`, or a user-defined
+/// runner), built on the first call and shared by every call; the function
+/// must be `async`.
 ///
 /// Optional `version` parameter forces cache invalidation:
 /// ```ignore

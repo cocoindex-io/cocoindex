@@ -13,7 +13,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use cocoindex::ops::api::{ApiEmbedder, ApiTranscriber, LlmPairResolver};
+use cocoindex::ops::api::{
+    ApiChatClient, ApiEmbedder, ApiTranscriber, ChatMessage, LlmPairResolver,
+};
 use cocoindex::prelude::{FileContentCache, FileLike, FileMetadata, FilePath};
 use cocoindex::{CanonicalSide, Ctx, PairResolver, walk_items};
 use futures::future::join_all;
@@ -627,6 +629,90 @@ async fn llm_pair_resolver_memoizes_decisions() {
 
     resolve(&["Acme Corp", "Acme Inc"]).await.unwrap();
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// ApiChatClient::extract — a typed, memoized JSON-mode completion
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Person {
+    name: String,
+    age: u32,
+}
+
+#[tokio::test]
+async fn chat_client_extract_deserializes_and_memoizes() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(chat_response(r#"{"name": "Ada", "age": 36}"#))
+        .mount(&server)
+        .await;
+    let client = ApiChatClient::new("fake-model").with_base_url(server.uri());
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = app_in(&tempdir, "chat_extract").await;
+
+    let extract = |text: &'static str| {
+        let client = client.clone();
+        app.update(move |ctx| async move {
+            let messages = [
+                ChatMessage::system("Reply with JSON {name, age}."),
+                ChatMessage::user(text),
+            ];
+            client.extract::<Person>(&ctx, &messages).await
+        })
+    };
+
+    for _ in 0..2 {
+        let person = extract("Ada is 36.").await.unwrap();
+        assert_eq!(
+            person,
+            Person {
+                name: "Ada".into(),
+                age: 36
+            }
+        );
+    }
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "the same conversation is served from the memo store"
+    );
+
+    extract("Ada, 36 years old.").await.unwrap();
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["response_format"]["type"], "json_object");
+}
+
+#[tokio::test]
+async fn chat_client_extract_rejects_an_answer_of_another_shape() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(chat_response(r#"{"name": "Ada"}"#))
+        .mount(&server)
+        .await;
+    let client = ApiChatClient::new("fake-model").with_base_url(server.uri());
+    let err = in_update("chat_extract_bad_shape", move |ctx| async move {
+        client
+            .extract::<Person>(&ctx, &[ChatMessage::user("Ada")])
+            .await
+            .map(|person| person.age)
+    })
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("expected JSON"),
+        "unexpected error: {err}"
+    );
 }
 
 /// A rate-limited (429) response is retried, honoring `Retry-After`.

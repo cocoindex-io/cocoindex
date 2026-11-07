@@ -1,11 +1,12 @@
 //! Runners: bound how many calls of a function run at once on a scarce
 //! resource, the Rust form of Python's `@coco.fn.as_async(runner=coco.GPU)`.
 //!
-//! The one runner is [`GPURunner`]. Each call (or, for a `batching` function,
-//! each physical batch) acquires a share of one GPU from the process-wide
-//! GPU pool before its body runs and releases it afterwards, so a body that
-//! holds a whole GPU never runs twice at once on the same GPU, and two
-//! halves share one. Inside the body, [`current_gpu`], [`current_gpus`] and
+//! A [`Runner`] wraps the body of every call of a function (or, for a
+//! `batching` function, of every physical batch). The built-in runner is
+//! [`GPURunner`]: each body acquires a share of one GPU from the process-wide
+//! GPU pool before it runs and releases it afterwards, so a body that holds a
+//! whole GPU never runs twice at once on the same GPU, and two halves share
+//! one. Inside the body, [`current_gpu`], [`current_gpus`] and
 //! [`current_gpu_fraction`] tell which GPU was assigned.
 //!
 //! ```ignore
@@ -16,6 +17,24 @@
 //! }
 //! ```
 //!
+//! A user-defined runner implements [`Runner`], Python's `Runner` base class:
+//! it receives the body as a future and decides when and how to run it.
+//!
+//! ```ignore
+//! struct AtMostTwo(tokio::sync::Semaphore);
+//!
+//! #[async_trait::async_trait]
+//! impl cocoindex::Runner for AtMostTwo {
+//!     async fn run(&self, body: cocoindex::RunnerBody<'_>) -> Result<cocoindex::RunnerOutput> {
+//!         let _permit = self.0.acquire().await;
+//!         body.await
+//!     }
+//! }
+//!
+//! #[cocoindex::function(runner = AtMostTwo(tokio::sync::Semaphore::new(2)))]
+//! async fn summarize(_ctx: &Ctx, text: String) -> Result<String> { /* ... */ }
+//! ```
+//!
 //! The pool's size is detected from `COCOINDEX_NUM_GPUS`, then
 //! `CUDA_VISIBLE_DEVICES`, then `nvidia-smi`, and falls back to one;
 //! [`configure_gpu_pool`] overrides it. Python's subprocess mode
@@ -23,14 +42,67 @@
 //! for the GIL and CUDA's fork rules; a Rust body runs on the Tokio runtime
 //! and has neither problem, so there is no equivalent here.
 
+use std::any::Any;
 use std::future::Future;
 use std::num::NonZeroUsize;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
+use async_trait::async_trait;
 use cocoindex_utils::gpu_pool::GPUPool;
 use cocoindex_utils::gpu_pool::gpu_capacity::GPUCapacity;
+use futures::future::BoxFuture;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
+
+/// The value a [`RunnerBody`] produces. It is the function's own result,
+/// opaque to the runner, which hands it back unchanged.
+pub struct RunnerOutput(Box<dyn Any + Send>);
+
+/// The body of one call (or one physical batch) that a [`Runner`] runs: a
+/// future the runner awaits once, when its resource is available.
+pub struct RunnerBody<'a>(BoxFuture<'a, Result<RunnerOutput>>);
+
+impl Future for RunnerBody<'_> {
+    type Output = Result<RunnerOutput>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.as_mut().poll(cx)
+    }
+}
+
+/// Runs the bodies of a function's calls, Python's `Runner` base class. The
+/// value of `#[cocoindex::function(runner = ...)]` is any type implementing
+/// it; [`GPURunner`] is the built-in one.
+///
+/// An implementation awaits `body` exactly once and returns its output. What
+/// it does around that await is its policy: wait for a permit, hold a
+/// resource, set a task-local for the body to read.
+#[async_trait]
+pub trait Runner: Send + Sync + 'static {
+    async fn run(&self, body: RunnerBody<'_>) -> Result<RunnerOutput>;
+}
+
+/// Run `f` under `runner` and give back its typed output. The macro-generated
+/// wrappers and the batch scheduler go through here.
+#[doc(hidden)]
+pub async fn __run_under<T, F>(runner: &dyn Runner, f: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: Future<Output = Result<T>> + Send,
+{
+    let body = RunnerBody(Box::pin(async move {
+        let output = f.await?;
+        Ok(RunnerOutput(Box::new(output)))
+    }));
+    let output = runner.run(body).await?;
+    output
+        .0
+        .downcast::<T>()
+        .map(|output| *output)
+        .map_err(|_| Error::engine("the runner returned another body's output"))
+}
 
 /// A runner that serializes calls over the GPUs in the process-wide pool.
 ///
@@ -49,9 +121,10 @@ impl GPURunner {
     /// `coco.GPU(fraction)`. Calls whose fractions fit together run at once on
     /// the same GPU: two `fraction(0.5)` calls share one.
     ///
-    /// `fraction` must be in `(0, 1]`. The function is `const`, so with a
-    /// literal in `#[cocoindex::function(runner = ...)]` a bad value is a
-    /// compile error; called at runtime with a bad value, it panics.
+    /// `fraction` must be in `(0, 1]`: the function panics otherwise. It is
+    /// `const`, so a `const` holding a bad literal fails to compile; in
+    /// `#[cocoindex::function(runner = ...)]` the value is built on the first
+    /// call, where a bad value panics.
     pub const fn fraction(fraction: f32) -> Self {
         assert!(
             fraction > 0.0 && fraction <= 1.0,
@@ -59,14 +132,14 @@ impl GPURunner {
         );
         Self { fraction }
     }
+}
 
-    /// Run `f` while holding this runner's share of one GPU: wait until a GPU
-    /// has that much capacity free, run `f` with [`current_gpu`] set to it,
-    /// and give the capacity back when `f` finishes or is cancelled.
-    pub async fn run<T, F>(&self, f: F) -> Result<T>
-    where
-        F: Future<Output = Result<T>>,
-    {
+#[async_trait]
+impl Runner for GPURunner {
+    /// Run `body` while holding this runner's share of one GPU: wait until a
+    /// GPU has that much capacity free, run `body` with [`current_gpu`] set
+    /// to it, and give the capacity back when `body` finishes or is cancelled.
+    async fn run(&self, body: RunnerBody<'_>) -> Result<RunnerOutput> {
         let pool = default_gpu_pool()?;
         let fraction = GPUCapacity::try_from(self.fraction)?;
         let gpu_id = pool.acquire(fraction).await?;
@@ -79,7 +152,7 @@ impl GPURunner {
             gpus: vec![gpu_id],
             fraction: self.fraction,
         };
-        CURRENT_GPU.scope(assignment, f).await
+        CURRENT_GPU.scope(assignment, body).await
     }
 }
 

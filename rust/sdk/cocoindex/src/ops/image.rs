@@ -9,13 +9,15 @@
 //! `image_search` example.
 //!
 //! Implements [`VectorSchemaProvider`] so a vector column can be defined from
-//! the model's dimension.
+//! the model's dimension. Each batch runs under the GPU runner, one at a time
+//! per GPU, like the text embedder; [`ImageEmbedder::load_with`] picks the
+//! ONNX Runtime execution providers.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use fastembed::{ImageEmbedding, ImageInitOptions};
+use fastembed::{ExecutionProviderDispatch, ImageEmbedding, ImageInitOptions};
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
@@ -54,7 +56,7 @@ impl serde::Serialize for ScheduledImageEmbedder {
     }
 }
 
-#[crate::function(memo, batching, max_batch_size = 64)]
+#[crate::function(memo, batching, max_batch_size = 64, runner = crate::GPU)]
 async fn embed_scheduled(
     _ctx: &Ctx,
     images: Vec<Bytes>,
@@ -73,13 +75,26 @@ impl ImageEmbedder {
     /// Loading downloads and initializes the ONNX model, so it runs on a
     /// blocking thread.
     pub async fn load(model_name: impl Into<String>) -> Result<Self> {
+        Self::load_with(model_name, Vec::new()).await
+    }
+
+    /// Like [`load`](Self::load), running the model on the first of
+    /// `execution_providers` that ONNX Runtime can start; see
+    /// [`SentenceTransformerEmbedder::load_with`](crate::ops::sentence_transformers::SentenceTransformerEmbedder::load_with).
+    pub async fn load_with(
+        model_name: impl Into<String>,
+        execution_providers: Vec<ExecutionProviderDispatch>,
+    ) -> Result<Self> {
         let model_name = model_name.into();
-        tokio::task::spawn_blocking(move || Self::load_blocking(&model_name))
+        tokio::task::spawn_blocking(move || Self::load_blocking(&model_name, execution_providers))
             .await
             .map_err(|e| Error::engine(format!("image embedder load task panicked: {e}")))?
     }
 
-    fn load_blocking(model_name: &str) -> Result<Self> {
+    fn load_blocking(
+        model_name: &str,
+        execution_providers: Vec<ExecutionProviderDispatch>,
+    ) -> Result<Self> {
         let suffix = |code: &str| code.rsplit('/').next().unwrap_or(code).to_string();
         let wanted_suffix = suffix(model_name);
         let info = ImageEmbedding::list_supported_models()
@@ -95,7 +110,9 @@ impl ImageEmbedder {
             })?;
 
         let dimension = info.dim;
-        let model = ImageEmbedding::try_new(ImageInitOptions::new(info.model))
+        let options =
+            ImageInitOptions::new(info.model).with_execution_providers(execution_providers);
+        let model = ImageEmbedding::try_new(options)
             .map_err(|e| Error::engine(format!("load image model `{model_name}`: {e}")))?;
         Ok(Self {
             model: Arc::new(model),
