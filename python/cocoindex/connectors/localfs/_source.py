@@ -220,6 +220,14 @@ class _LiveDirItems:
         async for pair in self._walker._items_iter():
             yield pair
 
+    def _is_file_included(self, relative: Path) -> bool:
+        matcher = self._walker._path_matcher
+        return matcher.is_file_included(relative) and all(
+            matcher.is_dir_included(parent)
+            for parent in relative.parents
+            if parent != Path(".")
+        )
+
     async def watch(self, subscriber: LiveMapSubscriber[str, File]) -> None:
         """Deliver an initial scan then live filesystem changes to the subscriber."""
         with self._watch_guard:
@@ -328,7 +336,7 @@ class _LiveDirItems:
                             # not all. Trigger a rescan as a safety net.
                             await subscriber.update_all()
                             continue
-                        if self._walker._path_matcher.is_file_included(relative):
+                        if self._is_file_included(relative):
                             handle = await subscriber.delete(key)
                             await handle.ready()
                         continue
@@ -337,7 +345,7 @@ class _LiveDirItems:
                         continue
                     if event.is_directory:
                         continue
-                    if not self._walker._path_matcher.is_file_included(relative):
+                    if not self._is_file_included(relative):
                         continue
 
                     file_path = self._walker._root_path / relative

@@ -5,11 +5,14 @@ Tests cover:
 - PatternFilePathMatcher / MatchAllFilePathMatcher: file path matching
 - to_file_path: path conversion helper
 - DirWalker._walk_sync: directory walking with filtering
+- Live directory events: ancestor directory filtering matches the initial scan
 """
 
 from __future__ import annotations
 
 import datetime
+import asyncio
+import contextlib
 import itertools
 import os
 import pathlib
@@ -17,6 +20,8 @@ from pathlib import Path, PurePath
 from unittest.mock import MagicMock
 
 import pytest
+import watchdog.observers
+from watchdog.events import FileCreatedEvent, FileDeletedEvent, FileModifiedEvent
 
 from cocoindex.resources.file import (
     FileMetadata,
@@ -24,7 +29,14 @@ from cocoindex.resources.file import (
     PatternFilePathMatcher,
 )
 from cocoindex.connectors.localfs._common import FilePath, to_file_path
-from cocoindex.connectors.localfs._source import _stat_to_metadata, DirWalker
+from cocoindex.connectors.localfs._source import (
+    _stat_to_metadata,
+    _LiveDirItems,
+    DirWalker,
+    File,
+)
+from cocoindex._internal.api import ComponentMountHandle
+from cocoindex._internal.live_component import LiveMapSubscriber
 from cocoindex._internal.context_keys import ContextKey
 
 
@@ -355,3 +367,81 @@ class TestRescanInterval:
 
         walker = walk_dir(tmp_path, live=True)
         assert walker._rescan_interval == datetime.timedelta(hours=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("excluded_dir", ["ignored", "outer/ignored"])
+@pytest.mark.parametrize("kind", ["created", "modified", "deleted"])
+async def test_live_events_respect_excluded_ancestor_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, excluded_dir: str, kind: str
+) -> None:
+    excluded_file = tmp_path / excluded_dir / "deep" / "hidden.txt"
+    excluded_file.parent.mkdir(parents=True)
+    if kind != "created":
+        excluded_file.write_text("before")
+    (tmp_path / "visible.txt").write_text("visible")
+    included_file = tmp_path / "allowed" / "deep" / "other.txt"
+    included_file.parent.mkdir(parents=True)
+    included_file.write_text("included")
+    matcher = PatternFilePathMatcher(excluded_patterns=[excluded_dir])
+    # The file itself matches; its ancestor directory is what excludes it.
+    assert matcher.is_file_included(excluded_file.relative_to(tmp_path))
+    items = DirWalker(
+        tmp_path, live=True, recursive=True, path_matcher=matcher, rescan_interval=None
+    ).items()
+    assert isinstance(items, _LiveDirItems)
+    observer = MagicMock()
+    monkeypatch.setattr(watchdog.observers, "Observer", lambda: observer)
+    ready = asyncio.Event()
+    barrier = asyncio.Event()
+    initial: list[str] = []
+    changes: list[tuple[str, str]] = []
+
+    class Subscriber(LiveMapSubscriber[str, File]):
+        def __init__(self) -> None:
+            pass
+
+        async def update_all(self) -> None:
+            initial.extend([key async for key, _ in items])
+
+        async def mark_ready(self) -> None:
+            ready.set()
+
+        async def update(self, key: str, value: File) -> ComponentMountHandle:
+            changes.append(("update", key))
+            if key == "visible.txt":
+                barrier.set()
+            return ComponentMountHandle([])
+
+        async def delete(self, key: str) -> ComponentMountHandle:
+            changes.append(("delete", key))
+            return ComponentMountHandle([])
+
+    task = asyncio.create_task(items.watch(Subscriber()))
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=5)
+        assert sorted(initial) == ["allowed/deep/other.txt", "visible.txt"]
+        if kind == "deleted":
+            excluded_file.unlink()
+        else:
+            excluded_file.write_text("after")
+        handler = observer.schedule.call_args.args[0]
+        event_type = {
+            "created": FileCreatedEvent,
+            "modified": FileModifiedEvent,
+            "deleted": FileDeletedEvent,
+        }[kind]
+        handler.on_any_event(event_type(str(excluded_file)))
+        handler.on_any_event(FileModifiedEvent(str(included_file)))
+        # A later, included event is a deterministic barrier: all preceding
+        # excluded events have been processed by the watcher's FIFO queue.
+        handler.on_any_event(FileModifiedEvent(str(tmp_path / "visible.txt")))
+        await asyncio.wait_for(barrier.wait(), timeout=5)
+        assert changes == [
+            ("update", "allowed/deep/other.txt"),
+            ("update", "visible.txt"),
+        ]
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
