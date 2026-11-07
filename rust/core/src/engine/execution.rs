@@ -673,16 +673,19 @@ impl<Prof: EngineProfile> Committer<Prof> {
     ) -> ExistenceReconciler {
         let app_store = self.app_store.clone();
         let component_path = self.component_path.clone();
+        let selector = self.component_ctx.component_selector().cloned();
         Box::new(move |wtxn| {
             let app_store = app_store.clone();
             let component_path = component_path.clone();
             let declared_children = declared_children.clone();
+            let selector = selector.clone();
             Box::pin(async move {
                 reconcile_child_existence(
                     wtxn,
                     &app_store,
                     &component_path,
                     declared_children.as_deref(),
+                    selector.as_ref(),
                 )
                 .await
             })
@@ -818,8 +821,15 @@ impl<Prof: EngineProfile> Committer<Prof> {
         // fresh `RoTxn` internally.
         let tombstones = self.app_store.list_tombstones(&self.component_path).await?;
         let mut handles = Vec::with_capacity(tombstones.len());
+        // A tombstone left by an earlier run for a component this run's selector
+        // does not cover stays for a run that covers it: the deletion would
+        // touch that component's target states.
+        let selector = self.component_ctx.component_selector();
         for relative_path in tombstones {
             let stable_path = self.component_path.concat(relative_path.as_ref());
+            if selector.is_some_and(|selector| !selector.covers(&stable_path)) {
+                continue;
+            }
             let component = self.component_ctx.component().get_child(stable_path);
             let delete_ctx = component.new_processor_context_for_delete(
                 self.target_states_providers.clone(),
