@@ -137,6 +137,7 @@ pub use user_state::{IntoStateKey, StateHandle};
 // Re-export proc macros
 pub use cocoindex_macros::{
     MemoInput, SchemaFields, app, function, lifespan, main, mount, mount_each, use_mount,
+    use_mount_each,
 };
 pub use row_schema::{LogicalType, SchemaField, SchemaFields};
 

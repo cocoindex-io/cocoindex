@@ -23,15 +23,51 @@ use crate::error::{Error, Result};
 
 /// One `#[coco::function]`'s logic identity, collected at link time.
 ///
-/// The fingerprint computed from these fields must match the one
-/// `#[cocoindex::function]` records at call time (see `Ctx::__coco_tracked_fn`):
-/// `crate::ctx::fn_logic_fingerprint(module, name, code_hash, deps_fp)`.
+/// The fingerprint is computed once per process ([`fingerprint`](Self::fingerprint)):
+/// registration and every call of the function read the same cached value,
+/// so a call hashes nothing.
 pub struct FnLogicEntry {
     pub module: &'static str,
     pub name: &'static str,
     pub code_hash: u64,
     /// The function's `deps = ...` value, if any. See [`FnDeps`].
     pub deps: Option<&'static FnDeps>,
+    fingerprint: OnceLock<std::result::Result<Fingerprint, String>>,
+}
+
+impl FnLogicEntry {
+    #[doc(hidden)]
+    pub const fn new(
+        module: &'static str,
+        name: &'static str,
+        code_hash: u64,
+        deps: Option<&'static FnDeps>,
+    ) -> Self {
+        Self {
+            module,
+            name,
+            code_hash,
+            deps,
+            fingerprint: OnceLock::new(),
+        }
+    }
+
+    /// The function's logic fingerprint, computed on first use:
+    /// `crate::ctx::fn_logic_fingerprint(module, name, code_hash, deps_fp)`.
+    pub fn fingerprint(&self) -> Result<Fingerprint> {
+        self.fingerprint
+            .get_or_init(|| {
+                let deps_fp = self
+                    .deps
+                    .map(FnDeps::get)
+                    .transpose()
+                    .map_err(|err| err.to_string())?;
+                crate::ctx::fn_logic_fingerprint(self.module, self.name, self.code_hash, deps_fp)
+                    .map_err(|err| err.to_string())
+            })
+            .clone()
+            .map_err(|err| Error::engine(format!("logic fingerprint error: {err}")))
+    }
 }
 
 /// The fingerprint of a `#[cocoindex::function(deps = ...)]` value, computed
@@ -64,13 +100,6 @@ impl FnDeps {
 #[linkme::distributed_slice]
 pub static COCO_FN_LOGIC: [FnLogicEntry] = [..];
 
-/// The logic fingerprint for one registered function — kept in sync with
-/// `Ctx::__coco_tracked_fn`.
-fn entry_fingerprint(e: &FnLogicEntry) -> Result<Fingerprint> {
-    let deps_fp = e.deps.map(FnDeps::get).transpose()?;
-    crate::ctx::fn_logic_fingerprint(e.module, e.name, e.code_hash, deps_fp)
-}
-
 /// Register every `#[coco::function]`'s logic fingerprint into the engine's
 /// logic set. The slice is fixed at link time and these registrations are held
 /// for the life of the process, so only the first call registers; later calls
@@ -79,7 +108,7 @@ pub(crate) fn register_all_fn_logic() {
     static REGISTERED: Once = Once::new();
     REGISTERED.call_once(|| {
         for entry in COCO_FN_LOGIC {
-            match entry_fingerprint(entry) {
+            match entry.fingerprint() {
                 Ok(fp) => logic_registry::register(fp),
                 Err(err) => tracing::warn!(
                     "{}::{} is not registered in the logic set, so memo entries that recorded it never hit: {err}",

@@ -207,7 +207,7 @@ fn update_preview_ls_show_drop() {
     assert_ok(&show);
     assert_eq!(
         stdout(&show),
-        "Stable paths:\n  /\n  /\"upper/a.txt\"\n  /\"upper/b.txt\"\n"
+        "Stable paths:\n  /\n  /\"upper\"\n  /\"upper\"/\"a.txt\"\n  /\"upper\"/\"b.txt\"\n"
     );
     let tree = sb.cli(&[
         "show",
@@ -218,7 +218,7 @@ fn update_preview_ls_show_drop() {
         "--tree",
     ]);
     assert!(
-        stdout(&tree).contains("- upper/a.txt [component]"),
+        stdout(&tree).contains("- upper\n  - a.txt [component]"),
         "{}",
         stdout(&tree)
     );
@@ -252,9 +252,11 @@ fn update_preview_ls_show_drop() {
              states:1:Existing schema_version:0 generation:None\n      \
              - path:/@cocoindex/localfs/file/[\"{out_dir}\",\"{second}\"]\n        \
              states:1:Existing schema_version:0 generation:None\n\n  \
-             /\"upper/a.txt\"\n    type:component version:1 processor:mount:upper\n    \
+             /\"upper\"\n    type:directory version:0 processor:-\n    \
+             has_memoization:false target_state_count:0\n\n  \
+             /\"upper\"/\"a.txt\"\n    type:component version:1 processor:mount:upper\n    \
              has_memoization:true target_state_count:0\n\n  \
-             /\"upper/b.txt\"\n    type:component version:1 processor:mount:upper\n    \
+             /\"upper\"/\"b.txt\"\n    type:component version:1 processor:mount:upper\n    \
              has_memoization:true target_state_count:0\n\n"
         )
     });
@@ -265,7 +267,7 @@ fn update_preview_ls_show_drop() {
         "--app-name",
         "FixtureApp",
         "-p",
-        "/upper%2Fa.txt",
+        "/upper/a.txt",
     ]);
     assert_ok(&one);
     let states = sb.cli(&[

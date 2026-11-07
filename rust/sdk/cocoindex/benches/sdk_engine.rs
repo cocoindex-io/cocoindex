@@ -25,8 +25,7 @@
 //! 5. `batched_fn` — N concurrent calls of a `#[function(batching)]` with a
 //!    trivial body. Reported per call.
 //! 6. `startup` — open an environment on a fresh directory, create an app and
-//!    run an empty update: the async API and the `*_blocking` API, which
-//!    builds a tokio runtime per call.
+//!    run an empty update: the async API and the `*_blocking` API.
 
 use std::hint::black_box;
 use std::sync::Arc;
@@ -217,7 +216,9 @@ fn bench_memo_call(c: &mut Criterion) {
 async fn mount_each_run(app: &App, n: usize) -> Duration {
     app.update(move |ctx| async move {
         let start = Instant::now();
-        ctx.mount_each(0..n, |i| *i, |_child, _i| async { Ok(()) })
+        ctx.mount_each(0..n, |i| *i as i64, |_child, _i| async { Ok(()) })
+            .await?
+            .ready()
             .await?;
         Ok(start.elapsed())
     })
@@ -229,7 +230,7 @@ async fn scope_run(app: &App, n: usize) -> Duration {
     app.update(move |ctx| async move {
         let start = Instant::now();
         for i in 0..n {
-            ctx.scope(&i, |_child| async { Ok(()) }).await?;
+            ctx.scope(i as i64, |_child| async { Ok(()) }).await?;
         }
         Ok(start.elapsed())
     })

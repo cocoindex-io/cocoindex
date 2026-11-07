@@ -39,7 +39,7 @@ async fn app_main(ctx: Ctx) -> Result<()> {
     let files = walk_items(project_dir().join("data"), &["**/*.md"])?;
 
     // 3) Process each input under a stable path, then declare its output.
-    let outputs = mount_each!(files, |file| process_file(ctx, file)).await?;
+    let outputs = use_mount_each!(files, |file| process_file(ctx, file)).await?;
     for (name, content) in &outputs {
         target.declare_file(&ctx, name, content.as_bytes())?;
     }

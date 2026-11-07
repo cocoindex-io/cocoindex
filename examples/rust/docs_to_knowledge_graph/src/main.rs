@@ -302,7 +302,7 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         sourcedir.display()
     );
     let docs: Vec<DocTriples> = ctx
-        .mount_each(
+        .use_mount_each(
             files,
             |(key, _)| format!("file/{key}"),
             move |ctx, (_, file)| {

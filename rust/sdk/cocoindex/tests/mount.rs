@@ -501,13 +501,13 @@ async fn with_subpath_nests_child_paths() {
     .await;
 
     app.update(|ctx| async move {
-        let process = ctx.with_subpath(&"process");
+        let process = ctx.with_subpath("process");
         process
             .mount(&"a.md", |_child| async move { Err(Error::engine("boom")) })
             .await?
             .ready()
             .await?;
-        let ctx = &process.with_subpath(&"nested");
+        let ctx = &process.with_subpath("nested");
         cocoindex::mount!("b.md", fail_under_subpath(ctx, "b".to_string()))
             .await?
             .ready()
@@ -543,7 +543,7 @@ async fn with_subpath_is_the_same_component_as_the_direct_path() {
     let sink = recording_sink(log.clone());
     app.update(move |ctx| async move {
         let provider = root_provider(&ctx, sink)?;
-        ctx.with_subpath(&"process")
+        ctx.with_subpath("process")
             .mount(&"x", move |child| async move {
                 declare_target_state(&child, provider.target_state("x", "v1".to_string()))
             })
@@ -558,7 +558,7 @@ async fn with_subpath_is_the_same_component_as_the_direct_path() {
     let sink = recording_sink(log.clone());
     app.update(move |ctx| async move {
         let provider = root_provider(&ctx, sink)?;
-        ctx.with_subpath(&"process")
+        ctx.with_subpath("process")
             .mount(&"x", move |child| async move {
                 declare_target_state(&child, provider.target_state("x", "v1".to_string()))
             })
@@ -598,7 +598,7 @@ async fn use_state_is_rejected_on_a_subpath_ctx() {
     let message = app
         .update(|ctx| async move {
             let err = ctx
-                .with_subpath(&"process")
+                .with_subpath("process")
                 .use_state("counter", 0u32)
                 .err()
                 .expect("use_state on a subpath ctx must fail");

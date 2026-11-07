@@ -754,7 +754,7 @@ async fn type_owned_context_memo_state_invalidates_cached_function() {
                 Vec::new(),
             )?;
             ctx.__use_mount_fp(
-                "stateful_child".to_string(),
+                cocoindex::IntoStableKey::into_stable_key("stateful_child"),
                 Some(memo),
                 move |child_ctx| async move {
                     component_calls.fetch_add(1, Ordering::SeqCst);
@@ -2046,7 +2046,7 @@ mod memo_test_borrowed_slice {
     #[cocoindex::function(memo)]
     async fn memo_total(ctx: &cocoindex::Ctx, values: &[i64]) -> cocoindex::Result<i64> {
         CALLS.fetch_add(1, Ordering::SeqCst);
-        total(ctx, &values).await
+        total(ctx, values).await
     }
 
     #[tokio::test]
@@ -2556,7 +2556,7 @@ async fn ctx_mount_each() {
     app.update(|ctx| async move {
         let items = vec![("alpha", 1), ("beta", 2), ("gamma", 3)];
         let results: Vec<Output> = ctx
-            .mount_each(
+            .use_mount_each(
                 items,
                 |&(name, _)| name.to_string(),
                 |_child_ctx, (name, value)| async move {
@@ -2594,7 +2594,7 @@ async fn ctx_mount_each_independent_memo() {
     app.update(|ctx| async move {
         let items = vec!["child_a", "child_b"];
         let results: Vec<i32> = ctx
-            .mount_each(items, |name| name.to_string(), {
+            .use_mount_each(items, |name| name.to_string(), {
                 let count = count.clone();
                 move |child_ctx, name| {
                     let count = count.clone();
@@ -2625,7 +2625,7 @@ async fn ctx_mount_each_independent_memo() {
     app.update(|ctx| async move {
         let items = vec!["child_a", "child_b"];
         let results: Vec<i32> = ctx
-            .mount_each(items, |name| name.to_string(), {
+            .use_mount_each(items, |name| name.to_string(), {
                 let count = count.clone();
                 move |child_ctx, name| {
                     let count = count.clone();
@@ -2658,7 +2658,7 @@ async fn ctx_mount_each_preserves_input_order_under_concurrency() {
     app.update(|ctx| async move {
         let items = vec![("slow", 30_u64), ("fast", 0_u64), ("mid", 10_u64)];
         let results: Vec<String> = ctx
-            .mount_each(
+            .use_mount_each(
                 items.clone(),
                 |&(name, _)| name.to_string(),
                 |_child_ctx, (name, delay)| async move {
@@ -2882,7 +2882,7 @@ async fn ctx_stats_group_reports_scoped_child_stats() {
         let (sum, handle) = ctx
             .stats_group("Indexing docs", |group_ctx, _handle| async move {
                 let values = group_ctx
-                    .mount_each(
+                    .use_mount_each(
                         vec![1, 2],
                         |item| *item,
                         |child, item| async move {
@@ -2935,7 +2935,7 @@ async fn ctx_stats_group_with_options_reports_scoped_child_stats() {
                 options,
                 |group_ctx, _h| async move {
                     let values = group_ctx
-                        .mount_each(
+                        .use_mount_each(
                             vec![1, 2, 3],
                             |item| *item,
                             |child, item| async move {
@@ -3305,7 +3305,7 @@ async fn ctx_mount_each_rejects_duplicate_keys() {
             // "alpha" is duplicated
             let items = vec![("alpha", 1), ("beta", 2), ("alpha", 3)];
             let _: Vec<i32> = ctx
-                .mount_each(
+                .use_mount_each(
                     items,
                     |&(name, _)| name.to_string(), // duplicate 'alpha' keys
                     |_child_ctx, (_, value)| async move { Ok(value) },
@@ -3481,7 +3481,7 @@ mod mount_macros {
 
     async fn run_each(app: &cocoindex::App, items: Vec<(String, u32)>) -> Vec<u32> {
         app.update(move |ctx| async move {
-            let out = cocoindex::mount_each!(items, |n| each_double(ctx, n)).await?;
+            let out = cocoindex::use_mount_each!(items, |n| each_double(ctx, n)).await?;
             Ok(out)
         })
         .await
@@ -3518,7 +3518,7 @@ mod mount_macros {
 
         async fn run(app: &cocoindex::App, items: Vec<(String, u32)>) {
             app.update(move |ctx| async move {
-                cocoindex::mount_each!(items, |n| sel_double(ctx, n)).await?;
+                cocoindex::use_mount_each!(items, |n| sel_double(ctx, n)).await?;
                 Ok(())
             })
             .await
@@ -3578,7 +3578,7 @@ mod mount_macros {
                 // `#[rustfmt::skip]` keeps the block braces so this test keeps
                 // exercising the block-form closure body the macro must accept.
                 #[rustfmt::skip]
-                let out = cocoindex::mount_each!(items, |n| { block_id(ctx, n) }).await?;
+                let out = cocoindex::use_mount_each!(items, |n| { block_id(ctx, n) }).await?;
                 Ok(out)
             })
             .await

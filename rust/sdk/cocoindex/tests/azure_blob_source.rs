@@ -623,7 +623,7 @@ async fn mount_each_pipeline_reprocesses_only_changed_blobs() -> Result<()> {
                 .list()
                 .await?;
             let sizes = ctx
-                .mount_each(
+                .use_mount_each(
                     files,
                     |f| f.key(),
                     |child, file| async move { process(&child, &file).await },

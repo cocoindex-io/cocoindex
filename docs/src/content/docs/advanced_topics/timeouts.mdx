@@ -113,8 +113,8 @@ The same rule holds in the Rust SDK, where the deadline is carried by the `Ctx`:
 | --- | --- |
 | `UpdateOptions { timeout: Some(..), .. }` on `app.update_with_options(..)` | The root processor's `Ctx` carries the timeout (see [Time-boxing a whole update](#time-boxing-a-whole-update-programmatic-callers)). |
 | A `#[cocoindex::function]` called with a scoped `Ctx` | Sees the scoped deadline. A call made with the unscoped `Ctx` does not. |
-| `scoped.scope(..)` / `use_mount!` / `scoped.mount_each(..)` | The child inherits the deadline because the parent waits for the child's result. In Rust, `mount_each` is a foreground mount that returns the children's values, so its children inherit the deadline too. |
-| `scoped.mount(..)` / `mount!` / `auto_refresh` / `mount_live` | The child's `Ctx` carries no deadline. The caller's own wait on `handle.ready()` is bounded by the caller's deadline. |
+| `scoped.scope(..)` / `use_mount!` / `scoped.use_mount_each(..)` / `use_mount_each!` | The child inherits the deadline because the parent waits for the child's result. |
+| `scoped.mount(..)` / `mount!` / `scoped.mount_each(..)` / `mount_each!` / `auto_refresh` / `mount_live` | The child's `Ctx` carries no deadline. The caller's own wait on `handle.ready()` is bounded by the caller's deadline. |
 | `scoped.map(items, ..)` | Item tasks see the deadline. Already-started items run to completion before the error is returned. |
 | Batched function body | A physical batch does not inherit any individual caller's deadline. |
 | Target writes and connector sink calls | Do not inherit the processor deadline. |

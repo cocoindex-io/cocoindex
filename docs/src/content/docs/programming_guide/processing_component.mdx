@@ -79,13 +79,14 @@ And two sugar APIs that simplify common patterns:
 
 See also [`map()`](#using-cocoindex-map-to-apply-transformations) for a utility API that operates within a component without creating new ones.
 
-The Rust SDK has each API in two forms. The macros `mount!`, `use_mount!` and `mount_each!` take a `#[cocoindex::function]` call, substitute the child's `&Ctx` for its first argument, and fingerprint the function's logic and arguments so an unchanged child is skipped. The methods `ctx.mount`, `ctx.scope` and `ctx.mount_each` take a key and a closure, and always run it. `ctx.mount_each_live` is `mount_each` for a live source. The table maps the names:
+The Rust SDK has each API in two forms. The macros `mount!`, `use_mount!`, `mount_each!` and `use_mount_each!` take a `#[cocoindex::function]` call, substitute the child's `&Ctx` for its first argument, and fingerprint the function's logic and arguments so an unchanged child is skipped. The methods `ctx.mount`, `ctx.scope`, `ctx.mount_each` and `ctx.use_mount_each` take a key and a closure, and always run it. A key is a string or any other `IntoStableKey`: an integer, a UUID, bytes or a `StableKey`. `ctx.mount_each_live` is `mount_each` for a live source. The table maps the names:
 
 | Python | Rust macro | Rust method |
 |--------|------------|-------------|
 | `coco.mount(fn, ...)` | `mount!(fn(ctx, ...))` | `ctx.mount(&key, \|ctx\| async move { ... })` |
 | `coco.use_mount(fn, ...)` | `use_mount!(fn(ctx, ...))` | `ctx.scope(&key, \|ctx\| async move { ... })` |
-| `coco.mount_each(fn, items, ...)` | `mount_each!(items, \|item\| fn(ctx, item, ...))` | `ctx.mount_each(items, key_fn, \|ctx, item\| async move { ... })`, `ctx.mount_each_live(&key, feed, ...)` |
+| `coco.mount_each(fn, items, ...)` | `mount_each!(items, \|item\| fn(ctx, item, ...))` | `ctx.mount_each(items, key_fn, \|ctx, item\| async move { ... })`, `ctx.mount_each_stream(stream, ...)`, `ctx.mount_each_live(&key, feed, ...)` |
+| — | `use_mount_each!(items, \|item\| fn(ctx, item, ...))` | `ctx.use_mount_each(items, key_fn, \|ctx, item\| async move { ... })` |
 | `coco.mount_target(target)` | — | `mount_target(&ctx, target_state)`, or a connector's `mount_*_target` |
 | `coco.map(fn, items, ...)` | — | `ctx.map(items, async \|item\| { ... })` |
 
@@ -291,7 +292,7 @@ handle = await coco.mount_each(process_file, files.items(), target)
 await handle.ready()  # waits until every per-item component is ready
 ```
 
-Rust differs here: `mount_each!` is a foreground mount. It waits for every child and returns their values as a `Vec`, so there is no handle. `ctx.mount_each` returns the values the same way. `ctx.mount_each_live` returns once the feed's first scan is mounted and ready; in live mode its children keep reacting in the background.
+Rust works the same way: `mount_each!` and `ctx.mount_each` mount the children in the background as the items are read, and return one `ComponentMountHandle` whose `ready()` waits for all of them. For per-item values, Rust also has the foreground forms `use_mount_each!` and `ctx.use_mount_each`, which wait for every child and return their values as a `Vec` in input order. `ctx.mount_each_live` returns once the feed's first scan is mounted and ready; in live mode its children keep reacting in the background.
 
 If you want per-item results without creating components, use [`map()`](#using-cocoindex-map-to-apply-transformations).
 

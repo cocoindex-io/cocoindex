@@ -87,7 +87,7 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         sourcedir.display()
     );
 
-    let points = mount_each!(files, |file| process_image(ctx, file)).await?;
+    let points = use_mount_each!(files, |file| process_image(ctx, file)).await?;
 
     for p in &points {
         let payload = json!({ "filename": p.filename })

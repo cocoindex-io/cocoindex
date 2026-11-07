@@ -130,7 +130,7 @@ async fn index(producer: IggyProducer, stream: String, topic: String) -> Result<
                 let files = cocoindex::resources::fs::walk_items("./data", &["**/*.csv"])?;
                 println!("found {} CSV file(s)", files.len());
 
-                let per_file = mount_each!(files, |file| process_csv(ctx, file)).await?;
+                let per_file = use_mount_each!(files, |file| process_csv(ctx, file)).await?;
 
                 let mut declared = 0;
                 for messages in &per_file {

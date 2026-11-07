@@ -232,7 +232,7 @@ async fn s3_source_mount_each_pipeline_when_available() -> Result<()> {
 
     #[cocoindex::function(memo)]
     async fn process(ctx: &cocoindex::Ctx, file: &S3File) -> Result<usize> {
-        let bytes = ctx.get_key(&S3)?.read(&file).await?;
+        let bytes = ctx.get_key(&S3)?.read(file).await?;
         Ok(bytes.len())
     }
 
@@ -255,7 +255,7 @@ async fn s3_source_mount_each_pipeline_when_available() -> Result<()> {
                         .list()
                         .await?;
                 let sizes = ctx
-                    .mount_each(
+                    .use_mount_each(
                         files,
                         |f| f.key(),
                         |child, file| async move { process(&child, &file).await },

@@ -1,5 +1,5 @@
 //! Proc macros for cocoindex: `#[function]`, `#[app]`, `#[lifespan]`, `#[main]`,
-//! `use_mount!`, `mount!`, `mount_each!`.
+//! `use_mount!`, `mount!`, `mount_each!`, `use_mount_each!`.
 
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
@@ -39,7 +39,11 @@ fn derive_memo_input_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
             .push(syn::parse_quote!(#ty: ::cocoindex::memo::MemoInput));
     }
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-    let (write_body, state_body) = memo_input_derive_bodies(&name, &input.data)?;
+    let MemoInputBodies {
+        write_body,
+        has_state_body,
+        state_body,
+    } = memo_input_derive_bodies(&name, &input.data)?;
 
     Ok(quote! {
         #[::cocoindex::async_trait]
@@ -49,6 +53,10 @@ fn derive_memo_input_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
                 writer: &mut ::cocoindex::memo::MemoKeyWriter<'_>,
             ) -> ::cocoindex::Result<()> {
                 #write_body
+            }
+
+            fn has_memo_state(&self) -> bool {
+                #has_state_body
             }
 
             async fn memo_state(
@@ -63,6 +71,13 @@ fn derive_memo_input_impl(input: DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
+/// The three method bodies of a derived `MemoInput` impl.
+struct MemoInputBodies {
+    write_body: TokenStream2,
+    has_state_body: TokenStream2,
+    state_body: TokenStream2,
+}
+
 fn memo_input_field_types(data: &syn::Data) -> Vec<&Type> {
     match data {
         syn::Data::Struct(data) => data.fields.iter().map(|field| &field.ty).collect(),
@@ -75,10 +90,7 @@ fn memo_input_field_types(data: &syn::Data) -> Vec<&Type> {
     }
 }
 
-fn memo_input_derive_bodies(
-    name: &Ident,
-    data: &syn::Data,
-) -> syn::Result<(TokenStream2, TokenStream2)> {
+fn memo_input_derive_bodies(name: &Ident, data: &syn::Data) -> syn::Result<MemoInputBodies> {
     match data {
         syn::Data::Struct(data) => Ok(memo_input_struct_bodies(name, &data.fields)),
         syn::Data::Enum(data) => Ok(memo_input_enum_bodies(name, data)),
@@ -89,7 +101,7 @@ fn memo_input_derive_bodies(
     }
 }
 
-fn memo_input_struct_bodies(name: &Ident, fields: &syn::Fields) -> (TokenStream2, TokenStream2) {
+fn memo_input_struct_bodies(name: &Ident, fields: &syn::Fields) -> MemoInputBodies {
     let len = fields.len();
     let (key_writes, children): (Vec<_>, Vec<_>) = match fields {
         syn::Fields::Named(fields) => fields
@@ -126,15 +138,24 @@ fn memo_input_struct_bodies(name: &Ident, fields: &syn::Fields) -> (TokenStream2
         #(#key_writes)*
         Ok(())
     };
+    let has_state_body = quote! {
+        let __coco_children: &[&dyn ::cocoindex::memo::MemoInput] = &[#(#children),*];
+        ::cocoindex::memo::any_has_memo_state(__coco_children)
+    };
     let state_body = quote! {
         let __coco_children: &[&dyn ::cocoindex::memo::MemoInput] = &[#(#children),*];
         ::cocoindex::memo::memo_state_group(__coco_children, previous, false).await
     };
-    (write_body, state_body)
+    MemoInputBodies {
+        write_body,
+        has_state_body,
+        state_body,
+    }
 }
 
-fn memo_input_enum_bodies(name: &Ident, data: &syn::DataEnum) -> (TokenStream2, TokenStream2) {
+fn memo_input_enum_bodies(name: &Ident, data: &syn::DataEnum) -> MemoInputBodies {
     let mut write_arms = Vec::with_capacity(data.variants.len());
+    let mut has_state_arms = Vec::with_capacity(data.variants.len());
     let mut state_arms = Vec::with_capacity(data.variants.len());
 
     for variant in &data.variants {
@@ -178,9 +199,18 @@ fn memo_input_enum_bodies(name: &Ident, data: &syn::DataEnum) -> (TokenStream2, 
                         Ok(())
                     }
                 });
+                let children = children.collect::<Vec<_>>();
                 let patterns = fields_and_bindings
                     .iter()
-                    .map(|(field, binding)| quote! { #field: #binding });
+                    .map(|(field, binding)| quote! { #field: #binding })
+                    .collect::<Vec<_>>();
+                has_state_arms.push(quote! {
+                    Self::#variant_ident { #(#patterns),* } => {
+                        let __coco_children: &[&dyn ::cocoindex::memo::MemoInput] =
+                            &[#(#children),*];
+                        ::cocoindex::memo::any_has_memo_state(__coco_children)
+                    }
+                });
                 state_arms.push(quote! {
                     Self::#variant_ident { #(#patterns),* } => {
                         let __coco_children: &[&dyn ::cocoindex::memo::MemoInput] =
@@ -216,6 +246,14 @@ fn memo_input_enum_bodies(name: &Ident, data: &syn::DataEnum) -> (TokenStream2, 
                         Ok(())
                     }
                 });
+                let children = children.collect::<Vec<_>>();
+                has_state_arms.push(quote! {
+                    Self::#variant_ident(#(#bindings),*) => {
+                        let __coco_children: &[&dyn ::cocoindex::memo::MemoInput] =
+                            &[#(#children),*];
+                        ::cocoindex::memo::any_has_memo_state(__coco_children)
+                    }
+                });
                 state_arms.push(quote! {
                     Self::#variant_ident(#(#bindings),*) => {
                         let __coco_children: &[&dyn ::cocoindex::memo::MemoInput] =
@@ -241,15 +279,17 @@ fn memo_input_enum_bodies(name: &Ident, data: &syn::DataEnum) -> (TokenStream2, 
                         Ok(())
                     }
                 });
+                has_state_arms.push(quote! { Self::#variant_ident => false });
                 state_arms.push(quote! { Self::#variant_ident => Ok(None) });
             }
         }
     }
 
-    (
-        quote! { match self { #(#write_arms),* } },
-        quote! { match self { #(#state_arms),* } },
-    )
+    MemoInputBodies {
+        write_body: quote! { match self { #(#write_arms),* } },
+        has_state_body: quote! { match self { #(#has_state_arms),* } },
+        state_body: quote! { match self { #(#state_arms),* } },
+    }
 }
 
 /// Information about a non-ctx parameter.
@@ -631,8 +671,11 @@ fn gen_key_write_for_param(
         None if param.is_str_ref => Some(quote! {
             ::cocoindex::memo::write_key_fingerprint_part(&mut #fingerprinter, #default_arg)?;
         }),
+        // `MemoInput` identity when the type has one, else its serialized
+        // value (a target handle), picked by autoref specialization.
         None => Some(quote! {
-            ::cocoindex::memo::write_key_fingerprint_part_for_arg(&mut #fingerprinter, #default_arg)?;
+            (&&::cocoindex::memo::MemoArg(#default_arg))
+                .__coco_write_memo_key(&mut #fingerprinter)?;
         }),
     }
 }
@@ -647,15 +690,20 @@ fn gen_state_collect_for_param(
         return quote! {};
     }
     let ident = &param.ident;
-    let default_arg = quote! { &#ident };
+    // Only a `MemoInput` argument can carry state; a `Serialize`-only one
+    // takes no state slot, like a `MemoInput` whose state is `None`.
     quote! {
-        let __coco_prev_state = #prev_states_ident
-            .as_ref()
-            .and_then(|__coco_previous_states| __coco_previous_states.get(#states_ident.len()));
-        if let Some(__coco_state) =
-            ::cocoindex::memo::collect_memo_arg_state(#default_arg, __coco_prev_state).await?
+        if let ::core::option::Option::Some(__coco_input) =
+            (&&::cocoindex::memo::MemoArg(&#ident)).__coco_memo_state_input()
         {
-            #states_ident.push(__coco_state);
+            let __coco_prev_state = #prev_states_ident
+                .as_ref()
+                .and_then(|__coco_previous_states| __coco_previous_states.get(#states_ident.len()));
+            if let ::core::option::Option::Some(__coco_state) =
+                ::cocoindex::memo::collect_memo_arg_state(__coco_input, __coco_prev_state).await?
+            {
+                #states_ident.push(__coco_state);
+            }
         }
     }
 }
@@ -685,9 +733,20 @@ struct FnLogicTokens {
     hash_const_value: TokenStream2,
     /// The link-time logic registration (and the `deps` static), if tracked.
     logic_registration: TokenStream2,
-    /// An expression for the `deps` fingerprint: `Option<Fingerprint>`, may
-    /// use `?`.
-    deps_fp: TokenStream2,
+    /// `__COCO_FN_LOGIC_<NAME>`: the registered `FnLogicEntry` static, whose
+    /// cached fingerprint every call records. `None` for
+    /// `logic_tracking = "none"`.
+    logic_entry: Option<Ident>,
+}
+
+impl FnLogicTokens {
+    /// `Option<Fingerprint>` of the function's logic, for a memo frame.
+    fn logic_fp_tokens(&self) -> TokenStream2 {
+        match &self.logic_entry {
+            Some(entry) => quote! { ::core::option::Option::Some(#entry.fingerprint()?) },
+            None => quote! { ::core::option::Option::None },
+        }
+    }
 }
 
 fn gen_memo_wrapper_block(
@@ -700,7 +759,6 @@ fn gen_memo_wrapper_block(
     body_closure: TokenStream2,
 ) -> syn::Result<TokenStream2> {
     let hash_const_name = &logic.hash_const_name;
-    let deps_fp = &logic.deps_fp;
     let propagate_children_fn_logic = logic_tracking == LogicTracking::Full;
     validate_memo_key_overrides(
         overrides,
@@ -719,52 +777,41 @@ fn gen_memo_wrapper_block(
             gen_state_collect_for_param(&states_ident, &prev_states_ident, param, overrides)
         })
         .collect::<Vec<_>>();
-    let state_params = params
-        .iter()
-        .filter(|param| !param.is_str_ref && memo_key_override(overrides, &param.ident).is_none())
-        .cloned()
-        .collect::<Vec<_>>();
-    let state_clone_stmts = gen_clones(&state_params);
-    let body_clone_stmts = gen_clones(params);
     let memo_key = gen_function_memo_key(fn_name, hash_const_name, &key_writes);
     // `logic_tracking = "none"` is never registered in the logic set, so its
     // fingerprint must not reach a caller's memo entry.
-    let logic_fp = if logic_tracking != LogicTracking::None {
-        quote! {
-            ::core::option::Option::Some(::cocoindex::memo::fn_logic_fingerprint(
-                ::core::module_path!(),
-                ::core::stringify!(#fn_name),
-                #hash_const_name,
-                #deps_fp,
-            )?)
-        }
-    } else {
-        quote! { ::core::option::Option::None }
-    };
+    let logic_fp = logic.logic_fp_tokens();
 
+    // The key and the argument states only borrow the parameters, so a hit
+    // clones nothing; on a miss the parameters move into the body closure,
+    // which is created only then.
     Ok(quote! {{
-        let __coco_key = #memo_key;
-        let __coco_logic_fp = #logic_fp;
-
-        ::cocoindex::memo::cached_by_fingerprint_with_state(
+        #[allow(unused_imports)]
+        use ::cocoindex::memo::{
+            MemoArgKeyViaMemoInput as _, MemoArgKeyViaSerialize as _,
+            MemoArgStateViaMemoInput as _, MemoArgStateViaSerialize as _,
+        };
+        let #key_ident = #memo_key;
+        let __coco_probe = ::cocoindex::memo::MemoProbe::begin(
             #ctx_ident,
-            __coco_key,
-            __coco_logic_fp,
+            #key_ident,
+            #logic_fp,
             #propagate_children_fn_logic,
-            {
-                #(#state_clone_stmts)*
-                move |__coco_prev_states| async move {
-                    let mut __coco_states = Vec::new();
-                    #(#state_collects)*
-                    Ok(__coco_states)
-                }
-            },
-            {
-                #(#body_clone_stmts)*
-                #body_closure
-            },
         )
-        .await
+        .await?;
+        let mut #states_ident = ::std::vec::Vec::new();
+        if __coco_probe.validates_states() {
+            let #prev_states_ident = __coco_probe.cached_states();
+            #(#state_collects)*
+        }
+        match __coco_probe.lookup(#states_ident).await? {
+            ::cocoindex::memo::MemoLookup::Hit(__coco_value) => {
+                ::core::result::Result::Ok(__coco_value)
+            }
+            ::cocoindex::memo::MemoLookup::Miss(__coco_miss) => {
+                __coco_miss.run(#body_closure).await
+            }
+        }
     }})
 }
 
@@ -978,14 +1025,13 @@ fn expand_batching_function(
     func: &ItemFn,
     args: &FunctionArgs,
     logic: &FnLogicTokens,
-    track_logic: bool,
     propagate_children_fn_logic: bool,
 ) -> syn::Result<TokenStream2> {
     let FnLogicTokens {
         hash_const_name,
         hash_const_value,
         logic_registration,
-        deps_fp,
+        logic_entry: _,
     } = logic;
     let batching = parse_batching_signature(func)?;
     let fn_name = &func.sig.ident;
@@ -1058,6 +1104,10 @@ fn expand_batching_function(
             .await
     };
 
+    // The batch closure handed to the scheduler is `'static`, so the extra
+    // parameters are cloned into it; a memoized call clones them only on a
+    // miss, inside the body.
+    let initial_extra_clones = gen_clones(extra_params);
     let wrapper_body = if args.memo {
         let mut key_params = vec![batching.item_param.clone()];
         key_params.extend(extra_params.iter().cloned());
@@ -1070,21 +1120,18 @@ fn expand_batching_function(
             args.logic_tracking,
             quote! {
                 move |__coco_scoped_ctx| async move {
+                    #(#initial_extra_clones)*
                     #schedule_call
                 }
             },
         )?
     } else {
-        let initial_extra_clones = gen_clones(extra_params);
-        if track_logic {
+        if let Some(logic_entry) = &logic.logic_entry {
             quote! {{
                 #(#initial_extra_clones)*
                 #ctx_ident
                     .__coco_tracked_fn(
-                        ::core::module_path!(),
-                        ::core::stringify!(#fn_name),
-                        #hash_const_name,
-                        #deps_fp,
+                        &#logic_entry,
                         #propagate_children_fn_logic,
                         move |__coco_scoped_ctx| async move {
                             #schedule_call
@@ -1143,6 +1190,12 @@ fn expand_batching_function(
 /// whole function because it includes the function's logic hash and arguments
 /// in the key automatically.
 ///
+/// Each argument is keyed by its `cocoindex::MemoInput` identity, with that
+/// type's state validation (a file's mtime and content). An argument whose type
+/// is not `MemoInput` but is `Serialize`, such as a target handle, is keyed by
+/// its serialized value and has no state validation, as Python memoizes a
+/// target on its key.
+///
 /// Customize individual argument keys with `memo_key(...)`. A transform
 /// function replaces the argument's default `cocoindex::MemoInput` identity
 /// and suppresses its type-owned external-state validation. `skip` (or `None`)
@@ -1169,9 +1222,9 @@ fn expand_batching_function(
 /// let embedding: Vec<f32> = embed(ctx, text).await?;
 /// ```
 /// Additional parameters must implement `Serialize` because their serialized
-/// values group compatible calls into a physical batch. With `memo`, they must
-/// also implement `MemoInput` because they form part of each item's memo key,
-/// unless `memo_key(...)` transforms or skips their memo identity.
+/// values group compatible calls into a physical batch. With `memo`, they are
+/// also part of each item's memo key, by their `MemoInput` identity when they
+/// have one, unless `memo_key(...)` transforms or skips it.
 ///
 /// A batching body may return `Error::retry_with_smaller_batch(cause)`: the
 /// batch is halved and each half re-run, down to single items, where `cause`
@@ -1235,8 +1288,8 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
     // set, so a memoized caller's stored `logic_deps` (which include the
     // fingerprints of transitively-called `#[coco::function]`s) validate via
     // `all_contained` instead of being perpetually treated as stale. The
-    // (module, name, code_hash) tuple must match `Ctx::__coco_tracked_fn`'s
-    // fingerprint computation. `linkme` is reached through the re-export so the
+    // (module, name, code_hash) tuple is what `FnLogicEntry::fingerprint`
+    // hashes, once per process. `linkme` is reached through the re-export so the
     // user crate needs no direct dependency. Omitted entirely for
     // `logic_tracking = "none"`.
     // `deps = <expr>`: the value's fingerprint is computed once per process
@@ -1245,7 +1298,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
     // exactly as a body edit does. The static initializer cannot see the
     // function's parameters, so a per-call value cannot slip in here.
     let deps_static_name = format_ident!("__COCO_FN_DEPS_{}", fn_name.to_string().to_uppercase());
-    let (deps_static, deps_entry, deps_fp) = match &args.deps {
+    let (deps_static, deps_entry) = match &args.deps {
         Some(deps) => (
             quote! {
                 #[doc(hidden)]
@@ -1254,14 +1307,11 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 );
             },
             quote! { ::core::option::Option::Some(&#deps_static_name) },
-            quote! { ::core::option::Option::Some(#deps_static_name.get()?) },
         ),
-        None => (
-            quote! {},
-            quote! { ::core::option::Option::None },
-            quote! { ::core::option::Option::None },
-        ),
+        None => (quote! {}, quote! { ::core::option::Option::None }),
     };
+    // The entry's fingerprint is cached in the static (`FnLogicEntry::fingerprint`),
+    // so a call reads it instead of hashing its identity again.
     let logic_slice_name = format_ident!("__COCO_FN_LOGIC_{}", fn_name.to_string().to_uppercase());
     let logic_registration = if track_logic {
         quote! {
@@ -1269,16 +1319,17 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
             #[::cocoindex::linkme::distributed_slice(::cocoindex::COCO_FN_LOGIC)]
             #[linkme(crate = ::cocoindex::linkme)]
             #[doc(hidden)]
-            static #logic_slice_name: ::cocoindex::FnLogicEntry = ::cocoindex::FnLogicEntry {
-                module: ::core::module_path!(),
-                name: ::core::stringify!(#fn_name),
-                code_hash: #code_hash,
-                deps: #deps_entry,
-            };
+            static #logic_slice_name: ::cocoindex::FnLogicEntry = ::cocoindex::FnLogicEntry::new(
+                ::core::module_path!(),
+                ::core::stringify!(#fn_name),
+                #code_hash,
+                #deps_entry,
+            );
         }
     } else {
         quote! {}
     };
+    let logic_entry = track_logic.then(|| logic_slice_name.clone());
 
     if !args.memo && !args.memo_key.is_empty() {
         return TokenStream::from(
@@ -1302,16 +1353,10 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         hash_const_name,
         hash_const_value,
         logic_registration,
-        deps_fp,
+        logic_entry,
     };
     if args.batching {
-        return match expand_batching_function(
-            &func,
-            &args,
-            &logic,
-            track_logic,
-            propagate_children_fn_logic,
-        ) {
+        return match expand_batching_function(&func, &args, &logic, propagate_children_fn_logic) {
             Ok(expanded) => expanded.into(),
             Err(err) => err.to_compile_error().into(),
         };
@@ -1321,7 +1366,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         hash_const_name,
         hash_const_value,
         logic_registration,
-        deps_fp,
+        logic_entry,
     } = &logic;
     if args.memo {
         // memo: wrap body in ctx.memo()
@@ -1387,7 +1432,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         let body = &func.block;
 
         let expanded = if let Some(ctx_ident) = ctx_opt {
-            if track_logic {
+            if let Some(logic_entry) = logic_entry {
                 let run_body = gen_runner_wrap(
                     fn_name,
                     &args,
@@ -1405,10 +1450,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                     #(#attrs)*
                     #vis #sig {
                         #ctx_ident.__coco_tracked_fn(
-                            ::core::module_path!(),
-                            ::core::stringify!(#fn_name),
-                            #hash_const_name,
-                            #deps_fp,
+                            &#logic_entry,
                             #propagate_children_fn_logic,
                             move |__coco_scoped_ctx| async move { #run_body },
                         ).await
@@ -1510,7 +1552,7 @@ fn parse_grouped_call(expr: &Expr) -> syn::Result<(Path, Vec<Expr>)> {
 /// Foreground mount: creates a child component, runs `my_fn` under it with the
 /// child `&Ctx` substituted for the first argument, and returns its value.
 /// `(a, b)` are fingerprinted for the component-memo fast-path. The subpath is
-/// `key` if given, else the function's name.
+/// `key` (any `cocoindex::IntoStableKey`) if given, else the function's name.
 #[proc_macro]
 pub fn use_mount(input: TokenStream) -> TokenStream {
     expand_single_mount(input, "use_mount", quote! { __use_mount_fp })
@@ -1568,8 +1610,10 @@ fn expand_single_mount(input: TokenStream, name: &str, method: TokenStream2) -> 
         .iter()
         .map(|id| component_arg_part(quote! { & #id }));
     let key_tokens = match key_expr {
-        Some(key) => quote! { ::std::string::ToString::to_string(&(#key)) },
-        None => quote! { ::std::string::ToString::to_string(::core::stringify!(#fn_ident)) },
+        Some(key) => quote! { ::cocoindex::IntoStableKey::into_stable_key(#key) },
+        None => quote! {
+            ::cocoindex::IntoStableKey::into_stable_key(::core::stringify!(#fn_ident))
+        },
     };
 
     quote! {{
@@ -1582,7 +1626,7 @@ fn expand_single_mount(input: TokenStream, name: &str, method: TokenStream2) -> 
             #hash_path,
             ::std::vec![ #(#fp_parts),* ],
         )?;
-        let __coco_key: ::std::string::String = #key_tokens;
+        let __coco_key: ::cocoindex::StableKey = #key_tokens;
         __coco_parent.#method(
             __coco_key,
             ::core::option::Option::Some(__coco_memo),
@@ -1597,13 +1641,37 @@ fn expand_single_mount(input: TokenStream, name: &str, method: TokenStream2) -> 
 /// `mount_each!(items, |item| my_fn(ctx, item, a, b))` or
 /// `mount_each!(prefix, items, |item| my_fn(ctx, item, a, b))`.
 ///
-/// One child component per `(key, value)` item (subpath `prefix/key`, prefix
-/// defaulting to the function name). The closure binds the item's **value**;
-/// inside the call, `ctx` → child scope, the bound `item` → that value, and any
-/// other arguments are captured extras that are fingerprinted (with the value)
-/// for each item's component-memo key.
+/// One background child component per `(key, value)` item, at `prefix/key`
+/// (`prefix` defaulting to the function name), the Rust analogue of Python's
+/// `coco.mount_each`: evaluates to a `Result<ComponentMountHandle>` whose
+/// `ready().await` waits until every child's target states are synced; the
+/// children are mounted as `items` is consumed, and `my_fn` returns
+/// `Result<()>`. `use_mount_each!` is the form that returns the values.
+///
+/// The closure binds the item's **value**; inside the call, `ctx` → child
+/// scope, the bound `item` → that value, and any other arguments are captured
+/// extras that are fingerprinted (with the value) for each item's
+/// component-memo key.
 #[proc_macro]
 pub fn mount_each(input: TokenStream) -> TokenStream {
+    expand_mount_each(input, "mount_each", quote! { __mount_each_fp })
+}
+
+/// `use_mount_each!(items, |item| my_fn(ctx, item, a, b))` or
+/// `use_mount_each!(prefix, items, |item| my_fn(ctx, item, a, b))`.
+///
+/// Like `mount_each!`, but the children run in the foreground and the macro
+/// evaluates to a `Result<Vec<T>>` of `my_fn`'s values in `items` order: the
+/// per-item form of `use_mount!`.
+#[proc_macro]
+pub fn use_mount_each(input: TokenStream) -> TokenStream {
+    expand_mount_each(input, "use_mount_each", quote! { __use_mount_each_fp })
+}
+
+/// Shared expansion of `mount_each!` and `use_mount_each!`: the same
+/// grouped-call parse and per-item component memo, dispatched to
+/// `Ctx::<method>`.
+fn expand_mount_each(input: TokenStream, name: &str, method: TokenStream2) -> TokenStream {
     let parsed = parse_macro_input!(input with Punctuated::<Expr, Token![,]>::parse_terminated);
     let elems: Vec<Expr> = parsed.into_iter().collect();
     let (prefix_expr, items_expr, closure) = match elems.as_slice() {
@@ -1612,8 +1680,10 @@ pub fn mount_each(input: TokenStream) -> TokenStream {
         _ => {
             return SynError::new(
                 Span::call_site(),
-                "mount_each! takes `items, |item| my_fn(ctx, item, ...)` \
-                 or `prefix, items, |item| my_fn(ctx, item, ...)`",
+                format!(
+                    "{name}! takes `items, |item| my_fn(ctx, item, ...)` \
+                     or `prefix, items, |item| my_fn(ctx, item, ...)`"
+                ),
             )
             .to_compile_error()
             .into();
@@ -1683,7 +1753,7 @@ pub fn mount_each(input: TokenStream) -> TokenStream {
     quote! {{
         use ::cocoindex::mount::{ComponentArgViaMemoInput as _, ComponentArgViaSerialize as _};
         #(#extra_binds)*
-        (#ctx_arg).__mount_each_fp(
+        (#ctx_arg).#method(
             #items_expr,
             #prefix_tokens,
             {
@@ -2603,14 +2673,14 @@ mod tests {
             hash_const_name: hash_const_name.clone(),
             hash_const_value: quote!(#hash),
             logic_registration: quote!(),
-            deps_fp: quote!(::core::option::Option::None),
+            logic_entry: Some(format_ident!("__COCO_FN_LOGIC_EMBED")),
         };
         let first_expanded =
-            expand_batching_function(&first, &args, &logic_tokens(first_hash), true, true)
+            expand_batching_function(&first, &args, &logic_tokens(first_hash), true)
                 .unwrap()
                 .to_string();
         let second_expanded =
-            expand_batching_function(&second, &args, &logic_tokens(second_hash), true, true)
+            expand_batching_function(&second, &args, &logic_tokens(second_hash), true)
                 .unwrap()
                 .to_string();
         let key_part = "write_key_fingerprint_part (& mut __coco_key , & __COCO_FN_HASH_EMBED)";

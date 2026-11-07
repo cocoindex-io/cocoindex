@@ -297,7 +297,7 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         sourcedir.display()
     );
     let products: Vec<ProductTaxonomies> = ctx
-        .mount_each(
+        .use_mount_each(
             files,
             |(key, _)| format!("file/{key}"),
             move |ctx, (_, file)| {

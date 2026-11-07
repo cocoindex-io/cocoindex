@@ -695,7 +695,7 @@ async fn chat_json_memoized(
     client: &ApiChatClient,
     messages: &[ChatMessage],
 ) -> Result<String> {
-    client.request_chat_json(Some(ctx), &messages).await
+    client.request_chat_json(Some(ctx), messages).await
 }
 
 #[derive(Deserialize)]
@@ -753,7 +753,7 @@ async fn resolve_pair_memoized(
     candidates: &[String],
     resolver: &LlmPairResolver,
 ) -> Result<PairDecision> {
-    resolver.request_decision(ctx, &entity, &candidates).await
+    resolver.request_decision(ctx, entity, candidates).await
 }
 
 impl LlmPairResolver {
