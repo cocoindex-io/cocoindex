@@ -6,11 +6,29 @@ description: >
   mode via watchfiles, and write outputs with declare_file() and
   declare_dir_target() — with memo-stable FilePath across project moves.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 The `localfs` connector provides utilities for reading files from and writing files to the local file system.
+
+{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import localfs
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::resources::fs::{self, DirTarget, FileOptions, FilePath};
+```
+
+In the Rust SDK the connector is `cocoindex::resources::fs`. It is always compiled; `cocoindex::prelude::*` exports `DirTarget`, `FileEntry`, `walk_dir`, `walk_items` and `PatternFilePathMatcher`. Live watching (`.live()`) needs the `fs_live` Cargo feature.
+
+</Fragment>
+</LangTabs>
 
 ## Stable memoization with FilePath
 
@@ -19,6 +37,10 @@ A key feature of the `localfs` connector is [**stable memoization**](../programm
 ### Using ContextKey for stable base directories
 
 Define a `ContextKey[pathlib.Path]` with a stable string identifier. Provide the actual path in your app's lifespan, then pass the key directly to `walk_dir()`, `declare_dir_target()`, and related functions.
+
+{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import pathlib
@@ -39,6 +61,43 @@ async def lifespan(builder: coco.EnvironmentBuilder) -> None:
     builder.provide(SOURCE_DIR, pathlib.Path("./data"))
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::path::PathBuf;
+
+use cocoindex::resources::fs::{DirTarget, FilePath};
+use cocoindex::Environment;
+
+// The key's name ("OUT_DIR") is the stable identifier.
+cocoindex::context_key!(static OUT_DIR: PathBuf);
+
+// Provide the actual directory when you build the environment:
+let app = Environment::builder()
+    .db_path(&db)
+    .provide_key(&OUT_DIR, base)
+    .build()
+    .await?
+    .app("fs_context_dir")
+    .await?;
+
+app.update(move |ctx| async move {
+    // A path under the key's directory. Memo keys and target keys name
+    // the key, not the directory.
+    let root = FilePath::under_context_dir(&ctx, &OUT_DIR, "out")?;
+    let t = DirTarget::mount(&ctx, root)?;
+    t.declare_file(&ctx, "a.txt", b"a")?;
+    Ok(())
+})
+.await?;
+```
+
+A `ContextKey<PathBuf>` is declared with `context_key!` and provided with `provide_key`. `FilePath::under_context_dir(ctx, &KEY, path)` builds the path under it. Every function that takes `impl Into<FilePath>`, such as `walk_dir` and `DirTarget::mount`, accepts that `FilePath`.
+
+</Fragment>
+</LangTabs>
+
 When you move your project to a different location, just update the path in `builder.provide()` — memoization keys remain the same because they're based on the stable key string (`"source_dir"`), not the filesystem path.
 
 Target files are keyed the same way, by the key string and the relative path. Because the base directory isn't part of the key, CocoIndex can't tell when two keys reach the same file. See [One file, one declaration](#one-file-one-declaration).
@@ -48,6 +107,10 @@ Target files are keyed the same way, by the key string and the relative path. Be
 `FilePath` combines an optional base directory key and a relative path. Passing a `ContextKey[Path]` directly to any localfs function is equivalent to constructing `FilePath(base_dir=key)`.
 
 `FilePath` supports all `pathlib.PurePath` operations:
+
+{/* Rust: rust/sdk/cocoindex/src/resources/file.rs (FilePath methods), tests/fs_target.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir")
@@ -65,11 +128,39 @@ print(config_path.parent)    # FilePath pointing to "config/"
 abs_path = config_path.resolve()  # pathlib.Path
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Under a context directory: the key and the directory it was provided with.
+let source = FilePath::under_context_dir(&ctx, &SOURCE_DIR, "")?;
+
+// Create paths with join
+let config_path = source.join("config").join("settings.json");
+
+// Access path properties
+config_path.name();      // "settings.json"
+config_path.suffix();    // ".json"
+config_path.parent();    // Some(FilePath pointing to "config")
+
+// Resolve to the full path
+let abs_path = config_path.resolve();  // std::path::PathBuf
+```
+
+`FilePath::new(path)` builds a path with no base directory. The other `PurePath` operations are `stem`, `suffixes`, `parts`, `with_name`, `with_stem`, `with_suffix`, `relative_to` and `as_posix`.
+
+</Fragment>
+</LangTabs>
+
 See [FilePath](../common_resources/data_types#filepath) in Resource Types for full details.
 
 ## As source
 
 Use `walk_dir()` to iterate over files in a directory. It returns a `DirWalker` that supports both synchronous and asynchronous iteration.
+
+{/* Rust: rust/sdk/cocoindex/src/resources/fs.rs, examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def walk_dir(
@@ -80,6 +171,31 @@ def walk_dir(
     path_matcher: FilePathMatcher | None = None,
 ) -> DirWalker
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn walk_dir(path: impl Into<FilePath>) -> DirWalker
+
+impl DirWalker {
+    pub fn recursive(self, recursive: bool) -> Self
+    pub fn path_matcher(self, matcher: impl FilePathMatcher + 'static) -> Self
+    pub fn walk(&self) -> Result<Vec<FileEntry>>
+    pub fn items(&self) -> Result<Vec<(String, FileEntry)>>
+    pub fn live(self) -> LiveDirWalker   // `fs_live` feature
+}
+
+impl LiveDirWalker {
+    pub fn poll_interval(self, interval: Duration) -> Self
+    pub fn rescan_interval(self, interval: Option<Duration>) -> Self
+}
+```
+
+The Rust walker is a builder: `walk_dir(path).recursive(true).path_matcher(matcher)`. The `live` flag becomes the `.live()` method, which turns the walker into a `LiveDirWalker` for `ctx.mount_each_live`; `rescan_interval` is a method on it. `walk()` and `items()` block on the directory walk (a live feed walks on a blocking thread).
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -94,26 +210,71 @@ def walk_dir(
 
 `walk_dir()` returns a `DirWalker` that supports async iteration, yielding `File` objects (implementing the [`FileLike`](../common_resources/data_types#filelike) base class):
 
+{/* Rust: rust/sdk/cocoindex/src/resources/fs.rs (DirWalker::walk, FileEntry) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 async for file in localfs.walk_dir("/path/to/documents", recursive=True):
     text = await file.read_text()
     ...
 ```
 
-File I/O runs in a thread pool, keeping the event loop responsive.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+for file in walk_dir("/path/to/documents").recursive(true).walk()? {
+    let text = file.content_str()?;
+    // ...
+}
+```
+
+`walk()` reads the directory and returns a `Vec<FileEntry>`, sorted by relative path. `FileEntry` implements `FileLike`, so `file.read_text().await?` works too; `content()` and `content_str()` are the synchronous reads.
+
+</Fragment>
+</LangTabs>
+
+File I/O runs in a thread pool, keeping the event loop responsive. The Rust walker has no async iteration: `walk()` and `items()` return the full list.
 
 ### Keyed iteration with `items()`
 
 `DirWalker.items()` yields keyed `(str, File)` pairs, useful for associating each file with a stable string key (its relative path):
+
+{/* Rust: rust/sdk/cocoindex/src/resources/fs.rs, examples/rust/files_transform/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async for key, file in localfs.walk_dir("/path/to/dir", recursive=True).items():
     content = await file.read()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+for (key, file) in walk_dir("/path/to/dir").recursive(true).items()? {
+    let content = file.content()?;
+}
+
+// Shorthand: recursive walk with glob patterns, as `(key, file)` pairs
+// ready for `mount_each!`.
+let files = cocoindex::resources::fs::walk_items(&source_dir, &["**/*.md"])?;
+```
+
+The key is `FileEntry::key()`: the relative path with forward slashes.
+
+</Fragment>
+</LangTabs>
+
 ### Filtering files
 
 Use `PatternFilePathMatcher` to filter which files and directories are included:
+
+{/* Rust: examples/rust/text_embedding/src/main.rs, rust/sdk/cocoindex/src/resources/file.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import localfs
@@ -129,9 +290,39 @@ async for file in localfs.walk_dir("/path/to/project", recursive=True, path_matc
     await process(file)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::prelude::*;
+
+// Include only .py and .md files, exclude hidden directories and test files
+let matcher = PatternFilePathMatcher::new(
+    ["**/*.py", "**/*.md"],
+    ["**/.*", "**/test_*", "**/__pycache__"],
+)?;
+
+for file in walk_dir("/path/to/project")
+    .recursive(true)
+    .path_matcher(matcher)
+    .walk()?
+{
+    process(&ctx, file).await?;
+}
+```
+
+`PatternFilePathMatcher::new(included, excluded)` takes two iterables of patterns; `PatternFilePathMatcher::include(patterns)` takes only included patterns. An excluded pattern that starts with `!` is a negation, as in Python.
+
+</Fragment>
+</LangTabs>
+
 ### Live file watching
 
 When `live=True`, `items()` returns a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview) instead of a plain `AsyncIterable`. Combined with [`mount_each()`](../programming_guide/processing_component#mount_each), this enables automatic incremental file watching — new, modified, and deleted files are processed without a full rescan:
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 files = localfs.walk_dir(
@@ -142,9 +333,44 @@ files = localfs.walk_dir(
 await coco.mount_each(process_file, files.items(), target)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// One component per markdown file; each declares its own rows. In live
+// mode (`cocoindex update -L`) the walker keeps watching the directory.
+let files = walk_dir(sourcedir)
+    .recursive(true)
+    .path_matcher(PatternFilePathMatcher::new(
+        ["**/*.md"],
+        std::iter::empty::<&str>(),
+    )?)
+    .live()
+    .poll_interval(Duration::from_secs(1));
+ctx.mount_each_live(&"files", files, move |ctx, file: FileEntry| {
+    let table = table.clone();
+    async move {
+        for row in process_file(&ctx, &file).await? {
+            table.declare_row(&ctx, &row)?;
+        }
+        Ok(())
+    }
+})
+.await
+```
+
+`.live()` needs the `fs_live` Cargo feature. It returns a `LiveDirWalker`, a `LiveMapView` plus `LiveMapFeed` that follows the directory through the platform's native watcher: each event updates or removes that file's component alone, and a directory that appears is walked. Where the native watcher cannot be set up, it polls instead, every `poll_interval` (default one second). Every `rescan_interval` (default one hour; `None` disables it) it recreates the watcher and walks the whole directory, as a safety net against events the platform dropped. `ctx.mount_each_live(&key, feed, |ctx, file| ...)` mounts one child component per file. See `examples/rust/text_embedding` for the full program.
+
+</Fragment>
+</LangTabs>
+
 See [Live Mode](../programming_guide/live_mode) for how this works and how to enable it on the app.
 
 ### Example
+
+{/* Rust: examples/rust/files_to_sqlite/src/main.rs, examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import pathlib
@@ -171,6 +397,39 @@ async def process_file(file: FileLike) -> None:
     # ... process the file content ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::prelude::*;
+
+/// Memoized on the file: an unchanged file is not processed again.
+#[cocoindex::function(memo)]
+async fn process_file(_ctx: &Ctx, file: FileEntry) -> Result<()> {
+    let text = file.content_str()?;
+    // ... process the file content ...
+    Ok(())
+}
+
+let app = cocoindex::App::open("files_transform", ".cocoindex_db").await?;
+let stats = app
+    .run(move |ctx| {
+        let source_dir = source_dir.clone();
+        async move {
+            let files = cocoindex::resources::fs::walk_items(&source_dir, &["**/*.md"])?;
+            // One processing component per file.
+            mount_each!(files, |file| process_file(ctx, file)).await?;
+            Ok(())
+        }
+    })
+    .await?;
+```
+
+`mount_each!(items, |item| f(ctx, item))` mounts one processing component per `(key, file)` pair; `FileEntry::key()` is the component subpath. See `examples/rust/files_transform` and `examples/rust/text_embedding` for full programs.
+
+</Fragment>
+</LangTabs>
+
 ## As target
 
 The `localfs` connector provides target state APIs for writing files. CocoIndex tracks what files should exist and automatically handles creation, updates, and deletion.
@@ -178,6 +437,10 @@ The `localfs` connector provides target state APIs for writing files. CocoIndex 
 ### declare_file
 
 Declare a single file target. This is the simplest way to write a file.
+
+{/* Rust: rust/sdk/cocoindex/src/resources/fs.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn
@@ -189,6 +452,27 @@ def declare_file(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn declare_file(ctx: &Ctx, path: impl Into<FilePath>, content: &[u8]) -> Result<()>
+
+pub fn declare_file_with_options(
+    ctx: &Ctx,
+    path: impl Into<FilePath>,
+    content: &[u8],
+    options: FileOptions,
+) -> Result<()>
+
+pub struct FileOptions {
+    pub create_parent_dirs: bool,
+}
+```
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `path` — The filesystem path for the file. Can be a `FilePath`, a `pathlib.Path`, or a `ContextKey[Path]`.
@@ -196,6 +480,10 @@ def declare_file(
 - `create_parent_dirs` — If `True`, create parent directories if they don't exist.
 
 **Example:**
+
+{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 OUTPUT_DIR = coco.ContextKey[pathlib.Path]("output_dir")
@@ -210,9 +498,35 @@ def app_main() -> None:
     )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+app.update(move |ctx| async move {
+    fs::declare_file_with_options(
+        &ctx,
+        path,
+        b"hello",
+        FileOptions {
+            create_parent_dirs: true,
+        },
+    )
+})
+.await?;
+```
+
+`path` is any `impl Into<FilePath>`: a `PathBuf`, or `FilePath::under_context_dir(&ctx, &OUTPUT_DIR, "readme.txt")?` for a file under a context directory.
+
+</Fragment>
+</LangTabs>
+
 ### declare_dir_target
 
 Declare a directory target for writing multiple files. Returns a `DirTarget` for declaring files within.
+
+{/* Rust: rust/sdk/cocoindex/src/resources/fs.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn
@@ -222,6 +536,28 @@ def declare_dir_target(
     create_parent_dirs: bool = True,
 ) -> DirTarget[coco.PendingS]
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn dir_target(dir: impl Into<FilePath>) -> DirTargetState
+impl DirTargetState {
+    pub fn create_parent_dirs(self, create_parent_dirs: bool) -> Self
+}
+
+pub fn declare_dir_target(ctx: &Ctx, target: DirTargetState) -> Result<DirTarget>
+pub fn mount_dir_target(ctx: &Ctx, dir: impl Into<FilePath>) -> Result<DirTarget>
+
+impl DirTarget {
+    pub fn mount(ctx: &Ctx, dir: impl Into<FilePath>) -> Result<Self>  // same as mount_dir_target
+}
+```
+
+`DirTarget::mount(ctx, dir)` is the common form. `declare_dir_target(ctx, dir_target(dir).create_parent_dirs(false))` sets the option. The Rust handle is ready at once: there is no pending state to resolve.
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -234,6 +570,10 @@ def declare_dir_target(
 
 Declares a file to be written within the directory.
 
+{/* Rust: rust/sdk/cocoindex/src/resources/fs.rs (DirTarget::mount doctest), tests/fs_target.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def declare_file(
     self,
@@ -243,6 +583,27 @@ def declare_file(
     create_parent_dirs: bool = False,
 ) -> None
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let target = DirTarget::mount(ctx, "./output")?;
+target.declare_file(ctx, "result.txt", b"final output")?;
+
+// With options
+target.declare_file_with_options(
+    &ctx,
+    "made/a.txt",
+    b"AAA",
+    FileOptions {
+        create_parent_dirs: true,
+    },
+)?;
+```
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -254,6 +615,10 @@ def declare_file(
 
 Declares a subdirectory target within the directory.
 
+{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def declare_dir_target(
     self,
@@ -263,6 +628,22 @@ def declare_dir_target(
 ) -> DirTarget[coco.PendingS]
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let t = DirTarget::mount(&ctx, &out1)?;
+let sub = t.declare_dir_target(&ctx, "sub", false)?;
+sub.declare_file(&ctx, "b.txt", b"BBB")?;
+let deep = sub.declare_dir_target(&ctx, "deep/er", true)?;
+deep.declare_file(&ctx, "c.txt", b"CCC")?;
+```
+
+The third argument is `create_parent_dirs`.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `path` — The path of the subdirectory (relative to this directory). It's normalized and checked like `filename` above.
@@ -271,6 +652,10 @@ def declare_dir_target(
 **Returns:** A `DirTarget` for the subdirectory.
 
 ### Target example
+
+{/* Rust: examples/rust/files_transform/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import pathlib
@@ -302,9 +687,56 @@ async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
     )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::prelude::*;
+
+/// Process one markdown file: render it and declare the HTML output.
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: FileEntry, target: DirTarget) -> Result<()> {
+    let html = render_markdown(ctx, &file).await?;
+    target.declare_file(ctx, &output_name_for(&file), html.as_bytes())?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let (source_dir, output_dir) = parse_args();
+
+    let app = cocoindex::App::open("files_transform", ".cocoindex_db").await?;
+    let stats = app
+        .run(move |ctx| {
+            let source_dir = source_dir.clone();
+            let output_dir = output_dir.clone();
+            async move {
+                // Declarative output: the engine reconciles these files against
+                // the previous run and deletes outputs whose source disappeared.
+                let target = DirTarget::mount(&ctx, &output_dir)?;
+                let files = cocoindex::resources::fs::walk_items(&source_dir, &["**/*.md"])?;
+
+                // One processing component per file.
+                mount_each!(files, |file| process_file(ctx, file, target)).await?;
+
+                Ok(())
+            }
+        })
+        .await?;
+
+    println!("{stats}");
+    Ok(())
+}
+```
+
+This example uses plain paths. For a root under a `ContextKey`, build it with `FilePath::under_context_dir` as shown in [Using ContextKey for stable base directories](#using-contextkey-for-stable-base-directories). See `examples/rust/files_transform` for the full program.
+
+</Fragment>
+</LangTabs>
+
 ### One file, one declaration
 
-CocoIndex identifies each target file by its key: the `ContextKey` name (none for a path relative to the current directory) and the path under it. The base directory isn't part of the key, which is what lets you move it. The cost is that CocoIndex can't tell when two keys reach the same file on disk. Declare each physical file through exactly one key.
+CocoIndex identifies each target file by its key: the `ContextKey` name (none for a path relative to the current directory) and the path under it. The base directory isn't part of the key, which is what lets you move it. The cost is that CocoIndex can't tell when two keys reach the same file on disk. Declare each physical file through exactly one key. The Rust SDK uses the same keys, so the rules below apply to both SDKs.
 
 Two keys can reach one file in these ways:
 

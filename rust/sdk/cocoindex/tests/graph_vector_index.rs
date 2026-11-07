@@ -1,6 +1,7 @@
 //! Live graph vector-index e2e (Neo4j + FalkorDB).
 //!
-//! Each test skips gracefully when its server is unreachable. Run with:
+//! The Neo4j test skips when `NEO4J_URI` is unset, the FalkorDB test when its
+//! server is unreachable. Run with:
 //!   NEO4J_URI=bolt://localhost:7687 NEO4J_PASSWORD=cocoindex \
 //!   FALKORDB_URI=falkor://localhost:6379 \
 //!     cargo test -p cocoindex --features neo4j,falkordb --test graph_vector_index
@@ -29,7 +30,12 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
 
     cocoindex::context_key!(static G: neo4j::Graph, key = "neo4j_vidx_graph");
 
-    let uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
+    // `neo4rs` connects lazily, so an unset URI must skip here: a default
+    // localhost URI would fail at the first query instead.
+    let Ok(uri) = std::env::var("NEO4J_URI") else {
+        eprintln!("skipping Neo4j vector-index test; NEO4J_URI is not set");
+        return;
+    };
     let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
     let password = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "cocoindex".to_string());
     let database = std::env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".to_string());

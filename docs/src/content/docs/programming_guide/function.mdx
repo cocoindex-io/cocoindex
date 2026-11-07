@@ -5,11 +5,16 @@ description: >
   detection, memoization, and execution pipeline — with async adapters, batching,
   and GPU-aware runners included.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 :::note[Prerequisite]
 Read [Core Concepts](./core_concepts) for change detection and function memoization, with diagrams.
 :::
 
 It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can decorate any Python function with `@coco.fn` when you want to add incremental capabilities to it. The decorated function is still a normal Python function: its signature stays the same, and you can call it normally.
+
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn
@@ -20,7 +25,25 @@ async def process_file(file: FileLike) -> str:
 result = await process_file(file)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function]
+async fn process_file(_ctx: &Ctx, file: FileEntry) -> Result<String> {
+    Ok(file.content_str()?.to_string())
+}
+
+// Called like any other function, with the component's `Ctx`.
+let text = process_file(&ctx, file).await?;
+```
+
+</Fragment>
+</LangTabs>
+
 `@coco.fn` preserves the sync/async nature of the underlying function. Decorating a sync function yields a sync function; decorating an async function yields an async function.
+
+The Rust SDK has no sync/async adapter (`as_async`, `as_sync`): a `#[cocoindex::function]` body is an `async fn` and runs on the Tokio runtime. Rust has no ambient component context: every function takes the component's `&Ctx` as its first argument, and the macro substitutes a scoped `Ctx` for the call.
 
 ## How to think about `@coco.fn`
 
@@ -55,12 +78,32 @@ CocoIndex detects three kinds of changes:
 
 With `memo=True`, the function's result is cached. On subsequent calls, if no logic, input, or read context values have changed, the cached result is reused without executing the function body — it carries over [target states](./target_state) declared during the function's previous invocation and returns its previous return value.
 
+{/* Rust: rust/sdk/SHOWCASE.md "Define functions", verified against rust/sdk/cocoindex/tests/memo_deps.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 @coco.fn(memo=True)
 def process_chunk(chunk: Chunk) -> list[float]:
     # This computation is skipped if chunk, logic, and context are unchanged
     return embed(chunk.text)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(memo)]
+async fn parse_file(_ctx: &Ctx, file: FileEntry) -> Result<Vec<Section>> {
+    // Skipped when the file, the logic and the context values are unchanged
+    // ...
+}
+```
+
+In Rust, every argument of a `memo` function is part of the key through its `MemoInput` implementation, and the return type must implement `serde::Serialize` and `Deserialize`. See [Serialization](./serialization).
+
+</Fragment>
+</LangTabs>
 
 :::info[Type annotations]
 Add a **return type annotation** to memoized functions so CocoIndex can properly reconstruct cached values. Without a type annotation, cached values may deserialize as basic Python types (`dict`, `list`, etc.) instead of their original types. See [Serialization](./serialization) for details on supported types.
@@ -153,12 +196,27 @@ A memo entry records only the logic fingerprints its writer offered when it was 
 
 The `version` parameter lets you explicitly invalidate dependent memos by bumping an integer:
 
+{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (`#[cocoindex::function]` doc), rust/sdk/cocoindex/tests/memo_deps.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 @coco.fn(version=2)
 def process_chunk(chunk: Chunk) -> list[float]:
     # Bumping version invalidates all memoized callers, even if code looks the same
     return embed(chunk.text)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(memo, version = 2)]
+async fn my_fn(ctx: &Ctx, arg: &String) -> Result<String> { /* ... */ }
+```
+
+</Fragment>
+</LangTabs>
 
 :::caution[`version` replaces source tracking]
 Setting `version` makes the integer the function's logic **instead of** its source code — the body is no longer fingerprinted. Edits to a versioned function take effect only when you bump the number.
@@ -167,6 +225,10 @@ Setting `version` makes the integer the function's logic **instead of** its sour
 #### `deps`
 
 The `deps` parameter declares external value(s) the function logic depends on but that aren't visible in its body — for example a prompt string or a model identifier defined at module scope. When the value changes, the function's logic fingerprint changes and dependent memos are invalidated, exactly as if the function body had been edited.
+
+{/* Rust: rust/sdk/SHOWCASE.md "Declare dependencies beyond the arguments", verified against rust/sdk/cocoindex/tests/memo_deps.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 SYSTEM_PROMPT = "You are a helpful assistant. Be concise."
@@ -178,7 +240,26 @@ def summarize(text: str) -> str:
     return call_llm(SYSTEM_PROMPT, text)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+const SYSTEM_PROMPT: &str = "Summarize the document in three sentences.";
+
+#[cocoindex::function(memo, deps = SYSTEM_PROMPT)]
+async fn summarize(_ctx: &Ctx, text: &str) -> Result<String> {
+    llm_call(SYSTEM_PROMPT, text).await
+}
+```
+
+</Fragment>
+</LangTabs>
+
 For multiple dependencies, pass a tuple or dict:
+
+{/* Rust: rust/sdk/cocoindex/tests/memo_deps.rs (`deps = (PROMPT, ...)`) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 SYSTEM_PROMPT = "..."
@@ -189,17 +270,36 @@ def summarize(text: str) -> str:
     return call_llm(SYSTEM_PROMPT, text, model=MODEL)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(memo, deps = (PROMPT, MODEL))]
+async fn summarize(_ctx: &Ctx, text: &str) -> Result<String> { /* ... */ }
+```
+
+In Rust, `deps = <expr>` takes one expression that implements `MemoInput`; a tuple groups several values.
+
+</Fragment>
+</LangTabs>
+
 The value is canonicalized through the [memoization-key pipeline](../advanced_topics/memoization_keys), which honors `__coco_memo_key__()`, registered memo key functions, and the standard handling for primitives, dataclasses, and Pydantic models.
 
 :::caution[Snapshotted at decoration time]
 `deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call. For per-call or per-instance values (instance attributes in a bound method, request-scoped config, anything that changes at runtime) pass them as regular function arguments instead, so the memoization layer observes each new value.
 :::
 
+In Rust, `deps = <expr>` is fingerprinted once per process, the first time the function's logic is read. A later change to the value is not observed. Pass per-call values as arguments, as in Python.
+
 `deps` requires `logic_tracking` to be enabled; combining `deps=<value>` with `logic_tracking=None` raises `ValueError`.
 
 #### Per-call dependencies: `LogicDep` and `use_logic_dep`
 
 `deps` describes the whole function: every call depends on the value. Some dependencies are decided per call. A tree walk's `visit_file` depends on the parser of *that file's* language, and a change to one parser should re-run the files it parsed, not every file the walk saw. `coco.LogicDep` declares such a value once, at module import; `coco.use_logic_dep` records it as part of the current call's logic:
+
+{/* Rust: rust/sdk/SHOWCASE.md "Declare dependencies beyond the arguments", verified against rust/sdk/cocoindex/tests/memo_deps.rs (`LogicDep::new`, `ctx.use_logic_dep`) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 PARSER_DEPS = {
@@ -214,6 +314,27 @@ async def visit_file(file: File) -> None:
         coco.use_logic_dep(dep)  # this call's logic also depends on that parser
     ...
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+static RUST_PARSER: LazyLock<LogicDep> =
+    LazyLock::new(|| LogicDep::new(&("rust-parser", 2)).unwrap());
+
+#[cocoindex::function]
+async fn visit_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<Symbol>> {
+    if file.path.extension() == Some("rs".as_ref()) {
+        ctx.use_logic_dep(&RUST_PARSER)?;
+    }
+    parse_symbols(&file)
+}
+```
+
+In Rust, construct a `LogicDep` in a `static LazyLock` so it exists before the app runs, and record it per call with `ctx.use_logic_dep(&DEP)?`. `LogicDep::new` takes any `MemoInput` value.
+
+</Fragment>
+</LangTabs>
 
 A recorded dependency travels exactly like the function's own fingerprint: into the entry of a memoized caller, onward through `"full"` callers, hidden by a `"self"` caller above unless the call is carried by [`logic_propagated_to_callers`](#callbacks-logic_propagated_to_callers), and from a [mounted component](./processing_component) into every ancestor component's entry. (A memoized callee that hits re-offers its stored entry to the caller whole, and that rides to the enclosing component regardless of modes, so a `"self"` caller may record more after a hit than after a miss, never less.) When a later release constructs the `LogicDep` with a new value, only the entries that recorded the old one are invalidated: in the example, a parser's new version re-runs its files and the directories above them, and every other subtree is reused. It is recorded whatever the function's own `logic_tracking` is: it describes the call, not the function's code.
 
@@ -230,6 +351,10 @@ Adopting `use_logic_dep` in a function that memoized callers already stored entr
 :::
 
 Logic, arguments and context values are all known before a body runs. Some bodies read things decided only while they run: an agent session opens the files the model chose, a test runner touches the files the tests import. `coco.DataDep` declares a *kind* of such a read once, at module import, with a validator; `coco.use_data_dep` records one read into the current call, as a key and the state observed. The next probe validates each record from the stored key and state alone, through the kind's validator, so the entry can be reused even though nothing in its arguments covers the read.
+
+{/* Rust: rust/sdk/SHOWCASE.md "Declare dependencies beyond the arguments", verified against rust/sdk/cocoindex/tests/memo_deps.rs (`DataDep::new`, `MemoStateDecision::new`, `ctx.use_data_dep`) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def _validate_file(key: str, prev: tuple[int, bytes]) -> coco.MemoStateOutcome:
@@ -257,6 +382,37 @@ async def session(task: Task) -> Outcome:
     ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+static FILE: LazyLock<DataDep<String, (u64, Fingerprint)>> = LazyLock::new(|| {
+    DataDep::new("file", |path: String, (mtime, digest): (u64, Fingerprint)| async move {
+        let now = modified_nanos(&path)?;
+        if now == mtime {
+            return MemoStateDecision::new(&(mtime, digest), true);
+        }
+        let current = Fingerprint::from_bytes(&std::fs::read(&path)?);
+        MemoStateDecision::new(&(now, current), current == digest)
+    })
+    .unwrap()
+});
+
+#[cocoindex::function(memo)]
+async fn agent_session(ctx: &Ctx, task: &str) -> Result<String> {
+    let path = pick_file(task);
+    let mtime = modified_nanos(&path)?;
+    let data = std::fs::read(&path)?;
+    ctx.use_data_dep(&FILE, &path, &(mtime, Fingerprint::from_bytes(&data)))?;
+    Ok(run_agent(task, data).await?)
+}
+```
+
+In Rust, `DataDep<K, S>` is typed by its key and state, so the validator takes them already deserialized and returns a `MemoStateDecision` (`cocoindex::memo::MemoStateDecision`). Build the kind in a `static LazyLock` before the app runs.
+
+</Fragment>
+</LangTabs>
+
 The validator takes the recorded key and the stored state and returns a [`MemoStateOutcome`](../advanced_topics/memoization_keys#memo-state-validation), sync or awaitable; its parameter annotations drive typed deserialization of the stored key and state, so annotate both. It never receives `NON_EXISTENCE`. Renaming a kind invalidates every entry that recorded it, which doubles as its version bump.
 
 Key and state are any serializable values and are **snapshotted at the call**: identity and equality are fingerprints of the serialized bytes, and `__coco_memo_key__` is not consulted, so use plain values (the resolved path string, a tuple of mtime and digest). Recording the same kind and key again with an equal state records once; recording it with a **different** state makes the run store no entry, because output that used two states of one key has no single state to validate against. A body that writes what it then reads back should not record the read-back.
@@ -275,6 +431,10 @@ The rules for an entry that recorded data dependencies:
 `coco.logic_propagated_to_callers(fn)` closes this gap. It is library-side; the user only puts `@coco.fn` on the callback. It does not make `fn` tracked: `fn`'s own `@coco.fn` and `logic_tracking` decide what it offers, exactly as for any function. The wrapper only carries that up to the frame that called it, through layers that would otherwise drop it. (`coco.logic_tracked` is the former name; it still works and emits a `DeprecationWarning`.)
 
 Call it at the entry point that hands a callback down. The function that calls `logic_propagated_to_callers` is the callback's **owner**. The returned wrapper runs `fn` as usual; afterwards the logic `fn` offered (by `fn`'s own `logic_tracking`) is recorded in **every** memo entry between the call site and the owner's frame (the owner's own entry included) whatever their `logic_tracking`. The owner's mode only decides what goes further up: with `"full"` (the default) the owner offers the callback's logic to its callers like any other dependency; with `"self"` or `None` it stops there.
+
+{/* Rust: rust/sdk/cocoindex/tests/memo_deps.rs (`traverse`, `logic_propagated_to_callers`) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Library
@@ -303,6 +463,42 @@ async def app_main(repo: Repo) -> None:
     await walk(repo, MyVisitor())
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+type Visit = Box<dyn Fn(Ctx, String) -> VisitFuture + Send + Sync>;
+type VisitFuture = std::pin::Pin<Box<dyn Future<Output = Result<String>> + Send>>;
+
+// Library: a memoized "self" function calling a callback it received.
+#[cocoindex::function(memo, logic_tracking = "self", version = 1, memo_key(callback = skip))]
+async fn traverse(
+    ctx: &Ctx,
+    value: &str,
+    callback: &Arc<PropagatedCallback<Visit>>,
+) -> Result<String> {
+    callback.call(ctx, value.to_string()).await
+}
+
+// User: a tracked callback.
+#[cocoindex::function(logic_tracking = "self", version = 1)]
+async fn visit(_ctx: &Ctx, value: &str) -> Result<String> {
+    Ok(format!("visited {value}"))
+}
+
+// The owner wraps the callback once and hands it down.
+let callback: Visit = Box::new(|ctx: Ctx, value: String| {
+    Box::pin(async move { visit(&ctx, &value).await })
+});
+let wrapped = Arc::new(ctx.logic_propagated_to_callers(callback)?);
+traverse(&ctx, "a.rs", &wrapped).await?;
+```
+
+In Rust, `ctx.logic_propagated_to_callers(f)` returns a `PropagatedCallback<F>`. The library function takes it as an argument, skips it in the memo key, and calls it with `callback.call(ctx, ..)`. A call after the owner returned is an error, as in Python.
+
+</Fragment>
+</LangTabs>
+
 The user edits `visit_file`; every `accept` memo entry misses and runs again. The user never sees `logic_propagated_to_callers`. `accept` needs no code of its own: the wrapper it receives already carries its owner.
 
 **When a library does not do this**, wrap the callback in your own code. Your function becomes the owner:
@@ -330,6 +526,10 @@ These parameters can be set on any `@coco.fn` function — not just memoized one
 
 **Fully automatic (default)** — use `logic_tracking="full"` (or omit it) without setting `version`. Any logic change in the function or its callees invalidates dependent memos.
 
+{/* Rust: rust/sdk/cocoindex/tests/logic_tracking.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 @coco.fn
 async def process_file(file: FileLike) -> list[Chunk]:
@@ -338,7 +538,25 @@ async def process_file(file: FileLike) -> list[Chunk]:
     return split_and_embed(text)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function]
+async fn full_default(_ctx: &Ctx, x: &i64) -> Result<i64> { /* ... */ }
+
+#[cocoindex::function(logic_tracking = "full")]
+async fn full_explicit(_ctx: &Ctx, x: &i64) -> Result<i64> { /* ... */ }
+```
+
+</Fragment>
+</LangTabs>
+
 **Manual, precise control** — use `logic_tracking="self"` with `version`. You decide what counts as a behavior change by bumping `version`, without being affected by implementation detail changes (performance optimizations, logging tweaks, refactoring, etc.).
+
+{/* Rust: rust/sdk/cocoindex/tests/memo_deps.rs (`caller_self`) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn(logic_tracking="self", version=3)
@@ -348,7 +566,24 @@ async def process(data: str) -> str:
     return await transform(data)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(memo, logic_tracking = "self", version = 1)]
+async fn caller_self(ctx: &Ctx, test: &str, value: &str) -> Result<String> {
+    records(ctx, &test, "rust", &value).await
+}
+```
+
+</Fragment>
+</LangTabs>
+
 **Opt out of tracking** — use `logic_tracking=None` for functions with a stable contract (where logic changes don't affect output), or functions whose changes don't affect behavior (e.g., logging, performance hints). This prevents unnecessary reprocessing when only internals change.
+
+{/* Rust: rust/sdk/cocoindex/tests/logic_tracking.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn(logic_tracking=None)
@@ -357,6 +592,19 @@ def embed(text: str) -> list[float]:
     # Internal changes (e.g., switching backends) are handled by version bumps.
     return model.encode(text)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(logic_tracking = "none")]
+async fn untracked(_ctx: &Ctx, x: &i64) -> Result<i64> { /* ... */ }
+```
+
+The Rust spelling of Python's `logic_tracking=None` is the string `"none"`.
+
+</Fragment>
+</LangTabs>
 
 :::note
 [Context changes](./context#change-detection) are independent of `@coco.fn` and `logic_tracking`. Even with `logic_tracking=None`, a change in a change-detected context value still invalidates dependent memos, because context tracking is done by `use_context()`, not by the decorator.
@@ -385,6 +633,17 @@ By default, CocoIndex fingerprints function arguments, `deps` values, and contex
 
 For per-function overrides (excluding an argument from the memo key, or transforming it just for this function) pass `memo_key={...}` on `@coco.fn` / `@coco.fn.as_async`; see [Override at the call site with `memo_key=`](../advanced_topics/memoization_keys#override-at-the-call-site-with-memo_key).
 
+In Rust, arguments are fingerprinted through the `MemoInput` trait (`#[derive(MemoInput)]` for your own types). The per-function override is `memo_key(..)` on the attribute: a transform function replaces one argument's identity, and `skip` leaves it out. A target handle is `Clone` but not `MemoInput`, so a memoized function that declares rows takes it with `memo_key(table = skip)`:
+
+{/* Rust: examples/rust/text_embedding/src/main.rs, rust/sdk/SHOWCASE.md "Define functions" (verified against rust/sdk/cocoindex_macros/src/lib.rs) */}
+```rust
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_file(ctx: &Ctx, file: &FileEntry, table: &postgres::TableTarget) -> Result<()> { /* ... */ }
+
+#[cocoindex::function(memo, memo_key(entry = entry_identity, client = skip))]
+async fn fetch(_ctx: &Ctx, entry: &Entry, client: &ApiClient) -> Result<String> { /* ... */ }
+```
+
 ## Execution capabilities
 
 The following capabilities control *how* the function executes, independent of change detection and memoization.
@@ -403,6 +662,8 @@ embedding = await embed("hello world")
 ```
 
 `@coco.fn.as_async` is equivalent to wrapping the function in `asyncio.to_thread()` — the sync function runs on a thread pool and doesn't block the event loop.
+
+The Rust SDK has no equivalent of `as_async`: a `#[cocoindex::function]` is an `async fn`, and `batching` and `runner` are attribute arguments on it. Move blocking work to `tokio::task::spawn_blocking` inside the body when it must not hold a runtime worker.
 
 You can also call any `@coco.fn`-decorated function asynchronously via the `.as_async()` method, without changing its primary signature:
 
@@ -431,6 +692,10 @@ When batching is enabled:
 - Concurrent calls are collected and processed together
 - The implementation runs outside the calling components — see [Context values in a batched body](#context-values-in-a-batched-body)
 
+{/* Rust: rust/sdk/SHOWCASE.md "Batch item-shaped calls", verified against rust/sdk/cocoindex_macros/src/lib.rs and rust/sdk/cocoindex/tests/batching_runner.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 @coco.fn.as_async(batching=True, max_batch_size=32)
 def embed(texts: list[str]) -> list[list[float]]:
@@ -448,6 +713,40 @@ embeddings = await asyncio.gather(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(memo, batching, max_batch_size = 64)]
+async fn embed_batch(
+    ctx: &Ctx,
+    texts: Vec<String>,
+    model: String,
+) -> Result<Vec<Vec<f32>>> {
+    ctx.get_key(&EMBEDDING_CLIENT)?.embed(texts, &model).await
+}
+
+// External usage: one input, one output.
+let embedding: Vec<f32> = embed_batch(&ctx, text, model).await?;
+
+// Concurrent calls are batched: `ctx.map` runs one call per item.
+let embeddings = ctx
+    .map(texts, {
+        let ctx = ctx.clone();
+        move |text| {
+            let ctx = ctx.clone();
+            let model = model.clone();
+            async move { embed_batch(&ctx, text, model).await }
+        }
+    })
+    .await?;
+```
+
+In Rust, `batching` is an attribute argument. The body takes `Vec<T>` and returns `Vec<R>`; the generated wrapper takes one `T` and returns one `R`. With `memo`, a cache hit is served per item and only misses enter a batch.
+
+</Fragment>
+</LangTabs>
+
 The `max_batch_size` parameter limits how many inputs can be processed in a single batch.
 
 The `max_in_flight` parameter bounds how many batches run at once. By default (`None`), a full batch starts as soon as it fills, and the next partial batch starts only once every running batch has finished. With `max_in_flight=n`, at most `n` batches run concurrently, and whenever one finishes the next pending batch (full or partial) starts, so a slow batch no longer holds back the rest:
@@ -457,6 +756,8 @@ The `max_in_flight` parameter bounds how many batches run at once. By default (`
 async def embed(texts: list[str]) -> list[list[float]]:
     return await client.embed(texts)
 ```
+
+The Rust `#[cocoindex::function]` attribute has no `max_in_flight` or `rate_limiter` argument. Its batching arguments are `batching`, `max_batch_size` and `runner`.
 
 #### Pacing batches with a rate limiter
 
@@ -499,9 +800,15 @@ async def embed(text: str) -> list[float]:
 
 Only the first parameter is batched. Every other argument is passed through to the body unchanged and is part of the key that selects the batcher (so is `self`, for methods): calls share a batcher only when these arguments compare equal, which also means they must be hashable. Pass them the same way on every call. An explicit value and the default, or the same value given positionally and by keyword, select different batchers, and the calls are never batched together.
 
+Rust differs here: a batching body receives a `Ctx`, so `ctx.get_key(&KEY)?` works inside it, as in the `embed_batch` example above. The engine joins the dependencies the body reads into every caller's memo entry. The parameter after the `&Ctx` is the batched one; each other parameter must implement `Serialize`, because its serialized value selects the batcher, and `MemoInput` when the function is `memo` (unless `memo_key(..)` transforms or skips it).
+
 #### Retrying a failed batch as smaller batches
 
 Some batch failures depend on the batch's composition rather than any single input — e.g. a provider's per-request token or payload limit, or one input the provider rejects. No fixed `max_batch_size` can rule these out. When the function body hits such a failure, raise `coco.RetryWithSmallerBatch` from it: CocoIndex halves the batch and retries each half, recursing down to single items. At size 1, the wrapped original error is raised as that item's own failure — so one bad input fails only its own caller, while the rest of the batch still succeeds. There is no need to check the batch size before raising: at size 1 the engine simply unwraps the signal and raises the original error.
+
+{/* Rust: rust/sdk/SHOWCASE.md "Batch item-shaped calls", verified against rust/sdk/cocoindex/tests/batching_runner.rs (`Error::retry_with_smaller_batch`) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn.as_async(batching=True, max_batch_size=64)
@@ -513,6 +820,25 @@ async def embed(texts: list[str]) -> list[list[float]]:
             raise  # retrying smaller can't help these
         raise coco.RetryWithSmallerBatch() from e
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(memo, batching, max_batch_size = 64)]
+async fn embed_batch(ctx: &Ctx, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+    let client = ctx.get_key(&EMBEDDING_CLIENT)?;
+    client
+        .embed(&texts)
+        .await
+        .map_err(|err| Error::retry_with_smaller_batch(Error::user(err)))
+}
+```
+
+In Rust, return `Error::retry_with_smaller_batch(cause)` from the body. At batch size one, the engine unwraps the signal and fails that caller with `cause`.
+
+</Fragment>
+</LangTabs>
 
 Raising it is safe for *any* deterministic batch failure, even when you can't tell whether the batch size was the cause: if the error was actually global (it would fail at any size), the recursion terminates at single items and every caller receives the underlying error, at the bounded cost of extra attempts. Only propagate directly for errors where splitting provably can't help — global errors like invalid credentials, and transient errors (rate limits, network blips) that haven't yet been retried at the same size. Once same-size retries are exhausted, splitting is a reasonable last resort: a smaller request may pass where the large one timed out.
 
@@ -538,6 +864,10 @@ The `runner` parameter allows functions to execute in a specific context, such a
 
 Like batching, a runner requires an async interface, so it is always set with `@coco.fn.as_async(runner=...)`, on a plain `def` or an `async def` body. `@coco.fn(runner=...)` raises `ValueError` when applied.
 
+{/* Rust: rust/sdk/cocoindex/tests/batching_runner.rs (`runner = GPU`, `GPURunner::fraction`) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 @coco.fn.as_async(runner=coco.GPU)
 def gpu_inference(data: bytes) -> bytes:
@@ -547,6 +877,32 @@ def gpu_inference(data: bytes) -> bytes:
 # External usage: async
 result = await gpu_inference(data)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(runner = cocoindex::GPU)]
+async fn whole_gpu(_ctx: &Ctx, item: i64) -> Result<i64> {
+    // Runs while holding one whole GPU; `current_gpu()` names it.
+    let device = cocoindex::current_gpu();
+    // ...
+}
+
+#[cocoindex::function(memo, runner = GPURunner::fraction(0.5))]
+async fn half_gpu(_ctx: &Ctx, item: i64) -> Result<i64> {
+    // Two calls share one GPU.
+    // ...
+}
+
+// External usage: async
+let result = whole_gpu(&ctx, item).await?;
+```
+
+In Rust, `runner` is a `const` expression of type `GPURunner`. `cocoindex::GPU` takes a whole GPU per call; `GPURunner::fraction(f)` takes a share, so several calls run at once on one GPU. Inside the body, `current_gpu()`, `current_gpus()` and `current_gpu_fraction()` report the assignment. The pool size comes from `COCOINDEX_NUM_GPUS`, `CUDA_VISIBLE_DEVICES` or `nvidia-smi` (one GPU by default); `configure_gpu_pool(n)` overrides it before the first GPU function runs.
+
+</Fragment>
+</LangTabs>
 
 The `coco.GPU` runner:
 
@@ -567,7 +923,13 @@ Cancelling a call returns right away, but its GPU is not released until the work
 A call whose worker dies fails with `BrokenProcessPool` and is not retried: the component fails, nothing is written or memoized for it, and the next `app.update()` retries it cleanly. Calls on other workers keep running. If a worker dies while idle, the next call on that GPU goes to another worker, unless it reaches the dead one in the moment before the death is noticed, in which case that call fails too.
 :::
 
+Python's subprocess mode and dedicated GPU thread exist for the GIL and CUDA's fork rules. A Rust body has neither, so the Rust SDK has no equivalent.
+
 You can combine batching with a runner:
+
+{/* Rust: rust/sdk/cocoindex/tests/batching_runner.rs (`gpu_batch`) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn.as_async(batching=True, max_batch_size=16, runner=coco.GPU)
@@ -585,6 +947,27 @@ embeddings = await asyncio.gather(
     batch_gpu_embed("text3"),
 )
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(batching, max_batch_size = 2, runner = GPU)]
+async fn gpu_batch(_ctx: &Ctx, items: Vec<i64>) -> Result<Vec<i64>> {
+    // Each physical batch, and each retried half, holds the GPU.
+    // ...
+}
+
+// Concurrent calls
+let calls = [5, -1, 6, 7].map(|item| gpu_batch(&ctx, item));
+let outputs = futures::future::join_all(calls)
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>>>()?;
+```
+
+</Fragment>
+</LangTabs>
 
 :::note
 By default, `coco.GPU` runs functions in-process, so no pickling is required. When using subprocess mode (`COCOINDEX_RUN_GPU_IN_SUBPROCESS=1`), the function and all its arguments must be picklable since they are serialized for subprocess execution.

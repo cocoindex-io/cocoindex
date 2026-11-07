@@ -5,6 +5,8 @@ description: >
   embeddings. Learn how to declare them through connector APIs, nest container
   targets, and rely on CocoIndex to sync minimal creates, updates, and deletes.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 :::note[Prerequisite]
 Read [Core Concepts](./core_concepts) for target states and the declarative *target state = transform(source state)* model, with diagrams.
 :::
@@ -12,7 +14,7 @@ Read [Core Concepts](./core_concepts) for target states and the declarative *tar
 A **target state** represents what you want to exist in an external system. You *declare* target states in your code; CocoIndex keeps them in sync with your intent — creating, updating, or removing them as needed.
 
 :::note[Terminology]
-A **target** is the external system you write to — a directory, a database table, a vector store collection, etc. In Python, targets are represented by objects like `DirTarget` and `TableTarget`. A **target state** is what you want to exist *in* that target — a specific file, row, or embedding.
+A **target** is the external system you write to — a directory, a database table, a vector store collection, etc. In Python, targets are represented by objects like `DirTarget` and `TableTarget`; in Rust, by `DirTarget` and the connectors' `TableTarget` types. A **target state** is what you want to exist *in* that target — a specific file, row, or embedding.
 
 CocoIndex treats your declarations as the source of truth: if you stop declaring a target state, CocoIndex will remove it from the target.
 :::
@@ -29,6 +31,10 @@ When your source data changes, CocoIndex compares the newly declared target stat
 
 CocoIndex connectors provide **targets** with `declare_*` methods:
 
+{/* Rust: examples/rust/files_transform/src/main.rs, examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 # Declare a file target state
 dir_target.declare_file(filename="output.html", content=html)
@@ -36,6 +42,22 @@ dir_target.declare_file(filename="output.html", content=html)
 # Declare a row target state
 table_target.declare_row(row=DocEmbedding(...))
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Declare a file target state
+target.declare_file(ctx, &output_name_for(&file), html.as_bytes())?;
+
+// Declare a row target state
+table.declare_row(ctx, &DocEmbedding { /* ... */ })?;
+```
+
+Every `declare_*` method takes the component's `&Ctx` first: the target state belongs to that component.
+
+</Fragment>
+</LangTabs>
 
 ### Where do targets come from?
 
@@ -49,6 +71,10 @@ Connectors provide convenience methods that mount the container and return a rea
 
 For simple cases where each processing component writes a single file, you can declare the file directly:
 
+{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 from cocoindex.connectors import localfs
 
@@ -56,7 +82,33 @@ from cocoindex.connectors import localfs
 localfs.declare_file(outdir / "output.html", html, create_parent_dirs=True)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::resources::fs::{self, FileOptions};
+
+// Declare a single file target state directly
+fs::declare_file_with_options(
+    &ctx,
+    path,
+    b"hello",
+    FileOptions {
+        create_parent_dirs: true,
+    },
+)?;
+```
+
+`fs::declare_file(&ctx, path, content)` is the form with default options.
+
+</Fragment>
+</LangTabs>
+
 When you need a `DirTarget` to declare multiple files, use the connector's convenience method:
+
+{/* Rust: examples/rust/files_transform/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Mount a directory target, get a ready-to-use DirTarget
@@ -66,9 +118,27 @@ dir_target = await localfs.mount_dir_target(outdir)
 dir_target.declare_file(filename="output.html", content=html)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Mount a directory target, get a ready-to-use DirTarget
+let target = DirTarget::mount(&ctx, &output_dir)?;
+
+// Declare child target states (files)
+target.declare_file(ctx, &output_name_for(&file), html.as_bytes())?;
+```
+
+</Fragment>
+</LangTabs>
+
 ### Example: writing a row to PostgreSQL
 
 This example uses a [`ContextKey`](./context) to reference the database connection — see [Context](./context) for how keys are defined and provided.
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import asyncpg
@@ -91,11 +161,43 @@ table = await postgres.mount_table_target(
 table.declare_row(row=DocEmbedding(...))
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::postgres;
+
+// Define a ContextKey for the database connection (provided in the lifespan)
+cocoindex::context_key!(static DB: postgres::Database);
+
+// Mount a table target, get a ready-to-use TableTarget
+let target_table = postgres::mount_table_target(
+    &ctx,
+    &DB,
+    TABLE,
+    postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+        .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+        .await?,
+    Some(PG_SCHEMA),
+)
+.await?;
+
+// Declare a child target state (a row)
+target_table.declare_row(ctx, &DocEmbedding { /* ... */ })?;
+```
+
+The row type derives `SchemaFields`, and `TableSchema::from_row::<Row>(keys)` builds the schema from it. See [Serialization](./serialization#rust-rows-and-schemas).
+
+</Fragment>
+</LangTabs>
+
 These convenience methods wrap [`mount_target()`](./processing_component#mount_target), which automatically derives the component path from the target's globally unique key. See [Processing Component](./processing_component) for more on mounting APIs.
 
 :::tip[Type safety]
 Targets like `DirTarget` and `TableTarget` have two statuses: **pending** (just created) and **resolved** (after the container target state is ready). The type system tracks this — if you try to use a pending target before it's resolved, type checkers like mypy will flag the error.
 :::
+
+The Rust targets have no pending status: `mount_table_target` is `async` and returns the target once the container is ready, and `DirTarget::mount` returns a ready handle. A target handle is `Clone`, so one handle can be passed to every per-item component.
 
 ## How CocoIndex syncs target states
 
@@ -156,6 +258,24 @@ CocoIndex ensures a container exists before its contents are added, and syncs th
 
 A target state's identity is its key. CocoIndex doesn't detect two different keys that reach the same physical object: two directories that overlap or alias through a symlink, two [`ContextKey`s](./context#contextkey-as-stable-identity) for one database, or two names or IDs that the backend treats as equal (for example, table names that differ only in case). CocoIndex syncs them as two target states, so syncing one can overwrite or delete the other. Keeping the objects behind different keys apart is your responsibility.
 
+### Inspecting stored target states
+
+The state database records every tracked target state with the component that owns it. Both CLIs print them with `cocoindex show --target-states`. In Rust code, `cocoindex::inspect` reads the same records from an `App`, or from an `Environment` and an app name with the `_by_name` functions:
+
+{/* Rust: rust/sdk/SHOWCASE.md "Inspect stored state", verified against rust/sdk/cocoindex/tests/inspect.rs */}
+```rust
+use cocoindex::inspect;
+use futures::TryStreamExt;
+
+// Streams read in one transaction and buffer nothing.
+let mut entries = std::pin::pin!(inspect::iter_target_states(&app).await);
+while let Some(entry) = entries.try_next().await? {
+    println!("{} owner:{}", entry.readable_path, entry.owner_component_path);
+}
+```
+
+Each `TargetStateEntry` carries the target state's readable path, its fingerprint path, and its owner's component path. `inspect::list_stable_paths` and `inspect::iter_stable_path_details` list the components themselves, with the count of target states each one owns.
+
 ### What happens when a target's schema changes
 
 When you change a container target state's declaration (e.g., add a column to a table schema, change a primary key), CocoIndex detects the change and does its best to alter the target in place. If the change is too large to alter (e.g., changing primary keys), the target is dropped and recreated.
@@ -170,3 +290,5 @@ For cases where connector-specific APIs don't cover your needs, CocoIndex provid
 - `declare_target_state_with_child()` — declare a target state that provides child target states
 
 These are exported from `cocoindex` and used internally by connectors. For defining custom targets, see [Custom Target States Connector](../advanced_topics/custom_target_connector).
+
+The Rust SDK exports the same two functions, `declare_target_state(ctx, provider.target_state(key, value))` and `declare_target_state_with_child`, next to `register_root_target_states_provider(ctx, name, handler)`, which registers a `TargetHandler` and returns the provider. The Rust tests in `rust/sdk/cocoindex/tests/mount.rs` show a minimal handler.

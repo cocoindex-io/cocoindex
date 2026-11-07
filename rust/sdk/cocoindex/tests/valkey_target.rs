@@ -8,9 +8,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::Environment;
 use cocoindex::connectors::valkey::{
-    self, Distance, Document, FieldDef, FieldType, IndexSchema, VectorAlgorithm, VectorDef,
+    self, Distance, Document, FieldDef, FieldType, IndexSchema, PayloadValue, VectorAlgorithm,
+    VectorDef,
 };
 use cocoindex::resources::schema::VectorSchema;
+use cocoindex::statediff::ManagedTargetOptions;
 
 cocoindex::context_key!(static VK: valkey::Valkey, key = "valkey_target_conn");
 
@@ -38,7 +40,10 @@ async fn schema() -> IndexSchema {
             distance: Distance::Cosine,
             algorithm: VectorAlgorithm::Hnsw,
         },
-        vec![FieldDef::new("text", FieldType::Text)],
+        vec![
+            FieldDef::new("text", FieldType::Text),
+            FieldDef::new("price", FieldType::Numeric),
+        ],
     )
     .await
     .unwrap()
@@ -124,6 +129,14 @@ async fn valkey_index_upsert_update_and_cleanup_when_available() {
                     valkey::mount_index_target(&ctx, &VK, index_name, schema().await).await?;
                 index.declare_document(&ctx, doc("d1", vec![0.1, 0.2, 0.3], "hello"))?;
                 index.declare_document(&ctx, doc("d2", vec![0.4, 0.5, 0.6], "world"))?;
+                // A numeric payload value for the NUMERIC field.
+                index.declare_document(
+                    &ctx,
+                    Document::new("d3", vec![0.7, 0.8, 0.9]).with_payload([
+                        ("text", PayloadValue::from("priced")),
+                        ("price", PayloadValue::from(42i64)),
+                    ]),
+                )?;
                 Ok(())
             }
         }
@@ -132,15 +145,22 @@ async fn valkey_index_upsert_update_and_cleanup_when_available() {
     .expect("creating a Valkey index + documents should succeed");
 
     assert!(index_exists(&uri, &index_name).await);
-    assert_eq!(doc_count(&uri, &index_name).await, 2);
+    assert_eq!(doc_count(&uri, &index_name).await, 3);
     assert_eq!(
         hget(&uri, &format!("{index_name}:d1"), "text")
             .await
             .as_deref(),
         Some("hello")
     );
+    assert_eq!(
+        hget(&uri, &format!("{index_name}:d3"), "price")
+            .await
+            .as_deref(),
+        Some("42"),
+        "a numeric payload value is stored as its text form"
+    );
 
-    // Run 2: update d1's payload, drop d2.
+    // Run 2: update d1's payload, drop d2 and d3.
     app.run({
         let index_name = index_name.clone();
         move |ctx| {
@@ -236,6 +256,102 @@ async fn valkey_undeclared_and_dropped_indexes_are_removed_when_available() {
     assert!(!key_exists(&uri, &doc_key).await);
 }
 
+/// A user-managed index is never created, dropped or recreated by CocoIndex:
+/// only its documents are. The test creates the index itself, as the user
+/// would, and checks it survives both an undeclaring run and `drop_state`.
+#[tokio::test]
+async fn valkey_user_managed_index_is_left_in_place_when_available() {
+    let Some(vk) = try_connect().await else {
+        eprintln!("skipping live Valkey user-managed test; VALKEY_URI is not set or unavailable");
+        return;
+    };
+    let uri = std::env::var("VALKEY_URI").unwrap();
+    let index_name = format!("idx_user_{}", nonce());
+    let doc_key = format!("{index_name}:d1");
+
+    // The user creates the index.
+    let client = redis::Client::open(uri.as_str()).unwrap();
+    let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+    let mut create = redis::cmd("FT.CREATE");
+    create.arg(&index_name);
+    for word in ["ON", "HASH", "PREFIX", "1"] {
+        create.arg(word);
+    }
+    create.arg(format!("{index_name}:"));
+    for word in [
+        "SCHEMA",
+        "vector",
+        "VECTOR",
+        "HNSW",
+        "6",
+        "TYPE",
+        "FLOAT32",
+        "DIM",
+        "3",
+        "DISTANCE_METRIC",
+        "COSINE",
+        "text",
+        "TEXT",
+        "price",
+        "NUMERIC",
+    ] {
+        create.arg(word);
+    }
+    let _: redis::Value = create.query_async(&mut conn).await.unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(tmp.path().join("db"))
+        .provide_key(&VK, vk.clone())
+        .build()
+        .await
+        .unwrap()
+        .app("ValkeyUserManagedE2ETest")
+        .await
+        .unwrap();
+    let declare = |index_name: String| {
+        move |ctx: cocoindex::Ctx| async move {
+            let index = valkey::mount_index_target_with_options(
+                &ctx,
+                &VK,
+                index_name,
+                schema().await,
+                ManagedTargetOptions::user_managed(),
+            )
+            .await?;
+            index.declare_document(&ctx, doc("d1", vec![0.1, 0.2, 0.3], "hello"))?;
+            Ok::<_, cocoindex::Error>(())
+        }
+    };
+
+    app.run(declare(index_name.clone())).await.unwrap();
+    assert!(key_exists(&uri, &doc_key).await, "documents are written");
+
+    app.run(|_ctx| async { Ok(()) }).await.unwrap();
+    assert!(
+        index_exists(&uri, &index_name).await,
+        "a user-managed index no longer declared is left in place"
+    );
+    assert!(
+        !key_exists(&uri, &doc_key).await,
+        "its documents are removed"
+    );
+
+    app.run(declare(index_name.clone())).await.unwrap();
+    app.drop_state().await.unwrap();
+    assert!(
+        index_exists(&uri, &index_name).await,
+        "drop_state leaves a user-managed index in place"
+    );
+    assert!(!key_exists(&uri, &doc_key).await);
+
+    let _: redis::Value = redis::cmd("FT.DROPINDEX")
+        .arg(&index_name)
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+}
+
 /// An index that exists without a tracking record (e.g. state from an earlier
 /// version that keyed target states differently) is adopted, not re-created.
 #[tokio::test]
@@ -283,4 +399,87 @@ async fn valkey_adopts_untracked_existing_index_when_available() {
 
     second.drop_state().await.unwrap();
     assert!(!index_exists(&uri, &index_name).await);
+}
+
+/// A connection made from a `ClientConfig`, and one made from a caller-built
+/// `redis::Client`, both carry a target: the first is named on the server, and
+/// each writes the documents declared through it.
+#[tokio::test]
+async fn valkey_connects_with_a_client_config_and_a_caller_built_client_when_available() {
+    if try_connect().await.is_none() {
+        eprintln!("skipping live Valkey connection test; VALKEY_URI is not set or unavailable");
+        return;
+    }
+    let uri = std::env::var("VALKEY_URI").unwrap();
+    let info: redis::ConnectionInfo = uri.parse().unwrap();
+    let redis::ConnectionAddr::Tcp(host, port) = info.addr.clone() else {
+        eprintln!("skipping live Valkey connection test; VALKEY_URI is not a plain TCP address");
+        return;
+    };
+
+    let client_name = format!("coco_test_{}", nonce());
+    let from_config = valkey::Valkey::connect_with_config(valkey::ClientConfig {
+        host: host.clone(),
+        port,
+        password: info.redis.password.clone(),
+        client_name: Some(client_name.clone()),
+        ..valkey::ClientConfig::default()
+    })
+    .await
+    .expect("connecting with a ClientConfig should succeed");
+    assert_eq!(from_config.state_id(), format!("redis://{host}:{port}"));
+
+    let observer = redis::Client::open(uri.as_str()).unwrap();
+    let mut conn = observer.get_multiplexed_async_connection().await.unwrap();
+    let clients: String = redis::cmd("CLIENT")
+        .arg("LIST")
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+    assert!(
+        clients.contains(&format!("name={client_name}")),
+        "the configured client name is set on the connection: {clients}"
+    );
+
+    let from_client = valkey::Valkey::from_client("valkey-under-test", &observer)
+        .await
+        .expect("wrapping a redis::Client should succeed");
+    assert_eq!(from_client.state_id(), "valkey-under-test");
+
+    for (label, vk) in [("config", from_config), ("client", from_client)] {
+        let index_name = format!("idx_{label}_{}", nonce());
+        let tmp = tempfile::tempdir().unwrap();
+        let app = Environment::builder()
+            .db_path(tmp.path().join("db"))
+            .provide_key(&VK, vk)
+            .build()
+            .await
+            .unwrap()
+            .app("ValkeyConnectionTest")
+            .await
+            .unwrap();
+        app.run({
+            let index_name = index_name.clone();
+            move |ctx| {
+                let index_name = index_name.clone();
+                async move {
+                    let index =
+                        valkey::mount_index_target(&ctx, &VK, index_name, schema().await).await?;
+                    index.declare_document(&ctx, doc("d1", vec![0.1, 0.2, 0.3], "hello"))?;
+                    Ok(())
+                }
+            }
+        })
+        .await
+        .expect("declaring a document over the connection should succeed");
+        assert_eq!(
+            hget(&uri, &format!("{index_name}:d1"), "text")
+                .await
+                .as_deref(),
+            Some("hello"),
+            "connection made from a {label}"
+        );
+        app.drop_state().await.unwrap();
+        assert!(!index_exists(&uri, &index_name).await);
+    }
 }

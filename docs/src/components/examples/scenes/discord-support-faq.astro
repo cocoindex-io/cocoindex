@@ -1,0 +1,124 @@
+---
+// Discord support threads → FAQ.md: the eight forum posts seed_server.py
+// writes (a made-up self-hosted photo library's help forum), three of them
+// asking about uploads stalling behind a proxy. An LLM extracts each thread's
+// question and answer, entity resolution merges the three into one entry
+// (asked 3×), and FAQ.md lists answered questions by topic and the
+// unanswered one under Open questions; "Show us your setup" asks nothing and
+// gets no entry. That is the first run the README describes. The questions'
+// and answers' wording is an LLM's, from one hand run, so it's captioned as
+// varying by run. The file-names post (Δ) is the README's first "See it
+// update" step: answering it moves its question out of Open questions, and
+// only that thread goes back to the LLM.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="df">
+    <div class="sc-row">
+      <div class="sc-col df-src">
+        <span class="sc-cap">Support forum</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-stream"></span>DISCORD_CHANNEL_IDS</div>
+          <div class="sc-panel-b">
+            <div class="df-same">
+              <div class="sc-li"><span class="sc-ico i-file"></span><span>Uploads from my phone stall at 99%</span><span class="sc-meta">Solved</span></div>
+              <div class="sc-li"><span class="sc-ico i-file"></span><span>Large videos never finish uploading</span></div>
+              <div class="sc-li"><span class="sc-ico i-file"></span><span>Phone backup stuck at 99% on long videos</span></div>
+            </div>
+            <div class="sc-li"><span class="sc-ico i-file"></span><span>How do I move the library to a bigger disk?</span><span class="sc-meta">Solved</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>Can downloads keep the original file names?</span><span class="sc-dmark">Δ</span></div>
+            <div class="sc-li"><span class="sc-ico i-file"></span><span class="sc-dim">Show us your setup</span></div>
+            <span class="df-more">+2 more posts</span>
+          </div>
+        </div>
+        <p class="sc-quote df-note">Three posts ask the same thing in other words. Answer the Δ post and only it goes back to the LLM; its question leaves Open questions.</p>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col df-mid">
+        <span class="sc-cap">Extract, merge, write</span>
+        <div class="sc-stack">
+          <span class="sc-chip"><span class="sc-ico i-model"></span>extract_qa</span>
+          <span class="sc-chip"><span class="sc-ico i-model"></span>resolve_entities</span>
+          <span class="sc-chip"><span class="sc-ico i-model"></span>merge_answers</span>
+          <span class="sc-chip"><span class="sc-ico i-file"></span>localfs</span>
+        </div>
+        <span class="sc-cap df-fine">Per thread, memoized by its text; merge only for an entry answered in 2+ threads</span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col df-wide">
+        <span class="sc-cap">FAQ.md</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-file"></span>FAQ.md</div>
+          <div class="sc-panel-b df-md">
+            <span class="df-h2">## Storage</span>
+            <span class="df-h3">### How do I move the photo library to a new drive without re-uploading everything?</span>
+            <span class="sc-quote sc-clip2">For versions 2.0 and later: stop the server, copy the library folder to the new disk, start the server, then set the new library location in Administration &gt; Storage.</span>
+            <span class="df-asked">Asked 1×: How do I move the library… (Solved)</span>
+            <span class="df-h2">## Uploads</span>
+            <span class="df-h3">### Why do large video uploads never finish (no error)?</span>
+            <span class="sc-quote sc-clip2">Uploads stall because the reverse proxy (nginx) is capping request size…</span>
+            <span class="df-asked">Asked 3×: Uploads from my phone… (Solved), Large videos…, Phone backup… (Open)</span>
+            <div class="df-open sc-delta">
+              <span class="df-h2"><span class="sc-dtext">## Open questions</span></span>
+              <span class="df-h3"><span class="sc-dtext">### How do I keep my camera's original file names when downloading an album as a ZIP?</span></span>
+              <span class="df-asked"><span class="sc-dtext">Asked 1×: Can downloads keep the original file names?</span></span>
+            </div>
+          </div>
+        </div>
+        <span class="sc-cap df-fine">Illustrative: the wording is the LLM's and varies by run</span>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="df-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel df-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-stream"></span>Support forum</div>
+        <div class="sc-panel-b">
+          <div class="sc-li"><span class="sc-ico i-file"></span><span>Uploads from my phone stall…</span></div>
+          <div class="sc-li"><span class="sc-ico i-file"></span><span>Large videos never finish…</span></div>
+          <div class="sc-li"><span class="sc-ico i-file"></span><span>Phone backup stuck at 99%…</span></div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel df-card-dst">
+        <div class="sc-panel-h"><span class="sc-ico i-file"></span>FAQ.md</div>
+        <div class="sc-panel-b">
+          <span class="df-h3">### Why do large video uploads never finish (no error)?</span>
+          <span class="df-asked">Asked 3×</span>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .df { display: flex; flex-direction: column; gap: 18px; }
+  .df > .sc-row { gap: 10px; }
+  .df-src { flex: 1.25 1 0; }
+  .df-mid { flex: 0.8 1 0; }
+  .df-wide { flex: 1.45 1 0; }
+  .df .sc-li { font-size: 12px; }
+  .df-src .sc-li > span:nth-child(2) { font-family: var(--sans); }
+  .df-same { display: flex; flex-direction: column; gap: 4px; padding-left: 6px; border-left: 2px solid var(--sc-line-2); }
+  .df-more { padding-left: 22px; font-size: 12px; color: var(--sc-dim); }
+  .df-note { margin: 0; font-size: 12px; color: var(--sc-dim); }
+  .df-mid .sc-stack { align-items: flex-start; }
+  .df-fine { font-weight: 400; }
+  .df-md { gap: 3px; }
+  .df-h2 { margin-top: 6px; font-family: var(--mono); font-size: 12px; color: var(--sc-ink); }
+  .df-h2:first-child { margin-top: 0; }
+  .df-h3 { font-family: var(--mono); font-size: 12px; color: var(--sc-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .df-asked { font-size: 12px; color: var(--sc-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .df-open { display: flex; flex-direction: column; gap: 3px; margin: 4px -6px 0; padding: 4px 6px; border: 1px solid transparent; border-radius: 6px; }
+  .df-open .df-h2 { margin-top: 0; }
+
+  .df-card { height: 100%; display: flex; align-items: center; min-width: 0; contain: inline-size; }
+  .df-card > .sc-row { width: 100%; min-width: 0; align-items: center; }
+  .df-card-src { flex: 1.1 1 0; }
+  .df-card-dst { flex: 1 1 0; }
+  .df-card .sc-li > span:nth-child(2) { font-family: var(--sans); }
+  .df-card .df-h3 { font-size: 11px; white-space: normal; }
+  .df-card .df-asked { font-size: 11px; }
+</style>

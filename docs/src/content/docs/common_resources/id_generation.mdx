@@ -5,7 +5,9 @@ description: >
   and generate_uuid for pure derivation, and IdGenerator / UuidGenerator for
   stateful sequences that still reproduce across runs.
 ---
-The ID module (`cocoindex.resources.id`) provides utilities for generating stable unique IDs and UUIDs that persist across incremental updates.
+import LangTabs from '../../../components/LangTabs.astro';
+
+The ID module (`cocoindex.resources.id`) provides utilities for generating stable unique IDs and UUIDs that persist across incremental updates. The Rust SDK has the same four APIs in `cocoindex::resources::id`, re-exported from `cocoindex::prelude`.
 
 In an incremental pipeline, using random IDs (like `uuid.uuid4()`) means every reprocessing run generates different IDs for the same data — causing unnecessary churn in your targets (deleting old rows, inserting identical ones with new IDs). CocoIndex's ID utilities produce **stable** IDs: the same inputs produce the same IDs across runs, so unchanged data keeps its identity and targets only see real changes.
 
@@ -18,9 +20,15 @@ In an incremental pipeline, using random IDs (like `uuid.uuid4()`) means every r
 
 The same distinction applies to `generate_uuid` vs `UuidGenerator`.
 
+The Rust names are `generate_id(&ctx, &dep)` and `id_gen.next_id(&ctx, &dep)`. Every Rust ID function takes the component's `Ctx` first: the memo that keeps an ID stable belongs to the processing component, and in Rust the context is explicit.
+
 ## generate_id / generate_uuid
 
 Async functions that return the **same** ID/UUID for the **same** `dep` value. These are idempotent: calling multiple times with identical `dep` yields identical results.
+
+{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (generate_id_returns_same_id_for_same_dep_across_runs, generate_uuid_...) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.resources.id import generate_id, generate_uuid
@@ -36,6 +44,32 @@ async def process_document(doc: Document) -> Row:
     return Row(id=doc_uuid, content=doc.content)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::resources::id::{generate_id, generate_uuid};
+
+// Same dep always gets the same ID; "A" twice is one ID, "B" is another.
+let ids = vec![
+    generate_id(&ctx, &"A").await?,
+    generate_id(&ctx, &"B").await?,
+    generate_id(&ctx, &"A").await?,
+];
+
+// Same for UUIDs.
+let uuids = vec![
+    generate_uuid(&ctx, &"A").await?,
+    generate_uuid(&ctx, &"B").await?,
+    generate_uuid(&ctx, &"A").await?,
+];
+```
+
+`dep` is any `Serialize` value, passed by reference. `generate_id_default(&ctx)` and `generate_uuid_default(&ctx)` are the forms with no dependency value (Python's `dep=None`).
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `dep` — Dependency value that determines the ID/UUID. The same `dep` always produces the same result within a component. Defaults to `None`.
@@ -45,11 +79,17 @@ async def process_document(doc: Document) -> Row:
 - `generate_id` returns an `int` (IDs start from 1; 0 is reserved)
 - `generate_uuid` returns a `uuid.UUID`
 
+In Rust, `generate_id` returns a `u64` and `generate_uuid` a `uuid::Uuid`, each inside a `Result`.
+
 ## IdGenerator / UuidGenerator
 
 Classes that return a **distinct** ID/UUID on each call, even when called with the same `dep` value. The sequence is stable across runs.
 
 Use these when you need multiple IDs for potentially non-distinct inputs, such as splitting text into chunks where chunks may have identical content but still need unique IDs.
+
+{/* Rust: examples/rust/text_embedding/src/main.rs (process_file), rust/sdk/cocoindex/tests/pipeline.rs (with_deps, UuidGenerator) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.resources.id import IdGenerator, UuidGenerator
@@ -75,11 +115,68 @@ async def process_with_uuids(doc: Document) -> list[Row]:
     return rows
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::prelude::*;
+
+/// Embed one chunk and declare its row. The shared generator gives each
+/// chunk a distinct ID, even when two chunks have the same text.
+#[cocoindex::function]
+async fn process_chunk(
+    ctx: &Ctx,
+    chunk: Chunk,
+    text: &str,
+    filename: &str,
+    id_gen: &IdGenerator,
+    table: &postgres::TableTarget,
+) -> Result<()> {
+    let chunk_text = chunk.text(text);
+    let id = i64::try_from(id_gen.next_id(ctx, chunk_text).await?)
+        .map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
+    table.declare_row(
+        ctx,
+        &DocEmbedding {
+            id,
+            filename: filename.to_string(),
+            chunk_start: chunk.start.char_offset as i32,
+            chunk_end: chunk.end.char_offset as i32,
+            text: chunk_text.to_string(),
+            embedding: ctx.get_key(&EMBEDDER)?.embed(ctx, chunk_text).await?,
+        },
+    )
+}
+
+// One generator per file, shared by the concurrent calls of `ctx.map`.
+let id_gen = IdGenerator::new();
+ctx.map(chunks, async |chunk| {
+    process_chunk(ctx, chunk, &text, &filename, &id_gen, &table).await
+})
+.await?;
+
+// Constructor dependencies split the sequences of two generators in one component.
+let id_gen = IdGenerator::with_deps(&dep)?;
+let id = id_gen.next_id_default(&ctx).await?;
+
+let uuid_gen = UuidGenerator::new();
+let uuid = uuid_gen.next_uuid(&ctx, &"same").await?;
+```
+
+`next_id` and `next_uuid` take `&self`: the generator counts how often it has seen each `dep` behind a mutex, and that ordinal is part of the memo key. One generator can therefore be shared by the concurrent closures of `ctx.map`, as in `examples/rust/text_embedding`. Concurrent calls take their ordinals in the order they reach the generator, so give each call a `dep` that identifies its item, as the chunk text does above. A generator is not `Clone`: a copy would replay the same ordinals and hand out the same IDs again.
+
+</Fragment>
+</LangTabs>
+
 **Constructor:**
 
 - `IdGenerator(deps=None)` / `UuidGenerator(deps=None)` — Create a generator. The `deps` parameter distinguishes generators within the same [processing component](../programming_guide/processing_component). Use distinct `deps` values for different generator instances.
+
+In Rust: `IdGenerator::new()` / `UuidGenerator::new()` have no dependency; `IdGenerator::with_deps(&deps)?` / `UuidGenerator::with_deps(&deps)?` take any `Serialize` value.
 
 **Methods:**
 
 - `async IdGenerator.next_id(dep=None)` — Generate the next unique integer ID (distinct on each call)
 - `async UuidGenerator.next_uuid(dep=None)` — Generate the next unique UUID (distinct on each call)
+
+In Rust: `next_id(&ctx, &dep)` / `next_uuid(&ctx, &dep)`, and `next_id_default(&ctx)` / `next_uuid_default(&ctx)` with no per-call dependency.

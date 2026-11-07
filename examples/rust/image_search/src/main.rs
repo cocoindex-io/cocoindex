@@ -61,8 +61,8 @@ struct PointData {
 async fn process_image(ctx: &Ctx, file: FileEntry) -> Result<PointData> {
     let filename = file.key();
     let bytes = file.content()?;
-    let vector = ctx.get_key(&EMBEDDER)?.embed(bytes).await?;
-    let mut id_gen = IdGenerator::new();
+    let vector = ctx.get_key(&EMBEDDER)?.embed(ctx, bytes).await?;
+    let id_gen = IdGenerator::new();
     let id = id_gen.next_id(&ctx, &filename).await?;
     Ok(PointData {
         id,
@@ -87,7 +87,7 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         sourcedir.display()
     );
 
-    let points = mount_each!(files, |file| process_image(ctx, file)).await?;
+    let points = use_mount_each!(files, |file| process_image(ctx, file)).await?;
 
     for p in &points {
         let payload = json!({ "filename": p.filename })
@@ -105,7 +105,7 @@ async fn query_once(
     text_embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = Embedder::embed(text_embedder, query).await?;
+    let query_vec = text_embedder.embed_batch(vec![query.to_string()]).await?.remove(0);
     let hits = qdrant::vector_search(conn, COLLECTION, query_vec, TOP_K).await?;
     for hit in hits {
         let filename = hit

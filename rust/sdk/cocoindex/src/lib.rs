@@ -2,10 +2,12 @@ extern crate self as cocoindex;
 
 pub mod app;
 pub mod batched;
+pub mod cli;
 pub mod connectors;
 pub mod ctx;
 #[cfg(any(feature = "neo4j", feature = "falkordb"))]
 mod cypher_graph;
+pub mod deps;
 pub mod entity_resolution;
 pub mod error;
 // Rejects non-finite floats before the JSON round-trip in target connectors that
@@ -17,9 +19,13 @@ pub mod error;
     feature = "surrealdb",
     feature = "neo4j",
     feature = "falkordb",
-    feature = "lancedb"
+    feature = "lancedb",
+    feature = "zvec",
+    feature = "bigquery",
+    feature = "snowflake"
 ))]
 mod finite;
+pub mod inspect;
 pub mod live_component;
 #[doc(hidden)]
 pub mod logic;
@@ -28,9 +34,18 @@ pub mod mount;
 pub mod ops;
 pub mod prelude;
 pub(crate) mod profile;
+#[doc(hidden)]
+pub mod registry;
 pub mod resources;
 pub mod row_schema;
-#[cfg(any(feature = "doris", feature = "sqlite", feature = "surrealdb"))]
+pub mod runner;
+#[cfg(any(
+    feature = "doris",
+    feature = "sqlite",
+    feature = "surrealdb",
+    feature = "bigquery",
+    feature = "snowflake"
+))]
 pub(crate) mod sql_ident;
 pub mod statediff;
 mod stats;
@@ -44,7 +59,8 @@ pub use app::{
     Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle, UpdateOptions,
 };
 pub use batched::Batched;
-pub use ctx::{ContextKey, Ctx};
+pub use ctx::{ComponentMountHandle, ContextKey, Ctx};
+pub use deps::{DataDep, LogicDep, PropagatedCallback};
 pub use entity_resolution::{
     CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
     ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,
@@ -53,8 +69,8 @@ pub use entity_resolution::{
 pub use error::{Error, Result};
 pub use memo::MemoInput;
 pub use resources::file::{
-    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
-    MatchAllFilePathMatcher, PatternFilePathMatcher,
+    DecodeErrors, FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher,
+    FileSourceItem, MatchAllFilePathMatcher, PatternFilePathMatcher,
 };
 pub use resources::fs::{
     DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
@@ -64,20 +80,43 @@ pub use resources::id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
     generate_uuid_default,
 };
+pub use runner::{
+    GPU, GPURunner, Runner, RunnerBody, RunnerOutput, configure_gpu_pool, current_gpu,
+    current_gpu_fraction, current_gpus,
+};
 // Re-exported so `#[cocoindex::function]` output can register each function's
 // logic fingerprint without the user crate needing a direct `linkme` dependency.
 #[doc(hidden)]
 pub use linkme;
 pub use live_component::{
-    ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
-    LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
+    ExceptionContext, ExceptionHandler, ExceptionSource, LiveComponent, LiveComponentOperator,
+    LiveMapFeed, LiveMapSubscriber, LiveMapView, LiveStream, LiveStreamSubscriber, MountKind,
+    ReadyHandle, SingleWatcherGuard, SingleWatcherToken,
 };
 #[doc(hidden)]
-pub use logic::{COCO_FN_LOGIC, FnLogicEntry};
+pub use logic::{COCO_FN_LOGIC, FnDeps, FnLogicEntry};
+// Re-exported for `#[cocoindex::app]` / `#[cocoindex::lifespan]` output.
+#[doc(hidden)]
+pub use registry::{AppEntry, COCO_APPS, COCO_LIFESPANS, LifespanEntry};
+// Re-exported so `#[cocoindex::main]` can build its runtime without the user
+// crate depending on tokio.
+#[doc(hidden)]
+pub use tokio;
+
+/// Items the proc macros expand to; not part of the public API.
+#[doc(hidden)]
+pub mod __private {
+    pub use futures::future::BoxFuture;
+}
 pub use resources::chunk::{Chunk, TextPosition};
 pub use resources::embedder::Embedder;
-pub use resources::live_map::LiveMap;
+pub use resources::live_map::{LiveMap, LiveMapKey};
 pub use resources::rate_limit::RateLimiter;
+pub use resources::view::{SegmentKind, SourceView, ViewSegment};
+// The content/memo fingerprint type: `memo::key_fingerprint_result`,
+// `FileMetadata::content_fingerprint` and `FileLike::content_fingerprint`
+// return it, and `MemoInput` accepts a precomputed one.
+pub use cocoindex_utils::fingerprint::Fingerprint;
 pub use resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,
@@ -96,7 +135,10 @@ pub use target_state::{
 pub use user_state::{IntoStateKey, StateHandle};
 
 // Re-export proc macros
-pub use cocoindex_macros::{MemoInput, SchemaFields, function, mount_each, use_mount};
+pub use cocoindex_macros::{
+    MemoInput, SchemaFields, app, function, lifespan, main, mount, mount_each, use_mount,
+    use_mount_each,
+};
 pub use row_schema::{LogicalType, SchemaField, SchemaFields};
 
 // Re-exported so users can implement the async `LiveComponent` / `LiveMapFeed`

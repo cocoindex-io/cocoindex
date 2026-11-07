@@ -34,6 +34,7 @@ use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
+use crate::resources::schema::VectorSchemaProvider;
 use crate::sql_ident::validate_ident;
 use crate::statediff::{
     CompositeTrackingRecord, DiffAction, ManagedBy, MutualTrackingRecord, diff, diff_composite,
@@ -348,6 +349,41 @@ impl TableSchema {
         Self::new(columns, primary_key)
     }
 
+    /// Resolve a vector field derived from a row from a
+    /// [`VectorSchemaProvider`], typically the embedder that fills it (Python's
+    /// `column_overrides={"embedding": embedder}`). Doris vectors are
+    /// `ARRAY<FLOAT>` whatever the element type. For an embedder held in the
+    /// context, pass `ctx.get_key(&EMBEDDER)?`.
+    pub async fn with_vector_schema(
+        self,
+        field_name: &str,
+        provider: &(impl VectorSchemaProvider + ?Sized),
+    ) -> Result<Self> {
+        let schema =
+            crate::row_schema::provided_vector_schema("Doris", field_name, provider).await?;
+        self.with_vector_dim(field_name, schema.size)
+    }
+
+    /// Replace the Doris type of one column of a schema derived from a row
+    /// (Python's `column_overrides={"col": DorisType("…")}`), keeping its
+    /// nullability. The column is no longer a vector column.
+    pub fn with_column_type(
+        mut self,
+        field_name: &str,
+        doris_type: impl Into<String>,
+    ) -> Result<Self> {
+        let doris_type = doris_type.into();
+        validate_doris_type(&doris_type)?;
+        let def = self
+            .columns
+            .get_mut(field_name)
+            .ok_or_else(|| crate::row_schema::unknown_column_error("Doris", field_name))?;
+        def.doris_type = doris_type;
+        def.is_vector = false;
+        def.vector_dimension = None;
+        Ok(self)
+    }
+
     /// Resolve or override the dimension of a vector field derived from a row.
     pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
         let dim = u32::try_from(dim).map_err(|_| {
@@ -415,6 +451,119 @@ fn doris_column_def(field: &crate::row_schema::SchemaField) -> ColumnDef {
     let mut def = ColumnDef::new(doris_type);
     def.nullable = field.nullable;
     def
+}
+
+/// Options for [`build_vector_search_query`]. The defaults match Python's:
+/// `l2_distance`, 10 rows, every column, no filter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VectorSearchOptions {
+    /// `"l2_distance"` (default) and `"inner_product"` select Doris's
+    /// approximate (index-backed) functions. Any other name is used as the
+    /// distance function itself, e.g. `"cosine_distance"`.
+    pub metric: String,
+    /// Maximum number of rows returned.
+    pub limit: usize,
+    /// Columns to select; empty selects `*`.
+    pub select_columns: Vec<String>,
+    /// A SQL condition placed after `WHERE`, used verbatim.
+    pub where_clause: Option<String>,
+}
+
+impl Default for VectorSearchOptions {
+    fn default() -> Self {
+        Self {
+            metric: "l2_distance".to_string(),
+            limit: 10,
+            select_columns: Vec::new(),
+            where_clause: None,
+        }
+    }
+}
+
+/// Build a vector search query for a Doris table (Python's
+/// `build_vector_search_query`). `table` is `table` or `database.table`. The
+/// query selects the requested columns plus the distance as `_distance`, and
+/// orders by it: ascending for a distance metric, descending for a similarity
+/// such as `inner_product`.
+pub fn build_vector_search_query(
+    table: &str,
+    vector_field: &str,
+    query_vector: &[f32],
+    options: &VectorSearchOptions,
+) -> Result<String> {
+    let table_parts: Vec<&str> = table.split('.').collect();
+    if table_parts.len() > 2 {
+        return Err(Error::engine(format!(
+            "invalid Doris table name format: {table}"
+        )));
+    }
+    for part in &table_parts {
+        validate_ident(part, "table name")?;
+    }
+    let quoted_table = table_parts
+        .iter()
+        .map(|part| format!("`{part}`"))
+        .collect::<Vec<_>>()
+        .join(".");
+    validate_ident(vector_field, "vector field")?;
+
+    // Doris function names are case-insensitive, so match the metric that way:
+    // an upper-case distance must still sort ascending.
+    let metric = options.metric.to_ascii_lowercase();
+    let (distance_fn, order) = match metric.as_str() {
+        "l2_distance" => ("l2_distance_approximate", "ASC"),
+        "inner_product" => ("inner_product_approximate", "DESC"),
+        metric => {
+            validate_ident(metric, "metric name")?;
+            let order = if metric.contains("distance") {
+                "ASC"
+            } else {
+                "DESC"
+            };
+            (metric, order)
+        }
+    };
+
+    if let Some(value) = query_vector.iter().find(|v| !v.is_finite()) {
+        return Err(Error::engine(format!(
+            "Doris query vector contains a non-finite value: {value}"
+        )));
+    }
+    let vector_literal = query_vector
+        .iter()
+        .map(|v| format!("{v:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let select = if options.select_columns.is_empty() {
+        "*".to_string()
+    } else {
+        for column in &options.select_columns {
+            validate_ident(column, "select column")?;
+        }
+        options
+            .select_columns
+            .iter()
+            .map(|column| format!("`{column}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    let mut query = format!(
+        "SELECT {select}, {distance_fn}(`{vector_field}`, [{vector_literal}]) as _distance\n\
+         FROM {quoted_table}"
+    );
+    if let Some(where_clause) = &options.where_clause
+        && !where_clause.is_empty()
+    {
+        query.push_str("\nWHERE ");
+        query.push_str(where_clause);
+    }
+    query.push_str(&format!(
+        "\nORDER BY _distance {order}\nLIMIT {}",
+        options.limit
+    ));
+    Ok(query)
 }
 
 /// A vector (ANN) index. Mirrors Python's `VectorIndexDef`.
@@ -501,10 +650,16 @@ pub struct DorisTableOptions {
 // ---------------------------------------------------------------------------
 
 /// A declarative Doris table target — a handle to declare rows on.
-#[derive(Clone)]
+///
+/// As a `mount_each!` / `use_mount!` argument it fingerprints by its table name
+/// (its stable key); the schema and runtime provider are not part of the
+/// component-memo identity.
+#[derive(Clone, Serialize)]
 pub struct TableTarget {
     table_name: Arc<str>,
+    #[serde(skip)]
     table_schema: TableSchema,
+    #[serde(skip)]
     rows: TargetStateProvider<RowState>,
 }
 

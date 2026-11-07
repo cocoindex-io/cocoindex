@@ -17,7 +17,9 @@ go to implementation and tests. §8 is the delta index between this design and
 the code. CocoIndex Agents lives under `examples/` for now and is expected to
 become its own repository, so it is more elaborate than the other examples.
 It was called coco-harness until 2026-11-05. Amended 2026-11-05 for
-documents the model reads natively (§3, *Documents*), with the `orders` flow.
+documents the model reads natively (§3, *Documents*), with the `orders` flow,
+and the same day for a Google Drive folder as a source (§3, *Sources: a
+Google Drive folder*; §7), with the `drive` flow.
 
 ---
 
@@ -101,8 +103,9 @@ Two engine facts shape the design:
 
 What reruns after a change is defined once, in §7 (reuse model) and §6
 (reduce locality); the shapes above only pick tools. A shape does not depend
-on what the files are: the `orders` flow is shape A over PDFs, which the
-model reads natively (§3, *Documents*).
+on what the files are or where they are: the `orders` flow is shape A over
+PDFs, which the model reads natively (§3, *Documents*), and the `drive` flow
+is shape A over a Google Drive folder (§3, *Sources: a Google Drive folder*).
 
 Directions kept in view, not in v1:
 
@@ -157,7 +160,7 @@ package's API: JSON calls are canonical, comparable and pickable (§4).
 
 | Tool | What it does | CocoIndex primitive | In the transcript | Closed? |
 |---|---|---|---|---|
-| `open_source(kind, name, path, patterns?)` | localfs in v1 | connector → `FileLike`… | card | no |
+| `open_source(kind, name, path, patterns?)` | `localfs` (a directory), `google_drive` (a folder, by link or id) | connector → `FileLike`… | card | no |
 | `open_target(kind, name, path)` | a directory of files in v1 | `mount_target` | card | no |
 | `call_agent(key, task, role?, inputs?)` | run an open subagent and wait | `use_mount` at `child/<key>` | `{result: res:key, chars}` | no |
 | `start_agent(key, task, role?, inputs?)` | run in the background; effects only through targets in `inputs` | `mount` at `child/<key>` | `{job: job:key}` | no |
@@ -353,6 +356,65 @@ else), `test_an_open_session_samples_documents_by_size_and_reads_them_attached`
 `::test_non_object_arguments_are_the_models_error_and_survive_the_run`;
 `test_roles.py::test_default_roles_fit_the_recipes`,
 `::test_source_methods_reject_unknown_arguments`.
+
+### Sources: a Google Drive folder
+
+(Added 2026-11-05, with the `drive` flow.) A source is a folder of files
+wherever the folder is; `FolderSource` (`tools/folder.py`) is the contract
+both kinds keep — the four methods and their cards, every read recorded —
+and a kind supplies the walk, the record keys, the fan-out's listing entries
+and the read. The second kind is a Google Drive folder
+(`tools/drive.py`, over the `google_drive` connector), opened with
+`open_source(kind="google_drive", path=<link or id>)`.
+
+- **The model names the folder and never a credential.** The folder is read
+  as the account signed in on this machine through the connector's OAuth
+  sign-in (`cocoindex google-drive sign-in`), an explicit step outside any
+  run. The card names the folder and the patterns; the account's address is
+  in the source's memo key and in every record it makes, so that a
+  different account re-runs what was read, but it is not in any card or
+  transcript, and no token is anywhere the engine stores or the model sees.
+  A run with no sign-in fails in `open_source`, which an open session
+  contains and reports as the error's class name; the session re-runs until
+  a run finds a sign-in. A sign-in Google refuses (the consent expired or
+  was revoked) surfaces inside the Drive walk, in the validators too: they
+  treat it as an invalid record rather than raising, since the engine
+  propagates a validator's exception and would fail the run, so it reaches
+  the same contained failure.
+- **Keys are paths under the folder** (`archive/old.txt`), as a local file's
+  key is its relative path, so a worker names its output after the file.
+  Two files of one name in one folder (Drive allows it) keep both: the
+  second gets its id appended.
+- **Google-native files are read as their export.** A Doc, a Sheet or a
+  Slides deck has no bytes of its own; the connector exports Markdown, CSV
+  or text, and that is what `read` and a worker's `read_input` return, and
+  what `sample` shows the head of. A PDF stored in Drive is a document
+  (*Documents*, above): the same reference, the same attachment.
+- **Records validate from stored state alone, through the Drive API.** An
+  observation is keyed by the token file's location, the account, the
+  folder, the patterns and the call, and validates by walking again and
+  comparing a digest, as a local one does. A file read is keyed by the path
+  and validates by resolving the path again: the same file with the same
+  `modifiedTime` validates without a download; a changed time compares the
+  MD5 Drive gives a binary file, or re-exports a Google-native file and
+  compares a digest of the export. The fan-out's walk records each file's
+  id, `modifiedTime` and MD5, so an edit, an addition, a removal or a rename
+  re-runs the fan-out's session and probes its workers; a worker's item is
+  the connector's `DriveFile`, memoized on the same `modifiedTime` and
+  fingerprint. So an unchanged folder costs a walk and no download, and one
+  edited Doc costs one export and that worker's turns after `read_input`.
+
+*Acceptance:* `test_google_drive.py` —
+`test_a_summary_per_drive_file_and_only_an_edited_docs_worker_reruns` (the
+card names the folder and no transcript holds the address or a token;
+exports, a PDF and a nested file as a worker sees them; an unchanged rerun
+with no call, no tool and no download; one edited Doc exporting once and
+re-running one worker's two turns; an added and a removed file),
+`::test_a_reader_is_skipped_while_its_file_is_unchanged_without_a_download`
+(an edit elsewhere and a touch do not re-run the reader; an edit and a rename
+do), `::test_another_account_or_no_sign_in_reruns_what_was_read`,
+`::test_a_revoked_sign_in_reruns_the_session_instead_of_failing_the_run`,
+`::test_folder_ids_come_from_links_or_ids`.
 
 ## 4. Replay policy: "dump once"
 
@@ -695,7 +757,7 @@ A session's inputs — and so what invalidates it — are:
 
 Tracked logic stops at the handler: the engine strips decorators from logic
 fingerprints and does not follow undecorated helpers, so a handle object's
-method (`LocalDirSource.call`, `LocalDirTargetHandle.call`) or any other
+method (`FolderSource.call`, `LocalDirTargetHandle.call`) or any other
 helper is **not** tracked. Bump `AgentsConfig.version` when such code changes
 behaviour; it is in every spec.
 
@@ -725,7 +787,10 @@ covered:
   are *observations*, keyed by the source and the call and validated by
   observing again and comparing a digest of the result; `read(key)` is a
   *file read*, keyed by the path and validated by mtime, then content digest
-  (a file that did not exist is recorded as such). A collection crosses a
+  (a file that did not exist is recorded as such); a Google Drive source
+  records the same two kinds, keyed by the folder and the signed-in account
+  too, and validates them through the Drive API (§3, *Sources: a Google
+  Drive folder*). A collection crosses a
   mount by its content hash, as a result does. On the next run the engine
   validates the recorded reads from their stored keys and states, without
   running anything of the session: all valid → skipped entirely, turns and
@@ -1003,6 +1068,7 @@ input of a worker whose key must cover everything (*Open vs closed*).
 | Widened counts, bottom-k, stable hash, canonical JSON | `test_stats.py`, `test_stable_hash.py`, `test_transcript.py` |
 | Trace and report: stats line per shape and run, skipped subtrees credited from their stored trace, reasons, plan rendering | `test_observability.py` (§7 *Observability*) |
 | Documents: a PDF by reference in the transcript and attached in the rendered request, text files unchanged, no call on an unchanged rerun, one replaced PDF re-running that worker's content turns only; a source's `sample` showing a document by media type and size and its `read` attaching it | `test_documents.py`, `test_rendering.py` (§3 *Documents*) |
+| A Google Drive folder as a source with the local folder's contract: the folder named, the account never; exports of Google-native files, a PDF as a document; no call, no tool and no download on an unchanged rerun; one edited Doc re-running one worker's content turns; a reader skipped on `modifiedTime` alone and re-run on an edit or a rename; another account or no sign-in re-running what was read | `test_google_drive.py` (§3 *Sources: a Google Drive folder*) |
 
 **Implemented, not covered by a test:**
 
@@ -1010,6 +1076,7 @@ input of a worker whose key must cover everything (*Open vs closed*).
 |---|---|
 | LiteLLM client: the API call itself (rendering and response parsing are covered; the sample flows under `flows/` drive it with a real model and record the measured inference counts) | §4 |
 | The recipes' effect on a real model: that user-level prompts decompose the same way run after run is measured by the drives recorded in `flows/README.md`, not by a scripted test | §3 |
+| The Google Drive source against the real Drive API and a real sign-in: the tests use an in-memory Drive; the `drive` flow has not been driven against an account yet, and `flows/README.md` records it when it is | §3 |
 | The `file` content part reaching each provider's API as a document: LiteLLM's transformation is read, not tested here; the `orders` flow drives it with the default model and records what it extracted | §3 |
 
 **Target** (contract settled where stated, not implemented):
@@ -1018,7 +1085,9 @@ input of a worker whose key must cover everything (*Open vs closed*).
 |---|---|---|
 | `group_by` reduce (shape D) | §2, §6 | no API yet |
 | Stats hysteresis via `use_state` | §5 | helper exists, state not stored |
-| Table targets (sqlite/postgres), other sources | §3 | only `localfs` / `localfs_dir` |
+| Table targets (sqlite/postgres), other sources | §3 | sources: `localfs`, `google_drive`; targets: `localfs_dir` only |
+| A Drive folder named by name, or a shared drive, in `open_source` | §3 | a link or an id only; a name would need a lookup recorded as a read |
+| Drive change notifications in place of a walk per validation | §3, §7 | every validation walks the folder through the API; fine at the sizes tried |
 | Always-on / live mode | §2 | no watcher, no refresh design |
 | Reduce roadmap: hysteresis, prefix partitioning, delta prompting | §6 | — |
 | Output schemas for agents/planners | — | dropped from v1 (minimal surface); plans are text |
@@ -1050,17 +1119,20 @@ cocoindex_agents/
   documents.py     Document (bytes + reference), Documents (the run-local store), the media-type rule
   tools/           Tool (closed_ok; key_arg = the argument that names the child slot),
                    ToolRegistry (validate_args), AgentsConfig (spec, version; change-detected);
-                   sources (the OBSERVATION and FILE_READ data-dependency kinds), targets,
-                   agents, reduce, stats
+                   folder (FolderSource: the contract a source keeps, whatever holds the
+                   folder), sources (the local kind, its OBSERVATION and FILE_READ records,
+                   and the open_source / call / read_input tools), drive (the Google Drive
+                   kind and its records, over the google_drive connector's signed-in
+                   account), targets, agents, reduce, stats
   roles.py         default roles, the protocol text, and the orchestrator's recipes
   litellm_client.py  renders a transcript to messages and calls LiteLLM (API call untested);
                    sums the usage the provider reports
   testing.py       ScriptedModel (test-only tools live in tests/helpers.py)
   app.py           default config; build a coco.App from a flow prompt; CLI
 tests/             see the Acceptance lines in §3–§7 and the table in §8
-flows/             four sample flows (shapes A–C of §2, and shape A over PDFs) with user-level
-                   prompts, data, a runner, and the stability and model calls measured with a
-                   real model
+flows/             five sample flows (shapes A–C of §2, shape A over PDFs, shape A over a
+                   Google Drive folder) with user-level prompts, data, a runner, and the
+                   stability and model calls measured with a real model
 ```
 
 Tests use a scripted model that counts its calls, so assertions are about
@@ -1104,3 +1176,7 @@ Pointers only; the substance is in the owning section.
   from a run-local store as a `user` message after the step's tool messages,
   inline base64 through LiteLLM's `file` part; media type decides, not the
   flow — §3, §4
+- Sources: one contract for a folder wherever it is; a Google Drive folder
+  read as the signed-in account, the model naming the folder and never a
+  credential, records keyed by path and account and validated through the
+  Drive API, Google-native files as their export — §3, §7

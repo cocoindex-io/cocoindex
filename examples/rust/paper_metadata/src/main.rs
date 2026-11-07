@@ -262,7 +262,7 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
         .collect();
 
     // Deterministic per-paper UUIDs (stable across runs unlike Python's uuid4).
-    let mut uuid_gen = UuidGenerator::with_deps(&filename)?;
+    let uuid_gen = UuidGenerator::with_deps(&filename)?;
     let mut embeddings = Vec::new();
 
     // Title embedding (one row).
@@ -421,7 +421,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = vector_param(&Embedder::embed(embedder, query).await?);
+    let query_vec = vector_param(&embedder.embed_batch(vec![query.to_string()]).await?.remove(0));
     let rows = sqlx::query(&format!(
         "SELECT filename, location, text, embedding <=> $1::vector AS distance \
          FROM \"{PG_SCHEMA}\".\"{TABLE_EMBEDDINGS}\" ORDER BY distance ASC LIMIT $2"

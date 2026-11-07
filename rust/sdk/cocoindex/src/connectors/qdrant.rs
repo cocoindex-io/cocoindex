@@ -16,9 +16,10 @@ use qdrant_client::Payload;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     CreateCollectionBuilder, Datatype as QdrantDatatype, DeletePointsBuilder,
-    Distance as QdrantDistance, MultiVectorComparator, MultiVectorConfigBuilder, NamedVectors,
-    PointStruct, PointsIdsList, QueryPointsBuilder, UpsertPointsBuilder, Vector, VectorInput,
-    VectorParams, VectorParamsBuilder, Vectors, VectorsConfigBuilder, value::Kind,
+    Distance as QdrantDistance, Modifier as QdrantModifier, MultiVectorComparator,
+    MultiVectorConfigBuilder, NamedVectors, PointStruct, PointsIdsList, QueryPointsBuilder,
+    SparseVectorParamsBuilder, SparseVectorsConfigBuilder, UpsertPointsBuilder, Vector,
+    VectorInput, VectorParams, VectorParamsBuilder, Vectors, VectorsConfigBuilder, value::Kind,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
@@ -51,18 +52,42 @@ pub struct QdrantConnection {
 }
 
 impl QdrantConnection {
-    /// Connect to a Qdrant server (gRPC URL, e.g. `http://localhost:6334`).
+    /// Connect to a Qdrant server (gRPC URL, e.g. `http://localhost:6334`)
+    /// with the client's default settings. For an API key, TLS or timeouts,
+    /// build the client yourself and pass it to [`QdrantConnection::from_client`].
     pub async fn connect(url: &str) -> Result<Self> {
         let client = Qdrant::from_url(url)
             .build()
             .map_err(|e| Error::engine(format!("qdrant connect {url:?}: {e}")))?;
-        Ok(Self {
-            client: Arc::new(client),
-            state_id: Arc::from(url),
-        })
+        Ok(Self::from_client(url, client))
     }
 
-    /// Stable identity (the URL) for use as a `ContextKey` state id / memo dep.
+    /// Wrap an already-built `qdrant_client::Qdrant`, e.g. one configured with
+    /// an API key (the Rust analogue of passing extra arguments to Python's
+    /// `create_client`). `state_id` is the stable identity used for memo
+    /// dependencies; it should name the server, not hold a secret.
+    ///
+    /// ```no_run
+    /// # use cocoindex::connectors::qdrant::QdrantConnection;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let url = "https://example.cloud.qdrant.io:6334";
+    /// let client = qdrant_client::Qdrant::from_url(url)
+    ///     .api_key(std::env::var("QDRANT_API_KEY").ok())
+    ///     .build()?;
+    /// let conn = QdrantConnection::from_client(url, client);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn from_client(state_id: impl Into<String>, client: Qdrant) -> Self {
+        Self {
+            client: Arc::new(client),
+            state_id: Arc::from(state_id.into()),
+        }
+    }
+
+    /// Stable identity (the URL, or the `state_id` given to
+    /// [`QdrantConnection::from_client`]) for use as a `ContextKey` state id /
+    /// memo dep.
     pub fn state_id(&self) -> &str {
         &self.state_id
     }
@@ -182,14 +207,15 @@ impl QdrantVectorDef {
 
     fn to_params(&self) -> VectorParams {
         let mut params = VectorParamsBuilder::new(self.vector_size(), self.distance.to_qdrant());
-        // Map the SDK element type to Qdrant's stored datatype. Float32 is
-        // Qdrant's default, so only f16 needs an explicit datatype. NOTE: the
-        // Python connector currently does *not* forward the schema dtype to
-        // `VectorParams(datatype=...)` — a latent Python bug that silently stores
-        // an f16 schema as f32. Rust honors the requested f16; Python should be
-        // fixed to match (tracked in the parity review).
-        if self.element_type() == VectorElementType::Float16 {
-            params = params.datatype(QdrantDatatype::Float16);
+        // Map the SDK element type to Qdrant's stored datatype. Qdrant has no
+        // 64-bit float vector, so `Float64` is stored as its default, f32.
+        // NOTE: the Python connector currently does *not* forward the schema
+        // dtype to `VectorParams(datatype=...)` — a latent Python bug that
+        // silently stores an f16 schema as f32. Rust honors the requested f16;
+        // Python should be fixed to match (tracked in the parity review).
+        match self.element_type() {
+            VectorElementType::Float32 | VectorElementType::Float64 => {}
+            VectorElementType::Float16 => params = params.datatype(QdrantDatatype::Float16),
         }
         if self.is_multivector() {
             params = params.multivector_config(MultiVectorConfigBuilder::new(
@@ -197,6 +223,53 @@ impl QdrantVectorDef {
             ));
         }
         params.into()
+    }
+}
+
+/// Value modifier Qdrant applies to a sparse vector at query time.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SparseModifier {
+    /// Inverse document frequency.
+    Idf,
+}
+
+/// Sparse vector definition for one named Qdrant vector field.
+///
+/// Sparse vectors in Qdrant are always named and use dot-product scoring.
+/// `modifier: Some(SparseModifier::Idf)` enables Qdrant's IDF modifier; `None`
+/// (the default) applies no modifier.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QdrantSparseVectorDef {
+    pub modifier: Option<SparseModifier>,
+}
+
+impl QdrantSparseVectorDef {
+    fn to_params(self) -> SparseVectorParamsBuilder {
+        let params = SparseVectorParamsBuilder::default();
+        match self.modifier {
+            Some(SparseModifier::Idf) => params.modifier(QdrantModifier::Idf),
+            None => params,
+        }
+    }
+}
+
+/// One entry of [`CollectionSchema::named`]: a dense (or multivector) field or
+/// a sparse one. Both definition types convert into it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QdrantNamedVectorDef {
+    Dense(QdrantVectorDef),
+    Sparse(QdrantSparseVectorDef),
+}
+
+impl From<QdrantVectorDef> for QdrantNamedVectorDef {
+    fn from(def: QdrantVectorDef) -> Self {
+        Self::Dense(def)
+    }
+}
+
+impl From<QdrantSparseVectorDef> for QdrantNamedVectorDef {
+    fn from(def: QdrantSparseVectorDef) -> Self {
+        Self::Sparse(def)
     }
 }
 
@@ -209,7 +282,8 @@ enum VectorFields {
 /// Schema for a Qdrant collection.
 ///
 /// `new` and `multivector` keep the simple single-vector API. Use
-/// [`CollectionSchema::named`] for Python-style named vectors.
+/// [`CollectionSchema::named`] for Python-style named vectors, dense and
+/// sparse.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CollectionSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -220,6 +294,10 @@ pub struct CollectionSchema {
     /// Kept for compatibility with the simple single-vector constructors.
     #[serde(default)]
     pub multivector: bool,
+    /// Sparse vector fields of a named-vector collection. They share the
+    /// collection's vector namespace with the dense fields in `vectors`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    sparse_vectors: BTreeMap<String, QdrantSparseVectorDef>,
 }
 
 impl CollectionSchema {
@@ -234,6 +312,7 @@ impl CollectionSchema {
             vector_size,
             distance,
             multivector: false,
+            sparse_vectors: BTreeMap::new(),
         }
     }
 
@@ -251,6 +330,7 @@ impl CollectionSchema {
             vector_size,
             distance,
             multivector: true,
+            sparse_vectors: BTreeMap::new(),
         }
     }
 
@@ -261,6 +341,7 @@ impl CollectionSchema {
             distance,
             multivector: false,
             vectors: Some(VectorFields::Single(def)),
+            sparse_vectors: BTreeMap::new(),
         })
     }
 
@@ -278,6 +359,7 @@ impl CollectionSchema {
             distance,
             multivector: true,
             vectors: Some(VectorFields::Single(def)),
+            sparse_vectors: BTreeMap::new(),
         })
     }
 
@@ -288,32 +370,68 @@ impl CollectionSchema {
         Self::from_multivector_schema(provider.multi_vector_schema().await?, distance)
     }
 
-    pub fn named<I, K>(vectors: I) -> Result<Self>
+    /// Named vector fields: each entry is a [`QdrantVectorDef`] (dense or
+    /// multivector) or a [`QdrantSparseVectorDef`]. Dense and sparse vectors
+    /// share one namespace in Qdrant, so a name may appear once.
+    ///
+    /// ```
+    /// use cocoindex::connectors::qdrant::{
+    ///     CollectionSchema, Distance, QdrantNamedVectorDef, QdrantSparseVectorDef,
+    ///     QdrantVectorDef,
+    /// };
+    /// # fn main() -> cocoindex::Result<()> {
+    /// let schema = CollectionSchema::named([
+    ///     (
+    ///         "dense",
+    ///         QdrantNamedVectorDef::from(QdrantVectorDef::f32(384, Distance::Cosine)?),
+    ///     ),
+    ///     ("sparse", QdrantSparseVectorDef::default().into()),
+    /// ])?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn named<I, K, V>(vectors: I) -> Result<Self>
     where
-        I: IntoIterator<Item = (K, QdrantVectorDef)>,
+        I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
+        V: Into<QdrantNamedVectorDef>,
     {
-        let mut resolved = BTreeMap::new();
+        let mut dense = BTreeMap::new();
+        let mut sparse = BTreeMap::new();
         for (name, def) in vectors {
             let name = name.into();
             validate_vector_name(&name)?;
-            if resolved.insert(name.clone(), def).is_some() {
+            if dense.contains_key(&name) || sparse.contains_key(&name) {
                 return Err(Error::engine(format!(
                     "duplicate qdrant vector name: {name:?}"
                 )));
             }
+            match def.into() {
+                QdrantNamedVectorDef::Dense(def) => {
+                    dense.insert(name, def);
+                }
+                QdrantNamedVectorDef::Sparse(def) => {
+                    sparse.insert(name, def);
+                }
+            }
         }
-        if resolved.is_empty() {
+        if dense.is_empty() && sparse.is_empty() {
             return Err(Error::engine(
                 "named qdrant schema must declare at least one vector field",
             ));
         }
-        let first = resolved.values().next().expect("non-empty").clone();
+        // The compatibility fields describe the first dense field; a
+        // sparse-only collection has none (sparse vectors score by dot product).
+        let (vector_size, distance, multivector) = match dense.values().next() {
+            Some(first) => (first.vector_size(), first.distance, first.is_multivector()),
+            None => (0, Distance::Dot, false),
+        };
         Ok(Self {
-            vector_size: first.vector_size(),
-            distance: first.distance,
-            multivector: first.is_multivector(),
-            vectors: Some(VectorFields::Named(resolved)),
+            vector_size,
+            distance,
+            multivector,
+            vectors: Some(VectorFields::Named(dense)),
+            sparse_vectors: sparse,
         })
     }
 
@@ -363,6 +481,7 @@ impl CollectionSchema {
             distance: first.distance,
             multivector: false,
             vectors: Some(VectorFields::Named(vectors)),
+            sparse_vectors: BTreeMap::new(),
         })
     }
 
@@ -376,6 +495,11 @@ impl CollectionSchema {
             ));
         }
         let mut fields = self.vector_fields();
+        if self.sparse_vectors.contains_key(field_name) {
+            return Err(Error::engine(format!(
+                "Qdrant vector field {field_name:?} is sparse and has no dimension"
+            )));
+        }
         let def = match &mut fields {
             VectorFields::Named(vectors) => vectors.get_mut(field_name),
             VectorFields::Single(def) if field_name == "vector" => Some(def),
@@ -386,12 +510,14 @@ impl CollectionSchema {
             QdrantVectorSchema::Dense(schema) => schema.size = dim,
             QdrantVectorSchema::Multi(schema) => schema.vector_schema.size = dim,
         }
-        self.vectors = Some(fields);
-        let first = match self.vectors.as_ref().expect("set above") {
-            VectorFields::Single(def) => def,
-            VectorFields::Named(vectors) => vectors.values().next().expect("non-empty"),
+        let first = match &fields {
+            VectorFields::Single(def) => Some(def),
+            VectorFields::Named(vectors) => vectors.values().next(),
         };
-        self.vector_size = first.vector_size();
+        if let Some(first) = first {
+            self.vector_size = first.vector_size();
+        }
+        self.vectors = Some(fields);
         Ok(self)
     }
 
@@ -414,19 +540,36 @@ impl CollectionSchema {
         }
     }
 
-    fn vectors_config(&self) -> VectorsConfigBuilder {
+    /// The dense vector config, or `None` for a collection that has only
+    /// sparse vectors.
+    fn vectors_config(&self) -> Option<VectorsConfigBuilder> {
         let mut builder = VectorsConfigBuilder::default();
         match self.vector_fields() {
             VectorFields::Single(def) => {
                 builder.add_vector_params(def.to_params());
             }
             VectorFields::Named(vectors) => {
+                if vectors.is_empty() {
+                    return None;
+                }
                 for (name, def) in vectors {
                     builder.add_named_vector_params(name, def.to_params());
                 }
             }
         }
-        builder
+        Some(builder)
+    }
+
+    /// The sparse vector config, or `None` when no sparse field is declared.
+    fn sparse_vectors_config(&self) -> Option<SparseVectorsConfigBuilder> {
+        if self.sparse_vectors.is_empty() {
+            return None;
+        }
+        let mut builder = SparseVectorsConfigBuilder::default();
+        for (name, def) in &self.sparse_vectors {
+            builder.add_named_vector_params(name, def.to_params());
+        }
+        Some(builder)
     }
 
     fn vector_fields(&self) -> VectorFields {
@@ -481,25 +624,50 @@ enum PointVector {
 pub enum NamedPointVector {
     Single(Vec<f32>),
     Multi(Vec<Vec<f32>>),
+    /// A sparse vector for a field declared with [`QdrantSparseVectorDef`]:
+    /// `values[i]` is the weight of dimension `indices[i]`. The indices must
+    /// be unique.
+    Sparse {
+        indices: Vec<u32>,
+        values: Vec<f32>,
+    },
 }
 
 impl NamedPointVector {
-    fn is_multivector(&self) -> bool {
-        matches!(self, NamedPointVector::Multi(_))
-    }
-
     fn into_vector(self) -> Vector {
         match self {
             NamedPointVector::Single(v) => Vector::new_dense(v),
             NamedPointVector::Multi(v) => Vector::new_multi(v),
+            NamedPointVector::Sparse { indices, values } => Vector::new_sparse(indices, values),
         }
     }
 }
 
+/// Check a sparse vector's own shape: one value per index, no index twice.
+fn validate_sparse_vector(indices: &[u32], values: &[f32]) -> std::result::Result<(), String> {
+    if indices.len() != values.len() {
+        return Err(format!(
+            "has {} indices but {} values",
+            indices.len(),
+            values.len()
+        ));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(indices.len());
+    if let Some(dup) = indices.iter().find(|index| !seen.insert(**index)) {
+        return Err(format!("repeats index {dup}"));
+    }
+    Ok(())
+}
+
 /// A point declared into a collection: an id, its vector(s), and a JSON payload.
 /// A Qdrant point id — an unsigned integer or a UUID string (Qdrant's two
-/// supported id types). Constructible from `u64`, `String`, or `&str`, so
-/// `declare_point(ctx, 7u64, ..)` and `declare_point(ctx, "uuid", ..)` both work.
+/// supported id types). Constructible from `u64`, `uuid::Uuid`, `String`, or
+/// `&str`, so `declare_point(ctx, 7u64, ..)` and `declare_point(ctx, "uuid", ..)`
+/// both work.
+///
+/// A UUID may be given in any text form Qdrant accepts (upper case, 32-char
+/// hex, URN, braced); it is stored in its canonical hyphenated lower-case form,
+/// so all forms of one UUID name one point and one target state.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum QdrantPointId {
     Num(u64),
@@ -511,18 +679,48 @@ impl From<u64> for QdrantPointId {
         Self::Num(v)
     }
 }
+impl From<uuid::Uuid> for QdrantPointId {
+    fn from(v: uuid::Uuid) -> Self {
+        Self::Uuid(v.hyphenated().to_string())
+    }
+}
 impl From<String> for QdrantPointId {
     fn from(v: String) -> Self {
-        Self::Uuid(v)
+        Self::Uuid(canonical_uuid_text(&v).unwrap_or(v))
     }
 }
 impl From<&str> for QdrantPointId {
     fn from(v: &str) -> Self {
-        Self::Uuid(v.to_string())
+        Self::Uuid(canonical_uuid_text(v).unwrap_or_else(|| v.to_string()))
     }
 }
 
+/// The id Qdrant stores a UUID point under: its hyphenated lower-case form.
+/// `None` when the text is not a UUID.
+fn canonical_uuid_text(text: &str) -> Option<String> {
+    uuid::Uuid::parse_str(text)
+        .ok()
+        .map(|id| id.hyphenated().to_string())
+}
+
+const POINT_ID_RULE: &str = "Qdrant point IDs must be an unsigned 64-bit integer or a UUID; see \
+     https://qdrant.tech/documentation/manage-data/points/#point-ids. For a stable ID derived \
+     from an arbitrary string key, use a version-5 UUID, e.g. \
+     uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, format!(\"doc/{key}\").as_bytes()).";
+
 impl QdrantPointId {
+    /// Error for a string id that is not a UUID, at declare time: Qdrant would
+    /// reject it at upsert time with an opaque transport error.
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Num(_) => Ok(()),
+            Self::Uuid(text) if canonical_uuid_text(text).is_some() => Ok(()),
+            Self::Uuid(text) => Err(Error::engine(format!(
+                "Invalid Qdrant point ID {text:?}: strings must be UUIDs. {POINT_ID_RULE}"
+            ))),
+        }
+    }
+
     /// The stable target-state key (a string for both variants, preserving the
     /// full `u64` range without an `i64` round-trip).
     fn stable_key(&self) -> StableKey {
@@ -585,6 +783,7 @@ impl Point {
             (VectorFields::Named(vectors), PointVector::Named(point_vectors)) => {
                 let missing: Vec<_> = vectors
                     .keys()
+                    .chain(schema.sparse_vectors.keys())
                     .filter(|name| !point_vectors.contains_key(*name))
                     .cloned()
                     .collect();
@@ -597,13 +796,32 @@ impl Point {
 
                 let mut named = HashMap::new();
                 for (name, point_vector) in point_vectors {
-                    let Some(def) = vectors.get(name) else {
+                    let shape_matches = if let Some(def) = vectors.get(name) {
+                        match point_vector {
+                            NamedPointVector::Single(_) => !def.is_multivector(),
+                            NamedPointVector::Multi(_) => def.is_multivector(),
+                            NamedPointVector::Sparse { .. } => false,
+                        }
+                    } else if schema.sparse_vectors.contains_key(name) {
+                        match point_vector {
+                            NamedPointVector::Sparse { indices, values } => {
+                                validate_sparse_vector(indices, values).map_err(|detail| {
+                                    Error::engine(format!(
+                                        "qdrant point {}: sparse vector field {:?} {detail}",
+                                        self.id, name
+                                    ))
+                                })?;
+                                true
+                            }
+                            NamedPointVector::Single(_) | NamedPointVector::Multi(_) => false,
+                        }
+                    } else {
                         return Err(Error::engine(format!(
                             "qdrant point {}: unexpected vector field {:?}",
                             self.id, name
                         )));
                     };
-                    if def.is_multivector() != point_vector.is_multivector() {
+                    if !shape_matches {
                         return Err(Error::engine(format!(
                             "qdrant point {}: vector field {:?} has the wrong vector shape",
                             self.id, name
@@ -615,7 +833,11 @@ impl Point {
             }
             (VectorFields::Named(vectors), PointVector::Single(_))
             | (VectorFields::Named(vectors), PointVector::Multi(_)) => {
-                let names: Vec<_> = vectors.keys().cloned().collect();
+                let names: Vec<_> = vectors
+                    .keys()
+                    .chain(schema.sparse_vectors.keys())
+                    .cloned()
+                    .collect();
                 Err(Error::engine(format!(
                     "qdrant point {}: collection declares named vectors {:?}",
                     self.id, names
@@ -767,6 +989,7 @@ impl CollectionTarget {
         payload: Map<String, JsonValue>,
     ) -> Result<()> {
         let id = id.into();
+        id.validate()?;
         let key = id.stable_key();
         let point = Point {
             id,
@@ -788,6 +1011,7 @@ impl CollectionTarget {
         payload: Map<String, JsonValue>,
     ) -> Result<()> {
         let id = id.into();
+        id.validate()?;
         let key = id.stable_key();
         let point = Point {
             id,
@@ -798,8 +1022,9 @@ impl CollectionTarget {
         declare_target_state(ctx, self.points.target_state(key, point))
     }
 
-    /// Declare a point for a named-vector collection. Each map value may be a
-    /// single vector or a multivector, depending on the field schema.
+    /// Declare a point for a named-vector collection. Each map value is a
+    /// single vector, a multivector or a sparse vector, depending on the
+    /// field schema.
     pub fn declare_named_vectors_point<I, K>(
         &self,
         ctx: &Ctx,
@@ -812,6 +1037,7 @@ impl CollectionTarget {
         K: Into<String>,
     {
         let id = id.into();
+        id.validate()?;
         let key = id.stable_key();
         let point = Point {
             id,
@@ -1030,11 +1256,17 @@ async fn ensure_collection(client: &Qdrant, action: &CollectionAction) -> Result
     } else if exists {
         return Ok(());
     }
+    // Dense and sparse fields share one namespace on our side; Qdrant takes
+    // them as two config maps.
+    let mut create = CreateCollectionBuilder::new(action.name.clone());
+    if let Some(vectors_config) = action.schema.vectors_config() {
+        create = create.vectors_config(vectors_config);
+    }
+    if let Some(sparse_vectors_config) = action.schema.sparse_vectors_config() {
+        create = create.sparse_vectors_config(sparse_vectors_config);
+    }
     client
-        .create_collection(
-            CreateCollectionBuilder::new(action.name.clone())
-                .vectors_config(action.schema.vectors_config()),
-        )
+        .create_collection(create)
         .await
         .map_err(|e| Error::engine(format!("qdrant create_collection {:?}: {e}", action.name)))?;
     Ok(())
@@ -1125,10 +1357,11 @@ impl TargetHandler<Point> for PointHandler {
 fn point_id(key: &StableKey) -> Result<QdrantPointId> {
     match key {
         // A numeric string is a `u64` id; any other string is treated as a UUID
-        // id (Qdrant validates the UUID format at upsert time).
+        // id. A key from before point ids were canonicalized (e.g. an upper-case
+        // UUID) maps to the canonical id, so it names the same point.
         StableKey::Str(s) => Ok(match s.parse::<u64>() {
             Ok(n) => QdrantPointId::Num(n),
-            Err(_) => QdrantPointId::Uuid(s.to_string()),
+            Err(_) => QdrantPointId::from(s.as_ref()),
         }),
         StableKey::Int(i) => u64::try_from(*i)
             .map(QdrantPointId::Num)
@@ -1146,6 +1379,29 @@ fn point_fingerprint(point: &Point) -> Result<String> {
     Ok(format!("{fp:?}"))
 }
 
+/// The points a batch upserts and the ids it deletes. A key from before point
+/// ids were canonicalized (e.g. an upper-case UUID) names the same point as its
+/// canonical key upserted in the same batch, so deleting it would remove the
+/// point just written: such a delete is dropped.
+fn split_point_actions(
+    actions: Vec<TargetAction<PointAction>>,
+) -> (Vec<Point>, Vec<QdrantPointId>) {
+    let mut upserts: Vec<Point> = Vec::new();
+    let mut deletes: Vec<QdrantPointId> = Vec::new();
+    for action in actions {
+        match action {
+            TargetAction::Create(a) | TargetAction::Update(a) => {
+                if let Some(point) = a.point {
+                    upserts.push(point);
+                }
+            }
+            TargetAction::Delete(a) => deletes.push(a.id),
+        }
+    }
+    deletes.retain(|id| !upserts.iter().any(|point| point.id == *id));
+    (upserts, deletes)
+}
+
 fn point_sink(
     conn_key: String,
     collection_name: String,
@@ -1158,22 +1414,16 @@ fn point_sink(
             let schema = schema.clone();
             async move {
                 let client = resolve_client(&host_ctx, &conn_key)?;
+                let (upserted, deleted) = split_point_actions(actions);
                 let mut upserts: Vec<PointStruct> = Vec::new();
-                let mut deletes: Vec<qdrant_client::qdrant::PointId> = Vec::new();
-                for action in actions {
-                    match action {
-                        TargetAction::Create(a) | TargetAction::Update(a) => {
-                            if let Some(point) = a.point {
-                                let id = point.id.to_qdrant();
-                                let vectors = point.to_qdrant_vectors(&schema)?;
-                                let payload: Payload = point.payload.into();
-                                let struct_ = PointStruct::new(id, vectors, payload);
-                                upserts.push(struct_);
-                            }
-                        }
-                        TargetAction::Delete(a) => deletes.push(a.id.to_qdrant()),
-                    }
+                for point in upserted {
+                    let id = point.id.to_qdrant();
+                    let vectors = point.to_qdrant_vectors(&schema)?;
+                    let payload: Payload = point.payload.into();
+                    upserts.push(PointStruct::new(id, vectors, payload));
                 }
+                let deletes: Vec<qdrant_client::qdrant::PointId> =
+                    deleted.iter().map(QdrantPointId::to_qdrant).collect();
                 if !upserts.is_empty() {
                     client
                         .upsert_points(UpsertPointsBuilder::new(collection_name.clone(), upserts))
@@ -1338,12 +1588,72 @@ mod tests {
             QdrantPointId::Num(42)
         );
         assert_eq!(point_id(&StableKey::Int(7)).unwrap(), QdrantPointId::Num(7));
-        // A non-numeric string is taken as a UUID id (Qdrant validates later).
+        // A non-numeric string is taken as a UUID id, in its canonical form.
         assert_eq!(
-            point_id(&StableKey::Str(Arc::from("9b2e...-uuid"))).unwrap(),
-            QdrantPointId::Uuid("9b2e...-uuid".to_string())
+            point_id(&StableKey::Str(Arc::from(
+                "9B2E6F1A-0000-4000-8000-000000000001"
+            )))
+            .unwrap(),
+            QdrantPointId::Uuid("9b2e6f1a-0000-4000-8000-000000000001".to_string())
         );
         assert!(point_id(&StableKey::Int(-1)).is_err());
+    }
+
+    #[test]
+    fn uuid_point_ids_are_canonicalized_and_validated() {
+        let canonical = "9b2e6f1a-0000-4000-8000-000000000001";
+        for form in [
+            "9b2e6f1a-0000-4000-8000-000000000001",
+            "9B2E6F1A-0000-4000-8000-000000000001",
+            "9b2e6f1a000040008000000000000001",
+            "urn:uuid:9b2e6f1a-0000-4000-8000-000000000001",
+            "{9b2e6f1a-0000-4000-8000-000000000001}",
+        ] {
+            let id = QdrantPointId::from(form);
+            assert_eq!(id, QdrantPointId::Uuid(canonical.to_string()), "{form}");
+            assert_eq!(id.stable_key(), StableKey::Str(Arc::from(canonical)));
+            assert!(id.validate().is_ok());
+        }
+        assert_eq!(
+            QdrantPointId::from(uuid::Uuid::parse_str(canonical).unwrap()),
+            QdrantPointId::Uuid(canonical.to_string())
+        );
+        assert!(QdrantPointId::from(7u64).validate().is_ok());
+        let err = QdrantPointId::from("doc-1")
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("strings must be UUIDs"), "{err}");
+        assert!(err.contains("new_v5"), "{err}");
+    }
+
+    #[test]
+    fn a_delete_of_a_point_upserted_under_its_canonical_id_is_dropped() {
+        let point = |id: &str| Point {
+            id: QdrantPointId::from(id),
+            vector: PointVector::Single(vec![0.1, 0.2]),
+            payload: Map::new(),
+        };
+        let a = "9b2e6f1a-0000-4000-8000-000000000001";
+        let b = "9b2e6f1a-0000-4000-8000-000000000002";
+        let actions = vec![
+            TargetAction::Update(PointAction {
+                id: QdrantPointId::from(a),
+                point: Some(point(a)),
+            }),
+            // The pre-canonicalization key of the same point.
+            TargetAction::Delete(PointAction {
+                id: point_id(&StableKey::Str(Arc::from(a.to_uppercase()))).unwrap(),
+                point: None,
+            }),
+            TargetAction::Delete(PointAction {
+                id: QdrantPointId::from(b),
+                point: None,
+            }),
+        ];
+        let (upserts, deletes) = split_point_actions(actions);
+        assert_eq!(upserts.len(), 1);
+        assert_eq!(deletes, vec![QdrantPointId::Uuid(b.to_string())]);
     }
 
     #[test]
@@ -1386,7 +1696,7 @@ mod tests {
             "multivector": false
         }))
         .unwrap();
-        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().into();
+        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().unwrap().into();
         let Some(qdrant_client::qdrant::vectors_config::Config::Params(params)) = config.config
         else {
             panic!("expected unnamed vector params");
@@ -1402,7 +1712,7 @@ mod tests {
             "multivector": true
         }))
         .unwrap();
-        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().into();
+        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().unwrap().into();
         let Some(qdrant_client::qdrant::vectors_config::Config::Params(params)) = config.config
         else {
             panic!("expected unnamed vector params");
@@ -1427,7 +1737,7 @@ mod tests {
             ),
         ])
         .unwrap();
-        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().into();
+        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().unwrap().into();
         let Some(qdrant_client::qdrant::vectors_config::Config::ParamsMap(map)) = config.config
         else {
             panic!("expected named vector params map");
@@ -1449,7 +1759,7 @@ mod tests {
             ),
         ])
         .unwrap();
-        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().into();
+        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().unwrap().into();
         let Some(qdrant_client::qdrant::vectors_config::Config::ParamsMap(map)) = config.config
         else {
             panic!("expected named vector params map");
@@ -1465,7 +1775,7 @@ mod tests {
     fn single_f16_schema_sets_datatype() {
         let schema =
             CollectionSchema::from_vector_schema(VectorSchema::f16(16), Distance::Dot).unwrap();
-        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().into();
+        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().unwrap().into();
         let Some(qdrant_client::qdrant::vectors_config::Config::Params(params)) = config.config
         else {
             panic!("expected unnamed vector params");
@@ -1585,6 +1895,199 @@ mod tests {
             payload: Map::new(),
         };
         assert!(wrong_shape.to_qdrant_vectors(&schema).is_err());
+    }
+
+    fn hybrid_schema(modifier: Option<SparseModifier>) -> CollectionSchema {
+        CollectionSchema::named([
+            (
+                "dense",
+                QdrantNamedVectorDef::from(QdrantVectorDef::f32(3, Distance::Cosine).unwrap()),
+            ),
+            ("sparse", QdrantSparseVectorDef { modifier }.into()),
+        ])
+        .unwrap()
+    }
+
+    fn named_point(vectors: impl IntoIterator<Item = (&'static str, NamedPointVector)>) -> Point {
+        Point {
+            id: QdrantPointId::Num(1),
+            vector: PointVector::Named(
+                vectors
+                    .into_iter()
+                    .map(|(name, vector)| (name.to_string(), vector))
+                    .collect(),
+            ),
+            payload: Map::new(),
+        }
+    }
+
+    #[test]
+    fn named_schema_splits_dense_and_sparse_configs() {
+        let schema = hybrid_schema(Some(SparseModifier::Idf));
+        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().unwrap().into();
+        let Some(qdrant_client::qdrant::vectors_config::Config::ParamsMap(dense)) = config.config
+        else {
+            panic!("expected named vector params map");
+        };
+        assert_eq!(dense.map.keys().collect::<Vec<_>>(), ["dense"]);
+
+        let sparse: qdrant_client::qdrant::SparseVectorConfig =
+            schema.sparse_vectors_config().unwrap().into();
+        assert_eq!(sparse.map.keys().collect::<Vec<_>>(), ["sparse"]);
+        assert_eq!(
+            sparse.map["sparse"].modifier,
+            Some(QdrantModifier::Idf as i32)
+        );
+
+        let no_modifier: qdrant_client::qdrant::SparseVectorConfig =
+            hybrid_schema(None).sparse_vectors_config().unwrap().into();
+        assert_eq!(no_modifier.map["sparse"].modifier, None);
+    }
+
+    #[test]
+    fn sparse_only_schema_has_no_dense_config() {
+        let schema =
+            CollectionSchema::named([("sparse", QdrantSparseVectorDef::default())]).unwrap();
+        assert!(schema.vectors_config().is_none());
+        assert!(schema.sparse_vectors_config().is_some());
+        // Nothing to resolve: a sparse field has no dimension.
+        schema.validate_vector_dimensions().unwrap();
+        assert!(schema.with_vector_dim("sparse", 3).is_err());
+    }
+
+    #[test]
+    fn dense_schema_has_no_sparse_config() {
+        assert!(
+            CollectionSchema::new(3, Distance::Cosine)
+                .sparse_vectors_config()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn named_schema_rejects_a_name_used_by_both_kinds() {
+        let err = CollectionSchema::named([
+            (
+                "v",
+                QdrantNamedVectorDef::from(QdrantVectorDef::f32(3, Distance::Cosine).unwrap()),
+            ),
+            ("v", QdrantSparseVectorDef::default().into()),
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("duplicate"), "{err}");
+    }
+
+    #[test]
+    fn point_vectors_validate_sparse_fields() {
+        let schema = hybrid_schema(None);
+        let dense = || NamedPointVector::Single(vec![1.0, 0.0, 0.0]);
+        let sparse = |indices: &[u32], values: &[f32]| NamedPointVector::Sparse {
+            indices: indices.to_vec(),
+            values: values.to_vec(),
+        };
+
+        let vectors = named_point([
+            ("dense", dense()),
+            ("sparse", sparse(&[7, 42], &[0.5, 1.5])),
+        ])
+        .to_qdrant_vectors(&schema)
+        .unwrap();
+        let Some(qdrant_client::qdrant::vectors::VectorsOptions::Vectors(named)) =
+            vectors.vectors_options
+        else {
+            panic!("expected named vectors");
+        };
+        assert_eq!(named.vectors.len(), 2);
+
+        // An empty sparse vector is a valid value.
+        named_point([("dense", dense()), ("sparse", sparse(&[], &[]))])
+            .to_qdrant_vectors(&schema)
+            .unwrap();
+
+        let rejected = [
+            // The sparse field is part of the schema, so a point must carry it.
+            named_point([("dense", dense())]),
+            named_point([("dense", dense()), ("sparse", sparse(&[1, 2], &[0.5]))]),
+            named_point([("dense", dense()), ("sparse", sparse(&[1, 1], &[0.5, 0.5]))]),
+            named_point([("dense", dense()), ("sparse", dense())]),
+            named_point([
+                ("dense", sparse(&[1], &[0.5])),
+                ("sparse", sparse(&[1], &[0.5])),
+            ]),
+        ];
+        for point in rejected {
+            assert!(
+                point.to_qdrant_vectors(&schema).is_err(),
+                "{:?}",
+                point.vector
+            );
+        }
+    }
+
+    #[test]
+    fn sparse_schema_change_recreates_the_collection() {
+        let handler = CollectionHandler::default();
+        let key = CollectionKey {
+            conn_key: "db".to_string(),
+            collection_name: "docs".to_string(),
+        }
+        .stable_key();
+        let spec = |schema: CollectionSchema| CollectionSpec {
+            collection_name: "docs".to_string(),
+            schema,
+            managed_by: ManagedBy::System,
+        };
+        let recreate = |prev: CollectionSchema, desired: CollectionSchema| {
+            let output = handler
+                .reconcile(
+                    key.clone(),
+                    Some(spec(desired)),
+                    vec![MutualTrackingRecord::new(spec(prev), ManagedBy::System)],
+                    false,
+                )
+                .unwrap()
+                .unwrap();
+            let TargetAction::Update(action) = output.action else {
+                panic!("expected an update action");
+            };
+            action.recreate
+        };
+        let dense_only = || {
+            CollectionSchema::named([("dense", QdrantVectorDef::f32(3, Distance::Cosine).unwrap())])
+                .unwrap()
+        };
+
+        assert!(recreate(dense_only(), hybrid_schema(None)), "sparse added");
+        assert!(
+            recreate(
+                hybrid_schema(None),
+                hybrid_schema(Some(SparseModifier::Idf))
+            ),
+            "modifier changed"
+        );
+        assert!(
+            recreate(hybrid_schema(None), dense_only()),
+            "sparse removed"
+        );
+        assert!(
+            !recreate(hybrid_schema(None), hybrid_schema(None)),
+            "unchanged"
+        );
+    }
+
+    #[test]
+    fn schema_stored_before_sparse_vectors_reads_as_dense_only() {
+        let dense_only = CollectionSchema::named([(
+            "dense",
+            QdrantVectorDef::f32(3, Distance::Cosine).unwrap(),
+        )])
+        .unwrap();
+        let mut stored = serde_json::to_value(&dense_only).unwrap();
+        // A dense-only schema is stored as it was before sparse vectors existed.
+        assert!(stored.as_object().unwrap().get("sparse_vectors").is_none());
+        stored.as_object_mut().unwrap().remove("sparse_vectors");
+        let read: CollectionSchema = serde_json::from_value(stored).unwrap();
+        assert_eq!(read, dense_only);
     }
 
     #[test]

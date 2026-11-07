@@ -7,13 +7,18 @@
 //!
 //! Use [`table_target`] to build a composable target state, [`declare_table_target`]
 //! inside the current component, or [`mount_table_target`] when rows must be
-//! declared immediately. [`read_table`] and [`read_table_items`] read source rows
-//! for use with `Ctx::mount_each`.
+//! declared immediately. [`read_table`] and [`read_table_items`] stream source
+//! rows for use with `Ctx::mount_each`.
+//!
+//! Rows are written in batches: one parameterized `unnest` statement per
+//! chunk of [`ROWS_PER_STATEMENT`] rows (see [`RowStatements`]), the statements
+//! of a batch running concurrently over the pool.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use cocoindex_utils::fingerprint::Fingerprint;
+use futures::{SinkExt as _, Stream, StreamExt as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 use sqlx::PgPool;
@@ -21,6 +26,7 @@ use sqlx::postgres::PgPoolOptions;
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
+use crate::resources::schema::{VectorElementType, VectorSchemaProvider};
 use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
 };
@@ -161,7 +167,56 @@ impl TableSchema {
     }
 
     /// Resolve or override the dimension of a vector field derived from a row.
-    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+    pub fn with_vector_dim(self, field_name: &str, dim: usize) -> Result<Self> {
+        self.set_vector_column(field_name, dim, None)
+    }
+
+    /// Resolve a vector field derived from a row from a
+    /// [`VectorSchemaProvider`], typically the embedder that fills it (Python's
+    /// `column_overrides={"embedding": embedder}`). The column becomes
+    /// `halfvec(N)` for `f16` elements and `vector(N)` otherwise. For an
+    /// embedder held in the context, pass `ctx.get_key(&EMBEDDER)?`.
+    pub async fn with_vector_schema(
+        self,
+        field_name: &str,
+        provider: &(impl VectorSchemaProvider + ?Sized),
+    ) -> Result<Self> {
+        let schema =
+            crate::row_schema::provided_vector_schema("Postgres", field_name, provider).await?;
+        let base = match schema.element_type {
+            VectorElementType::Float16 => "halfvec",
+            VectorElementType::Float32 | VectorElementType::Float64 => "vector",
+        };
+        self.set_vector_column(field_name, schema.size, Some(base))
+    }
+
+    /// Replace the Postgres type of one column of a schema derived from a row
+    /// (Python's `column_overrides={"col": PgType("…")}`), keeping its
+    /// nullability.
+    pub fn with_column_type(
+        mut self,
+        field_name: &str,
+        pg_type: impl Into<String>,
+    ) -> Result<Self> {
+        let pg_type = pg_type.into();
+        validate_pg_type(&pg_type)?;
+        let def = self
+            .columns
+            .get_mut(field_name)
+            .ok_or_else(|| crate::row_schema::unknown_column_error("Postgres", field_name))?;
+        def.pg_type = pg_type;
+        self.unresolved_vector_columns.remove(field_name);
+        Ok(self)
+    }
+
+    /// Set the dimension of the vector column `field_name`, and its pgvector
+    /// type base when `base` is given.
+    fn set_vector_column(
+        mut self,
+        field_name: &str,
+        dim: usize,
+        base: Option<&'static str>,
+    ) -> Result<Self> {
         if dim == 0 {
             return Err(crate::row_schema::zero_vector_dimension_error(
                 "Postgres", field_name,
@@ -171,9 +226,9 @@ impl TableSchema {
             .columns
             .get_mut(field_name)
             .ok_or_else(|| crate::row_schema::unknown_vector_field_error("Postgres", field_name))?;
-        let base = pgvector_type_base(&def.pg_type)
+        let current_base = pgvector_type_base(&def.pg_type)
             .ok_or_else(|| crate::row_schema::not_vector_field_error("Postgres", field_name))?;
-        def.pg_type = format!("{base}({dim})");
+        def.pg_type = format!("{}({dim})", base.unwrap_or(current_base));
         self.unresolved_vector_columns.remove(field_name);
         Ok(self)
     }
@@ -319,7 +374,26 @@ pub fn declare_table_target(
     table_schema: TableSchema,
     pg_schema_name: Option<&str>,
 ) -> Result<TableTarget> {
-    let ts = table_target(ctx, db, table_name, table_schema, pg_schema_name)?;
+    declare_table_target_with_options(
+        ctx,
+        db,
+        table_name,
+        table_schema,
+        pg_schema_name,
+        ManagedTargetOptions::default(),
+    )
+}
+
+/// [`declare_table_target`] with explicit [`ManagedTargetOptions`] (`managed_by`).
+pub fn declare_table_target_with_options(
+    ctx: &Ctx,
+    db: &ContextKey<Database>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    pg_schema_name: Option<&str>,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget> {
+    let ts = table_target_with_options(ctx, db, table_name, table_schema, pg_schema_name, options)?;
     let spec = ts.value().clone();
     let rows = declare_target_state_with_child::<TableSpec, RowState>(ctx, ts)?;
     Ok(table_target_handle(spec, rows))
@@ -375,6 +449,15 @@ impl TableTarget {
         &self.table_name
     }
 
+    /// Declare a row. `row` serializes to an object whose entries are the
+    /// table's columns (extra entries are ignored, missing ones are NULL); a
+    /// value is written in its column type's input syntax.
+    ///
+    /// Python's `ColumnDef.encoder` converts a field's value before it is
+    /// bound. Here the row's `Serialize` impl does that: `uuid`, `chrono`,
+    /// `rust_decimal`, `std::net::IpAddr` (for `inet`) and `Vec<f32>` (for
+    /// pgvector) serialize to what their columns take, and a field needing
+    /// another form uses `#[serde(serialize_with = "…")]`.
     pub fn declare_row<R: Serialize>(&self, ctx: &Ctx, row: &R) -> Result<()> {
         let row = row_state(row, &self.table_schema)?;
         let key = pk_stable_key(&row, self.table_schema.primary_key())?;
@@ -845,11 +928,15 @@ fn resolve_db(host_ctx: &Arc<ContextStore>, db_key: &str) -> Result<Arc<Database
 impl RowHandler {
     fn row_sink(&self) -> TargetActionSink<RowAction> {
         let db_key = self.db_key.clone();
-        let spec = self.spec.clone();
+        let spec = Arc::new(self.spec.clone());
+        let statements = Arc::new(RowStatements::new(&self.spec));
+        let table_defined = Arc::new(tokio::sync::OnceCell::new());
         TargetActionSink::from_async_fn_with_ctx(
             move |host_ctx, actions: Vec<TargetAction<RowAction>>| {
                 let db_key = db_key.clone();
                 let spec = spec.clone();
+                let statements = statements.clone();
+                let table_defined = table_defined.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
                     let mut mutations = Vec::with_capacity(actions.len());
@@ -861,7 +948,19 @@ impl RowHandler {
                         };
                         mutations.push((row.pk, row.state));
                     }
-                    apply_rows(&db, &spec, mutations).await
+                    if mutations.is_empty() {
+                        return Ok(());
+                    }
+                    // Ensure the table exists before this sink's first row
+                    // mutation (once per sink, not per batch). This keeps a
+                    // delete-only reconciliation idempotent after a crash or an
+                    // external table cleanup.
+                    if spec.managed_by.is_system() {
+                        table_defined
+                            .get_or_try_init(|| define_table(&db, &spec))
+                            .await?;
+                    }
+                    apply_rows(&db, &statements, mutations).await
                 }
             },
         )
@@ -1234,34 +1333,61 @@ async fn drop_table(db: &Database, pg_schema_name: Option<&str>, table_name: &st
     Ok(())
 }
 
+/// Rows per upsert / delete statement. A statement's parameter count doesn't
+/// grow with its row count (one `text[]` per column), so the bind limit doesn't
+/// apply; throughput is flat from about 1,000 to 8,000 rows per statement, and
+/// smaller statements spread a large batch over more connections (Python's
+/// `_UNNEST_UPSERT_ROWS`).
+const ROWS_PER_STATEMENT: usize = 2000;
+
+/// Apply a batch of row mutations: upserts and deletes, each in statements of
+/// up to [`ROWS_PER_STATEMENT`] rows. The statements of a batch run
+/// concurrently, each on its own pool connection and committing on its own, as
+/// the Python connector's do: a batch is not atomic, and a statement that
+/// fails is retried by the next run.
 async fn apply_rows(
     db: &Database,
-    spec: &TableSpec,
+    statements: &RowStatements,
     mutations: Vec<(Vec<JsonValue>, Option<RowState>)>,
 ) -> Result<()> {
-    if mutations.is_empty() {
-        return Ok(());
-    }
-    // Ensure the table exists before any row mutation. This keeps delete-only
-    // reconciliation idempotent after a crash or external table cleanup.
-    if spec.managed_by.is_system() {
-        define_table(db, spec).await?;
-    }
-    // Apply the whole batch atomically.
-    let mut tx = db.pool().begin().await.map_err(pg_err)?;
+    let mut upserts = Vec::new();
+    let mut deletes = Vec::new();
     for (pk, state) in mutations {
         match state {
-            Some(state) => {
-                let sql = upsert_sql(spec, &state.fields)?;
-                sqlx::query(&sql).execute(&mut *tx).await.map_err(pg_err)?;
-            }
-            None => {
-                let sql = delete_sql(spec, &pk)?;
-                sqlx::query(&sql).execute(&mut *tx).await.map_err(pg_err)?;
-            }
+            Some(state) => upserts.push(state.fields),
+            None => deletes.push(pk),
         }
     }
-    tx.commit().await.map_err(pg_err)?;
+    let mut executions = Vec::new();
+    for chunk in upserts.chunks(ROWS_PER_STATEMENT) {
+        executions.push(execute_with_columns(
+            db,
+            &statements.upsert_sql,
+            statements.upsert_params(chunk)?,
+        ));
+    }
+    for chunk in deletes.chunks(ROWS_PER_STATEMENT) {
+        executions.push(execute_with_columns(
+            db,
+            &statements.delete_sql,
+            statements.delete_params(chunk)?,
+        ));
+    }
+    futures::future::try_join_all(executions).await?;
+    Ok(())
+}
+
+/// Run `sql` with one `text[]` parameter per column.
+async fn execute_with_columns(
+    db: &Database,
+    sql: &str,
+    columns: Vec<Vec<Option<String>>>,
+) -> Result<()> {
+    let mut query = sqlx::query(sql);
+    for column in columns {
+        query = query.bind(column);
+    }
+    query.execute(db.pool()).await.map_err(pg_err)?;
     Ok(())
 }
 
@@ -1298,78 +1424,137 @@ async fn drop_vector_index(db: &Database, spec: &VectorIndexSpec) -> Result<()> 
 // SQL builders + helpers
 // ---------------------------------------------------------------------------
 
-fn upsert_sql(spec: &TableSpec, fields: &Map<String, JsonValue>) -> Result<String> {
-    let cols = spec
-        .table_schema
-        .columns()
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    let col_sql = cols
-        .iter()
-        .map(|name| quote_ident(name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let values = cols
-        .iter()
-        .map(|name| {
-            let col = spec
-                .table_schema
-                .columns()
-                .get(name)
-                .expect("schema column");
-            let value = fields.get(name).unwrap_or(&JsonValue::Null);
-            sql_literal(value, col)
-        })
-        .collect::<Result<Vec<_>>>()?
-        .join(", ");
-    let pk_sql = spec
-        .table_schema
-        .primary_key()
-        .iter()
-        .map(|name| quote_ident(name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let non_pk = cols
-        .iter()
-        .filter(|name| !spec.table_schema.primary_key().contains(name))
-        .map(|name| format!("{} = EXCLUDED.{}", quote_ident(name), quote_ident(name)))
-        .collect::<Vec<_>>();
-    let conflict = if non_pk.is_empty() {
-        format!("ON CONFLICT ({pk_sql}) DO NOTHING")
-    } else {
-        format!("ON CONFLICT ({pk_sql}) DO UPDATE SET {}", non_pk.join(", "))
-    };
-    Ok(format!(
-        "INSERT INTO {} ({col_sql}) VALUES ({values}) {conflict}",
-        qualified_table_name(spec)
-    ))
+/// The row statements of one table, built once per row sink.
+///
+/// Every column travels as one `text[]` parameter holding the chunk's values in
+/// Postgres input syntax, and the statement casts each back to the declared
+/// column type (an I/O conversion cast). One statement shape thus covers every
+/// column type, pgvector, `jsonb`, `bytea`, `interval` and `inet` included, and
+/// its text and parameter count don't grow with the row count. Python's
+/// connector upserts through the same `unnest` shape with typed arrays.
+struct RowStatements {
+    /// Every column, in statement order.
+    columns: Vec<(String, ColumnDef)>,
+    /// `INSERT … SELECT … FROM unnest(…) … ON CONFLICT …`.
+    upsert_sql: String,
+    /// The primary-key columns, in key order.
+    pk_columns: Vec<(String, ColumnDef)>,
+    /// `DELETE … WHERE (pk) IN (SELECT … FROM unnest(…))`.
+    delete_sql: String,
 }
 
-fn delete_sql(spec: &TableSpec, pk: &[JsonValue]) -> Result<String> {
-    if pk.len() != spec.table_schema.primary_key().len() {
-        return Err(Error::engine(
-            "Postgres row target primary key length mismatch",
-        ));
+impl RowStatements {
+    fn new(spec: &TableSpec) -> Self {
+        let schema = &spec.table_schema;
+        let columns: Vec<(String, ColumnDef)> = schema
+            .columns()
+            .iter()
+            .map(|(name, col)| (name.clone(), col.clone()))
+            .collect();
+        let pk_columns: Vec<(String, ColumnDef)> = schema
+            .primary_key()
+            .iter()
+            .map(|name| (name.clone(), schema.columns()[name].clone()))
+            .collect();
+        let table = qualified_table_name(spec);
+
+        let col_list = ident_list(&columns);
+        let pk_list = ident_list(&pk_columns);
+        let non_pk: Vec<String> = columns
+            .iter()
+            .filter(|(name, _)| !schema.primary_key().contains(name))
+            .map(|(name, _)| format!("{0} = EXCLUDED.{0}", quote_ident(name)))
+            .collect();
+        let conflict = if non_pk.is_empty() {
+            format!("ON CONFLICT ({pk_list}) DO NOTHING")
+        } else {
+            format!(
+                "ON CONFLICT ({pk_list}) DO UPDATE SET {}",
+                non_pk.join(", ")
+            )
+        };
+        let upsert_sql = format!(
+            "INSERT INTO {table} ({col_list}) SELECT {} FROM unnest({}) AS r({col_list}) {conflict}",
+            cast_list(&columns),
+            param_list(columns.len()),
+        );
+        let delete_sql = format!(
+            "DELETE FROM {table} WHERE ({pk_list}) IN (SELECT {} FROM unnest({}) AS r({pk_list}))",
+            cast_list(&pk_columns),
+            param_list(pk_columns.len()),
+        );
+        Self {
+            columns,
+            upsert_sql,
+            pk_columns,
+            delete_sql,
+        }
     }
-    let mut predicates = Vec::with_capacity(pk.len());
-    for (idx, name) in spec.table_schema.primary_key().iter().enumerate() {
-        let col = spec.table_schema.columns().get(name).ok_or_else(|| {
-            Error::engine(format!(
-                "primary key column {name:?} is not in the table schema"
-            ))
-        })?;
-        predicates.push(format!(
-            "{} = {}",
-            quote_ident(name),
-            sql_literal(&key_part_value(&pk[idx], col), col)?
-        ));
+
+    /// The parameters of [`Self::upsert_sql`] for `rows`: one `text[]` per
+    /// column.
+    fn upsert_params(&self, rows: &[Map<String, JsonValue>]) -> Result<Vec<Vec<Option<String>>>> {
+        let mut params: Vec<Vec<Option<String>>> = self
+            .columns
+            .iter()
+            .map(|_| Vec::with_capacity(rows.len()))
+            .collect();
+        for row in rows {
+            for (param, (name, col)) in params.iter_mut().zip(&self.columns) {
+                let value = row.get(name).unwrap_or(&JsonValue::Null);
+                param.push(sql_text(value, col)?);
+            }
+        }
+        Ok(params)
     }
-    Ok(format!(
-        "DELETE FROM {} WHERE {}",
-        qualified_table_name(spec),
-        predicates.join(" AND ")
-    ))
+
+    /// The parameters of [`Self::delete_sql`] for `keys`: one `text[]` per
+    /// primary-key column.
+    fn delete_params(&self, keys: &[Vec<JsonValue>]) -> Result<Vec<Vec<Option<String>>>> {
+        let mut params: Vec<Vec<Option<String>>> = self
+            .pk_columns
+            .iter()
+            .map(|_| Vec::with_capacity(keys.len()))
+            .collect();
+        for key in keys {
+            if key.len() != self.pk_columns.len() {
+                return Err(Error::engine(
+                    "Postgres row target primary key length mismatch",
+                ));
+            }
+            for ((param, (_, col)), part) in params.iter_mut().zip(&self.pk_columns).zip(key) {
+                param.push(sql_text(&key_part_value(part, col), col)?);
+            }
+        }
+        Ok(params)
+    }
+}
+
+/// `"a", "b", …`
+fn ident_list(columns: &[(String, ColumnDef)]) -> String {
+    columns
+        .iter()
+        .map(|(name, _)| quote_ident(name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `r."a"::type_a, r."b"::type_b, …`: the unnested text values cast back to
+/// their column types.
+fn cast_list(columns: &[(String, ColumnDef)]) -> String {
+    columns
+        .iter()
+        .map(|(name, col)| format!("r.{}::{}", quote_ident(name), col.pg_type))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `$1::text[], $2::text[], …`
+fn param_list(count: usize) -> String {
+    (1..=count)
+        .map(|i| format!("${i}::text[]"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn row_state<R: Serialize>(row: &R, schema: &TableSchema) -> Result<Map<String, JsonValue>> {
@@ -1455,10 +1640,13 @@ fn json_scalar_to_stable_key(value: &JsonValue) -> Result<StableKey> {
     }
 }
 
-fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
+/// A column value in Postgres input syntax for its declared type (`None` for
+/// SQL NULL), as the row statements bind it. Postgres rejects U+0000 in any
+/// text parameter, so it is stripped from every value.
+fn sql_text(value: &JsonValue, col: &ColumnDef) -> Result<Option<String>> {
     if value.is_null() {
         return if col.nullable {
-            Ok("NULL".to_string())
+            Ok(None)
         } else {
             Err(Error::engine(format!(
                 "non-nullable Postgres column of type {} got null",
@@ -1467,75 +1655,58 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
         };
     }
     let lower = col.pg_type.to_ascii_lowercase();
-    if is_text_type(&lower) {
-        return Ok(quote_string(value_to_string(value)?));
-    }
-    if lower == "boolean" || lower == "bool" {
-        return value
+    let text = if is_text_type(&lower) {
+        value_to_string(value)?.to_string()
+    } else if lower == "boolean" || lower == "bool" {
+        value
             .as_bool()
-            .map(|b| if b { "TRUE" } else { "FALSE" }.to_string())
-            .ok_or_else(|| Error::engine("boolean column requires bool JSON value"));
-    }
-    if lower.starts_with("interval") {
-        return interval_literal(value, &col.pg_type);
-    }
-    if is_numeric_type(&lower) {
-        return match value {
-            JsonValue::Number(n) => Ok(n.to_string()),
-            JsonValue::String(s) if is_decimal_type(&lower) && is_decimal_literal(s) => {
-                Ok(s.clone())
+            .map(|b| b.to_string())
+            .ok_or_else(|| Error::engine("boolean column requires bool JSON value"))?
+    } else if lower.starts_with("interval") {
+        interval_text(value)?
+    } else if is_numeric_type(&lower) {
+        match value {
+            JsonValue::Number(n) => n.to_string(),
+            JsonValue::String(s) if is_decimal_type(&lower) && is_decimal_literal(s) => s.clone(),
+            _ => {
+                return Err(Error::engine(format!(
+                    "numeric column {} requires numeric JSON value",
+                    col.pg_type
+                )));
             }
-            _ => Err(Error::engine(format!(
-                "numeric column {} requires numeric JSON value",
-                col.pg_type
-            ))),
-        };
-    }
-    if _is_pgvector_type(&lower) {
-        return vector_literal(value, &col.pg_type);
-    }
-    if lower == "bytea" {
+        }
+    } else if _is_pgvector_type(&lower) {
+        vector_text(value)?
+    } else if lower == "bytea" {
         // A Rust `Vec<u8>` serializes to a JSON array of byte values; encode it
-        // as Postgres hex bytea (`'\x..'::bytea`). The fallback `'[104,105]'`
+        // as Postgres hex bytea input (`\x…`). Its JSON text (`[104,105]`)
         // would be invalid bytea input.
-        return bytea_literal(value);
-    }
-    if lower == "json" || lower == "jsonb" {
+        bytea_text(value)?
+    } else if lower == "json" || lower == "jsonb" {
         // Postgres rejects U+0000 in json/jsonb on parse, and serde serializes a
-        // NUL inside a nested string/key as the `\x00` escape (which
-        // `quote_string`'s byte-level strip can't catch). Remove NULs from every
-        // string and object key before serializing.
-        return Ok(format!(
-            "{}::{}",
-            quote_string(sanitize_json_nul(value).to_string()),
-            col.pg_type
-        ));
-    }
-    match value {
-        JsonValue::String(s) => Ok(format!("{}::{}", quote_string(s), col.pg_type)),
-        JsonValue::Number(n) => Ok(format!("{}::{}", n, col.pg_type)),
-        JsonValue::Bool(b) => Ok(format!(
-            "{}::{}",
-            if *b { "TRUE" } else { "FALSE" },
-            col.pg_type
-        )),
-        _ => Ok(format!(
-            "{}::{}",
-            quote_string(value.to_string()),
-            col.pg_type
-        )),
-    }
+        // NUL inside a nested string/key as the `\u0000` escape (which the
+        // final byte-level strip can't catch). Remove NULs from every string
+        // and object key before serializing.
+        sanitize_json_nul(value).to_string()
+    } else {
+        // Any other type (uuid, date/time, inet, …) takes its value's text, or
+        // its JSON text for a non-scalar.
+        match value {
+            JsonValue::String(s) => s.clone(),
+            JsonValue::Number(n) => n.to_string(),
+            JsonValue::Bool(b) => b.to_string(),
+            other => other.to_string(),
+        }
+    };
+    Ok(Some(strip_nul(text)))
 }
 
-fn interval_literal(value: &JsonValue, pg_type: &str) -> Result<String> {
+fn interval_text(value: &JsonValue) -> Result<String> {
     if let Some((secs, nanos)) = crate::row_schema::serialized_duration_parts(value) {
-        return Ok(format!(
-            "{}::{pg_type}",
-            quote_string(format!("{secs}.{nanos:09} seconds"))
-        ));
+        return Ok(format!("{secs}.{nanos:09} seconds"));
     }
     match value {
-        JsonValue::String(s) => Ok(format!("{}::{pg_type}", quote_string(s))),
+        JsonValue::String(s) => Ok(s.clone()),
         _ => Err(Error::engine(
             "interval column requires a duration or string JSON value",
         )),
@@ -1548,9 +1719,9 @@ fn value_to_string(value: &JsonValue) -> Result<&str> {
         .ok_or_else(|| Error::engine("text column requires string JSON value"))
 }
 
-/// Encode a JSON value as a Postgres hex `bytea` literal. Accepts a byte array
-/// (the serde default for `Vec<u8>`) or a string (encoded as its UTF-8 bytes).
-fn bytea_literal(value: &JsonValue) -> Result<String> {
+/// Encode a JSON value as Postgres hex `bytea` input. Accepts a byte array (the
+/// serde default for `Vec<u8>`) or a string (encoded as its UTF-8 bytes).
+fn bytea_text(value: &JsonValue) -> Result<String> {
     let bytes: Vec<u8> = match value {
         JsonValue::Array(arr) => arr
             .iter()
@@ -1573,10 +1744,11 @@ fn bytea_literal(value: &JsonValue) -> Result<String> {
     for b in &bytes {
         hex.push_str(&format!("{b:02x}"));
     }
-    Ok(format!("{}::bytea", quote_string(hex)))
+    Ok(hex)
 }
 
-fn vector_literal(value: &JsonValue, pg_type: &str) -> Result<String> {
+/// A JSON number array as pgvector input: `[1,2,3]`.
+fn vector_text(value: &JsonValue) -> Result<String> {
     let arr = value
         .as_array()
         .ok_or_else(|| Error::engine("vector column requires JSON array"))?;
@@ -1590,16 +1762,16 @@ fn vector_literal(value: &JsonValue, pg_type: &str) -> Result<String> {
         }
         parts.push(n.to_string());
     }
-    Ok(format!(
-        "{}::{}",
-        quote_string(format!("[{}]", parts.join(","))),
-        pg_type
-    ))
+    Ok(format!("[{}]", parts.join(",")))
 }
 
-fn quote_string(value: impl AsRef<str>) -> String {
-    let value = value.as_ref().replace('\0', "").replace('\'', "''");
-    format!("'{value}'")
+/// Strip U+0000, which Postgres rejects in text, from a value's text.
+fn strip_nul(value: String) -> String {
+    if value.contains('\0') {
+        value.replace('\0', "")
+    } else {
+        value
+    }
 }
 
 /// Build the pgvector index `WITH (...)` clause, gating each parameter by the
@@ -1839,7 +2011,8 @@ mod tests {
             id: 42,
             filename: "src/lib.rs".to_string(),
             code: "fn answer() -> i32 { 42 }".to_string(),
-            embedding: vec![0.1, 0.2, 0.3],
+            // Exact in f32, so the text is the same through the f64 JSON form.
+            embedding: vec![0.5, 0.25, 0.75],
             start_line: 1,
             end_line: 3,
         };
@@ -1850,15 +2023,27 @@ mod tests {
             StableKey::Int(42)
         );
 
-        let sql = upsert_sql(&spec, &fields).unwrap();
-        assert!(sql.contains("INSERT INTO \"coco_examples\".\"code_embeddings\""));
-        assert!(sql.contains("'["));
-        assert!(sql.contains("]'::vector(3)"));
-        assert!(sql.contains("ON CONFLICT (\"id\") DO UPDATE SET"));
+        let statements = RowStatements::new(&spec);
+        assert_eq!(
+            statements.upsert_sql,
+            "INSERT INTO \"coco_examples\".\"code_embeddings\" (\"code\", \"embedding\", \"end_line\", \
+             \"filename\", \"id\", \"start_line\") SELECT r.\"code\"::text, r.\"embedding\"::vector(3), \
+             r.\"end_line\"::integer, r.\"filename\"::text, r.\"id\"::bigint, r.\"start_line\"::integer \
+             FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) \
+             AS r(\"code\", \"embedding\", \"end_line\", \"filename\", \"id\", \"start_line\") \
+             ON CONFLICT (\"id\") DO UPDATE SET \"code\" = EXCLUDED.\"code\", \
+             \"embedding\" = EXCLUDED.\"embedding\", \"end_line\" = EXCLUDED.\"end_line\", \
+             \"filename\" = EXCLUDED.\"filename\", \"start_line\" = EXCLUDED.\"start_line\""
+        );
+        // One `text[]` per column, in statement order, over every row.
+        let params = statements.upsert_params(&[fields.clone(), fields]).unwrap();
+        assert_eq!(params.len(), 6);
+        assert_eq!(params[1], vec![Some("[0.5,0.25,0.75]".to_string()); 2]);
+        assert_eq!(params[4], vec![Some("42".to_string()); 2]);
     }
 
     #[test]
-    fn delete_sql_uses_typed_primary_key_literal() {
+    fn delete_statement_takes_one_array_per_primary_key_column() {
         let schema = code_schema();
         let spec = TableSpec {
             pg_schema_name: Some("coco_examples".to_string()),
@@ -1866,11 +2051,20 @@ mod tests {
             table_schema: schema,
             managed_by: ManagedBy::System,
         };
-        let sql = delete_sql(&spec, &[JsonValue::from(42)]).unwrap();
+        let statements = RowStatements::new(&spec);
         assert_eq!(
-            sql,
-            "DELETE FROM \"coco_examples\".\"code_embeddings\" WHERE \"id\" = 42"
+            statements.delete_sql,
+            "DELETE FROM \"coco_examples\".\"code_embeddings\" WHERE (\"id\") IN \
+             (SELECT r.\"id\"::bigint FROM unnest($1::text[]) AS r(\"id\"))"
         );
+        let params = statements
+            .delete_params(&[vec![JsonValue::from(42)], vec![JsonValue::from(43)]])
+            .unwrap();
+        assert_eq!(
+            params,
+            vec![vec![Some("42".to_string()), Some("43".to_string())]]
+        );
+        assert!(statements.delete_params(&[vec![]]).is_err());
     }
 
     #[test]
@@ -1892,12 +2086,20 @@ mod tests {
             json_scalar_to_stable_key(&JsonValue::from("true")).unwrap(),
             json_scalar_to_stable_key(&JsonValue::Bool(true)).unwrap(),
         ]));
-        let sql = delete_sql(&spec, &stable_key_to_pk(&key).unwrap()).unwrap();
-        // A text key part spelled "true" stays a string.
+        let statements = RowStatements::new(&spec);
+        let params = statements
+            .delete_params(&[stable_key_to_pk(&key).unwrap()])
+            .unwrap();
+        // A text key part spelled "true" stays a string; the boolean key part
+        // is bound as a boolean's text.
         assert_eq!(
-            sql,
-            "DELETE FROM \"flags\" WHERE \"tenant\" = 'true' AND \"active\" = TRUE"
+            params,
+            vec![
+                vec![Some("true".to_string())],
+                vec![Some("true".to_string())]
+            ]
         );
+        assert!(statements.delete_sql.contains("r.\"active\"::boolean"));
     }
 
     #[test]
@@ -1914,11 +2116,20 @@ mod tests {
     }
 
     #[test]
-    fn quote_string_strips_nul_and_escapes_quotes() {
-        // Postgres text/jsonb reject U+0000; it must be stripped, and single
-        // quotes doubled.
-        assert_eq!(quote_string("a\0b'c"), "'ab''c'");
-        assert_eq!(quote_string("plain"), "'plain'");
+    fn sql_text_strips_nul_and_keeps_quotes() {
+        // Postgres rejects U+0000 in a text parameter; a quote needs no escape
+        // in a bound parameter.
+        let col = ColumnDef::new("text");
+        assert_eq!(
+            sql_text(&JsonValue::from("a\0b'c"), &col).unwrap(),
+            Some("ab'c".to_string())
+        );
+        assert_eq!(
+            sql_text(&JsonValue::from("plain"), &col).unwrap(),
+            Some("plain".to_string())
+        );
+        assert!(sql_text(&JsonValue::Null, &col).is_err());
+        assert_eq!(sql_text(&JsonValue::Null, &col.nullable()).unwrap(), None);
     }
 }
 
@@ -1926,26 +2137,45 @@ mod tests {
 // Source: read rows from a Postgres table
 // ---------------------------------------------------------------------------
 
+/// Rows buffered between the reading task and the consumer of a
+/// [`read_table`] stream.
+const READ_BUFFER_ROWS: usize = 256;
+
 /// Read every row of `table_name` (in the connection's default search path) as
-/// `T`.
+/// `T`, as a stream.
+///
+/// The rows are read inside one `REPEATABLE READ, READ ONLY` transaction, so
+/// the whole table is observed as one consistent snapshot, and they are
+/// streamed from the server as the consumer takes them (Python's
+/// `PgTableSource.fetch_rows()` cursor): at most [`READ_BUFFER_ROWS`] rows are
+/// held ahead of the consumer. Dropping the stream ends the read.
 ///
 /// `T` must be `Deserialize` (column names map to struct fields; unknown columns
 /// are ignored) and is usually also `Serialize` so each row can key memoized
-/// per-row work via `ctx.mount_each`. Incrementality comes from memoization
-/// (unchanged rows skip processing) plus target-state reconciliation (rows that
-/// disappear from the source have their derived target states deleted).
-pub async fn read_table<T: serde::de::DeserializeOwned>(
+/// per-row work via `ctx.mount_each`, which takes the collected rows
+/// (`futures::TryStreamExt::try_collect`). Incrementality comes from
+/// memoization (unchanged rows skip processing) plus target-state
+/// reconciliation (rows that disappear from the source have their derived
+/// target states deleted).
+pub async fn read_table<T>(
     db: &Database,
     table_name: &str,
-) -> Result<Vec<T>> {
+) -> Result<impl Stream<Item = Result<T>> + Send + 'static>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
     read_table_with_options(db, table_name, ReadTableOptions::default()).await
 }
 
-pub async fn read_table_with_options<T: serde::de::DeserializeOwned>(
+/// [`read_table`] with explicit [`ReadTableOptions`].
+pub async fn read_table_with_options<T>(
     db: &Database,
     table_name: &str,
     options: ReadTableOptions,
-) -> Result<Vec<T>> {
+) -> Result<impl Stream<Item = Result<T>> + Send + 'static>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
     validate_ident(table_name, "table name")?;
     if let Some(schema) = &options.pg_schema_name {
         validate_ident(schema, "schema name")?;
@@ -1970,39 +2200,45 @@ pub async fn read_table_with_options<T: serde::de::DeserializeOwned>(
         "SELECT {select_list} FROM {}",
         qualified_table_name_from_parts(options.pg_schema_name.as_deref(), table_name)
     );
-    // Read inside a REPEATABLE READ, READ ONLY transaction so the whole table is
-    // observed as one consistent snapshot.
     let mut tx = db.pool().begin().await.map_err(pg_err)?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)
         .await
         .map_err(pg_err)?;
-    let rows = sqlx::query(&sql)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| Error::engine(format!("postgres source read failed: {e}")))?;
-    tx.commit().await.map_err(pg_err)?;
-    let mut out = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let json = pg_row_to_json(row)?;
-        out.push(serde_json::from_value(json).map_err(|e| {
-            Error::engine(format!("postgres source row does not match row type: {e}"))
-        })?);
-    }
-    Ok(out)
+    let (mut sender, receiver) = futures::channel::mpsc::channel::<Result<T>>(READ_BUFFER_ROWS);
+    // The reading task owns the transaction; the stream is the channel's
+    // receiving end. The task stops at the first error, or when the receiver
+    // is dropped.
+    tokio::spawn(async move {
+        let mut rows = sqlx::query(&sql).fetch(&mut *tx);
+        while let Some(row) = rows.next().await {
+            let item = row
+                .map_err(|e| Error::engine(format!("postgres source read failed: {e}")))
+                .and_then(|row| source_row::<T>(&row));
+            let failed = item.is_err();
+            if sender.send(item).await.is_err() || failed {
+                break;
+            }
+        }
+        drop(rows);
+        // Nothing to commit in a read-only transaction; ending it releases the
+        // snapshot and returns the connection to the pool.
+        let _ = tx.commit().await;
+    });
+    Ok(receiver)
 }
 
 /// Read every row paired with a stable key derived by `key_fn`, ready to feed
-/// [`Ctx::mount_each`](crate::Ctx::mount_each). Reads use the same
-/// repeatable-read snapshot as [`read_table`].
+/// [`Ctx::mount_each`](crate::Ctx::mount_each) once collected. Reads use the
+/// same repeatable-read snapshot and streaming as [`read_table`].
 pub async fn read_table_items<T, K, S>(
     db: &Database,
     table_name: &str,
     key_fn: K,
-) -> Result<Vec<(StableKey, T)>>
+) -> Result<impl Stream<Item = Result<(StableKey, T)>> + Send + 'static>
 where
-    T: serde::de::DeserializeOwned,
-    K: Fn(&T) -> S,
+    T: serde::de::DeserializeOwned + Send + 'static,
+    K: Fn(&T) -> S + Send + 'static,
     S: crate::target_state::IntoStableKey,
 {
     read_table_items_with_options(db, table_name, ReadTableOptions::default(), key_fn).await
@@ -2014,20 +2250,26 @@ pub async fn read_table_items_with_options<T, K, S>(
     table_name: &str,
     options: ReadTableOptions,
     key_fn: K,
-) -> Result<Vec<(StableKey, T)>>
+) -> Result<impl Stream<Item = Result<(StableKey, T)>> + Send + 'static>
 where
-    T: serde::de::DeserializeOwned,
-    K: Fn(&T) -> S,
+    T: serde::de::DeserializeOwned + Send + 'static,
+    K: Fn(&T) -> S + Send + 'static,
     S: crate::target_state::IntoStableKey,
 {
-    let rows: Vec<T> = read_table_with_options(db, table_name, options).await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| {
+    let rows = read_table_with_options::<T>(db, table_name, options).await?;
+    Ok(rows.map(move |row| {
+        row.map(|row| {
             let key = key_fn(&row).into_stable_key();
             (key, row)
         })
-        .collect())
+    }))
+}
+
+/// Convert one source row to `T` through its JSON form.
+fn source_row<T: serde::de::DeserializeOwned>(row: &sqlx::postgres::PgRow) -> Result<T> {
+    let json = pg_row_to_json(row)?;
+    serde_json::from_value(json)
+        .map_err(|e| Error::engine(format!("postgres source row does not match row type: {e}")))
 }
 
 fn pg_row_to_json(row: &sqlx::postgres::PgRow) -> Result<JsonValue> {
@@ -2124,12 +2366,10 @@ mod review_fix_tests {
             "na\0me": "al\0ice",
             "tags": ["a\0b", {"k\0": "v\0"}],
         });
-        let lit = sql_literal(&value, &ColumnDef::new("jsonb")).unwrap();
-        assert!(!lit.contains('\0'), "raw NUL leaked: {lit}");
-        assert!(!lit.contains("\\u0000"), "escaped NUL leaked: {lit}");
-        assert!(lit.ends_with("::jsonb"));
-        let inner = lit.trim_start_matches('\'').trim_end_matches("'::jsonb");
-        let parsed: JsonValue = serde_json::from_str(&inner.replace("''", "'")).unwrap();
+        let text = sql_text(&value, &ColumnDef::new("jsonb")).unwrap().unwrap();
+        assert!(!text.contains('\0'), "raw NUL leaked: {text}");
+        assert!(!text.contains("\\u0000"), "escaped NUL leaked: {text}");
+        let parsed: JsonValue = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed["name"], serde_json::json!("alice"));
         assert_eq!(parsed["tags"][0], serde_json::json!("ab"));
         assert_eq!(parsed["tags"][1]["k"], serde_json::json!("v"));
@@ -2145,11 +2385,11 @@ mod review_fix_tests {
     fn numeric_literal_accepts_rust_decimal_string_encoding() {
         let value = serde_json::to_value(Decimal::from_str("1234567890.012300").unwrap()).unwrap();
         assert_eq!(
-            sql_literal(&value, &ColumnDef::new("numeric(28, 6)")).unwrap(),
-            "1234567890.012300"
+            sql_text(&value, &ColumnDef::new("numeric(28, 6)")).unwrap(),
+            Some("1234567890.012300".to_string())
         );
         assert!(
-            sql_literal(
+            sql_text(
                 &JsonValue::String("1); DROP TABLE rows; --".to_string()),
                 &ColumnDef::new("numeric")
             )
@@ -2161,8 +2401,8 @@ mod review_fix_tests {
     fn interval_literal_accepts_std_duration_encoding() {
         let value = serde_json::to_value(std::time::Duration::new(12, 345_000_000)).unwrap();
         assert_eq!(
-            sql_literal(&value, &ColumnDef::new("interval")).unwrap(),
-            "'12.345000000 seconds'::interval"
+            sql_text(&value, &ColumnDef::new("interval")).unwrap(),
+            Some("12.345000000 seconds".to_string())
         );
     }
 

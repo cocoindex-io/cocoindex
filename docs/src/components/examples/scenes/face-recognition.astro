@@ -2,13 +2,14 @@
 // Face search: the four photos the example ships in images/, the image → N
 // faces fan-out with face_recognition (dlib; CNN detector, 128-d encodings),
 // the Qdrant collection face_embeddings (one point per face, filename + box
-// payload, Euclidean), and the README's query: einplanck3.jpg finds Einstein's
-// face in the 1927 Solvay photo at a distance around 0.46. Counts (36 faces,
-// 29 from Solvay) and the distance are the README's. Carter_welcomes_Reagan.jpg
+// payload, Euclidean), and the README's query: einplanck3.jpg encodes its first
+// detected face, Max Planck, and his face in the 1927 Solvay photo comes back
+// third at 0.472 (after the photo's own crop at 0.230 and another attendee at
+// 0.463). Counts (36 faces, 29 from Solvay) and distances are from a real run. Carter_welcomes_Reagan.jpg
 // is the added photo (Δ); only its faces are detected and embedded.
 // Small tiles carry no name chip (too narrow); the added file is named
 // under the grid and in the Qdrant list.
-// The box on the Solvay photo is drawn by hand over Einstein's face.
+// The box on the Solvay photo is placed over Planck's detected face rect.
 interface Props { size?: 'hero' | 'card' }
 const { size = 'hero' } = Astro.props;
 const B = 'https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/scene';
@@ -69,22 +70,22 @@ const B = 'https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/scen
       <div class="sc-row fr-match">
         <div class="sc-row sc-keep fr-pair">
         <div class="fr-face">
-          <img src={`${B}/einplanck3-face.webp`} width="64" height="72" alt="" loading="lazy" decoding="async" />
+          <img src={`${B}/planck-query-face.webp`} width="64" height="72" alt="" loading="lazy" decoding="async" />
           <span class="sc-cap">query face</span>
         </div>
         <span class="sc-to"></span>
         <div class="fr-face">
-          <img src={`${B}/solvay-face.webp`} width="120" height="120" alt="" loading="lazy" decoding="async" />
-          <span class="sc-cap">nearest face</span>
+          <img src={`${B}/solvay-planck-face.webp`} width="120" height="120" alt="" loading="lazy" decoding="async" />
+          <span class="sc-cap">his Solvay face</span>
         </div>
         </div>
         <div class="fr-where">
           <div class="fr-photo">
-            <img src={`${B}/solvay-front-row.webp`} width="560" height="336" alt="" loading="lazy" decoding="async" />
+            <img src={`${B}/solvay-front-left.webp`} width="560" height="336" alt="" loading="lazy" decoding="async" />
             <span class="fr-box"></span>
           </div>
           <span class="sc-mono fr-file">Solvay_conference_1927.jpg</span>
-          <p class="sc-quote">Distance around <b>0.46</b>, under dlib's ~0.6 same-person rule. The box comes back in the payload.</p>
+          <p class="sc-quote">Distance <b>0.472</b>, under dlib's ~0.6 same-person rule. It ranks third, after the photo's own crop (0.230) and another attendee (0.463). The box comes back in the payload.</p>
         </div>
       </div>
     </div>
@@ -93,13 +94,13 @@ const B = 'https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/scen
   <div class="fr-card">
     <div class="sc-row sc-keep">
       <div class="sc-col fr-cq">
-        <img class="fr-cface" src={`${B}/einplanck3-face.webp`} width="64" height="72" alt="" loading="lazy" decoding="async" />
+        <img class="fr-cface" src={`${B}/planck-query-face.webp`} width="64" height="72" alt="" loading="lazy" decoding="async" />
         <span class="sc-mono">einplanck3.jpg</span>
       </div>
       <span class="sc-to"></span>
       <div class="sc-col fr-ch">
         <div class="fr-photo">
-          <img src={`${B}/solvay-front-row.webp`} width="560" height="336" alt="" loading="lazy" decoding="async" />
+          <img src={`${B}/solvay-front-left.webp`} width="560" height="336" alt="" loading="lazy" decoding="async" />
           <span class="fr-box"></span>
         </div>
         <span class="sc-mono fr-file">Solvay_conference_1927.jpg</span>
@@ -141,9 +142,9 @@ const B = 'https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/scen
   .fr-where .sc-quote { margin: 0; }
   .fr-photo { position: relative; border: 1px solid var(--sc-line-2); border-radius: 7px; overflow: hidden; }
   .fr-photo img { display: block; width: 100%; height: auto; aspect-ratio: 560 / 336; filter: grayscale(1); }
-  /* solvay-front-row.webp is x 900-1900, y 650-1250 of the 2560x1853 original;
-     Einstein's face sits at about x 240-310, y 155-235 of its 560x336 */
-  .fr-box { position: absolute; left: 42.5%; top: 45%; width: 13%; height: 25%; border: 1.5px solid #FFFFFF; border-radius: 3px; }
+  /* solvay-front-left.webp is x 250-1250, y 650-1250 of the 2560x1853 original;
+     Planck's detected rect is x 466-544, y 994-1074 there (21.6-29.4%, 57.3-70.7%) */
+  .fr-box { position: absolute; left: 20.4%; top: 55%; width: 10.2%; height: 18%; border: 1.5px solid #FFFFFF; border-radius: 3px; }
   .fr-where { display: grid; grid-template-columns: minmax(0, 280px) minmax(0, 1fr); column-gap: 14px; row-gap: 6px; align-items: start; }
   .fr-where .fr-photo, .fr-where .fr-file { grid-column: 1; }
   .fr-where .sc-quote { grid-column: 2; grid-row: 1 / 3; align-self: center; }

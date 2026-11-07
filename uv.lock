@@ -790,6 +790,7 @@ all = [
     { name = "google-auth-httplib2" },
     { name = "google-cloud-bigquery" },
     { name = "httplib2" },
+    { name = "httpx" },
     { name = "instructor" },
     { name = "lancedb" },
     { name = "litellm" },
@@ -821,6 +822,9 @@ bigquery = [
 colpali = [
     { name = "colpali-engine" },
 ]
+discord = [
+    { name = "httpx" },
+]
 doris = [
     { name = "aiohttp" },
     { name = "aiomysql" },
@@ -842,6 +846,7 @@ google-drive = [
     { name = "google-auth" },
     { name = "google-auth-httplib2" },
     { name = "httplib2" },
+    { name = "httpx" },
 ]
 iggy = [
     { name = "apache-iggy" },
@@ -906,6 +911,11 @@ ci = [
     { name = "aiomoto", extra = ["s3"] },
     { name = "asyncpg" },
     { name = "asyncpg-stubs" },
+    { name = "google-api-python-client" },
+    { name = "google-auth" },
+    { name = "google-auth-httplib2" },
+    { name = "httplib2" },
+    { name = "httpx" },
     { name = "maturin" },
     { name = "moto", extra = ["s3"] },
     { name = "mypy" },
@@ -922,6 +932,11 @@ ci = [
 ci-enabled-optional-deps = [
     { name = "aiohttp" },
     { name = "asyncpg" },
+    { name = "google-api-python-client" },
+    { name = "google-auth" },
+    { name = "google-auth-httplib2" },
+    { name = "httplib2" },
+    { name = "httpx" },
     { name = "neo4j" },
     { name = "pydantic" },
     { name = "pymysql" },
@@ -932,6 +947,11 @@ dev = [
     { name = "aiomoto", extra = ["s3"] },
     { name = "asyncpg" },
     { name = "asyncpg-stubs" },
+    { name = "google-api-python-client" },
+    { name = "google-auth" },
+    { name = "google-auth-httplib2" },
+    { name = "httplib2" },
+    { name = "httpx" },
     { name = "maturin" },
     { name = "moto", extra = ["s3"] },
     { name = "mypy" },
@@ -996,6 +1016,9 @@ requires-dist = [
     { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.0.0" },
     { name = "httplib2", marker = "extra == 'all'", specifier = ">=0.22.0" },
     { name = "httplib2", marker = "extra == 'google-drive'", specifier = ">=0.22.0" },
+    { name = "httpx", marker = "extra == 'all'", specifier = ">=0.27.0" },
+    { name = "httpx", marker = "extra == 'discord'", specifier = ">=0.27.0" },
+    { name = "httpx", marker = "extra == 'google-drive'", specifier = ">=0.27.0" },
     { name = "instructor", marker = "extra == 'all'", specifier = ">=1.0" },
     { name = "instructor", marker = "extra == 'entity-resolution-llm'", specifier = ">=1.0" },
     { name = "lancedb", marker = "extra == 'all'", specifier = ">=0.34.0" },
@@ -1036,7 +1059,7 @@ requires-dist = [
     { name = "zvec", marker = "extra == 'all'", specifier = ">=0.5.0" },
     { name = "zvec", marker = "extra == 'zvec'", specifier = ">=0.5.0" },
 ]
-provides-extras = ["all", "amazon-s3", "azure-blob", "bigquery", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "iggy", "kafka", "lancedb", "litellm", "neo4j", "oci", "postgres", "qdrant", "sentence-transformers", "snowflake", "sqlite", "surrealdb", "turbopuffer", "valkey", "zvec"]
+provides-extras = ["all", "amazon-s3", "azure-blob", "bigquery", "colpali", "discord", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "iggy", "kafka", "lancedb", "litellm", "neo4j", "oci", "postgres", "qdrant", "sentence-transformers", "snowflake", "sqlite", "surrealdb", "turbopuffer", "valkey", "zvec"]
 
 [package.metadata.requires-dev]
 build-test = [
@@ -1054,6 +1077,11 @@ ci = [
     { name = "aiomoto", extras = ["s3"], specifier = ">=0.3.0" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "asyncpg-stubs" },
+    { name = "google-api-python-client", specifier = ">=2.0.0" },
+    { name = "google-auth", specifier = ">=2.0.0" },
+    { name = "google-auth-httplib2", specifier = ">=0.2.0" },
+    { name = "httplib2", specifier = ">=0.22.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "maturin", specifier = ">=1.10.0,<2.0" },
     { name = "moto", extras = ["s3"], specifier = ">=5.0.0" },
     { name = "mypy" },
@@ -1070,6 +1098,11 @@ ci = [
 ci-enabled-optional-deps = [
     { name = "aiohttp", specifier = ">=3.9.0" },
     { name = "asyncpg", specifier = ">=0.31.0" },
+    { name = "google-api-python-client", specifier = ">=2.0.0" },
+    { name = "google-auth", specifier = ">=2.0.0" },
+    { name = "google-auth-httplib2", specifier = ">=0.2.0" },
+    { name = "httplib2", specifier = ">=0.22.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "neo4j", specifier = ">=5.18.0" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pymysql", specifier = ">=1.1.0" },
@@ -1080,6 +1113,11 @@ dev = [
     { name = "aiomoto", extras = ["s3"], specifier = ">=0.3.0" },
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "asyncpg-stubs" },
+    { name = "google-api-python-client", specifier = ">=2.0.0" },
+    { name = "google-auth", specifier = ">=2.0.0" },
+    { name = "google-auth-httplib2", specifier = ">=0.2.0" },
+    { name = "httplib2", specifier = ">=0.22.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
     { name = "maturin", specifier = ">=1.10.0,<2.0" },
     { name = "moto", extras = ["s3"], specifier = ">=5.0.0" },
     { name = "mypy" },

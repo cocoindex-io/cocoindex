@@ -5,11 +5,13 @@ description: >-
   when the user doesn't give one, draft the release notes from the commits
   since the last release, create the GitHub release (which creates the tag),
   and watch the Release workflow publish the wheels to PyPI and deploy the
-  docs. Use whenever the user wants to release, cut, ship or publish a new
-  CocoIndex version: "release 1.0.27", "cut a release", "make a new release",
-  "publish a new version to PyPI", "draft the release", "what should the next
-  version be". A minor is cut from main, a patch from the minor's release
-  branch (release/1.1); the skill tells them apart.
+  docs, then, for a minor or major release, create its release branch
+  (release/1.2) from the tag. Use whenever the user wants to release, cut,
+  ship or publish a new CocoIndex version: "release 1.0.27", "cut a release",
+  "make a new release", "publish a new version to PyPI", "draft the release",
+  "what should the next version be", "create the release branch for 1.2". A
+  minor or major release is cut from main, and a patch from the release branch
+  of its own minor (1.1.1 from release/1.1); the skill tells them apart.
 ---
 
 # Create a CocoIndex Release
@@ -38,9 +40,11 @@ published only on their go-ahead.
 A minor or major release is cut from `main`. A patch release is cut from the
 minor's release branch, `release/<X.Y>`, which starts at the minor's tag and
 takes only backports (`dev/agent-skills/backport/SKILL.md` says what
-qualifies and how one lands; `AGENTS.md`, Versioning, is the policy). The docs
-site shows the docs of the latest release, so a patch of an older minor is
-published with `--latest=false` (step 5) and deploys no docs.
+qualifies and how one lands; `AGENTS.md`, Versioning, is the policy). The
+minor's release creates that branch as its last step (step 7), so it's there
+before the first fix needs it. The docs site shows the docs of the latest
+release, so a patch of an older minor is published with `--latest=false`
+(step 5) and deploys no docs.
 
 Needs `gh` authenticated with push access to `cocoindex-io/cocoindex`. The
 commands below use placeholders: `<branch>` (`main` or `release/1.1`),
@@ -58,8 +62,8 @@ git log --oneline <prev_tag>..<sha>
 
 `<branch>` is `main` for a minor or major release and `release/<X.Y>` for a
 patch of `X.Y` (`git ls-remote --heads origin 'release/*'` lists them; the
-backport skill creates one). Release the branch's tip unless the user names
-another commit, and use the SHA, not the branch name, from here on: the
+minor's release created it, step 7). Release the branch's tip unless the user
+names another commit, and use the SHA, not the branch name, from here on: the
 branch can move while you work, and the tag must land on the commit the notes
 describe. `git describe` finds the previous release on the commit's own line
 of history; `gh release view` without a tag returns the release GitHub marks
@@ -335,6 +339,32 @@ skipped when the release isn't Latest (the `Docs Gate` job's log says which
 release is); for a patch of an older minor that is the expected outcome, not a
 failure.
 
+## 7. Create the release branch (minor or major only)
+
+A final minor or major release gets its release branch as soon as PyPI has
+its files (step 6), so that a fix for it can be backported at once. From then
+on the version is spent and can't be re-cut; a failed `Release Docs` job
+doesn't hold the branch back. `<X.Y>` is the release's major and minor: `v1.2.0` gets
+`release/1.2`, and `v2.0.0` gets `release/2.0`.
+
+```bash
+git ls-remote --heads origin 'refs/heads/release/<X.Y>'   # must print nothing
+git push origin <tag>:refs/heads/release/<X.Y>
+git ls-remote --heads origin 'refs/heads/release/<X.Y>'   # must print <sha>
+```
+
+Not earlier: the `release-branches` ruleset forbids deleting a release branch
+or force-pushing to it, so a branch created for a release that is then
+dropped, or re-cut on another commit (below), could never be removed or moved
+back. From the tag, so the branch starts exactly at the release. Once it
+exists the ruleset applies: pull requests only, `ci-gate` required. The push
+also starts a CI run on the branch, for a commit `main` already tested.
+
+A patch release creates no branch, since it's cut from one, and neither does a
+prerelease (`-rc.N`, `-alpha.N`, `-beta.N`): fixes between prereleases land on
+`main`, and the final release creates the branch. Report the branch with the
+release.
+
 ## If the Release workflow fails
 
 Read the failure first: `gh run view <run_id> --log-failed`.
@@ -345,8 +375,10 @@ Read the failure first: `gh run view <run_id> --log-failed`.
   the release's branch first (on `main`, then backported, for a release
   branch); then ask the user whether to delete the release and its tag
   (`gh release delete <tag> --cleanup-tag --yes`) and re-cut the same version
-  on the fixed commit, or keep it and cut the next patch. Deleting a published
-  release is visible to everyone, so it is their call.
+  on the fixed commit, or keep it and cut the next patch. A minor or major
+  kept this way gets its release branch from its tag first (step 7), and the
+  patch is cut from that. Deleting a published release is visible to
+  everyone, so it is their call.
 - **The `Release` job** (PyPI upload): rerun the failed jobs. The upload passes
   `--skip-existing`, so files already on PyPI are skipped. Once any file is on
   PyPI the version is spent; never delete and re-cut it.

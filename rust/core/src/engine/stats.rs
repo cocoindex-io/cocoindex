@@ -36,6 +36,21 @@ impl ProcessingStatsGroup {
     }
 }
 
+/// Failures kept for the progress summary; the counts in the stats groups
+/// cover every failure.
+pub const MAX_RECORDED_FAILURES: usize = 5;
+
+/// One failed component run, for the progress summary.
+#[derive(Clone, Debug)]
+pub struct FailureRecord {
+    /// The processor name the failure is counted under in the stats.
+    pub processor: String,
+    /// The component's path.
+    pub component: crate::state::stable_path::StablePath,
+    /// The first line of the error.
+    pub message: String,
+}
+
 /// A versioned snapshot of processing stats, combining the stats map with a version counter.
 #[derive(Default, Clone)]
 pub struct VersionedProcessingStats {
@@ -44,6 +59,8 @@ pub struct VersionedProcessingStats {
     /// True once the root processing component is ready (initial processing caught up).
     /// Stats may continue to update after this (live components).
     pub ready: bool,
+    /// The first `MAX_RECORDED_FAILURES` failures, in the order they happened.
+    pub failures: Vec<FailureRecord>,
 }
 
 /// Thread-safe container for processing stats with version tracking and change notification.
@@ -92,6 +109,15 @@ impl ProcessingStats {
         let _ = self.version_tx.send(version);
     }
 
+    /// Keep a failure for the summary, up to `MAX_RECORDED_FAILURES`. Does not
+    /// bump the version: the `update` that counts the failure does.
+    pub fn record_failure(&self, failure: FailureRecord) {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.failures.len() < MAX_RECORDED_FAILURES {
+            guard.failures.push(failure);
+        }
+    }
+
     /// Returns an atomic snapshot of (version, stats).
     pub fn snapshot(&self) -> VersionedProcessingStats {
         self.inner.lock().unwrap().clone()
@@ -124,6 +150,11 @@ impl ProcessingStats {
         let mut rx = self.terminated_rx.clone();
         // Err means the sender was dropped, which we also treat as terminated.
         let _ = rx.wait_for(|terminated| *terminated).await;
+    }
+
+    /// True once the operation has terminated.
+    pub fn is_terminated(&self) -> bool {
+        *self.terminated_rx.borrow()
     }
 
     /// Subscribe to version change notifications.

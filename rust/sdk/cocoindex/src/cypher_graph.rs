@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -9,6 +9,7 @@ use serde_json::{Map, Value as JsonValue};
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
+use crate::row_schema::{LogicalType, SchemaFields};
 use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff, resolve_system_transition,
 };
@@ -21,6 +22,28 @@ use crate::target_state::{
 /// Named parameters bound to a parameterized Cypher statement. Values are JSON
 /// (the connector maps them to Bolt types / FalkorDB `CYPHER` header literals).
 pub(crate) type CypherParams = BTreeMap<String, JsonValue>;
+
+/// A data-bearing Cypher statement with its bound parameters.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CypherStatement {
+    pub(crate) cypher: String,
+    pub(crate) params: CypherParams,
+}
+
+/// How [`CypherExecutor::execute_batch`] ended, short of a failure to report.
+pub(crate) enum BatchOutcome {
+    Applied,
+    /// The transaction went over the server's memory limit and rolled back. The
+    /// same statements fail the same way again, so the chunk they apply is split
+    /// in two instead of retried (Python's `_is_memory_limit`).
+    OverMemoryLimit(Error),
+}
+
+/// One transaction applies at most this many record actions (Python's
+/// `_MAX_ACTIONS_PER_TXN`): a batch is otherwise unbounded. A chunk can still
+/// go over the server's transaction memory limit (large properties); it is
+/// then split in two.
+const MAX_ACTIONS_PER_TXN: usize = 1000;
 
 #[async_trait]
 pub(crate) trait CypherExecutor: Clone + Send + Sync + 'static {
@@ -38,6 +61,17 @@ pub(crate) trait CypherExecutor: Clone + Send + Sync + 'static {
     /// through here so user values are never interpolated into the query body
     /// (Neo4j binds Bolt params; FalkorDB uses the `CYPHER name=value` header).
     async fn execute_with_params(&self, cypher: &str, params: &CypherParams) -> Result<()>;
+
+    /// Execute data-bearing statements as one unit. Neo4j runs them in one
+    /// transaction; the default runs them one after the other, for a dialect
+    /// with no multi-statement transaction (FalkorDB).
+    async fn execute_batch(&self, statements: &[CypherStatement]) -> Result<BatchOutcome> {
+        for statement in statements {
+            self.execute_with_params(&statement.cypher, &statement.params)
+                .await?;
+        }
+        Ok(BatchOutcome::Applied)
+    }
 
     async fn execute_unique_constraint(
         &self,
@@ -184,10 +218,18 @@ impl VectorMetric {
     }
 }
 
-/// Deterministic vector-index name for a `(label, field)` pair (Neo4j names its
-/// indexes; FalkorDB identifies them by `(label, field)` instead).
+/// Deterministic name of the database's vector index for a `(label, field)`
+/// pair (Neo4j names its indexes; FalkorDB identifies them by `(label, field)`
+/// instead). The declared name of an index (see
+/// [`TableTarget::declare_vector_index`]) only identifies its target state.
 pub(crate) fn vector_index_name(label: &str, field: &str) -> String {
     format!("coco_vec_{label}__{field}")
+}
+
+/// The declared name a vector index gets when the caller gives none, as in
+/// Python's `declare_vector_index(name=None)`.
+fn default_vector_index_name(label: &str, field: &str) -> String {
+    format!("vec_{label}__{field}")
 }
 
 /// Deterministic node-index name for a `(label, fields)` pair. Fields are joined
@@ -197,6 +239,9 @@ pub(crate) fn node_index_name(label: &str, fields: &[String]) -> String {
     format!("coco_idx_node_{label}__{}", fields.join("__"))
 }
 
+/// A property of a graph table. The type is metadata only: the graph enforces
+/// no property types, so it contributes to the schema's tracking record (a
+/// change re-upserts the records) and no DDL is emitted from it.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ColumnDef {
     pub cypher_type: String,
@@ -217,13 +262,21 @@ impl ColumnDef {
     }
 }
 
+/// Schema of a graph table: a node table (label) or a relation table
+/// (relationship type). The primary key is one field.
+///
+/// Build it from explicit columns ([`new`](Self::new)), from a row struct
+/// ([`from_row`](Self::from_row)), or with no declared columns
+/// ([`schemaless`](Self::schemaless)).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TableSchema {
-    columns: BTreeMap<String, ColumnDef>,
+    /// `None` for a schemaless table.
+    columns: Option<BTreeMap<String, ColumnDef>>,
     primary_key: String,
 }
 
 impl TableSchema {
+    /// A schema with explicit columns. `primary_key` must name one of them.
     pub fn new(
         columns: impl IntoIterator<Item = (impl Into<String>, ColumnDef)>,
         primary_key: impl Into<String>,
@@ -242,25 +295,111 @@ impl TableSchema {
             )));
         }
         Ok(Self {
-            columns: out,
+            columns: Some(out),
             primary_key,
         })
     }
 
-    pub(crate) fn primary_key(&self) -> &str {
-        &self.primary_key
+    /// Derive a schema from a `#[derive(SchemaFields)]` row type (the Rust
+    /// analogue of Python's `TableSchema.from_class`). Each field maps to a
+    /// Cypher property type as in Python's `from_class`; a `#[coco(vector)]`
+    /// field becomes `LIST<FLOAT>` (its dimension belongs to the vector index,
+    /// not the property), `#[coco(type = "…")]` is used verbatim, and a
+    /// collection, map or nested struct is recorded as `MAP`.
+    ///
+    /// ```ignore
+    /// #[derive(serde::Serialize, cocoindex::SchemaFields)]
+    /// struct Person {
+    ///     id: String,
+    ///     name: Option<String>,
+    ///     #[coco(vector)]
+    ///     embedding: Vec<f32>,
+    /// }
+    /// let schema = cocoindex::connectors::neo4j::TableSchema::from_row::<Person>("id")?;
+    /// ```
+    pub fn from_row<T: SchemaFields>(primary_key: impl Into<String>) -> Result<Self> {
+        Self::new(
+            T::schema_fields().into_iter().map(|field| {
+                let def = ColumnDef {
+                    cypher_type: cypher_type(field.logical_type),
+                    nullable: field.nullable,
+                };
+                (field.name, def)
+            }),
+            primary_key,
+        )
+    }
+
+    /// Replace the Cypher property type of one column of a schema derived
+    /// from a row (Python's `from_class(column_overrides={"col": …})`),
+    /// keeping its nullability.
+    pub fn with_column_type(
+        mut self,
+        field_name: &str,
+        cypher_type: impl Into<String>,
+    ) -> Result<Self> {
+        let def = self
+            .columns
+            .as_mut()
+            .and_then(|columns| columns.get_mut(field_name))
+            .ok_or_else(|| crate::row_schema::unknown_column_error("graph", field_name))?;
+        def.cypher_type = cypher_type.into();
+        Ok(self)
+    }
+
+    /// A schema with no declared columns (Python's `table_schema=None`): the
+    /// table's records are keyed by the `primary_key` property and written as
+    /// they serialize.
+    pub fn schemaless(primary_key: impl Into<String>) -> Result<Self> {
+        let primary_key = primary_key.into();
+        validate_ident(&primary_key, "primary key")?;
+        Ok(Self {
+            columns: None,
+            primary_key,
+        })
     }
 }
 
-#[derive(Clone)]
+/// The Cypher property type of a derived column (Python's
+/// `_LEAF_TYPE_MAPPINGS` for the graph targets).
+fn cypher_type(logical_type: LogicalType) -> String {
+    let name = match logical_type {
+        LogicalType::Bool => "BOOLEAN",
+        LogicalType::Int16 | LogicalType::Int32 | LogicalType::Int64 => "INTEGER",
+        LogicalType::Float32 | LogicalType::Float64 => "FLOAT",
+        // The graph has no decimal or UUID type: both are stored as strings.
+        LogicalType::Decimal | LogicalType::Text | LogicalType::Uuid => "STRING",
+        LogicalType::Bytes => "BYTES",
+        LogicalType::Date => "DATE",
+        LogicalType::Time => "LOCAL_TIME",
+        LogicalType::DateTime => "ZONED_DATETIME",
+        LogicalType::Duration => "DURATION",
+        LogicalType::Json => "MAP",
+        LogicalType::Vector { .. } => "LIST<FLOAT>",
+        LogicalType::Custom(cypher_type) => return cypher_type,
+    };
+    name.to_string()
+}
+
+/// As a `mount_each!` / `use_mount!` or memoized function argument a handle
+/// fingerprints by its stable key, the graph key and table name; the rest of it
+/// is not part of the identity.
+#[derive(Clone, Serialize)]
 pub(crate) struct TableTarget {
     /// The `ContextKey` name of the graph the table lives in.
     graph_key: Arc<str>,
     table_name: Arc<str>,
+    #[serde(skip)]
     primary_key: Arc<str>,
     /// The connector's static root provider; carries the index attachments.
+    #[serde(skip)]
     table_provider: TargetStateProvider<TableSpec>,
+    #[serde(skip)]
     provider: TargetStateProvider<RecordState>,
+    /// Field -> declared name of the vector indexes declared through this
+    /// target: the database keeps one vector index per label and field.
+    #[serde(skip)]
+    vector_index_names: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 impl TableTarget {
@@ -282,17 +421,48 @@ impl TableTarget {
     }
 
     /// Declare a vector index on `field` as an attachment of this node table.
+    /// `name` identifies the index's target state (default
+    /// `vec_{table}__{field}`); the database's own index is identified by the
+    /// label and field, so one field takes one vector index.
     pub(crate) fn declare_vector_index(
         &self,
         ctx: &Ctx,
+        name: Option<&str>,
         field: &str,
         dimension: u32,
         metric: VectorMetric,
     ) -> Result<()> {
         validate_ident(field, "vector index field")?;
+        let name = match name {
+            Some(name) => {
+                validate_ident(name, "vector index name")?;
+                name.to_string()
+            }
+            None => default_vector_index_name(&self.table_name, field),
+        };
+        if dimension == 0 {
+            return Err(Error::engine(format!(
+                "Invalid vector dimension: {dimension}"
+            )));
+        }
+        {
+            let mut names = self
+                .vector_index_names
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let declared = names
+                .entry(field.to_string())
+                .or_insert_with(|| name.clone());
+            if *declared != name {
+                return Err(Error::engine(format!(
+                    "Vector indexes {declared:?} and {name:?} both index {}.{field}: declare \
+                     one vector index per field.",
+                    self.table_name
+                )));
+            }
+        }
         let provider: TargetStateProvider<VectorIndexSpec> =
             self.table_provider.attachment(ctx, "vector_index")?;
-        let key = vector_index_name(&self.table_name, field);
         let spec = VectorIndexSpec {
             label: self.table_name.to_string(),
             field: field.to_string(),
@@ -301,7 +471,10 @@ impl TableTarget {
         };
         declare_target_state(
             ctx,
-            provider.target_state(index_key(&self.graph_key, key), spec),
+            provider.target_state(
+                vector_index_key(&self.graph_key, &self.table_name, &name),
+                spec,
+            ),
         )
     }
 
@@ -331,10 +504,20 @@ impl TableTarget {
     }
 }
 
-#[derive(Clone)]
+/// Fingerprints by its stable key, like [`TableTarget`].
+#[derive(Clone, Serialize)]
 pub(crate) struct RelationTarget {
+    /// The `ContextKey` name of the graph the relation lives in.
+    graph_key: Arc<str>,
+    relation_name: Arc<str>,
+    /// The property that keys the relation's records.
+    #[serde(skip)]
+    primary_key: Arc<str>,
+    #[serde(skip)]
     from_table: TableEndpoint,
+    #[serde(skip)]
     to_table: TableEndpoint,
+    #[serde(skip)]
     provider: TargetStateProvider<RecordState>,
 }
 
@@ -357,13 +540,28 @@ impl RelationTarget {
     ) -> Result<()> {
         let from_id = key_value(from_id.into_stable_key())?;
         let to_id = key_value(to_id.into_stable_key())?;
-        let fields = record_state(record)?.fields;
-        let record_id = relation_key(
-            &self.from_table.table_name,
-            &from_id.key_fragment(),
-            &self.to_table.table_name,
-            &to_id.key_fragment(),
-        );
+        let mut fields = record_state(record)?.fields;
+        // A record carrying the primary key is keyed by it; otherwise the id
+        // is derived from the endpoints.
+        let record_id = match fields.remove(&*self.primary_key) {
+            None | Some(JsonValue::Null) => StableKey::Str(Arc::from(relation_key(
+                &self.from_table.table_name,
+                &from_id.key_fragment(),
+                &self.to_table.table_name,
+                &to_id.key_fragment(),
+            ))),
+            Some(JsonValue::String(id)) => StableKey::Str(Arc::from(id)),
+            Some(id) => match id.as_i64() {
+                Some(id) => StableKey::Int(id),
+                None => {
+                    return Err(Error::engine(format!(
+                        "relation record's primary key {:?} must be a string or an integer, \
+                         got {id}",
+                        self.primary_key
+                    )));
+                }
+            },
+        };
         declare_target_state(
             ctx,
             self.provider.target_state(
@@ -394,6 +592,7 @@ struct TableEndpoint {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TableSpec {
     table_name: String,
+    /// `None` for a schemaless table.
     schema: Option<TableSchema>,
     primary_key: String,
     is_relation: bool,
@@ -406,8 +605,8 @@ impl TableSpec {
     fn table(table_name: String, schema: TableSchema, managed_by: ManagedBy) -> Self {
         Self {
             table_name,
-            primary_key: schema.primary_key().to_string(),
-            schema: Some(schema),
+            primary_key: schema.primary_key.clone(),
+            schema: schema.columns.is_some().then_some(schema),
             is_relation: false,
             from_table: None,
             to_table: None,
@@ -419,12 +618,13 @@ impl TableSpec {
         relation_name: String,
         from_table: TableEndpoint,
         to_table: TableEndpoint,
+        schema: TableSchema,
         managed_by: ManagedBy,
     ) -> Self {
         Self {
             table_name: relation_name,
-            schema: None,
-            primary_key: "id".to_string(),
+            primary_key: schema.primary_key.clone(),
+            schema: schema.columns.is_some().then_some(schema),
             is_relation: true,
             from_table: Some(from_table),
             to_table: Some(to_table),
@@ -495,13 +695,18 @@ struct TableAction {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum TableOp {
     Ensure(TableSpec),
-    Replace { prev: TableSpec, next: TableSpec },
+    Replace {
+        /// Boxed to keep the variants close in size.
+        prev: Box<TableSpec>,
+        next: TableSpec,
+    },
     Drop(TableSpec),
 }
 
+/// Action emitted by the record child handler. The table it belongs to is the
+/// record sink's, which captures the spec once for every action of a batch.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RecordAction {
-    spec: TableSpec,
     record_id: KeyValue,
     state: Option<RecordState>,
 }
@@ -539,6 +744,7 @@ pub(crate) fn relation_target_state<C: CypherExecutor>(
     relation_name: impl Into<String>,
     from_table: &TableTarget,
     to_table: &TableTarget,
+    schema: TableSchema,
     options: ManagedTargetOptions,
 ) -> Result<TargetState<TableSpec>> {
     let relation_name = relation_name.into();
@@ -555,6 +761,7 @@ pub(crate) fn relation_target_state<C: CypherExecutor>(
         relation_name.clone(),
         from_endpoint,
         to_endpoint,
+        schema,
         options.managed_by,
     );
     let provider = C::table_provider().get(ctx)?;
@@ -581,18 +788,29 @@ fn table_handle(
         primary_key: Arc::from(spec.primary_key.clone()),
         table_provider,
         provider: child,
+        vector_index_names: Arc::default(),
     }
 }
 
-fn relation_handle(spec: &TableSpec, child: TargetStateProvider<RecordState>) -> RelationTarget {
-    RelationTarget {
-        from_table: spec
-            .from_table
-            .clone()
-            .expect("relation spec has from_table"),
-        to_table: spec.to_table.clone().expect("relation spec has to_table"),
+fn relation_handle(
+    graph_key: &str,
+    spec: &TableSpec,
+    child: TargetStateProvider<RecordState>,
+) -> Result<RelationTarget> {
+    let (Some(from_table), Some(to_table)) = (&spec.from_table, &spec.to_table) else {
+        return Err(Error::engine(format!(
+            "relation table {:?} has no endpoints",
+            spec.table_name
+        )));
+    };
+    Ok(RelationTarget {
+        graph_key: Arc::from(graph_key),
+        relation_name: Arc::from(spec.table_name.as_str()),
+        primary_key: Arc::from(spec.primary_key.as_str()),
+        from_table: from_table.clone(),
+        to_table: to_table.clone(),
         provider: child,
-    }
+    })
 }
 
 pub(crate) async fn mount_table_target_with_options<C: CypherExecutor>(
@@ -629,12 +847,21 @@ pub(crate) async fn mount_relation_target_with_options<C: CypherExecutor>(
     relation_name: impl Into<String>,
     from_table: &TableTarget,
     to_table: &TableTarget,
+    schema: TableSchema,
     options: ManagedTargetOptions,
 ) -> Result<RelationTarget> {
-    let ts = relation_target_state(ctx, graph, relation_name, from_table, to_table, options)?;
+    let ts = relation_target_state(
+        ctx,
+        graph,
+        relation_name,
+        from_table,
+        to_table,
+        schema,
+        options,
+    )?;
     let spec = ts.value().clone();
     let child = mount_target(ctx, ts).await?;
-    Ok(relation_handle(&spec, child))
+    relation_handle(graph.name(), &spec, child)
 }
 
 pub(crate) fn declare_relation_target_with_options<C: CypherExecutor>(
@@ -643,12 +870,21 @@ pub(crate) fn declare_relation_target_with_options<C: CypherExecutor>(
     relation_name: impl Into<String>,
     from_table: &TableTarget,
     to_table: &TableTarget,
+    schema: TableSchema,
     options: ManagedTargetOptions,
 ) -> Result<RelationTarget> {
-    let ts = relation_target_state(ctx, graph, relation_name, from_table, to_table, options)?;
+    let ts = relation_target_state(
+        ctx,
+        graph,
+        relation_name,
+        from_table,
+        to_table,
+        schema,
+        options,
+    )?;
     let spec = ts.value().clone();
     let child = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
-    Ok(relation_handle(&spec, child))
+    relation_handle(graph.name(), &spec, child)
 }
 
 /// Resolve the graph provided under `graph_key` in the host context.
@@ -787,7 +1023,7 @@ impl<C: CypherExecutor> TargetHandler<TableSpec> for TableHandler<C> {
                 let (action, child_invalidation) = match prev_system_spec {
                     Some(prev_spec) if changed && !prev_spec.same_identity(&spec) => (
                         TargetAction::Update(table_action(TableOp::Replace {
-                            prev: prev_spec,
+                            prev: Box::new(prev_spec),
                             next: spec.clone(),
                         })),
                         Some(crate::target_state::TargetChildInvalidation::Destructive),
@@ -873,6 +1109,42 @@ fn index_key_graph(key: &StableKey) -> Result<String> {
     )))
 }
 
+/// A vector index's key: the graph's `ContextKey` name, the node table and
+/// the index's declared name (unique per table).
+fn vector_index_key(graph_key: &str, label: &str, name: &str) -> StableKey {
+    StableKey::Array(Arc::from([
+        StableKey::Str(Arc::from(graph_key)),
+        StableKey::Str(Arc::from(label)),
+        StableKey::Str(Arc::from(name)),
+    ]))
+}
+
+/// The graph key and declared index name of a [`vector_index_key`].
+struct VectorIndexKey {
+    graph_key: String,
+    name: String,
+}
+
+impl VectorIndexKey {
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [
+                StableKey::Str(graph_key),
+                StableKey::Str(_),
+                StableKey::Str(name),
+            ] = &parts[..]
+        {
+            return Ok(Self {
+                graph_key: graph_key.to_string(),
+                name: name.to_string(),
+            });
+        }
+        Err(Error::engine(format!(
+            "unexpected graph vector index target key: {key:?}"
+        )))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Vector-index attachment (node tables) — per-dialect Cypher via CypherExecutor
 // ---------------------------------------------------------------------------
@@ -891,13 +1163,17 @@ pub struct VectorIndexSpec {
 struct VectorIndexAction {
     /// The `ContextKey` name of the graph the index lives in.
     graph_key: String,
+    /// The index's declared name (its target-state identity).
+    name: String,
     label: String,
-    field: String,
-    /// `Some` to (re)create the index, `None` to drop it.
+    /// `Some` to (re)create the index on the spec's field.
     spec: Option<VectorIndexSpec>,
+    /// Fields this name indexed before and no longer does: the name was
+    /// undeclared, or re-pointed at another field. Their indexes are dropped.
+    released_fields: Vec<String>,
 }
 
-/// Stateless: the graph is named by each index's [`index_key`].
+/// Stateless: the graph is named by each index's [`vector_index_key`].
 struct VectorIndexHandler<C> {
     sink: SinkCache<VectorIndexAction>,
     _graph: PhantomData<fn() -> C>,
@@ -932,21 +1208,27 @@ impl<C: CypherExecutor> TargetHandler<VectorIndexSpec> for VectorIndexHandler<C>
         if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
             return Ok(None);
         }
-        let (label, field) = match (&desired, prev.first()) {
-            (Some(d), _) => (d.label.clone(), d.field.clone()),
-            (None, Some(p)) => (p.label.clone(), p.field.clone()),
-            (None, None) => {
-                return Err(Error::engine(format!(
-                    "vector index {key:?} has neither desired nor previous state"
-                )));
-            }
+        let Some(label) = desired.as_ref().or(prev.first()).map(|s| s.label.clone()) else {
+            return Err(Error::engine(format!(
+                "vector index {key:?} has neither desired nor previous state"
+            )));
         };
+        let mut released_fields: Vec<String> = Vec::new();
+        for p in &prev {
+            if desired.as_ref().is_none_or(|d| d.field != p.field)
+                && !released_fields.contains(&p.field)
+            {
+                released_fields.push(p.field.clone());
+            }
+        }
+        let key = VectorIndexKey::from_stable_key(&key)?;
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(VectorIndexAction {
-                graph_key: index_key_graph(&key)?,
+                graph_key: key.graph_key,
+                name: key.name,
                 label,
-                field,
                 spec: desired.clone(),
+                released_fields,
             }),
             sink: self.sink.get(vector_index_sink::<C>),
             tracking_record: desired,
@@ -955,35 +1237,62 @@ impl<C: CypherExecutor> TargetHandler<VectorIndexSpec> for VectorIndexHandler<C>
     }
 }
 
+/// An index is tracked by its declared name, but the database identifies it by
+/// its label and field. A renamed index therefore arrives as a create under
+/// the new name and a drop under the old one, both of one database index: the
+/// drop is skipped. A name re-pointed at another field releases its old
+/// field, whose index is dropped unless another name creates it. Two declared
+/// indexes of one database index are an error.
 fn vector_index_sink<C: CypherExecutor>() -> TargetActionSink<VectorIndexAction> {
     TargetActionSink::from_async_fn_with_ctx(
         |host_ctx, actions: Vec<TargetAction<VectorIndexAction>>| {
             async move {
-                for action in actions {
-                    let action = match action {
+                let actions: Vec<VectorIndexAction> = actions
+                    .into_iter()
+                    .map(|action| match action {
                         TargetAction::Create(a)
                         | TargetAction::Update(a)
                         | TargetAction::Delete(a) => a,
-                    };
+                    })
+                    .collect();
+                // (graph, label, field) of every index created -> declared name.
+                let mut created: BTreeMap<(&str, &str, &str), &str> = BTreeMap::new();
+                for action in &actions {
+                    let Some(spec) = &action.spec else { continue };
+                    let declared = *created
+                        .entry((&action.graph_key, &action.label, &spec.field))
+                        .or_insert(&action.name);
+                    if declared != action.name {
+                        return Err(Error::engine(format!(
+                            "Vector indexes {declared:?} and {:?} both index {}.{}: declare \
+                             one vector index per field.",
+                            action.name, action.label, spec.field
+                        )));
+                    }
+                }
+                for action in &actions {
                     let graph = resolve_graph::<C>(&host_ctx, &action.graph_key)?;
-                    match action.spec {
-                        Some(spec) => {
-                            // Drop-then-create so a metric/dimension change is applied.
-                            let _ = graph.drop_vector_index(&action.label, &action.field).await;
-                            graph
-                                .create_vector_index(
-                                    &action.label,
-                                    &action.field,
-                                    spec.dimension,
-                                    spec.metric,
-                                )
-                                .await?;
+                    for field in &action.released_fields {
+                        let recreated = created.contains_key(&(
+                            action.graph_key.as_str(),
+                            action.label.as_str(),
+                            field.as_str(),
+                        ));
+                        if !recreated {
+                            graph.drop_vector_index(&action.label, field).await?;
                         }
-                        None => {
-                            graph
-                                .drop_vector_index(&action.label, &action.field)
-                                .await?;
-                        }
+                    }
+                    if let Some(spec) = &action.spec {
+                        // Drop-then-create so a metric/dimension change is applied.
+                        let _ = graph.drop_vector_index(&action.label, &spec.field).await;
+                        graph
+                            .create_vector_index(
+                                &action.label,
+                                &spec.field,
+                                spec.dimension,
+                                spec.metric,
+                            )
+                            .await?;
                     }
                 }
                 Ok(())
@@ -1106,7 +1415,7 @@ fn node_index_sink<C: CypherExecutor>() -> TargetActionSink<NodeIndexAction> {
 struct RecordHandler<C> {
     sink: SinkCache<RecordAction>,
     graph_key: String,
-    spec: TableSpec,
+    spec: Arc<TableSpec>,
     _graph: PhantomData<fn() -> C>,
 }
 
@@ -1136,7 +1445,6 @@ impl<C: CypherExecutor> TargetHandler<RecordState> for RecordHandler<C> {
             return Ok(None);
         }
         let action = RecordAction {
-            spec: self.spec.clone(),
             record_id: key_value(key)?,
             state: desired,
         };
@@ -1148,7 +1456,9 @@ impl<C: CypherExecutor> TargetHandler<RecordState> for RecordHandler<C> {
         Ok(Some(TargetReconcileOutput {
             action,
             tracking_record: desired_fp,
-            sink: self.sink.get(|| record_sink::<C>(self.graph_key.clone())),
+            sink: self
+                .sink
+                .get(|| record_sink::<C>(self.graph_key.clone(), self.spec.clone())),
             child_invalidation: None,
         }))
     }
@@ -1193,26 +1503,33 @@ fn table_sink<C: CypherExecutor>() -> TargetActionSink<TableAction> {
             Ok(ChildTargetDef::new::<RecordState, _>(RecordHandler::<C> {
                 sink: SinkCache::default(),
                 graph_key: a.graph_key.clone(),
-                spec,
+                spec: Arc::new(spec),
                 _graph: PhantomData,
             }))
         },
     )
 }
 
-fn record_sink<C: CypherExecutor>(graph_key: String) -> TargetActionSink<RecordAction> {
+fn record_sink<C: CypherExecutor>(
+    graph_key: String,
+    spec: Arc<TableSpec>,
+) -> TargetActionSink<RecordAction> {
     TargetActionSink::from_async_fn_with_ctx(
         move |host_ctx, actions: Vec<TargetAction<RecordAction>>| {
             let graph_key = graph_key.clone();
+            let spec = spec.clone();
             async move {
                 let graph = resolve_graph::<C>(&host_ctx, &graph_key)?;
-                for action in actions {
-                    let (TargetAction::Create(action)
-                    | TargetAction::Update(action)
-                    | TargetAction::Delete(action)) = action;
-                    apply_record(graph.as_ref(), &action).await?;
-                }
-                Ok(())
+                let actions = actions
+                    .into_iter()
+                    .map(|action| {
+                        let (TargetAction::Create(action)
+                        | TargetAction::Update(action)
+                        | TargetAction::Delete(action)) = action;
+                        action
+                    })
+                    .collect();
+                apply_records(graph.as_ref(), &spec, actions).await
             }
         },
     )
@@ -1355,86 +1672,127 @@ async fn drop_table<C: CypherExecutor>(graph: &C, spec: &TableSpec) -> Result<()
     Ok(())
 }
 
-async fn apply_record<C: CypherExecutor>(graph: &C, action: &RecordAction) -> Result<()> {
-    match (&action.state, &action.spec.is_relation) {
+/// Apply a batch of one table's record actions: upserts first, then deletes,
+/// in transactions of at most [`MAX_ACTIONS_PER_TXN`] actions, one after the
+/// other. A failed transaction raises, so the batch's components are retried;
+/// earlier transactions stay committed, which is safe as the writes are
+/// idempotent (`MERGE`).
+async fn apply_records<C: CypherExecutor>(
+    graph: &C,
+    spec: &TableSpec,
+    actions: Vec<RecordAction>,
+) -> Result<()> {
+    let (upserts, deletes): (Vec<_>, Vec<_>) = actions
+        .into_iter()
+        .partition(|action| action.state.is_some());
+    let ordered: Vec<RecordAction> = upserts.into_iter().chain(deletes).collect();
+    for chunk in ordered.chunks(MAX_ACTIONS_PER_TXN) {
+        apply_chunk(graph, spec, chunk).await?;
+    }
+    Ok(())
+}
+
+/// Apply `chunk` as one unit ([`CypherExecutor::execute_batch`]); split it in
+/// two when it goes over the server's transaction memory limit.
+async fn apply_chunk<C: CypherExecutor>(
+    graph: &C,
+    spec: &TableSpec,
+    chunk: &[RecordAction],
+) -> Result<()> {
+    let statements = record_statements(spec, chunk)?;
+    match graph.execute_batch(&statements).await? {
+        BatchOutcome::Applied => Ok(()),
+        BatchOutcome::OverMemoryLimit(error) if chunk.len() == 1 => Err(error),
+        BatchOutcome::OverMemoryLimit(_) => {
+            let (first, second) = chunk.split_at(chunk.len() / 2);
+            Box::pin(apply_chunk(graph, spec, first)).await?;
+            Box::pin(apply_chunk(graph, spec, second)).await
+        }
+    }
+}
+
+/// The statements that apply `actions` (already in order), one `UNWIND $rows`
+/// statement per statement shape: the shape of a node upsert or delete is
+/// fixed by the table, a relation upsert's also by its endpoint tables. Rows
+/// of one shape keep their order, and so do the shapes (by first row).
+fn record_statements(spec: &TableSpec, actions: &[RecordAction]) -> Result<Vec<CypherStatement>> {
+    let mut statements: Vec<(String, Vec<JsonValue>)> = Vec::new();
+    for action in actions {
+        let (cypher, row) = record_statement(spec, action)?;
+        match statements.iter_mut().find(|(shape, _)| *shape == cypher) {
+            Some((_, rows)) => rows.push(row),
+            None => statements.push((cypher, vec![row])),
+        }
+    }
+    Ok(statements
+        .into_iter()
+        .map(|(cypher, rows)| CypherStatement {
+            cypher,
+            params: CypherParams::from([("rows".to_string(), JsonValue::Array(rows))]),
+        })
+        .collect())
+}
+
+/// The `UNWIND $rows AS row` statement that applies `action`, and the row it
+/// contributes to `$rows`.
+fn record_statement(spec: &TableSpec, action: &RecordAction) -> Result<(String, JsonValue)> {
+    let mut row = Map::new();
+    let cypher = match (&action.state, spec.is_relation) {
         (Some(state), false) => {
             let mut props = state.fields.clone();
-            props.remove(&action.spec.primary_key);
-            let mut params = CypherParams::new();
-            params.insert("key".to_string(), key_json(&action.record_id));
-            let set_clause = if props.is_empty() {
-                String::new()
-            } else {
-                params.insert("props".to_string(), JsonValue::Object(props));
-                " SET n += $props".to_string()
-            };
-            graph
-                .execute_with_params(
-                    &format!(
-                        "MERGE (n:`{}` {{`{}`: $key}}){}",
-                        action.spec.table_name, action.spec.primary_key, set_clause
-                    ),
-                    &params,
-                )
-                .await
+            props.remove(&spec.primary_key);
+            row.insert("key".to_string(), key_json(&action.record_id));
+            row.insert("props".to_string(), JsonValue::Object(props));
+            format!(
+                "UNWIND $rows AS row MERGE (n:`{}` {{`{}`: row.key}}) SET n += row.props",
+                spec.table_name, spec.primary_key
+            )
         }
         (None, false) => {
-            let mut params = CypherParams::new();
-            params.insert("key".to_string(), key_json(&action.record_id));
-            graph
-                .execute_with_params(
-                    &format!(
-                        "MATCH (n:`{}` {{`{}`: $key}}) DETACH DELETE n",
-                        action.spec.table_name, action.spec.primary_key
-                    ),
-                    &params,
-                )
-                .await
+            row.insert("key".to_string(), key_json(&action.record_id));
+            format!(
+                "UNWIND $rows AS row MATCH (n:`{}` {{`{}`: row.key}}) DETACH DELETE n",
+                spec.table_name, spec.primary_key
+            )
         }
         (Some(state), true) => {
             let rel = state
                 .relation
                 .as_ref()
                 .ok_or_else(|| Error::engine("relation record missing endpoints"))?;
-            let mut params = CypherParams::new();
-            params.insert("from_id".to_string(), key_json(&rel.from_id));
-            params.insert("to_id".to_string(), key_json(&rel.to_id));
-            params.insert("rel_id".to_string(), key_json(&action.record_id));
-            let set_clause = if state.fields.is_empty() {
-                String::new()
-            } else {
-                params.insert("props".to_string(), JsonValue::Object(state.fields.clone()));
-                " SET r += $props".to_string()
-            };
-            graph
-                .execute_with_params(
-                    &format!(
-                        "MERGE (s:`{}` {{`{}`: $from_id}}) MERGE (t:`{}` {{`{}`: $to_id}}) MERGE (s)-[r:`{}` {{`id`: $rel_id}}]->(t){}",
-                        rel.from_table.table_name,
-                        rel.from_table.primary_key,
-                        rel.to_table.table_name,
-                        rel.to_table.primary_key,
-                        action.spec.table_name,
-                        set_clause
-                    ),
-                    &params,
-                )
-                .await
+            row.insert("from_id".to_string(), key_json(&rel.from_id));
+            row.insert("to_id".to_string(), key_json(&rel.to_id));
+            row.insert("rel_id".to_string(), key_json(&action.record_id));
+            row.insert("props".to_string(), JsonValue::Object(state.fields.clone()));
+            let rel_pattern = format!(
+                "`{}` {{`{}`: row.rel_id}}",
+                spec.table_name, spec.primary_key
+            );
+            // The key identifies one relationship. An edge with this key
+            // between other endpoints is this relationship before its
+            // endpoints changed: delete it, or the MERGE would add a second
+            // edge beside it.
+            format!(
+                "UNWIND $rows AS row \
+                 MERGE (s:`{}` {{`{}`: row.from_id}}) MERGE (t:`{}` {{`{}`: row.to_id}}) \
+                 WITH s, t, row OPTIONAL MATCH (a)-[o:{rel_pattern}]->(b) WHERE a <> s OR b <> t \
+                 DELETE o WITH DISTINCT s, t, row \
+                 MERGE (s)-[r:{rel_pattern}]->(t) SET r += row.props",
+                rel.from_table.table_name,
+                rel.from_table.primary_key,
+                rel.to_table.table_name,
+                rel.to_table.primary_key,
+            )
         }
         (None, true) => {
-            let mut params = CypherParams::new();
-            params.insert("rel_id".to_string(), key_json(&action.record_id));
-            graph
-                .execute_with_params(
-                    &format!(
-                        "MATCH ()-[r:`{}` {{`id`: $rel_id}}]->() DELETE r",
-                        action.spec.table_name
-                    ),
-                    &params,
-                )
-                .await
+            row.insert("rel_id".to_string(), key_json(&action.record_id));
+            format!(
+                "UNWIND $rows AS row MATCH ()-[r:`{}` {{`{}`: row.rel_id}}]->() DELETE r",
+                spec.table_name, spec.primary_key
+            )
         }
-    }
+    };
+    Ok((cypher, JsonValue::Object(row)))
 }
 
 fn record_state<R: Serialize>(row: &R) -> Result<RecordState> {
@@ -1585,8 +1943,9 @@ pub(crate) fn validate_ident(name: &str, what: &str) -> Result<()> {
 /// changes are applied, including on `App::drop_state`.
 macro_rules! graph_target_api {
     ($graph:ty) => {
-        /// A node-table target. Cheap to clone.
-        #[derive(Clone)]
+        /// A node-table target. Cheap to clone. Serializes to its stable key, so
+        /// it can be a `mount_each!` / `use_mount!` or memoized function argument.
+        #[derive(Clone, ::serde::Serialize)]
         pub struct TableTarget($crate::cypher_graph::TableTarget);
 
         impl TableTarget {
@@ -1606,7 +1965,7 @@ macro_rules! graph_target_api {
             }
 
             /// Declare a vector index on `field`, created/recreated/dropped to
-            /// match the declaration.
+            /// match the declaration. It is named `vec_{table}__{field}`.
             pub fn declare_vector_index(
                 &self,
                 ctx: &$crate::ctx::Ctx,
@@ -1614,7 +1973,26 @@ macro_rules! graph_target_api {
                 dimension: u32,
                 metric: $crate::cypher_graph::VectorMetric,
             ) -> $crate::error::Result<()> {
-                self.0.declare_vector_index(ctx, field, dimension, metric)
+                self.0
+                    .declare_vector_index(ctx, None, field, dimension, metric)
+            }
+
+            /// [`declare_vector_index`](Self::declare_vector_index) with an
+            /// explicit `name`. The name identifies the declaration. The
+            /// database identifies the index by its label and field, so a
+            /// field takes one vector index, and renaming the declaration
+            /// rebuilds that index once and does not remove it. Declaring the
+            /// name on another field drops the index on the old field.
+            pub fn declare_vector_index_named(
+                &self,
+                ctx: &$crate::ctx::Ctx,
+                name: &str,
+                field: &str,
+                dimension: u32,
+                metric: $crate::cypher_graph::VectorMetric,
+            ) -> $crate::error::Result<()> {
+                self.0
+                    .declare_vector_index(ctx, Some(name), field, dimension, metric)
             }
 
             /// Declare a (non-vector) secondary index on `fields`,
@@ -1628,8 +2006,9 @@ macro_rules! graph_target_api {
             }
         }
 
-        /// A relation target. Cheap to clone.
-        #[derive(Clone)]
+        /// A relation target. Cheap to clone. Serializes to its stable key, so
+        /// it can be a `mount_each!` / `use_mount!` or memoized function argument.
+        #[derive(Clone, ::serde::Serialize)]
         pub struct RelationTarget($crate::cypher_graph::RelationTarget);
 
         impl RelationTarget {
@@ -1643,7 +2022,9 @@ macro_rules! graph_target_api {
                 self.0.declare_relation(ctx, from_id, to_id)
             }
 
-            /// Declare a relation carrying `record` properties.
+            /// Declare a relation carrying `record` properties. A record
+            /// that has the relation's primary key is keyed by it (a string or
+            /// an integer); otherwise the id is derived from the endpoints.
             pub fn declare_relation_record<R: ::serde::Serialize>(
                 &self,
                 ctx: &$crate::ctx::Ctx,
@@ -1690,6 +2071,7 @@ macro_rules! graph_target_api {
         }
 
         /// Mount a relation target (relation records resolve immediately).
+        /// The relation is schemaless and keyed by its `id` property.
         pub async fn mount_relation_target(
             ctx: &$crate::ctx::Ctx,
             graph: &$crate::ContextKey<$graph>,
@@ -1697,24 +2079,47 @@ macro_rules! graph_target_api {
             from_table: &TableTarget,
             to_table: &TableTarget,
         ) -> $crate::error::Result<RelationTarget> {
+            mount_relation_target_with_schema(
+                ctx,
+                graph,
+                relation_name,
+                from_table,
+                to_table,
+                $crate::cypher_graph::TableSchema::schemaless("id")?,
+            )
+            .await
+        }
+
+        /// [`mount_relation_target`] with a `schema`, which names the
+        /// relation's primary key.
+        pub async fn mount_relation_target_with_schema(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$crate::ContextKey<$graph>,
+            relation_name: impl Into<String>,
+            from_table: &TableTarget,
+            to_table: &TableTarget,
+            schema: $crate::cypher_graph::TableSchema,
+        ) -> $crate::error::Result<RelationTarget> {
             mount_relation_target_with_options(
                 ctx,
                 graph,
                 relation_name,
                 from_table,
                 to_table,
+                schema,
                 $crate::statediff::ManagedTargetOptions::default(),
             )
             .await
         }
 
-        /// [`mount_relation_target`] with explicit options.
+        /// [`mount_relation_target_with_schema`] with explicit options.
         pub async fn mount_relation_target_with_options(
             ctx: &$crate::ctx::Ctx,
             graph: &$crate::ContextKey<$graph>,
             relation_name: impl Into<String>,
             from_table: &TableTarget,
             to_table: &TableTarget,
+            schema: $crate::cypher_graph::TableSchema,
             options: $crate::statediff::ManagedTargetOptions,
         ) -> $crate::error::Result<RelationTarget> {
             Ok(RelationTarget(
@@ -1724,6 +2129,7 @@ macro_rules! graph_target_api {
                     relation_name,
                     &from_table.0,
                     &to_table.0,
+                    schema,
                     options,
                 )
                 .await?,
@@ -1768,6 +2174,7 @@ macro_rules! graph_target_api {
 
         /// Build a composable
         /// [`TargetState`](crate::target_state::TargetState) for a relation.
+        /// The relation is schemaless and keyed by its `id` property.
         pub fn relation_target(
             ctx: &$crate::ctx::Ctx,
             graph: &$crate::ContextKey<$graph>,
@@ -1777,23 +2184,47 @@ macro_rules! graph_target_api {
         ) -> $crate::error::Result<
             $crate::target_state::TargetState<$crate::cypher_graph::TableSpec>,
         > {
+            relation_target_with_schema(
+                ctx,
+                graph,
+                relation_name,
+                from_table,
+                to_table,
+                $crate::cypher_graph::TableSchema::schemaless("id")?,
+            )
+        }
+
+        /// [`relation_target`] with a `schema`, which names the relation's
+        /// primary key.
+        pub fn relation_target_with_schema(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$crate::ContextKey<$graph>,
+            relation_name: impl Into<String>,
+            from_table: &TableTarget,
+            to_table: &TableTarget,
+            schema: $crate::cypher_graph::TableSchema,
+        ) -> $crate::error::Result<
+            $crate::target_state::TargetState<$crate::cypher_graph::TableSpec>,
+        > {
             relation_target_with_options(
                 ctx,
                 graph,
                 relation_name,
                 from_table,
                 to_table,
+                schema,
                 $crate::statediff::ManagedTargetOptions::default(),
             )
         }
 
-        /// [`relation_target`] with explicit options.
+        /// [`relation_target_with_schema`] with explicit options.
         pub fn relation_target_with_options(
             ctx: &$crate::ctx::Ctx,
             graph: &$crate::ContextKey<$graph>,
             relation_name: impl Into<String>,
             from_table: &TableTarget,
             to_table: &TableTarget,
+            schema: $crate::cypher_graph::TableSchema,
             options: $crate::statediff::ManagedTargetOptions,
         ) -> $crate::error::Result<
             $crate::target_state::TargetState<$crate::cypher_graph::TableSpec>,
@@ -1804,6 +2235,7 @@ macro_rules! graph_target_api {
                 relation_name,
                 &from_table.0,
                 &to_table.0,
+                schema,
                 options,
             )
         }
@@ -1843,7 +2275,8 @@ macro_rules! graph_target_api {
 
         /// Declare a relation target in the **current** component. Use
         /// [`mount_relation_target`] when relation records must be declared
-        /// immediately.
+        /// immediately. The relation is schemaless and keyed by its `id`
+        /// property.
         pub fn declare_relation_target(
             ctx: &$crate::ctx::Ctx,
             graph: &$crate::ContextKey<$graph>,
@@ -1851,23 +2284,45 @@ macro_rules! graph_target_api {
             from_table: &TableTarget,
             to_table: &TableTarget,
         ) -> $crate::error::Result<RelationTarget> {
+            declare_relation_target_with_schema(
+                ctx,
+                graph,
+                relation_name,
+                from_table,
+                to_table,
+                $crate::cypher_graph::TableSchema::schemaless("id")?,
+            )
+        }
+
+        /// [`declare_relation_target`] with a `schema`, which names the
+        /// relation's primary key.
+        pub fn declare_relation_target_with_schema(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$crate::ContextKey<$graph>,
+            relation_name: impl Into<String>,
+            from_table: &TableTarget,
+            to_table: &TableTarget,
+            schema: $crate::cypher_graph::TableSchema,
+        ) -> $crate::error::Result<RelationTarget> {
             declare_relation_target_with_options(
                 ctx,
                 graph,
                 relation_name,
                 from_table,
                 to_table,
+                schema,
                 $crate::statediff::ManagedTargetOptions::default(),
             )
         }
 
-        /// [`declare_relation_target`] with explicit options.
+        /// [`declare_relation_target_with_schema`] with explicit options.
         pub fn declare_relation_target_with_options(
             ctx: &$crate::ctx::Ctx,
             graph: &$crate::ContextKey<$graph>,
             relation_name: impl Into<String>,
             from_table: &TableTarget,
             to_table: &TableTarget,
+            schema: $crate::cypher_graph::TableSchema,
             options: $crate::statediff::ManagedTargetOptions,
         ) -> $crate::error::Result<RelationTarget> {
             Ok(RelationTarget(
@@ -1877,6 +2332,7 @@ macro_rules! graph_target_api {
                     relation_name,
                     &from_table.0,
                     &to_table.0,
+                    schema,
                     options,
                 )?,
             ))
@@ -1920,6 +2376,8 @@ mod tests {
         statements: Arc<std::sync::Mutex<Vec<String>>>,
         constraints: Arc<std::sync::Mutex<Vec<String>>>,
         param_calls: Arc<std::sync::Mutex<Vec<(String, CypherParams)>>>,
+        /// The number of statements of each `execute_batch` call.
+        batches: Arc<std::sync::Mutex<Vec<usize>>>,
     }
 
     impl RecordingGraph {
@@ -1929,6 +2387,7 @@ mod tests {
                 statements: Arc::new(std::sync::Mutex::new(Vec::new())),
                 constraints: Arc::new(std::sync::Mutex::new(Vec::new())),
                 param_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+                batches: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
         }
 
@@ -1944,6 +2403,10 @@ mod tests {
             self.param_calls.lock().unwrap().clone()
         }
 
+        fn batches(&self) -> Vec<usize> {
+            self.batches.lock().unwrap().clone()
+        }
+
         /// A host context providing this graph under [`RECORDING`].
         fn host_ctx(&self) -> Arc<ContextStore> {
             let mut store = ContextStore::default();
@@ -1953,6 +2416,24 @@ mod tests {
     }
 
     crate::context_key!(static RECORDING: RecordingGraph, key = "cypher_graph_test_recording");
+
+    // Registered like a connector's, so an app can declare recording targets.
+    #[linkme::distributed_slice(crate::target_state::STATIC_ROOT_PROVIDERS)]
+    static RECORDING_TABLE_PROVIDER: StaticRootProvider =
+        table_root_provider::<RecordingGraph>("cocoindex/test_recording/table");
+
+    /// An app whose environment provides `graph` under [`RECORDING`].
+    async fn recording_app(graph: &RecordingGraph, db: &std::path::Path) -> crate::App {
+        crate::Environment::builder()
+            .db_path(db)
+            .provide_key(&RECORDING, graph.clone())
+            .build()
+            .await
+            .unwrap()
+            .app("CypherGraphTest")
+            .await
+            .unwrap()
+    }
 
     fn meeting_table_key() -> StableKey {
         TableKey {
@@ -1970,9 +2451,7 @@ mod tests {
         }
 
         fn table_provider() -> &'static StaticRootProvider {
-            static PROVIDER: StaticRootProvider =
-                table_root_provider::<RecordingGraph>("cocoindex/test_recording/table");
-            &PROVIDER
+            &RECORDING_TABLE_PROVIDER
         }
 
         async fn execute(&self, cypher: &str) -> Result<()> {
@@ -1986,6 +2465,15 @@ mod tests {
                 .unwrap()
                 .push((cypher.to_string(), params.clone()));
             Ok(())
+        }
+
+        async fn execute_batch(&self, statements: &[CypherStatement]) -> Result<BatchOutcome> {
+            self.batches.lock().unwrap().push(statements.len());
+            for statement in statements {
+                self.execute_with_params(&statement.cypher, &statement.params)
+                    .await?;
+            }
+            Ok(BatchOutcome::Applied)
         }
 
         async fn execute_unique_constraint(
@@ -2003,6 +2491,19 @@ mod tests {
         }
     }
 
+    /// The `$rows` a recorded statement binds.
+    fn rows(params: &CypherParams) -> &[JsonValue] {
+        params["rows"].as_array().unwrap()
+    }
+
+    fn person_spec(id_type: &str) -> TableSpec {
+        TableSpec::table(
+            "Person".to_string(),
+            TableSchema::new([("id", ColumnDef::new(id_type))], "id").unwrap(),
+            crate::statediff::ManagedBy::System,
+        )
+    }
+
     #[cfg(feature = "falkordb")]
     #[test]
     fn cypher_literals_escape_strings() {
@@ -2018,11 +2519,6 @@ mod tests {
         fields.insert("id".to_string(), JsonValue::from("p1"));
         fields.insert("name".to_string(), JsonValue::from("O'Brien"));
         let action = RecordAction {
-            spec: TableSpec::table(
-                "Person".to_string(),
-                TableSchema::new([("id", ColumnDef::new("STRING"))], "id").unwrap(),
-                crate::statediff::ManagedBy::System,
-            ),
             record_id: KeyValue::Str("p1".to_string()),
             state: Some(RecordState {
                 fields,
@@ -2030,41 +2526,216 @@ mod tests {
             }),
         };
 
-        apply_record(&graph, &action).await.unwrap();
+        apply_records(&graph, &person_spec("STRING"), vec![action])
+            .await
+            .unwrap();
 
         let calls = graph.param_calls();
         assert_eq!(calls.len(), 1);
         let (cypher, params) = &calls[0];
-        assert_eq!(cypher, "MERGE (n:`Person` {`id`: $key}) SET n += $props");
+        assert_eq!(
+            cypher,
+            "UNWIND $rows AS row MERGE (n:`Person` {`id`: row.key}) SET n += row.props"
+        );
         // The injection-prone value travels as a param, never in the query text.
         assert!(!cypher.contains("O'Brien"));
-        assert_eq!(params["key"], JsonValue::from("p1"));
         // The primary key is stripped from the SET props.
-        assert_eq!(params["props"], serde_json::json!({ "name": "O'Brien" }));
+        assert_eq!(
+            rows(params),
+            [serde_json::json!({ "key": "p1", "props": { "name": "O'Brien" } })]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_batch_of_records_takes_one_statement_per_shape_per_thousand() {
+        // Python applies a batch in transactions of at most 1,000 actions;
+        // each transaction holds one `UNWIND` statement per statement shape.
+        let graph = RecordingGraph::new("neo4j");
+        let upsert = |i: i64| RecordAction {
+            record_id: KeyValue::Int(i),
+            state: Some(RecordState {
+                fields: Map::from_iter([("n".to_string(), JsonValue::from(i))]),
+                relation: None,
+            }),
+        };
+        let delete = |i: i64| RecordAction {
+            record_id: KeyValue::Int(i),
+            state: None,
+        };
+        // Deletes interleaved with upserts: the batch applies upserts first.
+        let actions = (0..1500)
+            .map(|i| if i % 5 == 0 { delete(i) } else { upsert(i) })
+            .collect::<Vec<_>>();
+
+        apply_records(&graph, &person_spec("INTEGER"), actions)
+            .await
+            .unwrap();
+
+        // 1,200 upserts, then 300 deletes: two transactions, the second holding
+        // both shapes.
+        assert_eq!(graph.batches(), vec![1, 2]);
+        let calls = graph.param_calls();
+        let shapes = calls
+            .iter()
+            .map(|(cypher, params)| (cypher.as_str(), rows(params).len()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shapes,
+            vec![
+                (
+                    "UNWIND $rows AS row MERGE (n:`Person` {`id`: row.key}) SET n += row.props",
+                    1000
+                ),
+                (
+                    "UNWIND $rows AS row MERGE (n:`Person` {`id`: row.key}) SET n += row.props",
+                    200
+                ),
+                (
+                    "UNWIND $rows AS row MATCH (n:`Person` {`id`: row.key}) DETACH DELETE n",
+                    300
+                ),
+            ]
+        );
+        assert_eq!(rows(&calls[0].1)[0]["key"], JsonValue::from(1));
+        assert_eq!(rows(&calls[2].1)[0]["key"], JsonValue::from(0));
+    }
+
+    #[derive(Clone)]
+    struct MemoryLimitedGraph {
+        inner: RecordingGraph,
+        max_rows: usize,
+    }
+
+    #[async_trait]
+    impl CypherExecutor for MemoryLimitedGraph {
+        fn dialect(&self) -> &'static str {
+            "neo4j"
+        }
+
+        fn table_provider() -> &'static StaticRootProvider {
+            static PROVIDER: StaticRootProvider =
+                table_root_provider::<MemoryLimitedGraph>("cocoindex/test_memory_limited/table");
+            &PROVIDER
+        }
+
+        async fn execute(&self, cypher: &str) -> Result<()> {
+            self.inner.execute(cypher).await
+        }
+
+        async fn execute_with_params(&self, cypher: &str, params: &CypherParams) -> Result<()> {
+            self.inner.execute_with_params(cypher, params).await
+        }
+
+        async fn execute_batch(&self, statements: &[CypherStatement]) -> Result<BatchOutcome> {
+            let total: usize = statements.iter().map(|s| rows(&s.params).len()).sum();
+            if total > self.max_rows {
+                return Ok(BatchOutcome::OverMemoryLimit(Error::engine("too large")));
+            }
+            self.inner.execute_batch(statements).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chunk_over_the_memory_limit_is_split_in_two() {
+        let graph = MemoryLimitedGraph {
+            inner: RecordingGraph::new("neo4j"),
+            max_rows: 3,
+        };
+        let actions = (0..10)
+            .map(|i| RecordAction {
+                record_id: KeyValue::Int(i),
+                state: Some(RecordState {
+                    fields: Map::new(),
+                    relation: None,
+                }),
+            })
+            .collect();
+
+        apply_records(&graph, &person_spec("INTEGER"), actions)
+            .await
+            .unwrap();
+
+        // 10 → 5 + 5 → (2 + 3) + (2 + 3): every row lands exactly once, in order.
+        assert_eq!(graph.inner.batches(), vec![1, 1, 1, 1]);
+        let keys = graph
+            .inner
+            .param_calls()
+            .iter()
+            .flat_map(|(_, params)| rows(params).iter().map(|row| row["key"].clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(keys, (0..10).map(JsonValue::from).collect::<Vec<_>>());
+
+        // A single record over the limit has nothing left to split: it fails.
+        let graph = MemoryLimitedGraph {
+            inner: RecordingGraph::new("neo4j"),
+            max_rows: 0,
+        };
+        let action = RecordAction {
+            record_id: KeyValue::Int(1),
+            state: None,
+        };
+        let err = apply_records(&graph, &person_spec("INTEGER"), vec![action])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    #[test]
+    fn column_type_override_replaces_one_derived_column() {
+        let schema = TableSchema::new(
+            [
+                ("id", ColumnDef::new("STRING")),
+                ("location", ColumnDef::new("STRING").nullable()),
+            ],
+            "id",
+        )
+        .unwrap()
+        .with_column_type("location", "POINT")
+        .unwrap();
+        assert_eq!(
+            schema,
+            TableSchema::new(
+                [
+                    ("id", ColumnDef::new("STRING")),
+                    ("location", ColumnDef::new("POINT").nullable()),
+                ],
+                "id",
+            )
+            .unwrap()
+        );
+
+        let err = TableSchema::new([("id", ColumnDef::new("STRING"))], "id")
+            .unwrap()
+            .with_column_type("missing", "POINT")
+            .unwrap_err();
+        assert!(err.to_string().contains("\"missing\""), "{err}");
+        assert!(
+            TableSchema::schemaless("id")
+                .unwrap()
+                .with_column_type("id", "INTEGER")
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn node_record_delete_binds_key_param() {
         let graph = RecordingGraph::new("neo4j");
         let action = RecordAction {
-            spec: TableSpec::table(
-                "Person".to_string(),
-                TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap(),
-                crate::statediff::ManagedBy::System,
-            ),
             record_id: KeyValue::Int(42),
             state: None,
         };
 
-        apply_record(&graph, &action).await.unwrap();
+        apply_records(&graph, &person_spec("INTEGER"), vec![action])
+            .await
+            .unwrap();
 
         let calls = graph.param_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0].0,
-            "MATCH (n:`Person` {`id`: $key}) DETACH DELETE n"
+            "UNWIND $rows AS row MATCH (n:`Person` {`id`: row.key}) DETACH DELETE n"
         );
-        assert_eq!(calls[0].1["key"], JsonValue::from(42));
+        assert_eq!(rows(&calls[0].1), [serde_json::json!({ "key": 42 })]);
     }
 
     #[tokio::test]
@@ -2074,13 +2745,14 @@ mod tests {
             table_name: name.to_string(),
             primary_key: "id".to_string(),
         };
+        let spec = TableSpec::relation(
+            "ATTENDED".to_string(),
+            endpoint("Person"),
+            endpoint("Event"),
+            TableSchema::schemaless("id").unwrap(),
+            crate::statediff::ManagedBy::System,
+        );
         let action = RecordAction {
-            spec: TableSpec::relation(
-                "ATTENDED".to_string(),
-                endpoint("Person"),
-                endpoint("Event"),
-                crate::statediff::ManagedBy::System,
-            ),
             record_id: KeyValue::Str("rel-1".to_string()),
             state: Some(RecordState {
                 fields: Map::new(),
@@ -2093,19 +2765,23 @@ mod tests {
             }),
         };
 
-        apply_record(&graph, &action).await.unwrap();
+        apply_records(&graph, &spec, vec![action]).await.unwrap();
 
         let calls = graph.param_calls();
         assert_eq!(calls.len(), 1);
         let (cypher, params) = &calls[0];
         assert_eq!(
             cypher,
-            "MERGE (s:`Person` {`id`: $from_id}) MERGE (t:`Event` {`id`: $to_id}) \
-             MERGE (s)-[r:`ATTENDED` {`id`: $rel_id}]->(t)"
+            "UNWIND $rows AS row \
+             MERGE (s:`Person` {`id`: row.from_id}) MERGE (t:`Event` {`id`: row.to_id}) \
+             WITH s, t, row OPTIONAL MATCH (a)-[o:`ATTENDED` {`id`: row.rel_id}]->(b) WHERE a <> s OR b <> t \
+             DELETE o WITH DISTINCT s, t, row \
+             MERGE (s)-[r:`ATTENDED` {`id`: row.rel_id}]->(t) SET r += row.props"
         );
-        assert_eq!(params["from_id"], JsonValue::from("p1"));
-        assert_eq!(params["to_id"], JsonValue::from(9));
-        assert_eq!(params["rel_id"], JsonValue::from("rel-1"));
+        assert_eq!(
+            rows(params),
+            [serde_json::json!({ "from_id": "p1", "to_id": 9, "rel_id": "rel-1", "props": {} })]
+        );
     }
 
     #[test]
@@ -2290,6 +2966,7 @@ mod tests {
             "ATTENDED".to_string(),
             endpoint.clone(),
             endpoint,
+            TableSchema::schemaless("id").unwrap(),
             crate::statediff::ManagedBy::System,
         );
         let graph = RecordingGraph::new("neo4j");
@@ -2447,6 +3124,7 @@ mod tests {
             "ATTENDED".to_string(),
             endpoint.clone(),
             endpoint,
+            TableSchema::schemaless("id").unwrap(),
             crate::statediff::ManagedBy::System,
         );
         let graph = RecordingGraph::new("falkordb");
@@ -2580,5 +3258,509 @@ mod tests {
             )
             .unwrap();
         assert!(out.is_none());
+    }
+
+    #[tokio::test]
+    async fn schemaless_table_writes_records_as_they_serialize() {
+        let graph = RecordingGraph::new("neo4j");
+        let tmp = tempfile::tempdir().unwrap();
+        let app = recording_app(&graph, tmp.path()).await;
+
+        app.run(|ctx| async move {
+            let people = mount_table_target_with_options(
+                &ctx,
+                &RECORDING,
+                "Person",
+                TableSchema::schemaless("email")?,
+                ManagedTargetOptions::default(),
+            )
+            .await?;
+            people.declare_record(
+                &ctx,
+                "a@x.io",
+                &serde_json::json!({ "email": "a@x.io", "name": "alice", "age": 30 }),
+            )
+        })
+        .await
+        .unwrap();
+
+        // The table is keyed by the schemaless schema's primary key.
+        assert_eq!(
+            graph.statements(),
+            vec![
+                "CREATE CONSTRAINT `coco_uniq_Person__email` IF NOT EXISTS FOR (n:`Person`) REQUIRE n.`email` IS UNIQUE",
+            ]
+        );
+        let calls = graph.param_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].0,
+            "UNWIND $rows AS row MERGE (n:`Person` {`email`: row.key}) SET n += row.props"
+        );
+        assert_eq!(
+            rows(&calls[0].1)[0]["props"],
+            serde_json::json!({ "name": "alice", "age": 30 })
+        );
+    }
+
+    #[tokio::test]
+    async fn declaring_a_schema_for_a_schemaless_table_keeps_the_table() {
+        let schemaless = TableSpec::table(
+            "Meeting".to_string(),
+            TableSchema::schemaless("id").unwrap(),
+            crate::statediff::ManagedBy::System,
+        );
+        let with_schema = TableSpec::table(
+            "Meeting".to_string(),
+            TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap(),
+            crate::statediff::ManagedBy::System,
+        );
+        let handler = TableHandler::<RecordingGraph>::default();
+
+        let out = handler
+            .reconcile(
+                meeting_table_key(),
+                Some(with_schema),
+                vec![MutualTrackingRecord::new(
+                    schemaless,
+                    crate::statediff::ManagedBy::System,
+                )],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+
+        // Same MERGE key: the records re-upsert, nothing is rebuilt.
+        assert!(matches!(
+            out.action,
+            TargetAction::Update(TableAction {
+                op: TableOp::Ensure(_),
+                ..
+            })
+        ));
+        assert_eq!(
+            out.child_invalidation,
+            Some(crate::target_state::TargetChildInvalidation::Lossy)
+        );
+    }
+
+    /// Mounts `Person` and a `KNOWS` relation with `relation_schema`, then
+    /// declares one relation from `a` to `b` carrying `record`.
+    async fn run_knows_relation(
+        graph: &RecordingGraph,
+        relation_schema: TableSchema,
+        record: JsonValue,
+    ) -> Result<()> {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = recording_app(graph, tmp.path()).await;
+        app.run(move |ctx| {
+            let relation_schema = relation_schema.clone();
+            let record = record.clone();
+            async move {
+                let options = ManagedTargetOptions::default;
+                let people = mount_table_target_with_options(
+                    &ctx,
+                    &RECORDING,
+                    "Person",
+                    TableSchema::schemaless("id")?,
+                    options(),
+                )
+                .await?;
+                let knows = mount_relation_target_with_options(
+                    &ctx,
+                    &RECORDING,
+                    "KNOWS",
+                    &people,
+                    &people,
+                    relation_schema,
+                    options(),
+                )
+                .await?;
+                knows.declare_relation_record(&ctx, "a", "b", &record)
+            }
+        })
+        .await
+        .map(|_| ())
+    }
+
+    #[tokio::test]
+    async fn relation_record_is_keyed_by_its_primary_key() {
+        let graph = RecordingGraph::new("neo4j");
+        let schema = TableSchema::new(
+            [
+                ("edge_id", ColumnDef::new("STRING")),
+                ("since", ColumnDef::new("INTEGER")),
+            ],
+            "edge_id",
+        )
+        .unwrap();
+
+        run_knows_relation(
+            &graph,
+            schema,
+            serde_json::json!({ "edge_id": "e1", "since": 2020 }),
+        )
+        .await
+        .unwrap();
+
+        assert!(graph.statements().contains(
+            &"CREATE INDEX `coco_idx_rel_KNOWS__edge_id` IF NOT EXISTS FOR ()-[r:`KNOWS`]-() ON (r.`edge_id`)"
+                .to_string()
+        ));
+        let calls = graph.param_calls();
+        assert_eq!(calls.len(), 1);
+        let (cypher, params) = &calls[0];
+        assert_eq!(
+            cypher,
+            "UNWIND $rows AS row \
+             MERGE (s:`Person` {`id`: row.from_id}) MERGE (t:`Person` {`id`: row.to_id}) \
+             WITH s, t, row OPTIONAL MATCH (a)-[o:`KNOWS` {`edge_id`: row.rel_id}]->(b) WHERE a <> s OR b <> t \
+             DELETE o WITH DISTINCT s, t, row \
+             MERGE (s)-[r:`KNOWS` {`edge_id`: row.rel_id}]->(t) SET r += row.props"
+        );
+        // The record's key identifies the relationship and is not a property
+        // to set.
+        let row = &rows(params)[0];
+        assert_eq!(row["rel_id"], JsonValue::from("e1"));
+        assert_eq!(row["props"], serde_json::json!({ "since": 2020 }));
+    }
+
+    #[tokio::test]
+    async fn relation_record_without_its_primary_key_gets_a_derived_id() {
+        let graph = RecordingGraph::new("neo4j");
+
+        run_knows_relation(
+            &graph,
+            TableSchema::schemaless("edge_id").unwrap(),
+            serde_json::json!({ "since": 2020 }),
+        )
+        .await
+        .unwrap();
+
+        let calls = graph.param_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].0.contains("{`edge_id`: row.rel_id}"),
+            "{}",
+            calls[0].0
+        );
+        assert_eq!(
+            rows(&calls[0].1)[0]["rel_id"],
+            JsonValue::from(relation_key("Person", "a", "Person", "b"))
+        );
+    }
+
+    #[tokio::test]
+    async fn relation_record_rejects_a_primary_key_that_is_not_a_scalar_id() {
+        let graph = RecordingGraph::new("neo4j");
+
+        let err = run_knows_relation(
+            &graph,
+            TableSchema::schemaless("id").unwrap(),
+            serde_json::json!({ "id": [1, 2] }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("must be a string or an integer"), "{err}");
+        assert!(graph.param_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn relation_record_delete_matches_its_primary_key() {
+        let graph = RecordingGraph::new("neo4j");
+        let endpoint = TableEndpoint {
+            table_name: "Person".to_string(),
+            primary_key: "id".to_string(),
+        };
+        let spec = TableSpec::relation(
+            "KNOWS".to_string(),
+            endpoint.clone(),
+            endpoint,
+            TableSchema::schemaless("edge_id").unwrap(),
+            crate::statediff::ManagedBy::System,
+        );
+        let action = RecordAction {
+            record_id: KeyValue::Int(7),
+            state: None,
+        };
+
+        apply_records(&graph, &spec, vec![action]).await.unwrap();
+
+        let calls = graph.param_calls();
+        assert_eq!(
+            calls[0].0,
+            "UNWIND $rows AS row MATCH ()-[r:`KNOWS` {`edge_id`: row.rel_id}]->() DELETE r"
+        );
+        assert_eq!(rows(&calls[0].1), [serde_json::json!({ "rel_id": 7 })]);
+    }
+
+    /// Runs an app that mounts `Doc` and declares one vector index per entry
+    /// of `indexes` (`(name, field)`; `None` takes the default name).
+    async fn run_vector_indexes(
+        app: &crate::App,
+        indexes: &'static [(Option<&'static str>, &'static str)],
+    ) -> Result<()> {
+        app.run(move |ctx| async move {
+            let docs = mount_table_target_with_options(
+                &ctx,
+                &RECORDING,
+                "Doc",
+                TableSchema::schemaless("id")?,
+                ManagedTargetOptions::default(),
+            )
+            .await?;
+            for (name, field) in indexes {
+                docs.declare_vector_index(&ctx, *name, field, 3, VectorMetric::Cosine)?;
+            }
+            Ok(())
+        })
+        .await
+        .map(|_| ())
+    }
+
+    /// A handle's memo identity is its stable key: the graph key and the name,
+    /// and not the schema or the runtime providers.
+    #[tokio::test]
+    async fn a_handle_serializes_to_its_stable_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let graph = RecordingGraph::new("neo4j");
+        let app = recording_app(&graph, tmp.path()).await;
+        app.run(|ctx| async move {
+            let options = ManagedTargetOptions::default;
+            let person = mount_table_target_with_options(
+                &ctx,
+                &RECORDING,
+                "Person",
+                TableSchema::schemaless("id")?,
+                options(),
+            )
+            .await?;
+            let knows = mount_relation_target_with_options(
+                &ctx,
+                &RECORDING,
+                "KNOWS",
+                &person,
+                &person,
+                TableSchema::schemaless("id")?,
+                options(),
+            )
+            .await?;
+            let graph_key = RECORDING.name();
+            assert_eq!(
+                serde_json::to_value(&person).unwrap(),
+                serde_json::json!({ "graph_key": graph_key, "table_name": "Person" }),
+            );
+            assert_eq!(
+                serde_json::to_value(&knows).unwrap(),
+                serde_json::json!({ "graph_key": graph_key, "relation_name": "KNOWS" }),
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    fn vector_index_statements(graph: &RecordingGraph) -> Vec<String> {
+        graph
+            .statements()
+            .into_iter()
+            .filter(|s| s.contains("coco_vec_"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn renaming_a_vector_index_rebuilds_it_once() {
+        let graph = RecordingGraph::new("neo4j");
+        let tmp = tempfile::tempdir().unwrap();
+        let app = recording_app(&graph, tmp.path()).await;
+        let create = "CREATE VECTOR INDEX `coco_vec_Doc__embedding` IF NOT EXISTS FOR (n:`Doc`) ON n.`embedding` \
+                      OPTIONS { indexConfig: { `vector.dimensions`: 3, `vector.similarity_function`: 'cosine' } }";
+        let drop = "DROP INDEX `coco_vec_Doc__embedding` IF EXISTS";
+
+        run_vector_indexes(&app, &[(None, "embedding")])
+            .await
+            .unwrap();
+        assert_eq!(vector_index_statements(&graph), vec![drop, create]);
+
+        // The same declaration under an explicit name: a create under the new
+        // name and a drop under the old one, both of one database index. The
+        // index is recreated and the old name's drop is skipped.
+        run_vector_indexes(&app, &[(Some("doc_embedding"), "embedding")])
+            .await
+            .unwrap();
+        assert_eq!(
+            vector_index_statements(&graph),
+            vec![drop, create, drop, create]
+        );
+
+        // No longer declared: the index is dropped.
+        run_vector_indexes(&app, &[]).await.unwrap();
+        assert_eq!(
+            vector_index_statements(&graph),
+            vec![drop, create, drop, create, drop]
+        );
+    }
+
+    #[tokio::test]
+    async fn repointing_a_named_vector_index_drops_the_old_field_index() {
+        let graph = RecordingGraph::new("neo4j");
+        let tmp = tempfile::tempdir().unwrap();
+        let app = recording_app(&graph, tmp.path()).await;
+        let drop_a = "DROP INDEX `coco_vec_Doc__a` IF EXISTS";
+        let drop_b = "DROP INDEX `coco_vec_Doc__b` IF EXISTS";
+        let is_create = |s: &String, field: &str| {
+            s.starts_with(&format!("CREATE VECTOR INDEX `coco_vec_Doc__{field}`"))
+        };
+
+        run_vector_indexes(&app, &[(Some("emb"), "a")])
+            .await
+            .unwrap();
+        let before = vector_index_statements(&graph).len();
+
+        // One name, another field: the index on `a` is dropped and not
+        // recreated; the index on `b` is created.
+        run_vector_indexes(&app, &[(Some("emb"), "b")])
+            .await
+            .unwrap();
+        let statements = vector_index_statements(&graph);
+        let repoint = &statements[before..];
+        assert_eq!(repoint.len(), 3, "{repoint:?}");
+        assert_eq!(repoint[0], drop_a);
+        assert_eq!(repoint[1], drop_b);
+        assert!(is_create(&repoint[2], "b"), "{repoint:?}");
+
+        // `emb` moves on to `c` in the run where `other` takes `b`: another
+        // name recreates the released `b`, so it is not dropped for `emb`.
+        let before = statements.len();
+        run_vector_indexes(&app, &[(Some("emb"), "c"), (Some("other"), "b")])
+            .await
+            .unwrap();
+        let statements = vector_index_statements(&graph);
+        let takeover = &statements[before..];
+        assert_eq!(
+            takeover.iter().filter(|s| **s == drop_b).count(),
+            1,
+            "only the drop that precedes the create of `b`: {takeover:?}"
+        );
+        assert_eq!(
+            takeover.iter().filter(|s| is_create(s, "b")).count(),
+            1,
+            "{takeover:?}"
+        );
+        assert!(takeover.iter().any(|s| is_create(s, "c")), "{takeover:?}");
+    }
+
+    #[tokio::test]
+    async fn relation_endpoint_change_under_an_explicit_key_updates_one_edge() {
+        let graph = RecordingGraph::new("neo4j");
+        let tmp = tempfile::tempdir().unwrap();
+        let app = recording_app(&graph, tmp.path()).await;
+
+        // (a, b, e1), then (a, c, e1): one key, so one update of one edge.
+        for to_id in ["b", "c"] {
+            app.run(move |ctx| async move {
+                let options = ManagedTargetOptions::default;
+                let people = mount_table_target_with_options(
+                    &ctx,
+                    &RECORDING,
+                    "Person",
+                    TableSchema::schemaless("id")?,
+                    options(),
+                )
+                .await?;
+                let knows = mount_relation_target_with_options(
+                    &ctx,
+                    &RECORDING,
+                    "KNOWS",
+                    &people,
+                    &people,
+                    TableSchema::schemaless("edge_id")?,
+                    options(),
+                )
+                .await?;
+                knows.declare_relation_record(
+                    &ctx,
+                    "a",
+                    to_id,
+                    &serde_json::json!({ "edge_id": "e1" }),
+                )
+            })
+            .await
+            .unwrap();
+        }
+
+        let calls = graph.param_calls();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        let (cypher, params) = &calls[1];
+        // The upsert removes the edge keyed `e1` between other endpoints
+        // before it merges the edge between the new ones; nothing deletes by
+        // key alone, which would also remove the new edge.
+        assert!(
+            cypher.contains(
+                "OPTIONAL MATCH (a)-[o:`KNOWS` {`edge_id`: row.rel_id}]->(b) WHERE a <> s OR b <> t DELETE o"
+            ),
+            "{cypher}"
+        );
+        assert!(
+            cypher
+                .ends_with("MERGE (s)-[r:`KNOWS` {`edge_id`: row.rel_id}]->(t) SET r += row.props"),
+            "{cypher}"
+        );
+        let row = &rows(params)[0];
+        assert_eq!(row["rel_id"], JsonValue::from("e1"));
+        assert_eq!(row["to_id"], JsonValue::from("c"));
+    }
+
+    #[tokio::test]
+    async fn one_field_takes_one_vector_index() {
+        let graph = RecordingGraph::new("neo4j");
+        let tmp = tempfile::tempdir().unwrap();
+        let app = recording_app(&graph, tmp.path()).await;
+
+        let err = run_vector_indexes(&app, &[(Some("a"), "embedding"), (Some("b"), "embedding")])
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("\"a\" and \"b\" both index Doc.embedding"),
+            "{err}"
+        );
+        assert!(vector_index_statements(&graph).is_empty());
+    }
+
+    #[tokio::test]
+    async fn vector_index_rejects_a_zero_dimension_and_a_bad_name() {
+        let graph = RecordingGraph::new("neo4j");
+        let tmp = tempfile::tempdir().unwrap();
+        let app = recording_app(&graph, tmp.path()).await;
+
+        let err = app
+            .run(|ctx| async move {
+                let docs = mount_table_target_with_options(
+                    &ctx,
+                    &RECORDING,
+                    "Doc",
+                    TableSchema::schemaless("id")?,
+                    ManagedTargetOptions::default(),
+                )
+                .await?;
+                let bad_name =
+                    docs.declare_vector_index(&ctx, Some("no-dash"), "v", 3, VectorMetric::Cosine);
+                assert!(
+                    bad_name
+                        .unwrap_err()
+                        .to_string()
+                        .contains("vector index name")
+                );
+                docs.declare_vector_index(&ctx, None, "v", 0, VectorMetric::Cosine)
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("Invalid vector dimension: 0"), "{err}");
     }
 }

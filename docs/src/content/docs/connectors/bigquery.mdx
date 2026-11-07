@@ -5,11 +5,29 @@ description: >
   Write CocoIndex target rows into BigQuery tables with managed DDL, MERGE
   upserts, deletes, and automatic mapping from Python row types.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 The `bigquery` connector provides target state APIs for writing rows to BigQuery tables. CocoIndex tracks the rows that should exist and applies table creation, upserts, updates, and deletes incrementally.
+
+{/* Rust: examples/rust/bigquery_target/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import bigquery
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::bigquery::{self, BigQueryConfig, BigQueryConnection, TableSchema};
+```
+
+The Rust SDK needs the `bigquery` Cargo feature of the `cocoindex` crate. The Rust connector speaks the BigQuery v2 REST API directly.
+
+</Fragment>
+</LangTabs>
 
 :::note[Install]
 Install the optional BigQuery dependency before using this connector:
@@ -26,6 +44,10 @@ Create a `ContextKey[bigquery.ConnectionConfig]` to identify the BigQuery connec
 :::note
 The key name is load-bearing across runs. It is the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
+
+{/* Rust: examples/rust/bigquery_target/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import os
@@ -49,9 +71,41 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     yield
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::bigquery::{BigQueryConfig, BigQueryConnection};
+
+cocoindex::context_key!(static BIGQUERY: BigQueryConnection, key = "bigquery_demo");
+
+let optional = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+let conn = BigQueryConnection::connect(BigQueryConfig {
+    project: optional("BIGQUERY_PROJECT"),
+    credentials_path: optional("GOOGLE_APPLICATION_CREDENTIALS").map(Into::into),
+    location: optional("BIGQUERY_LOCATION"),
+})?;
+let app = cocoindex::Environment::builder()
+    .db_path(".cocoindex_db")
+    .provide_key(&BIGQUERY, conn)
+    .build()
+    .await?
+    .app("BigQueryTarget")
+    .await?;
+```
+
+`BigQueryConnection::connect(config)?` resolves the credentials and makes no request until the first query. The connection is `Clone`; `conn.query(sql).await?` runs a query and returns its rows as JSON objects.
+
+</Fragment>
+</LangTabs>
+
 If `credentials_path` is omitted, the Google client uses Application Default Credentials.
 
 ### ConnectionConfig
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/bigquery.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @dataclass(frozen=True)
@@ -60,6 +114,22 @@ class ConnectionConfig:
     credentials_path: str | None = None
     location: str | None = None
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub struct BigQueryConfig {
+    pub project: Option<String>,
+    pub credentials_path: Option<PathBuf>,
+    pub location: Option<String>,
+}
+```
+
+`BigQueryConfig` implements `Default`. When `project` is unset, the `GOOGLE_CLOUD_PROJECT` / `GCLOUD_PROJECT` environment variable, then the credentials file's project, is used.
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -75,6 +145,10 @@ The `bigquery` connector provides target state APIs for writing rows to tables.
 
 Declares a table as a target state. Returns a `TableTarget` for declaring rows.
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/bigquery.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def declare_table_target(
     db: ContextKey[ConnectionConfig],
@@ -86,6 +160,39 @@ def declare_table_target(
     managed_by: Literal["system", "user"] = "system",
 ) -> TableTarget[RowT, coco.PendingS]
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub async fn mount_table_target(
+    ctx: &Ctx,
+    conn: &ContextKey<BigQueryConnection>,
+    dataset: impl Into<String>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+) -> Result<TableTarget>
+
+pub async fn mount_table_target_with_options(
+    ctx: &Ctx,
+    conn: &ContextKey<BigQueryConnection>,
+    dataset: impl Into<String>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    options: BigQueryTableOptions,
+) -> Result<TableTarget>
+
+pub struct BigQueryTableOptions {
+    /// Project that owns the table. `None` means the connection's project.
+    pub project: Option<String>,
+    pub managed_by: ManagedBy,
+}
+```
+
+`declare_table_target` and `declare_table_target_with_options` take the same arguments and declare the table in the current component. `ManagedBy::User` is Python's `managed_by="user"`.
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -110,6 +217,10 @@ CocoIndex identifies a table by its key: the `db` key, `project`, `dataset` and 
 
 Once a `TableTarget` is resolved, declare rows to be upserted:
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/bigquery.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def TableTarget.declare_row(
     self,
@@ -118,6 +229,18 @@ def TableTarget.declare_row(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn TableTarget::declare_row<R: serde::Serialize>(&self, ctx: &Ctx, row: &R) -> Result<()>
+```
+
+The row serializes to an object whose keys are column names; keys outside the schema are ignored.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `row` - A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
@@ -125,6 +248,10 @@ def TableTarget.declare_row(
 ## Table schema: from Python class
 
 Define the table structure using a Python class:
+
+{/* Rust: examples/rust/bigquery_target/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from dataclasses import dataclass
@@ -142,28 +269,59 @@ schema = await bigquery.TableSchema.from_class(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::prelude::*;
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
+
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct BigQueryOrder {
+    order_id: String,
+    customer: String,
+    quantity: i64,
+    unit_price: f64,
+    #[coco(json)]
+    attributes: JsonValue,
+}
+
+let schema = TableSchema::from_row::<BigQueryOrder>(["order_id"])?;
+```
+
+`TableSchema::from_row::<Row>(primary_key)` takes the primary-key columns as an iterator of names. A `serde_json::Value` field needs `#[coco(json)]`; a `Vec<T>`, map or nested struct maps to `JSON` on its own.
+
+</Fragment>
+</LangTabs>
+
 Python types are automatically mapped to BigQuery column types:
 
-| Python Type | BigQuery Type |
-|-------------|---------------|
-| `bool` | `BOOL` |
-| `int` | `INT64` |
-| `float` | `FLOAT64` |
-| `decimal.Decimal` | `NUMERIC` |
-| `str` | `STRING` |
-| `bytes` | `BYTES` |
-| `uuid.UUID` | `STRING` |
-| `datetime.date` | `DATE` |
-| `datetime.time` | `TIME` |
-| `datetime.datetime` | `TIMESTAMP` |
-| `datetime.timedelta` | `FLOAT64` |
-| `list`, `dict`, nested structs | `JSON` |
+| Python Type | Rust Type | BigQuery Type |
+|-------------|-----------|---------------|
+| `bool` | `bool` | `BOOL` |
+| `int` | `i16`, `i32`, `i64` (and the unsigned widths) | `INT64` |
+| `float` | `f32`, `f64` | `FLOAT64` |
+| `decimal.Decimal` | `rust_decimal::Decimal` | `NUMERIC` |
+| `str` | `String` | `STRING` |
+| `bytes` | `Vec<u8>` | `BYTES` |
+| `uuid.UUID` | `uuid::Uuid` | `STRING` |
+| `datetime.date` | `chrono::NaiveDate` | `DATE` |
+| `datetime.time` | `chrono::NaiveTime` | `TIME` |
+| `datetime.datetime` | `chrono::DateTime`, `chrono::NaiveDateTime` | `TIMESTAMP` |
+| `datetime.timedelta` | `std::time::Duration` | `FLOAT64` |
+| `list`, `dict`, nested structs | other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `JSON` |
+| | `#[coco(vector)] Vec<f32>` | `ARRAY<FLOAT64>` |
 
-`JSON` values are JSON-serialized and written with `PARSE_JSON`.
+`JSON` values are JSON-serialized and written with `PARSE_JSON`. An `Option<T>` field is a nullable column; every other Rust field is `NOT NULL`.
 
 ### BigQueryType
 
 Use `BigQueryType` to specify a custom BigQuery type and optional encoder:
+
+{/* Rust: rust/sdk/cocoindex/tests/bigquery_target.rs; #[coco(type)] from rust/sdk/cocoindex_macros/src/lib.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from dataclasses import dataclass
@@ -176,6 +334,24 @@ class ProductRow:
     id: Annotated[int, BigQueryType("NUMERIC")]
     embedding: Annotated[list[float], BigQueryType("ARRAY<FLOAT64>")]
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[derive(Serialize, SchemaFields)]
+struct ProductRow {
+    #[coco(type = "NUMERIC")]
+    id: i64,
+    #[coco(type = "ARRAY<FLOAT64>")]
+    embedding: Vec<f64>,
+}
+```
+
+`#[coco(type = "…")]` sets the column type verbatim. The Rust SDK has no per-column `encoder`: a value is written as it serializes with serde. Explicit columns are also possible: `TableSchema::new([("id", ColumnDef::new("INT64").not_null()), ("payload", ColumnDef::new("JSON").parse_json())], ["id"])?`. A Rust `ColumnDef` is nullable unless `.not_null()` is called, and `.parse_json()` writes the value through `PARSE_JSON`.
+
+</Fragment>
+</LangTabs>
 
 You can also pass `column_overrides` when constructing the schema:
 
@@ -190,6 +366,10 @@ schema = await bigquery.TableSchema.from_class(
 ```
 
 ## Example
+
+{/* Rust: examples/rust/bigquery_target/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from dataclasses import dataclass
@@ -217,7 +397,31 @@ async def declare_products(rows: list[ProductRow]) -> None:
         table.declare_row(row=row)
 ```
 
-See `examples/bigquery_target` for a runnable project.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let schema = TableSchema::from_row::<BigQueryOrder>(["order_id"])?;
+let table = bigquery::mount_table_target(
+    &ctx,
+    &BIGQUERY,
+    "analytics",
+    "product_index",
+    schema,
+)
+.await?;
+let rows = use_mount_each!(orders, |order| process_order(ctx, order)).await?;
+for row in &rows {
+    table.declare_row(&ctx, row)?;
+}
+```
+
+To name the project that owns the table, use `mount_table_target_with_options` with `BigQueryTableOptions { project: Some("my-project".to_string()), ..Default::default() }`.
+
+</Fragment>
+</LangTabs>
+
+See `examples/bigquery_target` for a runnable project, and `examples/rust/bigquery_target` for the Rust one.
 
 ## Identifier handling
 

@@ -5,6 +5,8 @@ description: >
   trigger updates, configure the database path, and wire up lifespan-managed
   resources.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 :::note[Prerequisite]
 Read [Core Concepts](./core_concepts) for the App and source → transform → target-state model, with diagrams.
 :::
@@ -20,6 +22,10 @@ To create an App, provide:
 2. **A main function** — the entry point for your pipeline
 3. **Arguments** — any additional arguments to pass to the main function
 
+{/* Rust: examples/rust/text_embedding/src/main.rs, rust/sdk/SHOWCASE.md "Run apps with the `cocoindex` CLI" */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 import cocoindex as coco
 
@@ -34,11 +40,59 @@ app = coco.App(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::prelude::*;
+
+#[cocoindex::app(name = "MyPipeline")]
+async fn app_main(ctx: Ctx) -> Result<()> {
+    index(ctx, source_dir()).await
+}
+
+async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
+    // ... your pipeline logic ...
+    Ok(())
+}
+```
+
+In Rust, the main function takes the root component's `Ctx` by value and returns a `Result`. `#[cocoindex::app]` registers it under a name, so `Environment::from_registered` and the Rust CLI find it. The name is the function name unless you pass `name = "..."`. Arguments are not bound to the app: the registered function reads its inputs itself, and a closure passes them when your own code runs the app (see below).
+
+</Fragment>
+</LangTabs>
+
 You can also pass just a name string instead of `AppConfig`:
+
+{/* Rust: rust/sdk/SHOWCASE.md "Open and run an app" (verified against rust/sdk/cocoindex/src/app.rs) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 app = coco.App("MyPipeline", app_main, sourcedir=pathlib.Path("./data"))
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let app = App::open("MyPipeline", ".cocoindex_db").await?;
+```
+
+`App::open(name, db_path)` is short for `App::builder(name).db_path(db_path).build().await`. When the app needs shared resources, build an `Environment` and open the app from it:
+
+```rust
+let app = Environment::builder()
+    .db_path(".cocoindex_db")
+    .provide_key(&DB, database)
+    .build()
+    .await?
+    .app("MyPipeline")
+    .await?;
+```
+
+</Fragment>
+</LangTabs>
 
 :::tip
 The main function is usually async. See [How Sync and Async Work Together](./sdk_overview#how-sync-and-async-work-together) for details.
@@ -47,6 +101,10 @@ The main function is usually async. See [How Sync and Async Work Together](./sdk
 ## Updating an app
 
 Call `update()` to execute the pipeline. It returns an `UpdateHandle` that is also `Awaitable`, so the simplest usage stays the same:
+
+{/* Rust: rust/sdk/SHOWCASE.md "Run apps with the `cocoindex` CLI", examples/rust/text_embedding/src/main.rs, rust/sdk/cocoindex/tests/pipeline.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Async — await the result directly (backward-compatible)
@@ -58,11 +116,65 @@ result = await app.update()
 result = app.update_blocking()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// `run` returns the run's statistics.
+let stats = app.run(app_main).await?;
+println!("{stats}");
+
+// `update` returns the main function's value.
+let result = app.update(app_main).await?;
+
+// Arguments travel in a closure.
+let stats = app.run(move |ctx| index(ctx, dir)).await?;
+```
+
+```rust
+// Sync (blocking) API, outside a Tokio runtime
+let result = app.update_blocking(app_main)?;
+```
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `live` option keeps the app running after the initial scan so live components can continue watching for changes. See [Live Mode](./live_mode).
 - `report_to_stdout` option prints periodic progress updates during execution. Pass `True` for the default refresh interval, or a `timedelta` to set it.
 - `full_reprocess` option reprocesses everything, bypassing all memoization: every component **and** every memoized function re-executes, and all target states are re-applied even if unchanged. Mind the cost — this includes every paid external call (embedding and LLM APIs re-run for all content). To force re-running just one function's work, bump its [`version`](./function#version) instead.
+
+In Rust, these options are the fields of `UpdateOptions`: `live`, `report_to_stdout` (with `progress_refresh_interval`), `full_reprocess`, `preview` and `timeout`. Pass them to `app.update_with_options`, or to `app.start_update_with_options` for a handle:
+
+{/* Rust: rust/sdk/cocoindex/tests/fs_live.rs */}
+<LangTabs>
+<Fragment slot="python">
+
+```python
+handle = app.update(live=True)
+await handle.result()
+```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let handle = app.start_update_with_options(
+    UpdateOptions {
+        full_reprocess: false,
+        live: true,
+        ..UpdateOptions::default()
+    },
+    app_main,
+)?;
+handle.result().await?;
+```
+
+`app.preview(app_main).await?` runs with `preview: true` and returns the planned `Vec<PreviewAction>` instead of applying them.
+
+</Fragment>
+</LangTabs>
 
 When you update an App, CocoIndex:
 
@@ -72,7 +184,7 @@ When you update an App, CocoIndex:
 
 Given the same logic and inputs, updates are repeatable. When logic or inputs change, only the affected parts re-execute.
 
-To watch progress beyond the `report_to_stdout` flag, the `UpdateHandle` returned by `app.update()` also exposes stats programmatically — poll with `handle.stats()` or stream with `handle.watch()`. For those structured APIs, and for splitting a run into separately-reported scopes with `coco.stats_group()`, see [Progress monitoring](../advanced_topics/progress_monitoring).
+To watch progress beyond the `report_to_stdout` flag, the `UpdateHandle` returned by `app.update()` also exposes stats programmatically — poll with `handle.stats()` or stream with `handle.watch()`. For those structured APIs, and for splitting a run into separately-reported scopes with `coco.stats_group()`, see [Progress monitoring](../advanced_topics/progress_monitoring). In Rust, `app.start_update(f)` returns the `UpdateHandle`: poll with `handle.stats_snapshot()`, wait for a change with `handle.changed().await`, and take the value with `handle.result().await`.
 
 ## How an app runs
 
@@ -107,6 +219,10 @@ export COCOINDEX_DB=./cocoindex.db
 
 With `COCOINDEX_DB` set, you can create and run apps without any additional configuration:
 
+{/* Rust: examples/rust/text_embedding/src/main.rs; `COCOINDEX_DB` fallback verified in rust/sdk/cocoindex/src/app.rs `Environment::from_registered` */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 import cocoindex as coco
 
@@ -117,6 +233,21 @@ def app_main() -> None:
 app = coco.App("MyPipeline", app_main)
 app.update_blocking()  # Uses COCOINDEX_DB for storage
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let env = Environment::from_registered().await?;  // Uses COCOINDEX_DB when no lifespan sets db_path
+let app = env.app("MyPipeline").await?;
+let stats = app.run(app_main).await?;
+env.shutdown().await;
+```
+
+In Rust, `COCOINDEX_DB` applies to `Environment::from_registered()` and the Rust CLI. A plain `Environment::builder().build()` or `App::builder(name).build()` reads no environment variables: give it the path with `.db_path(..)`.
+
+</Fragment>
+</LangTabs>
 
 For details on what the internal database stores and how to tune its LMDB settings (the database grows automatically; `map_size` only sets where it starts), see [Internal Storage](../advanced_topics/internal_storage).
 
@@ -132,6 +263,10 @@ If you only need to set the database path, using the `COCOINDEX_DB` environment 
 
 Use the `@lifespan` decorator to register a lifespan function. By default, all apps share the same lifespan (unless you explicitly specify an app in a different [*Environment*](../advanced_topics/multiple_environments)). The function receives an `EnvironmentBuilder` for configuration and uses `yield` to separate setup from cleanup:
 
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 import pathlib
 from typing import AsyncIterator
@@ -146,6 +281,26 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     # Cleanup happens automatically when the context exits
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    let db = postgres::Database::connect(&database_url()).await?;
+    let pool = db.pool().clone();
+    Ok(builder
+        .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&DB, db)
+        .on_shutdown(move || async move { pool.close().await }))
+}
+```
+
+In Rust, the lifespan is an `async fn` that takes the `EnvironmentBuilder` and returns it. There is no `yield`: register cleanup with `builder.on_shutdown(..)`. Hooks run in reverse order when the environment shuts down. `Environment::from_registered()` and the Rust CLI run every registered lifespan before they open the state database.
+
+</Fragment>
+</LangTabs>
+
 Setting `db_path` in the lifespan takes precedence over the `COCOINDEX_DB` environment variable. If neither is provided, CocoIndex will raise an error.
 
 The lifespan function can be sync or async:
@@ -159,6 +314,8 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     yield
 ```
 
+A Rust lifespan is always an `async fn`.
+
 You can also use the lifespan to provide resources (like database connections) that processing components can access. See [Context](./context) for details on sharing resources across your pipeline.
 
 ### Explicit lifecycle control (optional)
@@ -166,6 +323,10 @@ You can also use the lifespan to provide resources (like database connections) t
 The lifespan runs automatically the first time any App updates — most users don't need to do anything beyond defining the lifespan and calling `app.update()`.
 
 If you need more explicit control (for example, to know when startup completes for health checks, or to explicitly trigger shutdown) you can manage the lifecycle directly:
+
+{/* Rust: rust/sdk/SHOWCASE.md "Run apps with the `cocoindex` CLI", verified against rust/sdk/cocoindex/tests/registered.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Async API
@@ -181,6 +342,26 @@ coco.start_blocking()   # Run lifespan setup
 coco.stop_blocking()    # Run lifespan cleanup
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::main]
+async fn main() -> Result<()> {
+    // `cocoindex ...` invocations are handled before this body runs.
+    let env = Environment::from_registered().await?;
+    let stats = env.app("MyApp").await?.run(app_main).await?;
+    println!("{stats}");
+    env.shutdown().await;
+    Ok(())
+}
+```
+
+In Rust, the lifecycle is always explicit: `Environment::from_registered().await?` runs the registered lifespans, and `env.shutdown().await` runs the `on_shutdown` hooks. `#[cocoindex::main]` builds the Tokio runtime and answers the Rust CLI before the body runs. A second `shutdown` is a no-op.
+
+</Fragment>
+</LangTabs>
+
 Or use the `runtime()` context manager, which supports both sync and async usage:
 
 ```python
@@ -194,6 +375,8 @@ async with coco.runtime():
 with coco.runtime():
     app.update_blocking()
 ```
+
+The Rust SDK has no `runtime()` context manager: call `env.shutdown().await` when the work is done.
 
 The same App can be retained and reused across sequential runtime lifecycles. After
 `stop()` returns (or a `runtime()` block exits), its next update or drop starts a new
@@ -214,13 +397,30 @@ in-flight operations is not supported.
 
 CocoIndex provides a CLI for managing your apps without writing additional code.
 
+For a Rust project, the `cocoindex` binary from `rust/cli` builds the crate and drives its binary. The crate's `main` must carry `#[cocoindex::main]`, and each app must carry `#[cocoindex::app]`. The CLI's app target is `[path][:app_name]`: a crate directory (default `.`), a `Cargo.toml`, or a built binary, with the app's name after a colon when the crate registers more than one app.
+
 ### Update an app
 
 Run your app once to sync all target states:
 
+{/* Rust: /tmp/coco-land-rust-cli-help.txt (`cocoindex update --help`) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```bash
 cocoindex update main.py
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```bash
+cocoindex update            # the crate in the current directory
+cocoindex update :MyApp     # one app of a crate that registers several
+```
+
+</Fragment>
+</LangTabs>
 
 This executes your pipeline and applies all declared target states to external systems. Add `--live` (or `-L`) to keep the app running and react to source changes continuously — see [Live Mode](./live_mode).
 
@@ -228,9 +428,25 @@ This executes your pipeline and applies all declared target states to external s
 
 Remove an app and revert all its target states:
 
+{/* Rust: /tmp/coco-land-rust-cli-help.txt (`cocoindex drop --help`); `App::drop_state` in rust/sdk/cocoindex/tests/registered.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```bash
 cocoindex drop main.py
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```bash
+cocoindex drop
+```
+
+From code, `app.drop_state().await?` does the same for one `App`.
+
+</Fragment>
+</LangTabs>
 
 This will delete all target states created by the app (e.g., drop tables, delete rows) and clear its internal state.
 

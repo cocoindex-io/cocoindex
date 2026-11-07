@@ -5,6 +5,8 @@ description: >
   Settings objects and separate db_paths — for multi-tenancy, library
   development, and testing. The CLI targets named environments via @env_name.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 By default, all CocoIndex apps share the same environment, which manages a shared database and context. For most use cases, this default behavior is sufficient. However, you can create multiple isolated environments when you need:
 
 - **Library development**: Libraries that depend on CocoIndex can use their own environment to avoid sharing state with other libraries or the application
@@ -16,12 +18,33 @@ By default, all CocoIndex apps share the same environment, which manages a share
 
 Create an explicit environment by providing `Settings` with a `db_path`:
 
+{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (Environment::builder), rust/sdk/cocoindex/src/app.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 import cocoindex as coco
 import pathlib
 
 env = coco.Environment(coco.Settings.from_env(db_path=pathlib.Path("./my_db.db")))
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::Environment;
+
+let env = Environment::builder()
+    .db_path("./my_db.db")
+    .build()
+    .await?;
+```
+
+An `Environment` built this way reads no environment variables. `Environment::from_registered()` is the path that runs the `#[cocoindex::lifespan]` functions and falls back to `COCOINDEX_DB`; it is what the `cocoindex` CLI uses.
+
+</Fragment>
+</LangTabs>
 
 You can optionally name the environment for easier identification:
 
@@ -32,11 +55,17 @@ env = coco.Environment(
 )
 ```
 
-`Settings` also accepts `db_settings` (a `coco.LmdbSettings` instance) for tuning the internal LMDB database. See [Internal Storage](./internal_storage#lmdb-tuning) for details.
+A Rust `Environment` has no name of its own: the name a handler sees in `ExceptionContext::env_name` is the app's name.
+
+`Settings` also accepts `db_settings` (a `coco.LmdbSettings` instance) for tuning the internal LMDB database. See [Internal Storage](./internal_storage#lmdb-tuning) for details. The Rust builder has `lmdb_max_dbs(..)` and `lmdb_map_size(..)` for the same settings.
 
 ## Associating Apps with an Environment
 
 Pass the environment to `AppConfig` when creating an app:
+
+{/* Rust: rust/sdk/cocoindex/src/app.rs (Environment::app), rust/sdk/SHOWCASE.md (verified) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 app = coco.App(
@@ -45,7 +74,19 @@ app = coco.App(
 )
 ```
 
-Apps that don't specify an environment use the default environment (configured via `@coco.lifespan` or the `COCOINDEX_DB` environment variable).
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let app = env.app("MyApp").await?;
+```
+
+Several apps can share one environment: each name is its own LMDB namespace, and they share the environment's provided resources. `App::open(name, db_path)` and `App::builder(name)` build a single-app environment for you.
+
+</Fragment>
+</LangTabs>
+
+Apps that don't specify an environment use the default environment (configured via `@coco.lifespan` or the `COCOINDEX_DB` environment variable). In Rust, there is no implicit default environment: an `App` always comes from an `Environment` you built, or from `Environment::from_registered()`.
 
 ## Closing an Environment
 
@@ -57,10 +98,27 @@ RuntimeError: the database at 'my_db.db' is already open in this process; close 
 
 Call `env.close()` once you're done with it to release the database without waiting for those references:
 
+{/* Rust: rust/sdk/cocoindex/tests/registered_nodb.rs (env.shutdown), rust/sdk/cocoindex/src/app.rs (Environment::shutdown) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 env.close()
 env = coco.Environment(coco.Settings.from_env(db_path=pathlib.Path("./my_db.db")))
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+env.shutdown().await;
+let env = Environment::builder().db_path("./my_db.db").build().await?;
+```
+
+`shutdown()` runs the `on_shutdown` hooks registered on the builder, most recently registered first, then closes the state db. Await every running update or drop before calling it.
+
+</Fragment>
+</LangTabs>
 
 `close()` waits for in-flight writes to finish. After that, using the environment raises an error, and so does updating the apps that use it. Context values provided to the environment stay open: whoever provided them closes them. Stopping the default environment (leaving `coco.runtime()`, or calling `coco.stop()`) closes it for you.
 
@@ -69,6 +127,10 @@ Garbage collection only helps when the last reference sits in a cycle: `gc.colle
 ## Example: Multiple Environments
 
 This example creates two apps in different environments, each with its own database:
+
+{/* Rust: rust/sdk/cocoindex/src/app.rs (Environment::builder, Environment::app, App::run) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import cocoindex as coco
@@ -92,6 +154,38 @@ def build2() -> None:
 app1 = coco.App(coco.AppConfig(name="App1", environment=env1), build1)
 app2 = coco.App(coco.AppConfig(name="App2", environment=env2), build2)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::prelude::*;
+
+#[cocoindex::function]
+async fn build1(_ctx: &Ctx) -> Result<()> {
+    // ... pipeline logic for env1 ...
+    Ok(())
+}
+
+#[cocoindex::function]
+async fn build2(_ctx: &Ctx) -> Result<()> {
+    // ... pipeline logic for env2 ...
+    Ok(())
+}
+
+// Two environments with separate databases
+let env1 = Environment::builder().db_path("./db1/cocoindex.db").build().await?;
+let env2 = Environment::builder().db_path("./db2/cocoindex.db").build().await?;
+
+// Apps in different environments
+let app1 = env1.app("App1").await?;
+let app2 = env2.app("App2").await?;
+app1.run(|ctx| async move { build1(&ctx).await }).await?;
+app2.run(|ctx| async move { build2(&ctx).await }).await?;
+```
+
+</Fragment>
+</LangTabs>
 
 ## Same App Name in Different Environments
 
@@ -124,6 +218,8 @@ app_alpha = coco.App(coco.AppConfig(name="MyApp", environment=env_alpha), build)
 app_default = coco.App("MyApp", build)  # Uses default environment
 ```
 
+The same holds in Rust: `env_alpha.app("MyApp")` and `env_default.app("MyApp")` are two apps with their own state, one per environment. The `cocoindex` CLI for Rust drives the one environment that `Environment::from_registered()` builds, so it has no `@env_name` syntax.
+
 ## CLI Support
 
 When working with multiple environments, the CLI groups apps by their environment. Use the `@env_name` syntax to target a specific app:
@@ -142,6 +238,10 @@ cocoindex update ./multi_env.py:MyApp@default
 ## Testing with Isolated Environments
 
 For tests, create isolated environments to avoid interference between test runs:
+
+{/* Rust: rust/sdk/cocoindex/tests/mount.rs (temp_app), rust/sdk/cocoindex/tests/memo_deps.rs (app_at) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import cocoindex as coco
@@ -162,6 +262,33 @@ def test_my_pipeline():
     app.update_blocking()
     # ... assertions ...
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+async fn temp_app(name: &str) -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::builder(name)
+        .db_path(dir.path().join(".cocoindex_db"))
+        .build()
+        .await
+        .unwrap();
+    (app, dir)
+}
+
+#[tokio::test]
+async fn my_pipeline() {
+    let (app, _dir) = temp_app("TestApp").await;
+    app.update(|ctx| async move { my_main_fn(&ctx).await }).await.unwrap();
+    // ... assertions ...
+}
+```
+
+Keep the `TempDir` alive for the test: dropping it deletes the database directory.
+
+</Fragment>
+</LangTabs>
 
 ## When to Use Multiple Environments
 

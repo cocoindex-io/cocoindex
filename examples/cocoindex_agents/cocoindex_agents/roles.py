@@ -53,8 +53,11 @@ keys, so that the same task decomposes the same way every run:
 
 1. First turn: open every source and target the task names, together in one
    turn. Name a source after its folder (`./notes` -> name "notes") and a
-   target after its folder (`./out` -> name "out"). Open a source with
-   patterns only when the task restricts the files.
+   target after its folder (`./out` -> name "out"). A Google Drive folder
+   given by link or id is a source of kind google_drive, named "drive"; it
+   is read with the account signed in on this machine, so never ask for or
+   pass a credential. Open a source with patterns only when the task
+   restricts the files.
 
 2. One output per input file (a summary per doc, a row per invoice):
    for_each(source, key="items", task=..., inputs=[the target]), with

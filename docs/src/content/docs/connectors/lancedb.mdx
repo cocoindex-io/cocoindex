@@ -8,9 +8,27 @@ description: >
 ---
 The `lancedb` connector provides utilities for writing rows to LanceDB tables, with automatic schema inference from Python classes and support for declaring vector and full-text search (FTS) indexes. CocoIndex manages the table lifecycle (creating, dropping, and evolving the schema) and keeps rows in sync via incremental upserts and deletions.
 
+import LangTabs from '../../../components/LangTabs.astro';
+
+{/* Rust: examples/rust/text_embedding_lancedb/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 from cocoindex.connectors import lancedb
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::lancedb::{self, LanceDatabase, TableSchema};
+```
+
+The module is compiled with the `lancedb` Cargo feature of the `cocoindex` crate.
+
+</Fragment>
+</LangTabs>
 
 :::note[Dependencies]
 This connector requires additional dependencies. Install with:
@@ -25,10 +43,29 @@ pip install cocoindex[lancedb]
 
 LanceDB connections are created directly via the LanceDB library. CocoIndex exposes thin wrappers:
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/lancedb.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 async def connect_async(uri: str, **options: Any) -> LanceAsyncConnection
 def connect(uri: str, **options: Any) -> lancedb.DBConnection
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl LanceDatabase {
+    pub async fn connect(uri: &str) -> Result<Self>
+    pub fn connection(&self) -> &lancedb::Connection
+}
+```
+
+`LanceDatabase::connect(uri)` opens (or creates) the database through the [`lancedb`](https://docs.rs/lancedb) crate; `connection()` returns the underlying `lancedb::Connection` for queries. The Rust SDK takes no `**options`.
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -39,9 +76,23 @@ def connect(uri: str, **options: Any) -> lancedb.DBConnection
 
 **Example:**
 
+{/* Rust: examples/rust/code_embedding_lancedb/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 conn = await lancedb.connect_async("./lancedb_data")
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let db = LanceDatabase::connect(&lancedb_uri()).await?;
+```
+
+</Fragment>
+</LangTabs>
 
 ## As target
 
@@ -57,6 +108,10 @@ Create a `ContextKey[lancedb.LanceAsyncConnection]` to identify your LanceDB con
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed tables. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
 
+{/* Rust: examples/rust/code_embedding_lancedb/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 import cocoindex as coco
 
@@ -69,9 +124,36 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     yield
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::lancedb::LanceDatabase;
+
+cocoindex::context_key!(static DB: LanceDatabase);
+
+let db = LanceDatabase::connect(&lancedb_uri()).await?;
+let app = Environment::builder()
+    .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+    .provide_key(&DB, db)
+    .build()
+    .await?
+    .app("CodeEmbeddingLanceDBRust")
+    .await?;
+```
+
+`context_key!(static DB: LanceDatabase)` declares the key; its name is the stable identity. `provide_key(&DB, db)` provides the connection, in a `#[cocoindex::lifespan]` function or on `Environment::builder()` as here.
+
+</Fragment>
+</LangTabs>
+
 #### Tables (parent state)
 
 Declares a table as a target state. Returns a pending `TableTarget` for declaring rows.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/lancedb.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def declare_table_target(
@@ -82,6 +164,38 @@ def declare_table_target(
     managed_by: ManagedBy = ManagedBy.SYSTEM,
 ) -> TableTarget[RowT, coco.PendingS]
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub async fn mount_table_target(
+    ctx: &Ctx,
+    db: &ContextKey<LanceDatabase>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+) -> Result<LanceTableTarget>
+
+pub async fn mount_table_target_with_options(
+    ctx: &Ctx,
+    db: &ContextKey<LanceDatabase>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    options: ManagedTargetOptions,
+) -> Result<LanceTableTarget>
+
+pub fn table_target(
+    ctx: &Ctx,
+    db: &ContextKey<LanceDatabase>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+) -> Result<TargetState<TableSpec>>
+```
+
+The handle type is `LanceTableTarget`. `managed_by` is set with `ManagedTargetOptions::user_managed()` on the `_with_options` variants (`table_target_with_options`, `mount_table_target_with_options`). `declare_table_target` has the same arguments as `mount_table_target`, and `table_target` returns the raw `TargetState` for `mount_target` / `declare_target_state_with_child`.
+
+</Fragment>
+</LangTabs>
 
 **Parameters:**
 
@@ -138,6 +252,10 @@ updating the table.
 
 Once a `TableTarget` is resolved, declare rows to be upserted:
 
+{/* Rust: examples/rust/text_embedding_lancedb/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def TableTarget.declare_row(
     self,
@@ -146,13 +264,31 @@ def TableTarget.declare_row(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl LanceTableTarget {
+    pub fn declare_row<R: Serialize>(&self, ctx: &Ctx, row: &R) -> Result<()>
+}
+
+table.declare_row(&ctx, row)?;
+```
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
-- `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
+- `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns. In Rust, any `Serialize` value that serializes to an object with the schema's columns; extra fields are dropped and missing ones become null.
 
 #### Vector indexes (attachment)
 
 Declare a vector index on a vector column to accelerate similarity search. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `TableTarget`:
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/lancedb.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def TableTarget.declare_vector_index(
@@ -170,6 +306,39 @@ def TableTarget.declare_vector_index(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl LanceTableTarget {
+    pub fn declare_vector_index(
+        &self,
+        ctx: &Ctx,
+        column: &str,
+        options: VectorIndexOptions,
+    ) -> Result<()>
+}
+
+pub struct VectorIndexOptions {
+    /// Index name; defaults to `<column>_idx`.
+    pub name: Option<String>,
+    /// Distance metric: "cosine" (default), "l2", or "dot".
+    pub metric: &'static str,
+    /// Index type: "ivf_pq" (default) or "ivf_hnsw_pq".
+    pub index_type: &'static str,
+    pub num_partitions: Option<u32>,
+    pub num_sub_vectors: Option<u32>,
+    pub num_bits: Option<u32>,
+    pub m: Option<u32>,
+    pub ef_construction: Option<u32>,
+}
+```
+
+Two names differ from Python: the HNSW index type is `"ivf_hnsw_pq"`, and the default index name is `<column>_idx`, not `column`.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `name` — Logical index name (defaults to `column`).
@@ -186,13 +355,31 @@ Parameters left as `None` fall back to LanceDB's defaults.
 
 **Example:**
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/lancedb.rs (VectorIndexOptions), tests/lancedb_target.rs (declare_fts_index shape) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 table.declare_vector_index(column="embedding", metric="cosine")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+table.declare_vector_index(&ctx, "embedding", lancedb::VectorIndexOptions::default())?;
+```
+
+</Fragment>
+</LangTabs>
+
 #### FTS indexes (attachment)
 
 Declare a full-text search (FTS) index on a text column to enable keyword and phrase search. Like vector indexes, FTS indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `TableTarget`:
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/lancedb.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def TableTarget.declare_fts_index(
@@ -205,6 +392,34 @@ def TableTarget.declare_fts_index(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl LanceTableTarget {
+    pub fn declare_fts_index(
+        &self,
+        ctx: &Ctx,
+        column: &str,
+        options: FtsIndexOptions,
+    ) -> Result<()>
+}
+
+pub struct FtsIndexOptions {
+    /// Index name; defaults to `<column>_fts_idx`.
+    pub name: Option<String>,
+    /// Record token positions (enables phrase queries). Defaults to `false`.
+    pub with_position: bool,
+    /// Stemming/stop-word language. `None` uses LanceDB's default (English).
+    pub language: Option<String>,
+}
+```
+
+Two defaults differ from Python: `with_position` is `false`, and the index name is `<column>_fts_idx`.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `name` — Logical index name (defaults to `column`).
@@ -214,9 +429,33 @@ def TableTarget.declare_fts_index(
 
 **Example:**
 
+{/* Rust: rust/sdk/cocoindex/tests/lancedb_target.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 table.declare_fts_index(column="content")
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+
+// With a language
+table.declare_fts_index(
+    &ctx,
+    "text",
+    lancedb::FtsIndexOptions {
+        language: Some("English".to_string()),
+        ..Default::default()
+    },
+)?;
+```
+
+</Fragment>
+</LangTabs>
 
 :::note
 Indexes are reconciled as part of the table's target state: changing a declaration replaces the index in place, removing a declaration drops the index, and dropping the table removes all its indexes.
@@ -225,6 +464,10 @@ Indexes are reconciled as part of the table's target state: changing a declarati
 ### Table schema: from Python class
 
 Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/lancedb.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @classmethod
@@ -237,6 +480,30 @@ async def TableSchema.from_class(
 ) -> TableSchema[RowT]
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl TableSchema {
+    pub fn from_row<T: SchemaFields>(
+        primary_key: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self>
+
+    pub fn with_vector_dim(self, field_name: &str, dim: usize) -> Result<Self>
+    pub async fn with_vector_schema(
+        self,
+        field_name: &str,
+        provider: &(impl VectorSchemaProvider + ?Sized),
+    ) -> Result<Self>
+    pub fn with_column_type(self, field_name: &str, col_type: ColumnType) -> Result<Self>
+}
+```
+
+The Rust row type is a struct that derives `SchemaFields` (and `Serialize`). Python's `column_specs` become builder calls on the derived schema: `with_vector_schema` or `with_vector_dim` for a vector column, `with_column_type` for a type override.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `record_type` — A record type whose fields define table columns.
@@ -244,6 +511,10 @@ async def TableSchema.from_class(
 - `column_specs` — Optional per-column overrides for type mapping or vector configuration.
 
 **Example:**
+
+{/* Rust: examples/rust/text_embedding_lancedb/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @dataclass
@@ -259,17 +530,44 @@ schema = await lancedb.TableSchema.from_class(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct DocEmbedding {
+    id: i64,
+    filename: String,
+    chunk_start: i64,
+    chunk_end: i64,
+    text: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+fn doc_embedding_schema() -> Result<TableSchema> {
+    TableSchema::from_row::<DocEmbedding>(["id"])?.with_vector_dim("embedding", EMBED_DIM)
+}
+```
+
+`#[coco(vector)]` marks a vector column whose dimension is set with `with_vector_dim` or `with_vector_schema`; `#[coco(vector = 384)]` fixes it in the struct. `Option<T>` fields become nullable columns.
+
+</Fragment>
+</LangTabs>
+
 Python types are automatically mapped to PyArrow types:
 
-| Python Type | PyArrow Type |
-|-------------|--------------|
-| `bool` | `bool` |
-| `int` | `int64` |
-| `float` | `float64` |
-| `str` | `string` |
-| `bytes` | `binary` |
-| `list`, `dict`, nested structs | `string` (JSON encoded) |
-| `NDArray` (with vector schema) | `fixed_size_list<float>` |
+| Python Type | Rust Type | PyArrow Type |
+|-------------|-----------|--------------|
+| `bool` | `bool` | `bool` |
+| `int` | `i64` (`i16`: `int16`, `i32`: `int32`) | `int64` |
+| `float` | `f64` (`f32`: `float32`) | `float64` |
+| `str` | `String`, `Uuid`, dates and times | `string` |
+| `bytes` | `Vec<u8>` | `binary` |
+| `list`, `dict`, nested structs | other `Vec<T>`, maps, nested structs, `Decimal`, `Duration`, `#[coco(json)]` | `string` (JSON encoded) |
+| `NDArray` (with vector schema) | `Vec<f32>` with `#[coco(vector)]` (`half` for `float16`) | `fixed_size_list<float>` |
+
+The Rust `ColumnType` enum names these: `Bool`, `Int16`, `Int32`, `Int64`, `Float32`, `Float64`, `Text`, `Binary`, `Json`, `Vector(dim)` and `HalfVector(dim)`. A `#[coco(type = "…")]` attribute is an error for LanceDB: use `with_column_type` with a `ColumnType`.
 
 To override the default mapping, provide a `LanceType` or `VectorSchemaProvider` via:
 
@@ -279,6 +577,10 @@ To override the default mapping, provide a `LanceType` or `VectorSchemaProvider`
 #### LanceType
 
 Use `LanceType` to specify a custom PyArrow type or encoder:
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/lancedb.rs (with_column_type) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from typing import Annotated
@@ -297,9 +599,27 @@ class MyRow:
 LanceType(pa.string(), encoder=lambda value: json.dumps(value))
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::lancedb::{ColumnType, TableSchema};
+
+let schema = TableSchema::from_row::<MyRow>(["id"])?
+    .with_column_type("id", ColumnType::Int32)?
+    .with_column_type("value", ColumnType::Float32)?;
+```
+
+Or declare the field as `i32` / `f32` in the struct. Python's encoder has no counterpart: a Rust row is encoded by its `Serialize` impl, so put `#[serde(serialize_with = "…")]` on the field.
+
+</Fragment>
+</LangTabs>
+
 #### VectorSchemaProvider
 
 For `NDArray` fields, a `VectorSchemaProvider` annotation specifies the vector dimension and dtype. The annotation accepts a `VectorSchemaProvider`, a `ContextKey`, or an explicit `VectorSchema`. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
+
+In Rust, call `with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?).await?` on the derived schema. It takes any `VectorSchemaProvider`: an embedder, or a `VectorSchema`. An `f16` provider selects a `float16` list.
 
 ### Table schema: explicit column definitions
 
@@ -330,6 +650,10 @@ class ColumnDef(NamedTuple):
 
 **Example:**
 
+{/* Rust: rust/sdk/cocoindex/tests/lancedb_target.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 schema = lancedb.TableSchema(
     {
@@ -342,7 +666,33 @@ schema = lancedb.TableSchema(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::lancedb::{ColumnDef, ColumnType, TableSchema};
+
+TableSchema::new(
+    [
+        ("id", ColumnDef::new(ColumnType::Int64)),
+        ("text", ColumnDef::new(ColumnType::Text)),
+        ("summary", ColumnDef::new(ColumnType::Text).nullable()),
+        ("embedding", ColumnDef::new(ColumnType::Vector(3))),
+    ],
+    ["id"],
+)?
+```
+
+`ColumnDef::new(col_type)` is not nullable; `.nullable()` opts in. The Rust `ColumnDef` has no encoder.
+
+</Fragment>
+</LangTabs>
+
 ### Example
+
+{/* Rust: examples/rust/text_embedding_lancedb/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import cocoindex as coco
@@ -384,3 +734,57 @@ async def app_main() -> None:
     for doc in documents:
         table.declare_row(row=doc)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::path::PathBuf;
+
+use cocoindex::connectors::lancedb::{self, LanceDatabase, TableSchema};
+use cocoindex::prelude::*;
+
+const EMBED_DIM: usize = 384;
+const TABLE: &str = "doc_embeddings";
+
+cocoindex::context_key!(static DB: LanceDatabase);
+
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct DocEmbedding {
+    id: i64,
+    filename: String,
+    chunk_start: i64,
+    chunk_end: i64,
+    text: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
+    // chunk and embed the file ...
+}
+
+fn doc_embedding_schema() -> Result<TableSchema> {
+    TableSchema::from_row::<DocEmbedding>(["id"])?.with_vector_dim("embedding", EMBED_DIM)
+}
+
+async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
+    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, doc_embedding_schema()?).await?;
+
+    let files = walk_items(&sourcedir, &["**/*.md"])?;
+    let rows_by_file = use_mount_each!(files, |file| process_file(ctx, file)).await?;
+
+    for rows in &rows_by_file {
+        for row in rows {
+            table.declare_row(&ctx, row)?;
+        }
+    }
+    Ok(())
+}
+```
+
+See `examples/rust/text_embedding_lancedb` for the full program, including the `lancedb::vector_search` query.
+
+</Fragment>
+</LangTabs>

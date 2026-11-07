@@ -13,6 +13,7 @@ cocoindex = { path = "../../../rust/sdk/cocoindex", features = [
     "lancedb",
     "text",
     "fastembed",
+    "fs_live",
 ] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

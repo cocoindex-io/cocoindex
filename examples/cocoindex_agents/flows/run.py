@@ -18,6 +18,7 @@ import argparse
 import logging
 import os
 import pathlib
+import re
 import sys
 import time
 
@@ -34,6 +35,25 @@ from cocoindex_agents.tools import AGENTS_CONFIG  # noqa: E402
 from cocoindex_agents.trace import SessionScratch  # noqa: E402
 
 FLOWS = pathlib.Path(__file__).resolve().parent
+
+
+def _expand(prompt_path: pathlib.Path) -> str:
+    """The prompt, with ``$NAME`` references filled from the environment.
+
+    A flow over data that is not checked in (``drive``: a Google Drive folder
+    of the user's) names it this way; an unset name is an error, not an empty
+    string in the prompt.
+    """
+    raw = prompt_path.read_text()
+    missing = sorted(
+        {v for v in re.findall(r"\$([A-Z][A-Z0-9_]*)", raw) if v not in os.environ}
+    )
+    if missing:
+        raise SystemExit(
+            f"{prompt_path} refers to {', '.join('$' + v for v in missing)}; "
+            "set it in the environment (see flows/README.md)."
+        )
+    return os.path.expandvars(raw)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -76,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     flow_dir = FLOWS / args.flow
-    prompt = (flow_dir / "prompt.md").read_text()
+    prompt = _expand(flow_dir / "prompt.md")
     os.chdir(flow_dir)
     # LiteLLM's aiohttp transport leaves a pending close task at interpreter
     # exit ("Task was destroyed but it is pending"); httpx does not.

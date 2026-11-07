@@ -1,0 +1,17 @@
+[package]
+name = "state_store"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+# Matches the root workspace's release profile, which is what a tuned user
+# build of the Rust SDK uses.
+[profile.release]
+codegen-units = 1
+lto = true
+strip = "symbols"
+
+[dependencies]
+cocoindex = { path = "../../../rust/sdk/cocoindex" }
+tokio = { version = "1", features = ["full"] }
