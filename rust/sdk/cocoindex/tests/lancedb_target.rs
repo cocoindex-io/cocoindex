@@ -892,6 +892,12 @@ async fn lancedb_fts_index_answers_phrase_queries_by_default() -> Result<()> {
     .await?;
 
     let table = db.connection().open_table(TABLE).execute().await.unwrap();
+    // One commit's sinks run in no fixed order, so the index may predate the
+    // rows. Fold them in: a phrase query reads only indexed rows.
+    table
+        .optimize(::lancedb::table::OptimizeAction::All)
+        .await
+        .unwrap();
     let phrase = PhraseQuery::new("red fox".to_string()).with_column(Some("text".to_string()));
     let batches: Vec<_> = table
         .query()
