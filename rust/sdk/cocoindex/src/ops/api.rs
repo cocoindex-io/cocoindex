@@ -689,7 +689,7 @@ async fn chat_json_memoized(
     client: &ApiChatClient,
     messages: &[ChatMessage],
 ) -> Result<String> {
-    client.request_chat_json(Some(ctx), &messages).await
+    client.request_chat_json(Some(ctx), messages).await
 }
 
 #[derive(Deserialize)]
