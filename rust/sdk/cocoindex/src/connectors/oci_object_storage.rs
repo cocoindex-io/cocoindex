@@ -1394,7 +1394,7 @@ struct OciEventDetails {
 /// over the event type): a present object becomes an `update`, a `404` a
 /// `delete`. Events are filtered by envelope type, namespace/bucket, the
 /// prefix + path matcher, and an `eventTime` cutoff (snapshot time minus
-/// [`OCI_LIVE_SKEW_SECS`]; missing/unparseable/future times pass through).
+/// `OCI_LIVE_SKEW_SECS`; missing/unparseable/future times pass through).
 /// An event is acknowledged to its [`LiveStream`] once the update or delete it
 /// caused has synced (at once when it was filtered out), so a durable stream
 /// commits its position only past processed events. Feed it to

@@ -632,8 +632,8 @@ pub async fn mount_namespace_target_with_options(
 
 /// Build a composable [`TargetState`] for a Turbopuffer namespace (the spec
 /// constructor). Pass it to the generic
-/// [`mount_target`](crate::target_state::mount_target) /
-/// [`declare_target_state_with_child`](crate::target_state::declare_target_state_with_child),
+/// [`mount_target`] /
+/// [`declare_target_state_with_child`],
 /// or use [`declare_namespace_target`]/[`mount_namespace_target`].
 pub fn namespace_target(
     ctx: &Ctx,

@@ -8,9 +8,9 @@
 //!   chunking.
 //! - [`code`] (`code_match` feature): structural code matching over reusable
 //!   parsed ASTs (`CodeAst`, `CodePattern`, `match_code`, `index_terms`).
-//! - [`sentence_transformers`] (`fastembed` feature): local sentence-transformer
+//! - `sentence_transformers` (`fastembed` feature): local sentence-transformer
 //!   embeddings.
-//! - [`image`] (`fastembed` feature): local image (CLIP) embeddings.
+//! - `image` (`fastembed` feature): local image (CLIP) embeddings.
 //! - [`api`] (`embed_api` feature): remote embeddings/transcription over an
 //!   OpenAI-compatible HTTP API.
 

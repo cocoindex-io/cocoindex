@@ -1,8 +1,8 @@
 //! Link-time registry of `#[coco::function]` logic fingerprints.
 //!
-//! Each `#[cocoindex::function]` adds one [`FnLogicEntry`] to the [`COCO_FN_LOGIC`]
+//! Each `#[cocoindex::function]` adds one [`FnLogicEntry`] to the `COCO_FN_LOGIC`
 //! distributed slice (collected across crates at link time). At app/environment
-//! startup, [`register_all_fn_logic`] computes each function's logic fingerprint
+//! startup, `register_all_fn_logic` computes each function's logic fingerprint
 //! and registers it into the engine's logic set.
 //!
 //! Why this matters: a memoized caller's entry stores the logic fingerprints of

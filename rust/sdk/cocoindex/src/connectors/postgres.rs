@@ -11,7 +11,7 @@
 //! rows for use with `Ctx::mount_each`.
 //!
 //! Rows are written in batches: one parameterized `unnest` statement per
-//! chunk of [`ROWS_PER_STATEMENT`] rows (see [`RowStatements`]), the statements
+//! chunk of `ROWS_PER_STATEMENT` rows (see `RowStatements`), the statements
 //! of a batch running concurrently over the pool.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -1341,7 +1341,7 @@ async fn drop_table(db: &Database, pg_schema_name: Option<&str>, table_name: &st
 const ROWS_PER_STATEMENT: usize = 2000;
 
 /// Apply a batch of row mutations: upserts and deletes, each in statements of
-/// up to [`ROWS_PER_STATEMENT`] rows. The statements of a batch run
+/// up to `ROWS_PER_STATEMENT` rows. The statements of a batch run
 /// concurrently, each on its own pool connection and committing on its own, as
 /// the Python connector's do: a batch is not atomic, and a statement that
 /// fails is retried by the next run.
@@ -2147,7 +2147,7 @@ const READ_BUFFER_ROWS: usize = 256;
 /// The rows are read inside one `REPEATABLE READ, READ ONLY` transaction, so
 /// the whole table is observed as one consistent snapshot, and they are
 /// streamed from the server as the consumer takes them (Python's
-/// `PgTableSource.fetch_rows()` cursor): at most [`READ_BUFFER_ROWS`] rows are
+/// `PgTableSource.fetch_rows()` cursor): at most `READ_BUFFER_ROWS` rows are
 /// held ahead of the consumer. Dropping the stream ends the read.
 ///
 /// `T` must be `Deserialize` (column names map to struct fields; unknown columns

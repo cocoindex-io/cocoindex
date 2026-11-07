@@ -409,7 +409,7 @@ pub struct LanceTableTarget {
 
 /// Build a composable [`TargetState`] for a LanceDB table (the spec constructor).
 /// Pass it to [`declare_table_target`]/[`mount_table_target`] or the generic
-/// [`declare_target_state_with_child`]/[`mount_target`]. System-managed.
+/// [`crate::declare_target_state_with_child`]/[`mount_target`]. System-managed.
 pub fn table_target(
     ctx: &Ctx,
     db: &ContextKey<LanceDatabase>,
