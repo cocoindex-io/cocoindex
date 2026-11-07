@@ -81,6 +81,15 @@ code. A heading inside appears only in that language's table of contents:
 
 Do not nest `Lang` in `Lang`.
 
+### `<LangCardGrid>`: a section overview's card grid
+
+The brand `DocCardGrid` with each card's link pointed into the reader's tree.
+Keep `src/data/section-grids.ts` written in Python-tree URLs:
+
+```mdx
+<LangCardGrid groups={advancedTopicsGroups} ariaLabel="Advanced topics" />
+```
+
 ### `<RustNote>`: a difference from Python
 
 Shown on Rust pages only, as a callout titled "Different from Python". Use it
@@ -98,8 +107,10 @@ The Rust SDK has no sync/async adapter: a `#[cocoindex::function]` body is an
 ## Links
 
 - A **source-relative** link (`./app`, `../connectors/postgres`) opens the
-  linked file's page in the reader's language when the page has one, else in
-  the language it has. Write these by default.
+  linked file's page in the reader's language when the page has one, else the
+  counterpart the page declares for that language (`../ops/litellm` opens
+  Model APIs on a Rust page), else the page in the language it has. Write
+  these by default.
 - A **root-relative** link (`/docs/cli/`, `/docs/rust/cli/`) is taken as
   written. Use it to point at one language on purpose, for example "see the
   [Python CLI](/docs/cli/)" on a Rust page.
@@ -109,7 +120,8 @@ The Rust SDK has no sync/async adapter: a `#[cocoindex::function]` body is an
 Each language has its own `.md` twins (`/docs/<slug>.md`,
 `/docs/rust/<slug>.md`), `llms.txt` and `llms-full.txt`. The twins keep only
 the page's language: `Lang`, `LangTabs` slots and `RustNote` of the other
-language are dropped. `scripts/check-agent-output.mjs` checks that every page
+language are dropped, source-relative links resolve as in the HTML page, and
+a Rust twin opens with a Rust SDK banner. `scripts/check-agent-output.mjs` checks that every page
 has a twin per language and that every code block appears in one of them.
 
 ## Reference page

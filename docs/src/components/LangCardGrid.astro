@@ -1,0 +1,24 @@
+---
+// The brand DocCardGrid with each card's link pointed into the reader's SDK
+// language tree: a card written as `/docs/<slug>/` opens `/docs/rust/<slug>/`
+// on a Rust page when that page exists there. Use it instead of DocCardGrid
+// in docs pages, with the same props; section-grids.ts stays written in
+// Python-tree URLs. Needs no import in a page.
+import DocCardGrid from '@cocoindex/brand/DocCardGrid.astro';
+import { DOCS_BASE } from '../consts';
+import { currentLang, langHref, pageRegistry } from '../lib/lang';
+
+type Props = Parameters<typeof DocCardGrid>[0];
+const { groups, ariaLabel } = Astro.props;
+const lang = currentLang(Astro);
+const reg = await pageRegistry();
+const localize = (href: string): string => {
+  if (!href.startsWith(`${DOCS_BASE}/`)) return href;
+  const [path, hash] = href.slice(DOCS_BASE.length + 1).split('#');
+  const route = path.replace(/\/$/, '');
+  if (!reg.at(lang, route)) return href;
+  return langHref(lang, route) + (hash ? `#${hash}` : '');
+};
+const localized = groups.map((g) => ({ ...g, cards: g.cards.map((c) => ({ ...c, href: localize(c.href) })) }));
+---
+<DocCardGrid groups={localized} ariaLabel={ariaLabel} />

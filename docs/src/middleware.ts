@@ -31,8 +31,9 @@ export const onRequest = defineMiddleware(async (context, next) => {
     }
     const lang = slug.startsWith('rust/') ? 'rust' : 'python';
     const route = lang === 'rust' ? slug.slice('rust/'.length) : slug;
-    const entry = (await pageRegistry()).at(lang, route);
-    if (entry) return markdown(buildDocMarkdown(entry.doc, lang, route));
+    const reg = await pageRegistry();
+    const entry = reg.at(lang, route);
+    if (entry) return markdown(buildDocMarkdown(entry.doc, lang, route, (s) => reg.resolve(s, lang)?.href));
   }
   return next();
 });

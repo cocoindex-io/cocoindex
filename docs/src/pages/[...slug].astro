@@ -5,6 +5,7 @@ import LangLink from '../components/LangLink.astro';
 import Lang from '../components/Lang.astro';
 import LangTabs from '../components/LangTabs.astro';
 import RustNote from '../components/RustNote.astro';
+import LangCardGrid from '../components/LangCardGrid.astro';
 import { titleText } from '../consts';
 import { docStaticPaths } from '../lib/raw-markdown';
 import { headingsFor, pageEntry, type Lang } from '../lib/lang';
@@ -52,6 +53,6 @@ const { neutral } = pageEntry(doc);
   sourcePath={sourcePath}
   introMeta={introMeta}
 >
-  {/* Lang, LangTabs and RustNote need no import in a page. */}
-  <Content components={{ a: LangLink, Lang, LangTabs, RustNote }} />
+  {/* Lang, LangTabs, RustNote and LangCardGrid need no import in a page. */}
+  <Content components={{ a: LangLink, Lang, LangTabs, RustNote, LangCardGrid }} />
 </DocsLayout>

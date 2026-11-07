@@ -7,13 +7,14 @@
 import type { APIRoute } from 'astro';
 import { type CollectionEntry } from 'astro:content';
 import { buildDocMarkdown, docStaticPaths } from '../lib/raw-markdown';
-import type { Lang } from '../lib/lang';
+import { pageRegistry, type Lang } from '../lib/lang';
 
 export const getStaticPaths = docStaticPaths;
 
-export const GET: APIRoute = ({ props }) => {
+export const GET: APIRoute = async ({ props }) => {
   const { doc, lang, route } = props as { doc: CollectionEntry<'docs'>; lang: Lang; route: string };
-  return new Response(buildDocMarkdown(doc, lang, route), {
+  const reg = await pageRegistry();
+  return new Response(buildDocMarkdown(doc, lang, route, (s) => reg.resolve(s, lang)?.href), {
     headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
   });
 };

@@ -13,7 +13,7 @@ import { sidebar, type SidebarItem } from '../data/docs-sidebar';
 import { SITE_MAIN, SITE_BLOG, SITE_EXAMPLES } from '../consts';
 import Search from './Search.astro';
 import LangSwitch from './LangSwitch.astro';
-import { langHref, type Lang } from '../lib/lang';
+import { DEFAULT_LANG, langHref, pageRegistry, sidebarFor, type Lang } from '../lib/lang';
 import MobileSheet from '@cocoindex/brand/MobileSheet.astro';
 
 export interface Props {
@@ -36,8 +36,14 @@ const {
   sidebarItems: sidebarItemsRaw,
   lang,
 } = Astro.props;
+// Default: the docs sidebar of the page's language (the Python tree on pages
+// that are not docs pages, such as the home page and 404), so no link points
+// at a page that exists only in the other tree.
 const sidebarItems: SidebarItem[] | null =
-  sidebarItemsRaw === undefined ? sidebar : sidebarItemsRaw;
+  sidebarItemsRaw === undefined
+    ? sidebarFor(sidebar, lang ?? DEFAULT_LANG, await pageRegistry())
+    : sidebarItemsRaw;
+const isDocsTree = sidebarItemsRaw === undefined || lang !== undefined;
 // Put the current section first without changing the shared desktop order.
 function containsCurrent(item: SidebarItem): boolean {
   return item.slug === currentSlug ||
@@ -106,7 +112,7 @@ function href(slug: string): string {
   )}
 
   <div class="mobile-pane" id="panePages" role={tocRows.length > 0 ? 'tabpanel' : undefined} aria-labelledby={tocRows.length > 0 ? 'tabPages' : undefined}>
-    {(sidebarItems === sidebar || lang) && (
+    {isDocsTree && (
       <div class="mobile-group">
         <nav class="mobile-list" aria-label="Documentation home">
           <a href={href('')} aria-current={currentSlug === '' ? 'page' : undefined}>
