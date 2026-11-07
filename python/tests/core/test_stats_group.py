@@ -312,6 +312,19 @@ async def test_stats_group_report_to_stdout_plain(
     assert "✓ Indexing · Done in" in out
 
 
+@pytest.mark.asyncio
+async def test_a_group_that_succeeds_keeps_the_final_status_green(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    _reset()
+    app = coco.App(
+        coco.AppConfig(name="test_sg_final_status_green", environment=coco_env),
+        _main_report,
+    )
+    await coco.show_progress(app.update())
+    assert "✓ Done in" in capfd.readouterr().out
+
+
 @coco.fn()
 async def _fail_in_group() -> None:
     raise ValueError("boom")

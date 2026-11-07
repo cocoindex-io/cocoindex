@@ -70,6 +70,7 @@ fn update_stats_total_aggregates_components() {
     let stats = UpdateStats {
         by_component,
         status: UpdateStatus::Ready,
+        ..Default::default()
     };
     let total = stats.total();
     assert_eq!(total.num_adds, 5);
@@ -95,6 +96,7 @@ fn update_stats_run_stats_derives_coarse_view() {
     let stats = UpdateStats {
         by_component,
         status: UpdateStatus::Ready,
+        ..Default::default()
     };
     let run = stats.run_stats();
     // Same mapping as the engine→RunStats conversion: skipped=unchanged,

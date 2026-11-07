@@ -23,6 +23,7 @@ pub struct Renderer {
     started: Instant,
     ready_at: Option<Instant>,
     components: BTreeMap<String, ComponentStatsWire>,
+    in_groups: ComponentStatsWire,
     drawn_lines: usize,
     last_draw: Option<Instant>,
     spinner: usize,
@@ -48,6 +49,7 @@ impl Renderer {
             started: Instant::now(),
             ready_at: None,
             components: BTreeMap::new(),
+            in_groups: ComponentStatsWire::default(),
             drawn_lines: 0,
             last_draw: None,
             spinner: 0,
@@ -75,12 +77,18 @@ impl Renderer {
         self.draw();
     }
 
-    pub fn progress(&mut self, ready: bool, components: BTreeMap<String, ComponentStatsWire>) {
+    pub fn progress(
+        &mut self,
+        ready: bool,
+        components: BTreeMap<String, ComponentStatsWire>,
+        in_groups: ComponentStatsWire,
+    ) {
         let became_ready = ready && self.ready_at.is_none();
         if became_ready {
             self.ready_at = Some(Instant::now());
         }
         self.components = components;
+        self.in_groups = in_groups;
         let due = self.last_draw.is_none_or(|t| t.elapsed() >= MIN_REDRAW);
         if due || became_ready {
             self.clear();
@@ -106,6 +114,7 @@ impl Renderer {
                 .map(|(name, stats)| (name.clone(), group(stats)))
                 .collect(),
             ready: self.ready_at.is_some(),
+            in_groups: group(&self.in_groups),
             ..Default::default()
         }
     }

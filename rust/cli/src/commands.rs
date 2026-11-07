@@ -321,8 +321,9 @@ pub async fn update(args: UpdateArgs) -> CliResult<()> {
             Output::Event(Event::Progress {
                 ready,
                 by_component,
+                in_groups,
                 ..
-            }) => renderer.progress(ready, by_component),
+            }) => renderer.progress(ready, by_component, in_groups),
             Output::Event(Event::Preview { kind, value }) => previews.push((kind, value)),
             Output::Event(_) => {}
         },

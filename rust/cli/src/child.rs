@@ -101,21 +101,22 @@ async fn pending_answer(answer: &mut Option<tokio::sync::oneshot::Receiver<bool>
     }
 }
 
-/// Forward the line in `buf`, unless the read found the end of the stream (or
-/// failed, which ends the forwarding, not the run). Returns whether the stream
-/// is still open.
+/// Forward what a finished read left in `buf`, and return whether the stream is
+/// still open: the end of the stream, or a failed read, ends the forwarding, not
+/// the run. `buf` decides what to forward, not the count: a read that `select!`
+/// cancelled leaves its bytes there, so a last line with no newline can arrive
+/// with a count of 0.
 fn forward_stderr(
     read: std::io::Result<usize>,
     buf: &mut Vec<u8>,
     on_output: &mut impl FnMut(Output<'_>),
 ) -> bool {
-    if !matches!(read, Ok(n) if n > 0) {
-        return false;
+    if !buf.is_empty() {
+        let text = String::from_utf8_lossy(buf).into_owned();
+        buf.clear();
+        on_output(Output::ErrorText(text.trim_end_matches(['\n', '\r'])));
     }
-    let text = String::from_utf8_lossy(buf).into_owned();
-    buf.clear();
-    on_output(Output::ErrorText(text.trim_end_matches(['\n', '\r'])));
-    true
+    matches!(read, Ok(n) if n > 0)
 }
 
 /// Run `<exe> __coco <verb> --protocol N <flags>` and feed its output to
@@ -187,7 +188,8 @@ pub async fn run(
             }
             read = reader.read_until(b'\n', &mut buf) => {
                 let n = read.map_err(fail("reading the target binary's output"))?;
-                if n == 0 {
+                // A cancelled read can leave a last line here with a count of 0.
+                if n == 0 && buf.is_empty() {
                     break;
                 }
                 let text = String::from_utf8_lossy(&buf).into_owned();
@@ -199,7 +201,9 @@ pub async fn run(
                         if !text.is_empty() {
                             on_output(Output::Text(text));
                         }
-                        eprintln!("warning: ignoring a malformed protocol line: {raw}");
+                        on_output(Output::ErrorText(&format!(
+                            "warning: ignoring a malformed protocol line: {raw}"
+                        )));
                     }
                     Line::Record { text, event } => {
                         if !text.is_empty() {
@@ -258,7 +262,7 @@ pub async fn run(
                 ctrl_c_count += 1;
                 if ctrl_c_count == 1 {
                     if let Interrupt::Cancel { quiet: false } = interrupt {
-                        eprintln!("\nStopping...");
+                        on_output(Output::ErrorText("\nStopping..."));
                     }
                     forward_interrupt(pid);
                 } else {
@@ -285,6 +289,8 @@ pub async fn run(
         }
     })
     .await;
+    // The drain can time out in the middle of a line.
+    forward_stderr(Ok(0), &mut err_buf, &mut on_output);
     if let Some(err) = mismatch {
         return Err(err);
     }
@@ -365,6 +371,23 @@ fn forward_interrupt(pid: Option<u32>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forward_stderr_keeps_a_last_line_whose_count_was_lost() {
+        let mut forwarded = Vec::new();
+        let mut on_output = |output: Output<'_>| {
+            if let Output::ErrorText(text) = output {
+                forwarded.push(text.to_string());
+            }
+        };
+        let mut buf = b"a line\r\n".to_vec();
+        assert!(forward_stderr(Ok(8), &mut buf, &mut on_output));
+        // A cancelled read left these bytes; the next read finds end of file.
+        buf.extend_from_slice(b"fatal");
+        assert!(!forward_stderr(Ok(0), &mut buf, &mut on_output));
+        assert!(!forward_stderr(Ok(0), &mut buf, &mut on_output));
+        assert_eq!(forwarded, ["a line", "fatal"]);
+    }
 
     #[test]
     fn confirm_prompts_match_the_python_cli() {

@@ -97,7 +97,9 @@ exits 1) and build and run an `init` scaffold.
 JSON object with an `event` tag, then `\n`. The child flushes after every record. Any stdout
 text without the separator (or before it on the same line) is user output; the CLI forwards it
 verbatim. Stderr is read line by line and forwarded to the CLI's stderr, the stream the progress
-block draws on, so that the block can make room for it. Lines whose JSON does not parse are reported as malformed and
+block draws on, so that the block can make room for it. The child's stderr is then a pipe, not a
+terminal: engine logs have no color under this CLI, libraries that check for a terminal behave as
+under a pipe, and output with no newline waits for one. Lines whose JSON does not parse are reported as malformed and
 otherwise ignored.
 
 **Invocation.** `<bin> __coco <ls|update|drop> --protocol 1 [--app NAME] [--live]

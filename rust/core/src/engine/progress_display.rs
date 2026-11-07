@@ -141,6 +141,19 @@ fn cells(s: &str) -> usize {
     unicode_width::UnicodeWidthStr::width(s)
 }
 
+/// `text` with control characters as spaces. A terminal acts on them: a tab or
+/// a carriage return moves its cursor past the cells counted here, which breaks
+/// the in-place redraw.
+fn printable(text: String) -> String {
+    if text.contains(char::is_control) {
+        text.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect()
+    } else {
+        text
+    }
+}
+
 /// One output line, built from segments that each carry their own color, so
 /// width is measured on the text alone and a cut never splits an escape.
 #[derive(Default, Clone)]
@@ -148,12 +161,12 @@ struct Line(Vec<(String, Option<&'static str>)>);
 
 impl Line {
     fn text(mut self, text: impl Into<String>) -> Self {
-        self.0.push((text.into(), None));
+        self.0.push((printable(text.into()), None));
         self
     }
 
     fn styled(mut self, code: &'static str, text: impl Into<String>) -> Self {
-        self.0.push((text.into(), Some(code)));
+        self.0.push((printable(text.into()), Some(code)));
         self
     }
 
@@ -469,8 +482,11 @@ struct Totals {
     failed: u64,
     /// Runs still in flight. On the final block these were cut off.
     unfinished: u64,
-    /// Failures in stats groups under this block, which have their own rows.
+    /// What stats groups under this block count: they have their own rows, and
+    /// only the final status adds these. Final blocks have one section, so
+    /// nothing counts twice with a nested group's section.
     failed_in_groups: u64,
+    unfinished_in_groups: u64,
 }
 
 impl Totals {
@@ -479,7 +495,11 @@ impl Totals {
         Totals {
             failed: groups().map(|g| g.num_errors).sum(),
             unfinished: groups().map(|g| g.num_in_progress()).sum(),
-            failed_in_groups: snapshots.iter().map(|s| s.failed_in_groups).sum(),
+            failed_in_groups: snapshots.iter().map(|s| s.in_groups.num_errors).sum(),
+            unfinished_in_groups: snapshots
+                .iter()
+                .map(|s| s.in_groups.num_in_progress())
+                .sum(),
         }
     }
 }
@@ -526,8 +546,9 @@ fn status_line(spec: &BlockSpec<'_>, ready: bool, totals: Totals, style: &Style)
     };
 
     if spec.finished {
-        let interrupted = totals.unfinished > 0;
         let failed = totals.failed + totals.failed_in_groups;
+        let unfinished = totals.unfinished + totals.unfinished_in_groups;
+        let interrupted = unfinished > 0;
         let mark = if interrupted {
             Line::default().styled(YELLOW, "!")
         } else if failed > 0 {
@@ -546,13 +567,12 @@ fn status_line(spec: &BlockSpec<'_>, ready: bool, totals: Totals, style: &Style)
                 .styled(GRAY, " · ")
                 .styled(RED, format!("{failed} failed"));
         }
-        if totals.unfinished > 0 {
+        if unfinished > 0 {
             line = line.styled(GRAY, " · ").styled(
                 YELLOW,
                 format!(
-                    "{} {} unfinished",
-                    totals.unfinished,
-                    plural(totals.unfinished, "run", "runs")
+                    "{unfinished} {} unfinished",
+                    plural(unfinished, "run", "runs")
                 ),
             );
         }
@@ -1524,12 +1544,42 @@ mod tests {
     fn test_final_status_counts_failures_in_groups() {
         let mut snapshot = VersionedProcessingStats::default();
         snapshot.stats.insert("main".to_string(), group(1, 1, 0, 0));
-        snapshot.failed_in_groups = 3;
+        snapshot.in_groups.num_execution_starts = 3;
+        snapshot.in_groups.num_errors = 3;
         let lines = stats_block_lines(&spec(false, true, 2.0, None), &snapshot, &Style::PLAIN);
         assert_eq!(
             lines,
             vec!["✗ Done in 2.0s · 3 failed", "  ✓ main  1 added"]
         );
+    }
+
+    #[test]
+    fn test_final_status_counts_runs_cut_off_in_groups() {
+        let mut snapshot = VersionedProcessingStats::default();
+        snapshot.stats.insert("main".to_string(), group(1, 1, 0, 0));
+        snapshot.in_groups.num_execution_starts = 2;
+        let lines = stats_block_lines(&spec(true, true, 2.0, None), &snapshot, &Style::PLAIN);
+        assert_eq!(lines[0], "! Stopped after 2.0s · 2 runs unfinished");
+    }
+
+    #[test]
+    fn test_control_characters_never_reach_the_terminal() {
+        let mut snapshot = VersionedProcessingStats::default();
+        snapshot
+            .stats
+            .insert("name\twith\rcontrols".to_string(), group(1, 0, 0, 1));
+        snapshot.failures.push(failure(
+            "name\twith\rcontrols",
+            item("3"),
+            "col1\tcol2\r\x1b[31mred",
+        ));
+        let spec = BlockSpec {
+            title: Some("Title\there"),
+            ..spec(false, true, 2.0, None)
+        };
+        for line in stats_block_lines(&spec, &snapshot, &narrow(60)) {
+            assert!(!line.contains(char::is_control), "{line:?}");
+        }
     }
 
     #[test]
