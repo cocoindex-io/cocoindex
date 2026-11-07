@@ -8,6 +8,22 @@ description: >
 import DocCardGrid from '@cocoindex/brand/DocCardGrid.astro';
 import { advancedTopicsGroups } from '/src/data/section-grids';
 
-You can build complete pipelines with the [programming guide](/docs/programming_guide/core_concepts/) alone. Reach for these pages when you want to go a level deeper into how the engine behaves, and extend it past what it ships with.
+{/* The card hrefs in section-grids.ts are root-relative Python URLs; the Rust copy points them at /docs/rust/. */}
+export const rustAdvancedTopicsGroups = advancedTopicsGroups.map((g) => ({
+  ...g,
+  cards: g.cards.map((c) => ({ ...c, href: c.href.replace(/^\/docs\//, '/docs/rust/') })),
+}));
+
+You can build complete pipelines with the [programming guide](../programming_guide/core_concepts) alone. Reach for these pages when you want to go a level deeper into how the engine behaves, and extend it past what it ships with.
+
+<Lang only="python">
 
 <DocCardGrid groups={advancedTopicsGroups} ariaLabel="Advanced topics" />
+
+</Lang>
+
+<Lang only="rust">
+
+<DocCardGrid groups={rustAdvancedTopicsGroups} ariaLabel="Advanced topics" />
+
+</Lang>
