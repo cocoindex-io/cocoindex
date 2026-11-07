@@ -7,6 +7,17 @@ description: >
 import DocCardGrid from '@cocoindex/brand/DocCardGrid.astro';
 import { commonResourcesGroups } from '/src/data/section-grids';
 
+{/* The grid's hrefs point at the Python tree; the Rust page gets a copy that points at /docs/rust/. */}
+export const rustGroups = commonResourcesGroups.map((g) => ({
+  ...g,
+  cards: g.cards.map((c) => ({ ...c, href: c.href.replace(/^\/docs\//, '/docs/rust/') })),
+}));
+
 The building blocks that connectors and operations share. Reach for these when you wire your own pieces together, or need the exact type a connector expects.
 
+<Lang only="python">
 <DocCardGrid groups={commonResourcesGroups} ariaLabel="Common resources" />
+</Lang>
+<Lang only="rust">
+<DocCardGrid groups={rustGroups} ariaLabel="Common resources" />
+</Lang>
