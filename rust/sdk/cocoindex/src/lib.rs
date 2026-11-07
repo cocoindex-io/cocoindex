@@ -240,11 +240,11 @@ pub use resources::chunk::{Chunk, TextPosition};
 pub use resources::embedder::Embedder;
 pub use resources::live_map::{LiveMap, LiveMapKey};
 pub use resources::rate_limit::RateLimiter;
-pub use resources::view::{SegmentKind, SourceView, ViewSegment};
 pub use resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,
 };
+pub use resources::view::{SegmentKind, SourceView, ViewSegment};
 pub use statediff::{
     CompositeTrackingRecord, DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord,
     TrackingRecordTransition, diff, diff_composite, resolve_system_transition,

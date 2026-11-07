@@ -310,9 +310,6 @@ redis = { version = "0.32.7", default-features = false, optional = true, feature
 ] }
 
 [dev-dependencies]
-# The crate's own tests use `cocoindex::testing`; a self dev-dependency is how
-# a crate enables one of its features for its tests.
-cocoindex = { path = ".", features = ["testing"] }
 tempfile = "3"
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
@@ -351,3 +348,25 @@ required-features = ["bench-support"]
 [[bench]]
 name = "entity_resolution"
 harness = false
+
+# These tests build their environment with `cocoindex::testing`, so they need
+# the `testing` feature; without it Cargo skips them instead of failing to
+# compile (`cargo check --all-targets` with no features). A self
+# dev-dependency would enable the feature too, but it links the crate twice
+# into its own unit tests and breaks the `linkme` registry (duplicate
+# `COCO_FN_LOGIC`).
+[[test]]
+name = "batching_runner"
+required-features = ["testing"]
+
+[[test]]
+name = "deadline"
+required-features = ["testing"]
+
+[[test]]
+name = "detailed_stats"
+required-features = ["testing"]
+
+[[test]]
+name = "mount"
+required-features = ["testing"]
