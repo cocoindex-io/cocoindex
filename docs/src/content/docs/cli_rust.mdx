@@ -3,12 +3,12 @@ title: The *CLI* reference
 description: >
   Reference for the `cocoindex` CLI for Rust projects — how it builds and drives
   your crate, the app target format, the three attributes an app registers with,
-  and the ls, show, update, drop and init subcommands.
+  and the ls, show, update, drop, init and google-drive subcommands.
 languages: [rust]
 # The Rust page in the CLI slot: /docs/rust/cli/.
 route: cli
 ---
-The `cocoindex` CLI for Rust projects gives a Rust pipeline the same commands the [Python CLI](/docs/cli/) has: `ls`, `show`, `update`, `drop`, `init` and `google-drive`. The Python prose on that page describes the Python tool; this page describes the Rust tool, which is a separate binary built from the `rust/cli` crate of the repository.
+The `cocoindex` CLI for Rust projects is a standalone tool for managing and inspecting your apps: `ls`, `show`, `update`, `drop`, `init` and `google-drive`. It is a binary of its own, built from the `rust/cli` crate of the repository. Python projects use the [Python CLI](/docs/cli/), which has the same subcommands.
 
 ## How it works
 
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
 }
 ```
 
-- `#[cocoindex::lifespan]` registers the environment setup: the state database path, the shared resources provided under context keys, and shutdown hooks. The function takes the `EnvironmentBuilder` by value and returns it. It is the Rust analogue of Python's `@coco.lifespan`. The same lifespan runs when your own code calls `Environment::from_registered()`.
+- `#[cocoindex::lifespan]` registers the environment setup: the state database path, the shared resources provided under context keys, and shutdown hooks. The function takes the `EnvironmentBuilder` by value and returns it. The same lifespan runs when your own code calls `Environment::from_registered()`.
 - `#[cocoindex::app(name = "...")]` registers an app entry point. The name defaults to the function name. The function keeps its signature and stays callable. App names must be unique within one binary.
 - `#[cocoindex::main]` makes your `async fn main` the entry point of a cocoindex binary. When the CLI started the binary, the CLI's request is answered before the body runs; otherwise the body runs as a normal `main`.
 
@@ -216,7 +216,7 @@ The scaffold is a crate with `Cargo.toml`, `src/main.rs` (a `lifespan`, an `app`
 
 ### `google-drive`
 
-Sign a personal Google account in to the Google Drive connector (experimental). The same two commands as the Python CLI, over the same token file, so one sign-in serves both SDKs; see [Google Drive](./connectors/google_drive#signing-in-with-a-personal-account).
+Sign a personal Google account in to the Google Drive connector (experimental). The Python CLI has the same two commands over the same token file, so one sign-in serves both SDKs; see [Google Drive](./connectors/google_drive#signing-in-with-a-personal-account).
 
 ```sh
 cocoindex google-drive sign-in [CLIENT_SECRETS]

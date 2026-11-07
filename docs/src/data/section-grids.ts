@@ -160,7 +160,7 @@ export const commonResourcesGroups: SectionGridGroup[] = [
         href: '/docs/common_resources/data_types/',
         title: 'Data types',
         glyph: 'types',
-        body: 'Shared models across connectors and ops: FileLike, FilePath, FilePathMatcher, Chunk, and the Embedder protocol.',
+        body: 'Shared models across connectors and ops: FileLike, FilePath, FilePathMatcher, Chunk, and the Embedder interface.',
       },
       {
         href: '/docs/common_resources/vector_schema/',

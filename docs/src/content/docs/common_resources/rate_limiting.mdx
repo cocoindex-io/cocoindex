@@ -6,12 +6,12 @@ description: >
 ---
 import LangTabs from '../../../components/LangTabs.astro';
 
-The rate-limiting module (`cocoindex.resources.rate_limit`) provides a
+The rate-limiting module (<Lang only="python">`cocoindex.resources.rate_limit`</Lang><Lang only="rust">`cocoindex::resources::rate_limit`</Lang>) provides a
 token-bucket `RateLimiter` for throttling outbound work — typically the API calls
 a pipeline makes to an external service — so it stays within that service's rate
 limit.
 
-{/* Rust: rust/sdk/cocoindex/src/resources/rate_limit.rs (signatures; no example or test calls RateLimiter yet) */}
+{/* Rust: rust/sdk/cocoindex/src/resources/rate_limit.rs (signatures checked against the source; no example or test calls RateLimiter yet, and the snippets are shaped after examples/rust/text_embedding) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -31,7 +31,7 @@ use cocoindex::resources::rate_limit::RateLimiter; // also in cocoindex::prelude
 
 ## RateLimiter
 
-A token-bucket limiter. Acquire tokens with `await limiter.acquire(n)`; the call
+A token-bucket limiter. Acquire tokens with <Lang only="python">`await limiter.acquire(n)`</Lang><Lang only="rust">`limiter.acquire(n).await?`</Lang>; the call
 returns once `n` tokens are available, otherwise it waits.
 
 {/* Rust: rust/sdk/cocoindex/src/resources/rate_limit.rs (signatures) */}
@@ -59,23 +59,40 @@ impl RateLimiter {
 }
 ```
 
-The Rust constructor has no default arguments: pass `Duration::from_secs(1)` for Python's default burst window, and `acquire(1)` for one token. An invalid rate (zero or negative) is an error from `new`.
-
 </Fragment>
 </LangTabs>
+
+<RustNote>
+The constructor and `acquire` have no default arguments: pass `Duration::from_secs(1)` for a one-second burst window, and `acquire(1)` for one token. An invalid rate (zero or negative) is an error from `new`, not a panic.
+</RustNote>
 
 **Constructor parameters:**
 
 - `max_rows_per_second` — the **sustained** rate, in tokens (think: units of
   work) per second. Fractional rates are supported (e.g. `2.5` → one token every
   0.4s). Must be positive.
+
+<Lang only="python">
+
 - `burst_window_secs` — the **burst** allowance, in seconds. Up to
   `max_rows_per_second * burst_window_secs` tokens may accumulate while the
   limiter is idle, letting a sudden fan-out proceed immediately before settling
   to the sustained rate. Defaults to `1.0` (a one-second burst). Set to `0.0` for
   no burst (strict spacing between tokens).
 
-**`acquire(n=1)`** — wait until `n` tokens are available, then consume them. A
+</Lang>
+
+<Lang only="rust">
+
+- `burst_window` — the **burst** allowance, as a `Duration`. Up to
+  `max_rows_per_second` × `burst_window` (in seconds) tokens may accumulate while the
+  limiter is idle, letting a sudden fan-out proceed immediately before settling
+  to the sustained rate. `Duration::from_secs(1)` gives a one-second burst;
+  `Duration::ZERO` gives no burst (strict spacing between tokens).
+
+</Lang>
+
+**<Lang only="python">`acquire(n=1)`</Lang><Lang only="rust">`acquire(n)`</Lang>** — wait until `n` tokens are available, then consume them. A
 single `RateLimiter` is safe to share across concurrent callers; they are served
 in **FIFO order**, so no caller can be starved.
 
@@ -112,11 +129,15 @@ of sharing is the instance: functions and components handed the *same*
 `RateLimiter` draw from one shared budget, while two separately-constructed
 limiters are two independent budgets — even with identical `max_rows_per_second`.
 
-The Rust `RateLimiter` is `Clone`, and every clone shares the one bucket. Cloning
+<Lang only="rust">
+
+`RateLimiter` is `Clone`, and every clone shares the one bucket. Cloning
 is the way to hand a limiter to several closures; it does not create a second budget.
 
+</Lang>
+
 The idiomatic way to share one budget is to bind a `RateLimiter` to a
-[context](../programming_guide/context) key and retrieve it with `coco.use_context`
+[context](../programming_guide/context) key and retrieve it with <Lang only="python">`coco.use_context`</Lang><Lang only="rust">`ctx.get_key`</Lang>
 wherever you make outbound calls. Every component then draws from the same budget,
 with no limiter to thread through each signature:
 
@@ -168,10 +189,12 @@ async fn fetch_one(ctx: &Ctx, item: Item) -> Result<Data> {
 </Fragment>
 </LangTabs>
 
-Because the key resolves to one shared instance, every `acquire()` across the app
+Because the key resolves to one shared instance, every `acquire` call across the app
 draws from the same 50/s budget.
 
 ## Pacing a batched function
+
+<Lang only="python">
 
 A [batched function](../programming_guide/function#batching) whose every batch is one request can take its tokens from the limiter itself: pass it as `rate_limiter`, and each batch takes one token before it runs. A token then pays for one batch rather than one call, and calls that arrive while the batcher waits for a token ride the next batch, so a scarce quota is spent on full batches. See [Pacing batches with a rate limiter](../programming_guide/function#pacing-batches-with-a-rate-limiter).
 
@@ -184,12 +207,22 @@ async def fetch_many(ids: list[str]) -> list[Item]:
     return await call_external_api(ids)  # one request per batch, one token each
 ```
 
-The Rust `#[cocoindex::function(batching, ..)]` has no `rate_limiter` option. Call `acquire(1)` at the start of the batched body instead: the body runs once per batch, so one token still pays for one batch.
+</Lang>
+
+<Lang only="rust">
+
+A [batched function](../programming_guide/function#batching) whose every batch is one request can pace itself on the limiter: call `acquire(1)` at the start of the batched body. The body runs once per batch, so a token pays for one batch rather than one call, and a scarce quota is spent on batches rather than on single items.
+
+</Lang>
+
+<RustNote>
+`#[cocoindex::function(batching, ..)]` has no `rate_limiter` option, so the batcher does not wait for a token before it forms a batch. Call `acquire(1)` in the body instead.
+</RustNote>
 
 ## When to use it
 
 Reach for a `RateLimiter` whenever a pipeline makes outbound calls to a
-rate-limited service — an API you query from a `@coco.fn`, an embedding or LLM
+rate-limited service — an API you query from a <Lang only="python">`@coco.fn`</Lang><Lang only="rust">`#[cocoindex::function]`</Lang>, an embedding or LLM
 endpoint, a bucket or database with a request cap — and you want the whole
 pipeline to stay within one budget rather than each call site guessing at its own
 `sleep`. Because a fan-out (e.g. one component per source item) can otherwise
