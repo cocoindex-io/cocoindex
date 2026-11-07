@@ -4,12 +4,16 @@ description: >
   How CocoIndex serializes memoized function returns with msgspec — supported
   types (primitives, collections, dataclasses, Pydantic, NumPy), required type
   annotations, custom type registration, and troubleshooting tips.
+rust_description: >
+  How CocoIndex serializes memoized function returns with serde — the
+  Serialize and Deserialize bounds, MemoInput for memo keys, and SchemaFields
+  for connector rows.
 ---
 import LangTabs from '../../../components/LangTabs.astro';
 
 ## Overview
 
-CocoIndex serializes and caches the return values of [memoized functions](./function#memoization) so that unchanged work can be skipped on subsequent runs. Most Python types work automatically — the key thing to get right is the **return type annotation**, which tells CocoIndex how to reconstruct your objects:
+CocoIndex serializes and caches the return values of [memoized functions](./function#memoization) so that unchanged work can be skipped on subsequent runs. <Lang only="python">Most Python types work automatically — the key thing to get right is the **return type annotation**, which tells CocoIndex how to reconstruct your objects:</Lang><Lang only="rust">The return type of a memoized function is static, so there is nothing to annotate: it must implement `serde::Serialize` and `serde::Deserialize`, which is how CocoIndex stores the value and reads it back:</Lang>
 
 {/* Rust: rust/sdk/SHOWCASE.md "Define functions", verified against rust/sdk/cocoindex/src/memo.rs (`cached` bounds) */}
 <LangTabs>
@@ -31,14 +35,14 @@ async fn parse_file(_ctx: &Ctx, file: FileEntry) -> Result<Vec<Section>> {
 }
 ```
 
-In Rust, the return type `T` of a memoized function must implement `serde::Serialize` and `serde::Deserialize`. The type is static, so there is nothing to annotate: derive both on `Section`.
+Derive both on `Section`: `#[derive(Serialize, Deserialize)]`.
 
 </Fragment>
 </LangTabs>
 
-Without annotations, values may deserialize as basic Python types (`dict`, `list`, `str`, etc.) instead of their original types.
+<Lang only="python">
 
-The rest of this page describes the Python types. The Rust SDK stores a value through `serde`; any type with a `Serialize` and `Deserialize` implementation works, including every `serde` container and derived struct. See [Rust rows and schemas](#rust-rows-and-schemas) for the Rust side of memo keys and connector rows.
+Without annotations, values may deserialize as basic Python types (`dict`, `list`, `str`, etc.) instead of their original types.
 
 :::info[Advanced: other places where serialization and type annotations matter]
 Serialization also applies to [memo states](../advanced_topics/memoization_keys#memo-state-validation) and [tracking records](../advanced_topics/custom_target_connector#targethandler-you-implement). If you're implementing these, add type annotations to:
@@ -159,13 +163,25 @@ If you see this error after upgrading, previously cached data may reference type
 - If the type is already a dataclass or NamedTuple, add `@coco.unpickle_safe` to allow reading the old cached data. Once the cache is rebuilt, the decorator can be removed.
 :::
 
-## Rust rows and schemas
+</Lang>
 
-The Rust SDK has no pickle path and no registration: three traits cover what this page describes for Python.
+<Lang only="rust">
 
-- **Memoized return values** are stored through `serde::Serialize` and read back through `serde::Deserialize`.
-- **Memo keys** (function arguments, `deps` values, change-detected context values) are fingerprinted through the `MemoInput` trait. Derive it with `#[derive(cocoindex::MemoInput)]`; every field is handled recursively, so the type needs no `Serialize`. It composes through `Option`, sequences, tuples, maps, sets, `Box` and `Arc`. `uuid::Uuid` and `serde_json::Value` are always available; the `chrono` and `rust_decimal` features add those leaf types, and a connector feature enables the leaf features it needs. Wrap another third-party type in a newtype when it appears inside derived data. A type with only `Serialize` is keyed by its serialized value; a target handle that is `Serialize` is keyed that way, by its stable key. A memoized function skips any other handle with `memo_key(table = skip)` (see [Function](./function#customizing-data-fingerprinting) and [target handles](../advanced_topics/memoization_keys)).
-- **Connector rows** are `serde::Serialize` structs with `#[derive(SchemaFields)]`. The connector's `TableSchema::from_row::<Row>(primary_key)` derives the columns from the struct, the Rust form of Python's `TableSchema.from_class`: an `Option<T>` field is a nullable column, every other field is `NOT NULL`.
+Three traits cover every value CocoIndex serializes or fingerprints; there is no registration step.
+
+## Return values
+
+A memoized return value is stored through `serde::Serialize` and read back through `serde::Deserialize`. Any type with both implementations works: primitives, `String`, every `serde` container, `Option`, tuples, and structs and enums with `#[derive(Serialize, Deserialize)]`, nested to any depth.
+
+A cache hit deserializes the stored value into the function's return type. If you change that type's shape (rename or retype a field) without changing the function, a stored value that no longer deserializes fails the call with an error. Bump the function's [`version`](./function#version), or rebuild the cache with `UpdateOptions { full_reprocess: true, .. }` or [`cocoindex update --full-reprocess`](../cli_rust).
+
+## Memo keys
+
+Memo keys (function arguments, `deps` values, change-detected context values) are fingerprinted through the `MemoInput` trait. Derive it with `#[derive(cocoindex::MemoInput)]`; every field is handled recursively, so the type needs no `Serialize`. It composes through `Option`, sequences, tuples, maps, sets, `Box` and `Arc`. `uuid::Uuid` and `serde_json::Value` are always available; the `chrono` and `rust_decimal` features add those leaf types, and a connector feature enables the leaf features it needs. Wrap another third-party type in a newtype when it appears inside derived data. A type with only `Serialize` is keyed by its serialized value; a target handle that is `Serialize` is keyed that way, by its stable key. A memoized function skips any other handle with `memo_key(table = skip)` (see [Function](./function#customizing-data-fingerprinting) and [target handles](../advanced_topics/memoization_keys)).
+
+## Connector rows
+
+Connector rows are `serde::Serialize` structs with `#[derive(SchemaFields)]`. The connector's `TableSchema::from_row::<Row>(primary_key)` derives the columns from the struct: an `Option<T>` field is a nullable column, every other field is `NOT NULL`.
 
 {/* Rust: rust/sdk/cocoindex/tests/schema_from_row.rs (`postgres_from_row_matches_explicit_schema`), rust/sdk/SHOWCASE.md "Derive connector schemas from row types" (verified) */}
 ```rust
@@ -205,4 +221,6 @@ The field attributes are:
 | `#[coco(type = "...")]` | A raw connector column type, used as written |
 | `#[coco(rename = "...")]` | A different column name |
 
-`with_column_type(field, type)` replaces one column's type for this schema only; use it when one row struct feeds two connectors. Python's `from_class(column_overrides=...)` also carries a value encoder; in Rust the row is encoded by its `Serialize` implementation, so put `#[serde(serialize_with = "...")]` on the field.
+`with_column_type(field, type)` replaces one column's type for this schema only; use it when one row struct feeds two connectors. To encode one field's value differently, put `#[serde(serialize_with = "...")]` on it: the row is encoded by its `Serialize` implementation.
+
+</Lang>

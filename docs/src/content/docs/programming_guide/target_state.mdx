@@ -186,7 +186,7 @@ let target_table = postgres::mount_table_target(
 target_table.declare_row(ctx, &DocEmbedding { /* ... */ })?;
 ```
 
-The row type derives `SchemaFields`, and `TableSchema::from_row::<Row>(keys)` builds the schema from it. See [Serialization](./serialization#rust-rows-and-schemas).
+The row type derives `SchemaFields`, and `TableSchema::from_row::<Row>(keys)` builds the schema from it. See Connector rows in [Serialization](./serialization).
 
 </Fragment>
 </LangTabs>
