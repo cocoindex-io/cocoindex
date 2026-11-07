@@ -12,7 +12,7 @@
 //!   cargo run -- search "cybersecurity risk" [--source filing|facts]
 //!
 //! Parallels the Python example:
-//!   - per-file compute  : `ctx.mount_each` + `#[cocoindex::function]` (cf. `coco.mount_each`)
+//!   - per-file compute  : `mount_each!` + `#[cocoindex::function]` (cf. `coco.mount_each`)
 //!   - chunking          : `cocoindex::ops::text::RecursiveSplitter` (cf. `RecursiveSplitter`)
 //!   - embeddings        : `cocoindex::ops::sentence_transformers` all-MiniLM-L6-v2
 //!   - target            : `doris::TableTarget` with `VectorIndexDef` + `InvertedIndexDef`
@@ -357,24 +357,13 @@ async fn app_main(ctx: Ctx, data_dir: PathBuf) -> Result<()> {
 
     // Both source formats fan into the same table, one component per file.
     let filing_table = table.clone();
-    ctx.mount_each(
-        filings,
-        |(key, _)| format!("filing/{key}"),
-        move |ctx, (_, file)| {
-            let table = filing_table.clone();
-            async move { process_filing(&ctx, file, table).await }
-        },
-    )
+    mount_each!("filing", filings, |file| process_filing(
+        ctx,
+        file,
+        filing_table
+    ))
     .await?;
-    ctx.mount_each(
-        facts,
-        |(key, _)| format!("facts/{key}"),
-        move |ctx, (_, file)| {
-            let table = table.clone();
-            async move { process_facts(&ctx, file, table).await }
-        },
-    )
-    .await?;
+    mount_each!("facts", facts, |file| process_facts(ctx, file, table)).await?;
     Ok(())
 }
 
