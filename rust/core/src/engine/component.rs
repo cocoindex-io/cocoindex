@@ -1191,7 +1191,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                             Err(propagated) => Err(SharedError::from(propagated)),
                         }
                     } else {
-                        error!("component build failed:\n{err:?}");
+                        error!("component build failed at {}:\n{err:?}", self.stable_path());
                         Ok(())
                     };
                     (ComponentRunOutcome::exception(), task_result)
@@ -1256,7 +1256,10 @@ impl<Prof: EngineProfile> Component<Prof> {
                                 Err(propagated) => Err(SharedError::from(propagated)),
                             }
                         } else {
-                            error!("component delete failed:\n{err:?}");
+                            error!(
+                                "component delete failed at {}:\n{err:?}",
+                                self.stable_path()
+                            );
                             Ok(())
                         };
                         (ComponentRunOutcome::exception(), task_result)
@@ -1635,6 +1638,15 @@ impl<Prof: EngineProfile> Component<Prof> {
                 Ok((children_outcome, build_output))
             }
             Err(err) => {
+                if !err.is_cancelled() {
+                    let message = err.to_string();
+                    let message = message.lines().find(|l| !l.trim().is_empty());
+                    processing_stats.record_failure(crate::engine::stats::FailureRecord {
+                        processor: final_processor_name.to_string(),
+                        component: self.stable_path().to_string(),
+                        message: message.unwrap_or_default().trim().to_string(),
+                    });
+                }
                 processing_stats.update(final_processor_name, |stats| {
                     if reported_processor_name.is_none() {
                         stats.num_execution_starts += 1;

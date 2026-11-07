@@ -281,7 +281,7 @@ impl<Prof: EngineProfile> App<Prof> {
                 // are still releasing.
                 root_component.app_ctx().app_reg().unregister();
 
-                info!("App dropped successfully");
+                debug!("App dropped successfully");
                 stats_for_task.notify_terminated();
                 Ok(())
             }
