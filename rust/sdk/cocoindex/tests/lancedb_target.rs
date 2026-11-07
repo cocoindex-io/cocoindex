@@ -856,6 +856,57 @@ async fn lancedb_stores_every_integer_width_and_float16() -> Result<()> {
     Ok(())
 }
 
+/// An FTS index stores token positions by default, as in the Python connector,
+/// so it answers a phrase query.
+#[tokio::test]
+async fn lancedb_fts_index_answers_phrase_queries_by_default() -> Result<()> {
+    use ::lancedb::index::scalar::{FtsQuery, FullTextSearchQuery, PhraseQuery};
+    use ::lancedb::query::{ExecutableQuery, QueryBase};
+    use futures::TryStreamExt;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceFtsPhraseTest")
+        .await?;
+    app.run(move |ctx| async move {
+        let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+        for (id, text) in [(1, "red fox jumps"), (2, "fox red jumps")] {
+            table.declare_row(
+                &ctx,
+                &Row {
+                    id,
+                    text: text.to_string(),
+                    embedding: vec![0.1, 0.2, 0.3],
+                },
+            )?;
+        }
+        table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+        Ok(())
+    })
+    .await?;
+
+    let table = db.connection().open_table(TABLE).execute().await.unwrap();
+    let phrase = PhraseQuery::new("red fox".to_string()).with_column(Some("text".to_string()));
+    let batches: Vec<_> = table
+        .query()
+        .full_text_search(FullTextSearchQuery::new_query(FtsQuery::Phrase(phrase)))
+        .execute()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    let hits: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(hits, 1, "only the row with the words in order matches");
+    Ok(())
+}
+
 /// `connect_with_options` passes the options Python's `connect_async(uri,
 /// **options)` takes; the state id stays the URI.
 #[tokio::test]

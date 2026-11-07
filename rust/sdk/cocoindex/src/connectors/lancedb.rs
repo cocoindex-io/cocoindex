@@ -1061,10 +1061,7 @@ struct RowHandler {
     /// [`TRANSACTIONS_BEFORE_OPTIMIZE`] batches (see [`apply_rows`]).
     optimize_counter: Arc<std::sync::atomic::AtomicU64>,
     /// The table handle, opened (and for a system-managed table, ensured) by
-    /// the first row batch of the run and reused by every later one: a handle
-    /// writes on the table's latest version, so a reopen per batch only costs
-    /// the listing, open and schema read. A run that recreates the table gets
-    /// a new handler, so a handle never outlives its table (see
+    /// the first row batch of the run and reused by every later one (see
     /// [`open_table_for_rows`]).
     table: Arc<OnceCell<Table>>,
     null_backfilled_columns: BTreeSet<String>,
@@ -1241,11 +1238,23 @@ impl RowHandler {
 /// [`declare_table_target`] rows can arrive before the table sink runs.
 /// User-managed targets leave DDL to the caller and let `open_table` surface
 /// a missing table.
+///
+/// A reused handle moves to the table's latest version first: a merge joins
+/// against the version its handle has checked out, and a handle does not
+/// reload by itself under the default read consistency. Another handle may have
+/// written since (an index sink, or the table sink recreating the table).
 async fn open_table_for_rows<'a>(
     cache: &'a OnceCell<Table>,
     db: &LanceDatabase,
     spec: &TableSpec,
 ) -> Result<&'a Table> {
+    if let Some(table) = cache.get() {
+        table
+            .checkout_latest()
+            .await
+            .map_err(|e| Error::engine(format!("lancedb reload table: {e}")))?;
+        return Ok(table);
+    }
     cache
         .get_or_try_init(|| async {
             if spec.managed_by.is_system() {
@@ -2668,7 +2677,8 @@ mod tests {
 
     /// The row batches of a run write through one table handle: the first
     /// batch ensures and opens the table, every later batch reuses the handle
-    /// (no table listing, open or schema read per batch).
+    /// (no table listing, open or schema read per batch). The handle still sees
+    /// what another handle wrote, and a table recreated under it.
     #[tokio::test]
     async fn row_batches_of_a_run_share_one_table_handle() {
         let tempdir = tempfile::tempdir().unwrap();
@@ -2709,5 +2719,34 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(first.count_rows(None).await.unwrap(), 3);
+
+        let row = |id: i64, name: &str| {
+            let mut row = Map::new();
+            row.insert("id".into(), JsonValue::from(id));
+            row.insert("name".into(), JsonValue::from(name));
+            row.insert("embedding".into(), JsonValue::from(vec![0.1, 0.2, 0.3]));
+            row
+        };
+        let batch = async |rows: Vec<Map<String, JsonValue>>| {
+            let table = open_table_for_rows(&handler.table, &db, &spec)
+                .await
+                .unwrap();
+            apply_rows(table, &spec, rows, vec![], &counter)
+                .await
+                .unwrap();
+            table.count_rows(None).await.unwrap()
+        };
+
+        // A row another handle wrote is matched, not inserted a second time.
+        let other = db.conn.open_table("docs").execute().await.unwrap();
+        apply_rows(&other, &spec, vec![row(4, "other")], vec![], &counter)
+            .await
+            .unwrap();
+        assert_eq!(batch(vec![row(4, "cached")]).await, 4);
+
+        // A table recreated under the handle receives the next batch.
+        drop_table(&db, "docs").await.unwrap();
+        create_empty_table(&db, &spec).await.unwrap();
+        assert_eq!(batch(vec![row(9, "new")]).await, 1);
     }
 }

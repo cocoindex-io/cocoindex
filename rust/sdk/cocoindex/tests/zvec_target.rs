@@ -859,7 +859,7 @@ async fn array_fields_round_trip() -> Result<()> {
     assert_eq!(doc.get_array_i64("ints").unwrap(), Some(vec![1, 2, 3]));
     assert_eq!(doc.get_array_f64("floats").unwrap(), Some(vec![1.5, 2.5]));
     // zvec-rust 0.8's getter cannot read an `ARRAY_BOOL` field back ("Unknown
-    // data type"); the field is stored, and the Python connector reads it.
+    // data type"), so this checks only that the field is present.
     assert!(doc.has_field("flags") && !doc.is_field_null("flags"));
     assert_eq!(doc.get_array_i32("small").unwrap(), Some(vec![7, 8]));
     Ok(())
