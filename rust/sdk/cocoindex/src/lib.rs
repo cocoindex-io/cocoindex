@@ -116,6 +116,8 @@ pub use resources::view::{SegmentKind, SourceView, ViewSegment};
 // The content/memo fingerprint type: `memo::key_fingerprint_result`,
 // `FileMetadata::content_fingerprint` and `FileLike::content_fingerprint`
 // return it, and `MemoInput` accepts a precomputed one.
+pub use cocoindex_core::state::component_selector::ComponentSelector;
+pub use cocoindex_core::state::stable_path::StablePath;
 pub use cocoindex_utils::fingerprint::Fingerprint;
 pub use resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
