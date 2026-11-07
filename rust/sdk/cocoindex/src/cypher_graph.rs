@@ -30,6 +30,15 @@ pub(crate) struct CypherStatement {
     pub(crate) params: CypherParams,
 }
 
+/// How [`CypherExecutor::execute_batch`] ended, short of a failure to report.
+pub(crate) enum BatchOutcome {
+    Applied,
+    /// The transaction went over the server's memory limit and rolled back. The
+    /// same statements fail the same way again, so the chunk they apply is split
+    /// in two instead of retried (Python's `_is_memory_limit`).
+    OverMemoryLimit(Error),
+}
+
 /// One transaction applies at most this many record actions (Python's
 /// `_MAX_ACTIONS_PER_TXN`): a batch is otherwise unbounded. A chunk can still
 /// go over the server's transaction memory limit (large properties); it is
@@ -56,19 +65,12 @@ pub(crate) trait CypherExecutor: Clone + Send + Sync + 'static {
     /// Execute data-bearing statements as one unit. Neo4j runs them in one
     /// transaction; the default runs them one after the other, for a dialect
     /// with no multi-statement transaction (FalkorDB).
-    async fn execute_batch(&self, statements: &[CypherStatement]) -> Result<()> {
+    async fn execute_batch(&self, statements: &[CypherStatement]) -> Result<BatchOutcome> {
         for statement in statements {
             self.execute_with_params(&statement.cypher, &statement.params)
                 .await?;
         }
-        Ok(())
-    }
-
-    /// Whether `error` reports a transaction over the server's memory limit:
-    /// the same statements fail the same way again, so the chunk they apply
-    /// is split in two instead of retried (Python's `_is_memory_limit`).
-    fn is_transaction_too_large(&self, _error: &Error) -> bool {
-        false
+        Ok(BatchOutcome::Applied)
     }
 
     async fn execute_unique_constraint(
@@ -1680,14 +1682,14 @@ async fn apply_chunk<C: CypherExecutor>(
     chunk: &[RecordAction],
 ) -> Result<()> {
     let statements = record_statements(spec, chunk)?;
-    match graph.execute_batch(&statements).await {
-        Ok(()) => Ok(()),
-        Err(error) if chunk.len() > 1 && graph.is_transaction_too_large(&error) => {
+    match graph.execute_batch(&statements).await? {
+        BatchOutcome::Applied => Ok(()),
+        BatchOutcome::OverMemoryLimit(error) if chunk.len() == 1 => Err(error),
+        BatchOutcome::OverMemoryLimit(_) => {
             let (first, second) = chunk.split_at(chunk.len() / 2);
             Box::pin(apply_chunk(graph, spec, first)).await?;
             Box::pin(apply_chunk(graph, spec, second)).await
         }
-        Err(error) => Err(error),
     }
 }
 
@@ -2445,13 +2447,13 @@ mod tests {
             Ok(())
         }
 
-        async fn execute_batch(&self, statements: &[CypherStatement]) -> Result<()> {
+        async fn execute_batch(&self, statements: &[CypherStatement]) -> Result<BatchOutcome> {
             self.batches.lock().unwrap().push(statements.len());
             for statement in statements {
                 self.execute_with_params(&statement.cypher, &statement.params)
                     .await?;
             }
-            Ok(())
+            Ok(BatchOutcome::Applied)
         }
 
         async fn execute_unique_constraint(
@@ -2541,7 +2543,7 @@ mod tests {
             state: None,
         };
         // Deletes interleaved with upserts: the batch applies upserts first.
-        let actions = (0..2500)
+        let actions = (0..1500)
             .map(|i| if i % 5 == 0 { delete(i) } else { upsert(i) })
             .collect::<Vec<_>>();
 
@@ -2549,9 +2551,9 @@ mod tests {
             .await
             .unwrap();
 
-        // 2,000 upserts, then 500 deletes: three transactions, the second
-        // holding both shapes.
-        assert_eq!(graph.batches(), vec![1, 1, 1]);
+        // 1,200 upserts, then 300 deletes: two transactions, the second holding
+        // both shapes.
+        assert_eq!(graph.batches(), vec![1, 2]);
         let calls = graph.param_calls();
         let shapes = calls
             .iter()
@@ -2566,11 +2568,11 @@ mod tests {
                 ),
                 (
                     "UNWIND $rows AS row MERGE (n:`Person` {`id`: row.key}) SET n += row.props",
-                    1000
+                    200
                 ),
                 (
                     "UNWIND $rows AS row MATCH (n:`Person` {`id`: row.key}) DETACH DELETE n",
-                    500
+                    300
                 ),
             ]
         );
@@ -2604,16 +2606,12 @@ mod tests {
             self.inner.execute_with_params(cypher, params).await
         }
 
-        async fn execute_batch(&self, statements: &[CypherStatement]) -> Result<()> {
+        async fn execute_batch(&self, statements: &[CypherStatement]) -> Result<BatchOutcome> {
             let total: usize = statements.iter().map(|s| rows(&s.params).len()).sum();
             if total > self.max_rows {
-                return Err(Error::engine("too large"));
+                return Ok(BatchOutcome::OverMemoryLimit(Error::engine("too large")));
             }
             self.inner.execute_batch(statements).await
-        }
-
-        fn is_transaction_too_large(&self, error: &Error) -> bool {
-            error.to_string().contains("too large")
         }
     }
 
@@ -2646,6 +2644,20 @@ mod tests {
             .flat_map(|(_, params)| rows(params).iter().map(|row| row["key"].clone()))
             .collect::<Vec<_>>();
         assert_eq!(keys, (0..10).map(JsonValue::from).collect::<Vec<_>>());
+
+        // A single record over the limit has nothing left to split: it fails.
+        let graph = MemoryLimitedGraph {
+            inner: RecordingGraph::new("neo4j"),
+            max_rows: 0,
+        };
+        let action = RecordAction {
+            record_id: KeyValue::Int(1),
+            state: None,
+        };
+        let err = apply_records(&graph, &person_spec("INTEGER"), vec![action])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("too large"), "{err}");
     }
 
     #[test]

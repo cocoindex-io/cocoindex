@@ -44,11 +44,6 @@ fn is_transient(e: &neo4rs::Error) -> bool {
     matches!(e, neo4rs::Error::Neo4j(err) if err.kind() == neo4rs::Neo4jErrorKind::Transient)
 }
 
-/// The marker [`cypher_graph::CypherExecutor::is_transaction_too_large`]
-/// recognizes in an error [`Graph::execute_batch`] raised for a transaction
-/// over the memory limit.
-const MEMORY_LIMIT_MARKER: &str = "neo4j transaction over the server's memory limit: ";
-
 fn normalize_uri(uri: &str) -> String {
     uri.strip_prefix("bolt://")
         .or_else(|| uri.strip_prefix("neo4j://"))
@@ -122,7 +117,10 @@ impl cypher_graph::CypherExecutor for Graph {
     /// Run `statements` in one transaction, retried on a transient error (a
     /// deadlock: Neo4j expects the client to retry). A failure rolls the
     /// transaction back and raises.
-    async fn execute_batch(&self, statements: &[cypher_graph::CypherStatement]) -> Result<()> {
+    async fn execute_batch(
+        &self,
+        statements: &[cypher_graph::CypherStatement],
+    ) -> Result<cypher_graph::BatchOutcome> {
         let queries = statements
             .iter()
             .map(|statement| bolt_query(&statement.cypher, &statement.params))
@@ -131,9 +129,9 @@ impl cypher_graph::CypherExecutor for Graph {
         let mut attempt = 1;
         loop {
             match self.run_in_txn(&queries).await {
-                Ok(()) => return Ok(()),
+                Ok(()) => return Ok(cypher_graph::BatchOutcome::Applied),
                 Err(e) if is_memory_limit(&e) => {
-                    return Err(Error::engine(format!("{MEMORY_LIMIT_MARKER}{e}")));
+                    return Ok(cypher_graph::BatchOutcome::OverMemoryLimit(neo4j_error(e)));
                 }
                 Err(e) if is_retryable(&e) && attempt < TXN_MAX_ATTEMPTS => {
                     tokio::time::sleep(backoff).await;
@@ -143,10 +141,6 @@ impl cypher_graph::CypherExecutor for Graph {
                 Err(e) => return Err(neo4j_error(e)),
             }
         }
-    }
-
-    fn is_transaction_too_large(&self, error: &Error) -> bool {
-        error.to_string().contains(MEMORY_LIMIT_MARKER)
     }
 }
 
