@@ -4,6 +4,10 @@ description: >
   Use ContextKey, builder.provide(), and use_context() to share connections,
   models, and config across processing components. Covers change detection on
   context values and accessing context outside mount boundaries.
+rust_description: >
+  Use context_key!, EnvironmentBuilder::provide_key() and ctx.get_key() to share
+  connections, models, and config across processing components. Covers change
+  detection on context values and the query path outside an update.
 ---
 import LangTabs from '../../../components/LangTabs.astro';
 
@@ -11,7 +15,7 @@ CocoIndex provides a **context** mechanism for sharing resources across your pip
 
 ## ContextKey
 
-A `ContextKey[T]` is a typed key that identifies a resource. Define keys at module level:
+A <Lang only="python">`ContextKey[T]`</Lang><Lang only="rust">`ContextKey<T>`</Lang> is a typed key that identifies a resource. Define keys at module level:
 
 {/* Rust: examples/rust/text_embedding/src/main.rs; `key = "..."` form from rust/sdk/SHOWCASE.md "Declare typed context resources", verified against `context_key!` in rust/sdk/cocoindex/src/ctx.rs */}
 <LangTabs>
@@ -57,15 +61,35 @@ cocoindex::context_key!(
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 The type parameter (`asyncpg.Pool`, `SentenceTransformerEmbedder`) enables type checking — when you retrieve the value, your editor knows its type.
 
+</Lang>
+
+<Lang only="rust">
+
+The type parameter (`postgres::Database`, `SentenceTransformerEmbedder`) is the type of the value: providing a value of another type does not compile, and retrieving the value returns a `&T`.
+
+</Lang>
+
 ### Change detection
+
+<Lang only="python">
 
 By default, context keys have **change detection disabled** — changing the provided value between runs does not automatically invalidate memoized functions that consumed it via `use_context()`. To opt in to change detection, pass `detect_change=True`. When enabled, [context changes](./function#change-detection) are their own category — tracked by `use_context()` at the call site, independent of `@coco.fn`. When a fingerprint changes, any memoized function whose execution involved a `use_context()` call on that key is invalidated.
 
 Use `detect_change=True` for resources that affect computation results — models, configuration objects, etc. This ensures memoized functions re-execute when those values change. Resources that don't affect computation results (database connections, loggers, debug flags, monitoring clients) can use the default (`detect_change=False`).
 
-In Rust, a `detect_change` key fingerprints its value through the `MemoInput` trait, and `ctx.get_key(&KEY)?` records the dependency. Derive `MemoInput` for your own configuration types; each field is handled recursively, so the type needs no `Serialize`:
+</Lang>
+
+<Lang only="rust">
+
+By default, context keys have **change detection disabled** — changing the provided value between runs does not invalidate memoized functions that read it with `ctx.get_key()`. To opt in to change detection, add `detect_change` to the `context_key!` declaration. When enabled, [context changes](./function#change-detection) are their own category — tracked by `ctx.get_key()` at the call site, independent of `#[cocoindex::function]`. When a fingerprint changes, any memoized function whose execution read that key with `ctx.get_key()` is invalidated.
+
+Use `detect_change` for resources that affect computation results — models, configuration objects, etc. This ensures memoized functions re-execute when those values change. Resources that don't affect computation results (database connections, loggers, debug flags, monitoring clients) can use the default, without `detect_change`.
+
+A `detect_change` key fingerprints its value through the `MemoInput` trait. Derive `MemoInput` for your own configuration types; each field is handled recursively, so the type needs no `Serialize`:
 
 {/* Rust: rust/sdk/SHOWCASE.md "Declare typed context resources", verified against `derive(MemoInput)` in rust/sdk/cocoindex_macros/src/lib.rs */}
 ```rust
@@ -78,8 +102,10 @@ struct AppConfig {
 cocoindex::context_key!(static CONFIG: AppConfig, detect_change);
 ```
 
+</Lang>
+
 :::tip
-Change detection is transitive: if function `foo` (memoized) calls function `bar`, and `bar` calls `use_context(key)` on a change-detected key, then `foo`'s memo is also invalidated when the context value changes.
+Change detection is transitive: if function `foo` (memoized) calls function `bar`, and `bar` reads a change-detected key<Lang only="python"> with `use_context(key)`</Lang><Lang only="rust"> with `ctx.get_key(&KEY)`</Lang>, then `foo`'s memo is also invalidated when the context value changes.
 :::
 
 ## ContextKey as stable identity
@@ -98,14 +124,18 @@ This has two consequences:
 Pick a `ContextKey` name that reflects the *logical* role of the resource, not its current address. The name is what CocoIndex persists.
 
 - **Applications**: use any descriptive name — e.g., `"text_embedding_db"`, `"docs_root"`.
-- **Libraries**: prefix with your package name and a `/` to avoid collisions with application keys or other libraries — e.g., `"my_library/db"`, `"cocoindex.connectors.postgres/pool"`.
+- **Libraries**: prefix with your package name and a `/` to avoid collisions with application keys or other libraries — e.g., <Lang only="python">`"my_library/db"`, `"cocoindex.connectors.postgres/pool"`</Lang><Lang only="rust">`"my_crate/db"`</Lang>.
 :::
 
-In Rust, the persisted name is the identifier of the `context_key!` static by default, so a rename of the static is a rename of the key. Pass `key = "..."` to keep the old name, or to give a library key its prefix.
+<Lang only="rust">
+
+The persisted name is the identifier of the `context_key!` static by default, so a rename of the static is a rename of the key. Pass `key = "..."` to keep the old name, or to give a library key its prefix. A key name is unique within a process: constructing a second key with the same name panics.
+
+</Lang>
 
 ## Providing values
 
-In your [lifespan function](./app#defining-a-lifespan), use `builder.provide()` to make resources available:
+In your [lifespan function](./app#defining-a-lifespan), use <Lang only="python">`builder.provide()`</Lang><Lang only="rust">`builder.provide_key()`</Lang> to make resources available:
 
 {/* Rust: examples/rust/text_embedding/src/main.rs */}
 <LangTabs>
@@ -145,11 +175,11 @@ async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
 </Fragment>
 </LangTabs>
 
-The resource is available for the lifetime of the environment. When the lifespan exits (after `yield`), cleanup happens automatically if you use a context manager pattern.
+The resource is available for the lifetime of the environment. <Lang only="python">When the lifespan exits (after `yield`), cleanup happens automatically if you use a context manager pattern.</Lang><Lang only="rust">When the environment shuts down (`Environment::shutdown`), it runs the `on_shutdown` hooks, the most recently registered first, and then closes its state database.</Lang>
 
 ## Retrieving values
 
-In processing components, use `coco.use_context()` to retrieve provided resources:
+In processing components, use <Lang only="python">`coco.use_context()`</Lang><Lang only="rust">`ctx.get_key()`</Lang> to retrieve provided resources:
 
 {/* Rust: examples/rust/text_embedding/src/main.rs */}
 <LangTabs>
@@ -199,7 +229,17 @@ async fn process_chunk(
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 Some connectors also accept `ContextKey`s directly as a convenience — for example, `postgres.mount_table_target()` takes a `ContextKey[asyncpg.Pool]` and resolves the connection internally:
+
+</Lang>
+
+<Lang only="rust">
+
+Connectors also accept `ContextKey`s directly — for example, `postgres::mount_table_target()` takes a `&ContextKey<postgres::Database>` and resolves the connection internally:
+
+</Lang>
 
 {/* Rust: examples/rust/text_embedding/src/main.rs */}
 <LangTabs>
@@ -238,7 +278,7 @@ async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
 }
 ```
 
-Every Rust connector target takes its connection as a `&ContextKey<T>`, so the key is the target's stable identity, as in Python.
+Every connector target takes its connection as a `&ContextKey<T>`, so the key is the target's stable identity.
 
 </Fragment>
 </LangTabs>
@@ -498,6 +538,8 @@ The full program, with `main` and a pgvector query path, is `examples/rust/text_
 
 ## Accessing context outside processing components
 
+<Lang only="python">
+
 If you need to access context values outside of CocoIndex processing components (for example, in query/serving logic that shares resources with your indexing pipeline) use `env.get_context()`:
 
 ```python
@@ -507,10 +549,16 @@ db = env.get_context(PG_DB)
 
 `default_env()` is async. From synchronous code, start the environment with `coco.start_blocking()` and then read the value with `asyncio.run(coco.default_env()).get_context(PG_DB)`, or keep the pool yourself outside the lifespan (see the query section of `examples/text_embedding/main.py`).
 
-The Rust `Environment` has no `get_context`: outside an update there is no `Ctx`. Keep the resource yourself for the query path, as the `query` branch of `examples/rust/text_embedding/src/main.rs` does with its own pool and embedder.
-
 This is useful when your application runs both indexing and serving in the same process and you want to initialize shared resources (like database connection pools or configuration) once in the lifespan.
 
 :::note
 `default_env()` starts the environment if it hasn't been started yet, which runs the lifespan function. If you're using an explicit environment, call `get_context()` directly on that environment instance.
 :::
+
+</Lang>
+
+<Lang only="rust">
+
+Context values are read through a `Ctx`, and a `Ctx` exists only inside an update. `Environment` has no method that returns a provided value. For query or serving logic that runs outside an update, keep the resource yourself: the `query` branch of `examples/rust/text_embedding/src/main.rs` connects its own pool and loads its own embedder.
+
+</Lang>

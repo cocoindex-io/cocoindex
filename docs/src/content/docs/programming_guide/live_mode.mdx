@@ -4,21 +4,25 @@ description: >
   Keep an App running after its initial sweep so it reacts to source changes
   continuously. Covers live=True on apps, watchers, and live-aware connectors
   like the local filesystem and Kafka.
+rust_description: >
+  Keep an App running after its initial sweep so it reacts to source changes
+  continuously. Covers UpdateOptions { live: true }, ctx.mount_each_live, and
+  live-aware connectors like the local filesystem and Kafka.
 ---
 import LangTabs from '../../../components/LangTabs.astro';
 
-By default, calling `app.update()` runs in **catch-up mode**: it scans all sources, processes what changed since the last run (memoized components are skipped, so unchanged work is not redone), syncs target states, and returns. Targets are caught up to the moment the run started, and that's it — to pick up further changes, you call `update()` again.
+By default, an update (<Lang only="python">`app.update()`</Lang><Lang only="rust">`app.update(body)`</Lang>) runs in **catch-up mode**: it scans all sources, processes what changed since the last run (memoized components are skipped, so unchanged work is not redone), syncs target states, and returns. Targets are caught up to the moment the run started, and that's it — to pick up further changes, you run an update again.
 
 **Live mode** keeps the app running after catch-up finishes and lets components stream changes continuously from their sources (e.g. a file system watcher or a database change feed), applying them to target states with low latency. This is useful when:
 
-- You want near-real-time reactions to source changes, instead of waiting for the next `update()` call
+- You want near-real-time reactions to source changes, instead of waiting for the next update
 - Your sources can push changes more efficiently than a full rescan can discover them
 
 Two things are needed for live mode to work: the app must be **enabled** to stay running, and somewhere in the component tree a component must **react** to changes.
 
 ## Enabling live mode
 
-Pass `live=True` when updating the app:
+<Lang only="python">Pass `live=True` when updating the app:</Lang><Lang only="rust">Set `live: true` in the `UpdateOptions` of the update:</Lang>
 
 {/* Rust: examples/rust/kafka_consume/src/main.rs, rust/sdk/cocoindex/tests/fs_live.rs */}
 <LangTabs>
@@ -54,7 +58,7 @@ handle.result().await?;
 
 From the CLI:
 
-{/* Rust: /tmp/coco-land-rust-cli-help.txt (`cocoindex update --help`) */}
+{/* Rust: rust/cli/src/main.rs (`update` command, `-L` / `--live`) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -76,15 +80,29 @@ cocoindex update -L
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 The `live` flag propagates top-down through the component tree — both `coco.mount()` and `coco.use_mount()` inherit `live` from the parent, so children are live when the app is live.
 
 Without `live=True` on the app, the app runs in catch-up mode — everything completes after the initial scan, even if a source supports live watching.
+
+</Lang>
+
+<Lang only="rust">
+
+The `live` flag propagates top-down through the component tree — both `mount!` and `use_mount!` (and the `ctx.mount` / `ctx.scope` methods behind them) inherit `live` from the parent, so children are live when the app is live.
+
+Without `live: true` on the update, the app runs in catch-up mode — everything completes after the initial scan, even if a source supports live watching.
+
+</Lang>
 
 ## Reacting to changes
 
 Enabling live mode keeps the app running, but something in the component tree needs to actually watch for changes. That something is a [**LiveComponent**](../advanced_topics/live_component) — a component with a long-running `process_live()` method that delivers incremental updates.
 
 You rarely need to write a `LiveComponent` manually. The two most common patterns are:
+
+<Lang only="python">
 
 ### Sources with `LiveMapView` or `LiveMapFeed`
 
@@ -95,6 +113,21 @@ Source connectors can provide live capabilities via two [protocols](../advanced_
 
 When `mount_each()` receives either, it automatically creates a `LiveComponent` internally that:
 
+</Lang>
+
+<Lang only="rust">
+
+### Sources with `LiveMapView`
+
+Source connectors provide live capabilities through two [traits](../advanced_topics/live_component#livemapfeed-and-livemapview):
+
+- **`LiveMapFeed`** — `watch` streams changes to a subscriber. A feed with no snapshot to scan works only in live mode.
+- **`LiveMapView`** — a `LiveMapFeed` that also has a `scan` of its current state, so it works in both catch-up and live modes. Examples: [`walk_dir(..).live()`](../connectors/localfs#live-file-watching) and [`kafka::topic_as_map`](../connectors/kafka#as-source).
+
+`ctx.mount_each_live(&key, feed, f)` takes a `LiveMapView` and mounts one child component per key. It creates a `LiveComponent` internally that:
+
+</Lang>
+
 1. **Scans current state** (if available) — iterates all items and mounts a processing component for each
 2. **Signals readiness** — the initial scan is complete (or the stream has caught up), target states are synced
 3. **Watches for changes** — the source delivers incremental updates:
@@ -103,13 +136,36 @@ When `mount_each()` receives either, it automatically creates a `LiveComponent` 
 
 CocoIndex handles change detection, memoization, and target state reconciliation the same way as in catch-up mode.
 
+<Lang only="python">
+
 Without live support on the source, `mount_each()` falls back to catch-up behavior — a one-time iteration over items and that's it.
 
-Rust names the live form explicitly: `ctx.mount_each_live(&key, feed, f)` takes a `LiveMapView` feed (a `walk_dir(..).live()` walker, `kafka::topic_as_map`, a `LiveMap`) and mounts one child per key, while `mount_each!` and `ctx.mount_each` take a plain iterator. In catch-up mode `mount_each_live` scans the feed once and returns. A `LiveComponent` of your own implements the `LiveComponent` trait (`process`, and `process_live` for the reactive body) and is mounted with `ctx.mount_live(&key, component)`.
+</Lang>
+
+<Lang only="rust">
+
+In catch-up mode, `mount_each_live` scans the feed once and returns. `mount_each!` and `ctx.mount_each` take a plain iterator instead, and always do a one-time iteration over the items. A `LiveComponent` of your own implements the `LiveComponent` trait (`process`, and `process_live` for the reactive body) and is mounted with `ctx.mount_live(&key, component)`.
+
+</Lang>
+
+<Lang only="python">
 
 ### Periodic refresh with `coco.auto_refresh`
 
 When the source isn't change-aware but you still want fresh data (say, polling a REST endpoint or re-reading a database table that doesn't emit change events) wrap your processor function in [`coco.auto_refresh`](../advanced_topics/live_component#example-periodic-refresh-with-cocoauto_refresh). It runs your function once, signals readiness, then re-runs it on a fixed delay:
+
+</Lang>
+
+<Lang only="rust">
+
+{/* Keeps the Python heading's anchor for links written against it (connectors/discord). */}
+<span id="periodic-refresh-with-cocoauto_refresh"></span>
+
+### Periodic refresh with `ctx.auto_refresh`
+
+When the source isn't change-aware but you still want fresh data (say, polling a REST endpoint or re-reading a database table that doesn't emit change events) mount your processing body with [`ctx.auto_refresh`](../advanced_topics/live_component#example-periodic-refresh-with-cocoauto_refresh). It runs the body once, signals readiness, then re-runs it on a fixed delay:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/tests/live_component.rs (`ctx.auto_refresh`), verified against rust/sdk/cocoindex/src/ctx.rs */}
 <LangTabs>
@@ -151,28 +207,44 @@ ctx.auto_refresh(&"poller", Duration::from_secs(60), |ctx| async move {
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 **Catch-up compatibility:** in catch-up mode (the default), `auto_refresh` runs `sync_users` once and exits — observationally identical to mounting `sync_users` directly. The interval is ignored. Same pipeline, choose catch-up or live at run time.
 
 **Handling deletes:** each cycle's declarations are reconciled against the previous run. If a row disappears from the source table between polls, `sync_users` simply doesn't declare it that cycle — CocoIndex automatically deletes the corresponding target. You don't need to track deletions yourself.
 
+</Lang>
+
+<Lang only="rust">
+
+**Catch-up compatibility:** in catch-up mode (the default), `auto_refresh` runs the body once and returns. The interval is ignored. Same pipeline, choose catch-up or live at run time.
+
+**Handling deletes:** each cycle's declarations are reconciled against the previous run. If a row disappears from the source table between polls, the body simply doesn't declare it that cycle — CocoIndex automatically deletes the corresponding target. You don't need to track deletions yourself.
+
+</Lang>
+
 ### Decoupling stages with an in-memory `LiveMap`
 
-When one part of your pipeline produces keyed data and another consumes it (without going through an external system) put an in-memory [`LiveMap`](../common_resources/live_map) between them. Producers declare `(key, value)` entries; the consumer reads it as a `LiveMapView` via `mount_each`, reacting to adds, updates, and deletes just like a live source.
+When one part of your pipeline produces keyed data and another consumes it (without going through an external system) put an in-memory [`LiveMap`](../common_resources/live_map) between them. Producers declare `(key, value)` entries; the consumer reads it as a `LiveMapView` via <Lang only="python">`mount_each`</Lang><Lang only="rust">`ctx.mount_each_live`</Lang>, reacting to adds, updates, and deletes just like a live source.
 
-The Rust `LiveMap<K, V>` works the same way. `K` is any `LiveMapKey` (`String`, `i64`, `u64` or a `StableKey`):
+<Lang only="rust">
 
-{/* Rust: rust/sdk/cocoindex/tests/live_map.rs */}
+`LiveMap<K, V>` takes any `LiveMapKey` as `K` (`String`, `i64`, `u64` or a `StableKey`):
+
+{/* Rust: rust/sdk/SHOWCASE.md "In-memory `LiveMap`", verified against rust/sdk/cocoindex/tests/live_map.rs */}
 ```rust
-let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
-lm.declare_entry(&ctx, "a".to_string(), "alpha".to_string())?;    // producer side
-ctx.mount_each_live(&"each", lm.clone(), process_entry).await?;    // consumer side
+let lm: LiveMap<i64, String> = LiveMap::create(&ctx).await?;
+lm.declare_entry(&ctx, 7, "seven".to_string())?;           // producer side
+ctx.mount_each_live(&"entries", lm.clone(), process_entry).await?; // consumer side
 ```
+
+</Lang>
 
 ## Examples
 
 ### `localfs` — file watching with `LiveMapView`
 
-The [`localfs`](../connectors/localfs) connector supports live mode via `walk_dir(..., live=True)`, which watches for file system changes using `watchfiles`:
+The [`localfs`](../connectors/localfs) connector supports live mode via <Lang only="python">`walk_dir(..., live=True)`, which watches for file system changes using `watchfiles`</Lang><Lang only="rust">`walk_dir(..).live()`, which watches for file system changes</Lang>:
 
 {/* Rust: examples/rust/text_embedding/src/main.rs */}
 <LangTabs>
@@ -217,13 +289,25 @@ async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
 </Fragment>
 </LangTabs>
 
-**Catch-up compatibility:** `LiveMapView` sources also work without `live=True` — they do the initial full scan and exit cleanly. You can write your pipeline once and choose catch-up or live at run time.
+**Catch-up compatibility:** `LiveMapView` sources also work in catch-up mode — they do the initial full scan and exit cleanly. You can write your pipeline once and choose catch-up or live at run time.
 
-For a complete working example, see [`files_transform`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/files_transform). The Rust example with a live source is [`examples/rust/text_embedding`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/rust/text_embedding).
+<Lang only="python">For a complete working example, see [`files_transform`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/files_transform).</Lang><Lang only="rust">For a complete working example, see [`examples/rust/text_embedding`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/rust/text_embedding).</Lang>
+
+<Lang only="python">
 
 ### `kafka` — consuming a topic with `LiveMapFeed`
 
 The [`kafka`](../connectors/kafka) connector treats a topic as a live keyed map — each message is an upsert or delete for a key. Since there's no snapshot to scan, it returns a `LiveMapFeed`:
+
+</Lang>
+
+<Lang only="rust">
+
+### `kafka` — consuming a topic with `LiveMapView`
+
+The [`kafka`](../connectors/kafka) connector treats a topic as a live keyed map — each message is an upsert or delete for a key. `kafka::topic_as_map` returns a `LiveMapView`: its scan reads every partition up to its high-watermark, keeping the latest message per key, and its watch tails new records from there. With a consumer group, a live run resumes from the committed offsets instead of scanning:
+
+</Lang>
 
 {/* Rust: examples/rust/kafka_consume/src/main.rs */}
 <LangTabs>
@@ -281,11 +365,22 @@ The full program, with the `--live` switch, is `examples/rust/kafka_consume/src/
 
 The abstractions behind live mode, from most general to most specific:
 
+<Lang only="python">
+
 - **[LiveComponent](../advanced_topics/live_component)** — the underlying protocol for components that react to changes incrementally. Most flexible — full control over the lifecycle.
 - **[LiveMapFeed / LiveMapView](../advanced_topics/live_component#livemapfeed-and-livemapview)** — represents a changing collection of keyed items. `mount_each()` uses it to construct a `LiveComponent` automatically. Connector authors implement this to add live support.
 - **[`coco.auto_refresh`](../advanced_topics/live_component#example-periodic-refresh-with-cocoauto_refresh)** — wraps a regular processor function as a `LiveComponent` that re-runs on a fixed interval. Use when there's no change-event source.
 - **Source connectors** — provide `LiveMapView` (e.g., [`localfs`](../connectors/localfs)) or `LiveMapFeed` (e.g., [`kafka`](../connectors/kafka)) from their source APIs. Users just pass the result to `mount_each()`.
 
-For custom change feeds, fine-grained lifecycle control, or implementing live map protocols on your own connector, see [Live Components](../advanced_topics/live_component).
+</Lang>
 
-In Rust, the same layers are the `LiveComponent` trait (mounted with `ctx.mount_live`), the `LiveMapFeed` and `LiveMapView` traits (consumed with `ctx.mount_each_live`), `ctx.auto_refresh`, and the connectors' live sources (`walk_dir(..).live()`, `kafka::topic_as_map`, `iggy::topic_as_map`).
+<Lang only="rust">
+
+- **[LiveComponent](../advanced_topics/live_component)** — the trait for components that react to changes incrementally, mounted with `ctx.mount_live`. Most flexible — full control over the lifecycle.
+- **[LiveMapFeed / LiveMapView](../advanced_topics/live_component#livemapfeed-and-livemapview)** — traits for a changing collection of keyed items. `ctx.mount_each_live` uses a `LiveMapView` to construct a `LiveComponent` automatically. Connector authors implement them to add live support.
+- **[`ctx.auto_refresh`](../advanced_topics/live_component#example-periodic-refresh-with-cocoauto_refresh)** — mounts a regular processing body as a `LiveComponent` that re-runs on a fixed interval. Use when there's no change-event source.
+- **Source connectors** — provide a `LiveMapView` from their source APIs (e.g., `walk_dir(..).live()` in [`localfs`](../connectors/localfs), `kafka::topic_as_map` in [`kafka`](../connectors/kafka), `iggy::topic_as_map` in [`iggy`](../connectors/iggy)). Users just pass the result to `ctx.mount_each_live()`.
+
+</Lang>
+
+For custom change feeds, fine-grained lifecycle control, or implementing live map <Lang only="python">protocols</Lang><Lang only="rust">traits</Lang> on your own connector, see [Live Components](../advanced_topics/live_component).
