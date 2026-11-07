@@ -1,14 +1,19 @@
 """
 State-store benchmark runner.
 
-For each (N, M) cell, runs three phases via the cocoindex CLI against a
-fresh LMDB state store in a temp directory:
+For each (N, M) cell and each SDK, runs three phases against a fresh LMDB
+state store in a temp directory:
 
-    cold   — fresh state, first `cocoindex update` (creates app + memo entries)
-    warm   — second `cocoindex update` against the populated state (all memo hits)
-    drop   — `cocoindex drop -f` on the populated state (cascade + clear)
+    cold   — fresh state, first update (creates app + memo entries)
+    warm   — second update against the populated state (all memo hits)
+    drop   — drop on the populated state (cascade + clear)
 
-Times are wall-clock from subprocess.run, matching what the user observes.
+The Python SDK runs through the cocoindex CLI (`python -m cocoindex.cli
+update|drop main.py`); the Rust SDK runs the `rust/` crate's binary
+(`state_store update|drop`). Both read `COCOINDEX_DB`, `BENCH_N` and
+`BENCH_M` from the environment. Times are wall-clock from subprocess.run,
+matching what the user observes, so the Python numbers include interpreter
+and import start-up and the Rust numbers include process start-up.
 """
 
 from __future__ import annotations
@@ -24,14 +29,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-BENCH_DIR = Path(__file__).resolve().parent
-MAIN_PY = BENCH_DIR / "main.py"
+PY_DIR = Path(__file__).resolve().parent
+BENCH_ROOT = PY_DIR.parent
+MAIN_PY = PY_DIR / "main.py"
+RUST_MANIFEST = BENCH_ROOT / "rust" / "Cargo.toml"
 
 DEFAULT_NS = (100, 1_000, 10_000)
+LANGUAGES = ("rust", "python")
 
 
 @dataclass
 class CellResult:
+    language: str
     n: int
     m: int
     cold_s: float
@@ -57,9 +66,33 @@ def _run(cmd: list[str], env: dict[str, str], cwd: Path) -> float:
 _COCOINDEX_CMD = [sys.executable, "-m", "cocoindex.cli"]
 
 
-def _cell(n: int, m: int) -> CellResult:
-    update_cmd = [*_COCOINDEX_CMD, "update", str(MAIN_PY)]
-    drop_cmd = [*_COCOINDEX_CMD, "drop", "-f", str(MAIN_PY)]
+def _rust_binary() -> Path:
+    """Build the Rust crate in release mode and return its binary path."""
+    subprocess.run(
+        ["cargo", "build", "--release", "--manifest-path", str(RUST_MANIFEST)],
+        cwd=BENCH_ROOT,
+        check=True,
+    )
+    target_dir = Path(
+        os.environ.get("CARGO_TARGET_DIR", RUST_MANIFEST.parent / "target")
+    )
+    return target_dir / "release" / "state_store"
+
+
+def _commands(language: str, rust_bin: Path | None) -> tuple[list[str], list[str]]:
+    """The (update, drop) commands of one SDK."""
+    if language == "python":
+        return (
+            [*_COCOINDEX_CMD, "update", str(MAIN_PY)],
+            [*_COCOINDEX_CMD, "drop", "-f", str(MAIN_PY)],
+        )
+    if rust_bin is None:
+        raise RuntimeError("the Rust binary was not built")
+    return ([str(rust_bin), "update"], [str(rust_bin), "drop"])
+
+
+def _cell(language: str, rust_bin: Path | None, n: int, m: int) -> CellResult:
+    update_cmd, drop_cmd = _commands(language, rust_bin)
     with tempfile.TemporaryDirectory(prefix="coco-bench-lmdb-") as tmp:
         env = {
             **os.environ,
@@ -67,19 +100,22 @@ def _cell(n: int, m: int) -> CellResult:
             "BENCH_N": str(n),
             "BENCH_M": str(m),
         }
-        cold = _run(update_cmd, env, BENCH_DIR)
-        warm = _run(update_cmd, env, BENCH_DIR)
-        drop = _run(drop_cmd, env, BENCH_DIR)
-    return CellResult(n=n, m=m, cold_s=cold, warm_s=warm, drop_s=drop)
+        cold = _run(update_cmd, env, PY_DIR)
+        warm = _run(update_cmd, env, PY_DIR)
+        drop = _run(drop_cmd, env, PY_DIR)
+    return CellResult(
+        language=language, n=n, m=m, cold_s=cold, warm_s=warm, drop_s=drop
+    )
 
 
 def _print_table(results: list[CellResult]) -> None:
-    hdr = f"{'N':>8}  {'M':>4}  {'cold':>8}  {'warm':>8}  {'drop':>8}"
+    hdr = f"{'N':>8}  {'M':>4}  {'lang':<6}  {'cold':>8}  {'warm':>8}  {'drop':>8}"
     print(hdr)
     print("-" * len(hdr))
-    for r in sorted(results, key=lambda r: (r.n, r.m)):
+    for r in sorted(results, key=lambda r: (r.n, r.m, LANGUAGES.index(r.language))):
         print(
-            f"{r.n:>8}  {r.m:>4}  {r.cold_s:>8.3f}  {r.warm_s:>8.3f}  {r.drop_s:>8.3f}"
+            f"{r.n:>8}  {r.m:>4}  {r.language:<6}  "
+            f"{r.cold_s:>8.3f}  {r.warm_s:>8.3f}  {r.drop_s:>8.3f}"
         )
     print()
     print("All numbers in seconds. Lower is better.")
@@ -90,6 +126,7 @@ def _print_json(results: list[CellResult]) -> None:
         json.dumps(
             [
                 {
+                    "language": r.language,
                     "n": r.n,
                     "m": r.m,
                     "cold_s": r.cold_s,
@@ -120,6 +157,12 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--lang",
+        choices=(*LANGUAGES, "all"),
+        default="all",
+        help="Which SDK to run. Default: all (Rust, then Python, per cell).",
+    )
+    parser.add_argument(
         "--format",
         choices=("table", "json"),
         default="table",
@@ -128,22 +171,25 @@ def main() -> int:
 
     ns = [int(s) for s in args.n.split(",") if s.strip()]
     ms = [int(s) for s in args.m.split(",") if s.strip()]
+    languages = list(LANGUAGES) if args.lang == "all" else [args.lang]
+    rust_bin = _rust_binary() if "rust" in languages else None
 
     results: list[CellResult] = []
     for n in ns:
         for m in ms:
-            label = f"N={n}/M={m}"
-            print(f"running {label} …", flush=True)
-            try:
-                r = _cell(n, m)
-            except Exception as exc:
-                print(f"  ! {label} failed: {exc}", file=sys.stderr)
-                continue
-            print(
-                f"  cold {r.cold_s:.3f}s   warm {r.warm_s:.3f}s   drop {r.drop_s:.3f}s",
-                flush=True,
-            )
-            results.append(r)
+            for language in languages:
+                label = f"N={n}/M={m}/{language}"
+                print(f"running {label} …", flush=True)
+                try:
+                    r = _cell(language, rust_bin, n, m)
+                except Exception as exc:
+                    print(f"  ! {label} failed: {exc}", file=sys.stderr)
+                    continue
+                print(
+                    f"  cold {r.cold_s:.3f}s   warm {r.warm_s:.3f}s   drop {r.drop_s:.3f}s",
+                    flush=True,
+                )
+                results.append(r)
 
     print()
     if args.format == "json":

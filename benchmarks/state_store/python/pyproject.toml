@@ -11,4 +11,4 @@ dependencies = [
 package = false
 
 [tool.uv.sources]
-cocoindex = {path = "../../", editable = true}
+cocoindex = {path = "../../../", editable = true}
