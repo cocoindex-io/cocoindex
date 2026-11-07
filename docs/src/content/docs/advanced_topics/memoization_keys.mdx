@@ -214,7 +214,7 @@ It works for every parameter kind:
 
 `memo_key` is validated at decoration time: unknown parameter names raise `ValueError`, and values that are neither callable nor `None` raise `TypeError`. In Rust the macro checks the names at compile time. A transform also suppresses the argument type's `memo_state` validation; use a newtype when the freshness check must stay.
 
-**Target handles in Rust.** `DirTarget`, `TableTarget` and the other target handles are `Clone` but not `MemoInput`: a target handle is where output goes, not an input of the computation. Skip it in the memo key:
+**Target handles in Rust.** A target handle is where output goes, not an input of the computation, so it is not `MemoInput`. `DirTarget` and the Postgres, SQLite, Doris, SurrealDB, LanceDB, Neo4j and FalkorDB table and relation targets are `Serialize` instead: as an argument of a memoized function or of `mount!`, `use_mount!` or `mount_each!`, one is keyed by its stable key, as in Python. The other connectors' handles are only `Clone`. Skip those in the memo key; you can skip any handle the same way:
 
 {/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (target_state_of_nested_memo_survives_outer_memo_hit) */}
 ```rust

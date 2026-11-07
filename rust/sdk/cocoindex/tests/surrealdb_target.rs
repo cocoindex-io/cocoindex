@@ -980,3 +980,54 @@ async fn surrealdb_connects_with_a_database_user_when_available() {
     .await;
     assert!(denied.is_err());
 }
+
+/// Both SurrealDB handles as mount arguments, keyed by their stable keys.
+#[cocoindex::function]
+async fn declare_edge_in_component(
+    ctx: &Ctx,
+    person: surrealdb::TableTarget,
+    knows: surrealdb::RelationTarget,
+) -> Result<()> {
+    for name in ["alice", "bob"] {
+        person.declare_record(ctx, name, &serde_json::json!({ "name": name }))?;
+    }
+    knows.declare_relation(ctx, "alice", "bob")
+}
+
+#[tokio::test]
+async fn surrealdb_handles_are_mount_arguments_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_handle_args_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB handle argument test; no local SurrealDB connection");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let app = Environment::builder()
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&GRAPH, graph.clone())
+        .build()
+        .await
+        .unwrap()
+        .app("surrealdb_handle_args")
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        app.run(|ctx| async move {
+            let person = surrealdb::mount_table_target(&ctx, &GRAPH, "person").await?;
+            let knows =
+                surrealdb::mount_relation_target(&ctx, &GRAPH, "knows", &person, &person).await?;
+            cocoindex::mount!(declare_edge_in_component(ctx, person, knows))
+                .await?
+                .ready()
+                .await
+        })
+        .await
+        .unwrap();
+        assert_eq!(graph.count("person").await.unwrap(), 2);
+        assert_eq!(graph.count("knows").await.unwrap(), 1);
+    }
+}

@@ -381,17 +381,24 @@ fn cypher_type(logical_type: LogicalType) -> String {
     name.to_string()
 }
 
-#[derive(Clone)]
+/// As a `mount_each!` / `use_mount!` or memoized function argument a handle
+/// fingerprints by its stable key, the graph key and table name; the rest of it
+/// is not part of the identity.
+#[derive(Clone, Serialize)]
 pub(crate) struct TableTarget {
     /// The `ContextKey` name of the graph the table lives in.
     graph_key: Arc<str>,
     table_name: Arc<str>,
+    #[serde(skip)]
     primary_key: Arc<str>,
     /// The connector's static root provider; carries the index attachments.
+    #[serde(skip)]
     table_provider: TargetStateProvider<TableSpec>,
+    #[serde(skip)]
     provider: TargetStateProvider<RecordState>,
     /// Field -> declared name of the vector indexes declared through this
     /// target: the database keeps one vector index per label and field.
+    #[serde(skip)]
     vector_index_names: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
@@ -497,12 +504,20 @@ impl TableTarget {
     }
 }
 
-#[derive(Clone)]
+/// Fingerprints by its stable key, like [`TableTarget`].
+#[derive(Clone, Serialize)]
 pub(crate) struct RelationTarget {
+    /// The `ContextKey` name of the graph the relation lives in.
+    graph_key: Arc<str>,
+    relation_name: Arc<str>,
     /// The property that keys the relation's records.
+    #[serde(skip)]
     primary_key: Arc<str>,
+    #[serde(skip)]
     from_table: TableEndpoint,
+    #[serde(skip)]
     to_table: TableEndpoint,
+    #[serde(skip)]
     provider: TargetStateProvider<RecordState>,
 }
 
@@ -778,6 +793,7 @@ fn table_handle(
 }
 
 fn relation_handle(
+    graph_key: &str,
     spec: &TableSpec,
     child: TargetStateProvider<RecordState>,
 ) -> Result<RelationTarget> {
@@ -788,6 +804,8 @@ fn relation_handle(
         )));
     };
     Ok(RelationTarget {
+        graph_key: Arc::from(graph_key),
+        relation_name: Arc::from(spec.table_name.as_str()),
         primary_key: Arc::from(spec.primary_key.as_str()),
         from_table: from_table.clone(),
         to_table: to_table.clone(),
@@ -843,7 +861,7 @@ pub(crate) async fn mount_relation_target_with_options<C: CypherExecutor>(
     )?;
     let spec = ts.value().clone();
     let child = mount_target(ctx, ts).await?;
-    relation_handle(&spec, child)
+    relation_handle(graph.name(), &spec, child)
 }
 
 pub(crate) fn declare_relation_target_with_options<C: CypherExecutor>(
@@ -866,7 +884,7 @@ pub(crate) fn declare_relation_target_with_options<C: CypherExecutor>(
     )?;
     let spec = ts.value().clone();
     let child = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
-    relation_handle(&spec, child)
+    relation_handle(graph.name(), &spec, child)
 }
 
 /// Resolve the graph provided under `graph_key` in the host context.
@@ -1925,8 +1943,9 @@ pub(crate) fn validate_ident(name: &str, what: &str) -> Result<()> {
 /// changes are applied, including on `App::drop_state`.
 macro_rules! graph_target_api {
     ($graph:ty) => {
-        /// A node-table target. Cheap to clone.
-        #[derive(Clone)]
+        /// A node-table target. Cheap to clone. Serializes to its stable key, so
+        /// it can be a `mount_each!` / `use_mount!` or memoized function argument.
+        #[derive(Clone, ::serde::Serialize)]
         pub struct TableTarget($crate::cypher_graph::TableTarget);
 
         impl TableTarget {
@@ -1987,8 +2006,9 @@ macro_rules! graph_target_api {
             }
         }
 
-        /// A relation target. Cheap to clone.
-        #[derive(Clone)]
+        /// A relation target. Cheap to clone. Serializes to its stable key, so
+        /// it can be a `mount_each!` / `use_mount!` or memoized function argument.
+        #[derive(Clone, ::serde::Serialize)]
         pub struct RelationTarget($crate::cypher_graph::RelationTarget);
 
         impl RelationTarget {
@@ -3498,6 +3518,48 @@ mod tests {
         })
         .await
         .map(|_| ())
+    }
+
+    /// A handle's memo identity is its stable key: the graph key and the name,
+    /// and not the schema or the runtime providers.
+    #[tokio::test]
+    async fn a_handle_serializes_to_its_stable_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let graph = RecordingGraph::new("neo4j");
+        let app = recording_app(&graph, tmp.path()).await;
+        app.run(|ctx| async move {
+            let options = ManagedTargetOptions::default;
+            let person = mount_table_target_with_options(
+                &ctx,
+                &RECORDING,
+                "Person",
+                TableSchema::schemaless("id")?,
+                options(),
+            )
+            .await?;
+            let knows = mount_relation_target_with_options(
+                &ctx,
+                &RECORDING,
+                "KNOWS",
+                &person,
+                &person,
+                TableSchema::schemaless("id")?,
+                options(),
+            )
+            .await?;
+            let graph_key = RECORDING.name();
+            assert_eq!(
+                serde_json::to_value(&person).unwrap(),
+                serde_json::json!({ "graph_key": graph_key, "table_name": "Person" }),
+            );
+            assert_eq!(
+                serde_json::to_value(&knows).unwrap(),
+                serde_json::json!({ "graph_key": graph_key, "relation_name": "KNOWS" }),
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
     }
 
     fn vector_index_statements(graph: &RecordingGraph) -> Vec<String> {

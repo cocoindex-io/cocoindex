@@ -442,11 +442,19 @@ fn json_object_keys(info: Option<&JsonValue>, field: &str) -> Vec<String> {
 // Target handles
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+/// A SurrealDB table target — a handle to declare records on.
+///
+/// As a `mount_each!` / `use_mount!` or memoized function argument it
+/// fingerprints by its stable key, the graph key and table name; the managed-by
+/// flag and runtime provider are not part of the identity.
+#[derive(Clone, Serialize)]
 pub struct TableTarget {
+    graph_key: Arc<str>,
     table_name: Arc<str>,
+    #[serde(skip)]
     managed_by: ManagedBy,
     /// The table's record provider; also carries its vector-index attachment.
+    #[serde(skip)]
     records: TargetStateProvider<RecordState>,
 }
 
@@ -570,13 +578,24 @@ impl Default for VectorIndexOptions {
     }
 }
 
-#[derive(Clone)]
+/// A SurrealDB relation target — a handle to declare relations on.
+///
+/// As a `mount_each!` / `use_mount!` or memoized function argument it
+/// fingerprints by its stable key, the graph key and table name; the endpoints
+/// and runtime provider are not part of the identity.
+#[derive(Clone, Serialize)]
 pub struct RelationTarget {
+    graph_key: Arc<str>,
     table_name: Arc<str>,
+    #[serde(skip)]
     from_tables: Arc<[String]>,
+    #[serde(skip)]
     to_tables: Arc<[String]>,
+    #[serde(skip)]
     from_table: Option<Arc<str>>,
+    #[serde(skip)]
     to_table: Option<Arc<str>>,
+    #[serde(skip)]
     records: TargetStateProvider<RecordState>,
 }
 
@@ -697,20 +716,30 @@ fn relation_key_part(value: &str) -> String {
     format!("{}:{value};", value.len())
 }
 
-fn table_handle(spec: TableSpec, records: TargetStateProvider<RecordState>) -> TableTarget {
+fn table_handle(
+    graph: &ContextKey<Graph>,
+    spec: TableSpec,
+    records: TargetStateProvider<RecordState>,
+) -> TableTarget {
     TableTarget {
+        graph_key: Arc::from(graph.name()),
         table_name: Arc::from(spec.table_name),
         managed_by: spec.managed_by,
         records,
     }
 }
 
-fn relation_handle(spec: TableSpec, records: TargetStateProvider<RecordState>) -> RelationTarget {
+fn relation_handle(
+    graph: &ContextKey<Graph>,
+    spec: TableSpec,
+    records: TargetStateProvider<RecordState>,
+) -> RelationTarget {
     let from_names = spec.from_tables;
     let to_names = spec.to_tables;
     let from_table = (from_names.len() == 1).then(|| Arc::from(from_names[0].clone()));
     let to_table = (to_names.len() == 1).then(|| Arc::from(to_names[0].clone()));
     RelationTarget {
+        graph_key: Arc::from(graph.name()),
         table_name: Arc::from(spec.table_name),
         from_table,
         to_table,
@@ -908,7 +937,7 @@ pub fn declare_table_target_with_schema_and_options(
     let ts = table_target_with_schema_and_options(ctx, graph, table_name, table_schema, options)?;
     let spec = ts.value().clone();
     let records = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
-    Ok(table_handle(spec, records))
+    Ok(table_handle(graph, spec, records))
 }
 
 /// Declare a SurrealDB relation target in the **current** component and return
@@ -954,7 +983,7 @@ pub fn declare_relation_target_many_with_options(
     )?;
     let spec = ts.value().clone();
     let records = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
-    Ok(relation_handle(spec, records))
+    Ok(relation_handle(graph, spec, records))
 }
 
 /// Declare an unconstrained SurrealDB relation target in the current component.
@@ -981,7 +1010,7 @@ pub fn declare_relation_target_unconstrained_with_options(
     let ts = relation_target_unconstrained_with_options(ctx, graph, table_name, options)?;
     let spec = ts.value().clone();
     let records = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
-    Ok(relation_handle(spec, records))
+    Ok(relation_handle(graph, spec, records))
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,7 +1067,7 @@ pub async fn mount_table_target_with_schema_and_options(
     let ts = table_target_with_schema_and_options(ctx, graph, table_name, table_schema, options)?;
     let spec = ts.value().clone();
     let records = mount_target::<TableSpec, RecordState>(ctx, ts).await?;
-    Ok(table_handle(spec, records))
+    Ok(table_handle(graph, spec, records))
 }
 
 pub async fn mount_relation_target(
@@ -1120,7 +1149,7 @@ pub async fn mount_relation_target_many_with_options(
     )?;
     let spec = ts.value().clone();
     let records = mount_target::<TableSpec, RecordState>(ctx, ts).await?;
-    Ok(relation_handle(spec, records))
+    Ok(relation_handle(graph, spec, records))
 }
 
 pub async fn mount_relation_target_unconstrained(
@@ -1146,7 +1175,7 @@ pub async fn mount_relation_target_unconstrained_with_options(
     let ts = relation_target_unconstrained_with_options(ctx, graph, table_name, options)?;
     let spec = ts.value().clone();
     let records = mount_target::<TableSpec, RecordState>(ctx, ts).await?;
-    Ok(relation_handle(spec, records))
+    Ok(relation_handle(graph, spec, records))
 }
 
 // ---------------------------------------------------------------------------
