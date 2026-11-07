@@ -15,9 +15,15 @@
 //! and are replaced whole.
 //!
 //! A [`TableSchema`] makes the table `SCHEMAFULL`. Derive it from a row struct
-//! with [`TableSchema::from_row`]. Top-level values of `datetime`, `uuid`,
-//! `decimal`, `duration` and `bytes` columns are written as typed SurrealQL
-//! values, and a top-level `null` is written as `NONE`.
+//! with [`TableSchema::from_row`]. Values are sent as typed parameters, never
+//! inlined: top-level values of `datetime`, `uuid`, `decimal`, `duration` and
+//! `bytes` columns arrive in their SurrealDB type, and a top-level `null` is
+//! sent as `NONE`.
+//!
+//! A batch of record actions is applied in chunks of 500, each chunk one
+//! transaction and one round trip, with one statement per shape of write rather
+//! than one per record. A chunk that hits a transaction conflict is retried with
+//! exponential backoff, five attempts in all, as the Python connector does.
 //!
 //! Use the target constructors ([`table_target`], [`relation_target_many`],
 //! [`relation_target_unconstrained`]) for composition, `declare_*` helpers inside
@@ -32,8 +38,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 use surrealdb::Surreal;
 use surrealdb::engine::remote::ws::{Client, Ws};
-use surrealdb::opt::auth::Root;
-use surrealdb::types::{QueryError, RecordId};
+use surrealdb::opt::auth;
+use surrealdb::types::{
+    Bytes, Datetime, Decimal, Duration, Number, Object, QueryError, RecordId, RecordIdKey,
+    SurrealValue, Uuid, Value, Variables,
+};
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
@@ -77,6 +86,16 @@ impl ColumnDef {
     }
 }
 
+/// The type of a vector column of dimension `dim`.
+fn vector_type(dim: usize) -> String {
+    format!("array<float, {dim}>")
+}
+
+/// The type [`TableSchema::from_row`] gives a `#[coco(vector)]` field whose
+/// dimension is not known yet: [`TableSchema::with_vector_schema`] resolves
+/// it, and a table declared with it still unresolved is rejected.
+const UNRESOLVED_VECTOR_TYPE: &str = "array<float, 0>";
+
 /// Map a derived row field to its SurrealDB type, as the leaf-type table of
 /// Python's `surrealdb` `from_class` does.
 fn surreal_type(field: &SchemaField) -> Result<String> {
@@ -96,14 +115,9 @@ fn surreal_type(field: &SchemaField) -> Result<String> {
         // Collections, maps and nested structs are sent as native arrays and
         // objects; the derive does not tell them apart, so no type constraint.
         LogicalType::Json => "any",
-        LogicalType::Vector { dim: 0, .. } => {
-            return Err(Error::engine(format!(
-                "SurrealDB vector field {:?} has an unresolved dimension; \
-                 use #[coco(vector = N)]",
-                field.name
-            )));
-        }
-        LogicalType::Vector { dim, .. } => return Ok(format!("array<float, {dim}>")),
+        // Resolved by `with_vector_schema`, or rejected when the table is declared.
+        LogicalType::Vector { dim: 0, .. } => return Ok(UNRESOLVED_VECTOR_TYPE.to_string()),
+        LogicalType::Vector { dim, .. } => return Ok(vector_type(*dim as usize)),
         LogicalType::Custom(surreal_type) => return Ok(surreal_type.trim().to_string()),
     };
     Ok(surreal_type.to_string())
@@ -147,6 +161,63 @@ impl TableSchema {
 
     pub fn columns(&self) -> &BTreeMap<String, ColumnDef> {
         &self.columns
+    }
+
+    /// Replace the SurrealDB type of one column of a schema derived from a row
+    /// (Python's `column_overrides={"col": SurrealType(…)}`), keeping its
+    /// nullability.
+    pub fn with_column_type(
+        mut self,
+        field_name: &str,
+        surreal_type: impl Into<String>,
+    ) -> Result<Self> {
+        self.column_mut(field_name)?.surreal_type = surreal_type.into().trim().to_string();
+        Ok(self)
+    }
+
+    /// Type a vector column of a schema derived from a row from a
+    /// [`VectorSchemaProvider`](crate::resources::schema::VectorSchemaProvider),
+    /// typically the embedder that fills it (Python's
+    /// `column_overrides={"embedding": embedder}`): the column becomes
+    /// `array<float, N>` for the provider's dimension `N`. For an embedder held
+    /// in the context, pass `ctx.get_key(&EMBEDDER)?`.
+    pub async fn with_vector_schema(
+        mut self,
+        field_name: &str,
+        provider: &(impl crate::resources::schema::VectorSchemaProvider + ?Sized),
+    ) -> Result<Self> {
+        let schema =
+            crate::row_schema::provided_vector_schema("SurrealDB", field_name, provider).await?;
+        let def = self.column_mut(field_name)?;
+        if !def.surreal_type.starts_with("array<float") {
+            return Err(crate::row_schema::not_vector_field_error(
+                "SurrealDB",
+                field_name,
+            ));
+        }
+        def.surreal_type = vector_type(schema.size);
+        Ok(self)
+    }
+
+    /// Reject a vector column whose dimension `from_row` could not resolve.
+    fn validate_vector_dimensions(&self) -> Result<()> {
+        for (name, def) in &self.columns {
+            if def.surreal_type == UNRESOLVED_VECTOR_TYPE {
+                return Err(crate::row_schema::vector_dimension_error(
+                    "SurrealDB",
+                    name,
+                    "has an unresolved dimension; use #[coco(vector = N)] or \
+                     with_vector_schema(…) before declaring the target",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn column_mut(&mut self, field_name: &str) -> Result<&mut ColumnDef> {
+        self.columns
+            .get_mut(field_name)
+            .ok_or_else(|| crate::row_schema::unknown_column_error("SurrealDB", field_name))
     }
 }
 
@@ -200,7 +271,26 @@ fn surreal_err(e: surrealdb::Error) -> Error {
     Error::engine(format!("surrealdb: {e}"))
 }
 
+/// How [`Graph::connect_with_credentials`] signs in (Python's `credentials`
+/// dict of `ConnectionFactory`). A namespace or database user belongs to the
+/// namespace and database the connection uses.
+#[derive(Clone, Debug)]
+pub enum Credentials {
+    /// Sign in as a root user.
+    Root { username: String, password: String },
+    /// Sign in as a user of the connection's namespace.
+    Namespace { username: String, password: String },
+    /// Sign in as a user of the connection's database.
+    Database { username: String, password: String },
+    /// Sign in as a record user through the access method `access` of the
+    /// connection's database, with the parameters that method expects.
+    Record { access: String, params: JsonValue },
+    /// No sign-in, for a server started without authentication.
+    None,
+}
+
 impl Graph {
+    /// Connect over WebSocket and sign in as the root user `user`.
     pub async fn connect(
         url: &str,
         ns: &str,
@@ -208,12 +298,58 @@ impl Graph {
         user: &str,
         pass: &str,
     ) -> Result<Self> {
-        let db = Surreal::new::<Ws>(url).await.map_err(surreal_err)?;
-        db.signin(Root {
-            username: user.to_string(),
-            password: pass.to_string(),
-        })
+        Self::connect_with_credentials(
+            url,
+            ns,
+            db_name,
+            Credentials::Root {
+                username: user.to_string(),
+                password: pass.to_string(),
+            },
+        )
         .await
+    }
+
+    /// Connect over WebSocket and sign in with `credentials`.
+    pub async fn connect_with_credentials(
+        url: &str,
+        ns: &str,
+        db_name: &str,
+        credentials: Credentials,
+    ) -> Result<Self> {
+        let db = Surreal::new::<Ws>(url).await.map_err(surreal_err)?;
+        match credentials {
+            Credentials::Root { username, password } => {
+                db.signin(auth::Root { username, password }).await.map(drop)
+            }
+            Credentials::Namespace { username, password } => db
+                .signin(auth::Namespace {
+                    namespace: ns.to_string(),
+                    username,
+                    password,
+                })
+                .await
+                .map(drop),
+            Credentials::Database { username, password } => db
+                .signin(auth::Database {
+                    namespace: ns.to_string(),
+                    database: db_name.to_string(),
+                    username,
+                    password,
+                })
+                .await
+                .map(drop),
+            Credentials::Record { access, params } => db
+                .signin(auth::Record {
+                    namespace: ns.to_string(),
+                    database: db_name.to_string(),
+                    access,
+                    params,
+                })
+                .await
+                .map(drop),
+            Credentials::None => Ok(()),
+        }
         .map_err(surreal_err)?;
         db.use_ns(ns.to_string())
             .use_db(db_name.to_string())
@@ -227,6 +363,12 @@ impl Graph {
 
     pub fn state_id(&self) -> &str {
         &self.state_id
+    }
+
+    /// The underlying client, for queries of your own (Python's
+    /// `ConnectionFactory.acquire()`).
+    pub fn client(&self) -> &Surreal<Client> {
+        &self.db
     }
 
     pub async fn count(&self, table: &str) -> Result<usize> {
@@ -411,7 +553,7 @@ pub struct VectorIndexOptions {
     pub name: Option<String>,
     /// Distance metric: `"cosine"`, `"euclidean"`, or `"manhattan"`.
     pub metric: &'static str,
-    /// Index method: `"mtree"` or `"hnsw"`.
+    /// Index method: `"hnsw"` (SurrealDB 3 removed `MTREE`).
     pub method: &'static str,
     /// Vector element type: `"f32"`, `"f64"`, `"i16"`, `"i32"`, or `"i64"`.
     pub vector_type: &'static str,
@@ -422,7 +564,7 @@ impl Default for VectorIndexOptions {
         Self {
             name: None,
             metric: "cosine",
-            method: "mtree",
+            method: "hnsw",
             vector_type: "f32",
         }
     }
@@ -588,6 +730,9 @@ fn table_target_state(
     spec: TableSpec,
 ) -> Result<TargetState<TableSpec>> {
     validate_ident(&spec.table_name, "table name")?;
+    if let Some(schema) = &spec.table_schema {
+        schema.validate_vector_dimensions()?;
+    }
     let provider = TABLE_PROVIDER.get(ctx)?;
     Ok(provider.target_state(
         // Stable connection identity = the ContextKey's name; the graph is
@@ -1106,6 +1251,19 @@ impl RecordIdValue {
             Self::String(value) => quote_record_id(value),
         }
     }
+
+    /// The typed record id of this value in `table`: a numeric id that fits an
+    /// `i64` is a number key, any other id a string key.
+    fn to_record_id(&self, table: &str) -> RecordId {
+        let key = match self {
+            Self::Number(value) => value
+                .parse::<i64>()
+                .map(RecordIdKey::Number)
+                .unwrap_or_else(|_| RecordIdKey::String(value.clone())),
+            Self::String(value) => RecordIdKey::String(value.clone()),
+        };
+        RecordId::new(table, key)
+    }
 }
 
 /// Action emitted by the table container handler.
@@ -1430,11 +1588,7 @@ fn table_sink() -> TargetActionSink<TableAction> {
                         if a.recreate && spec.managed_by.is_system() {
                             remove_table(&graph, &spec.table_name).await?;
                         }
-                        define_table(&graph, &spec).await?;
-                        if !a.drop_fields.is_empty() || !a.retype_fields.is_empty() {
-                            apply_field_changes(&graph, &spec, &a.drop_fields, &a.retype_fields)
-                                .await?;
-                        }
+                        define_table(&graph, &spec, &a.drop_fields, &a.retype_fields).await?;
                     }
                     TargetAction::Delete(a) => {
                         if let Some(table_name) = a.drop {
@@ -1739,68 +1893,12 @@ async fn run_query(graph: &Graph, stmt: &str) -> Result<()> {
 // DB I/O
 // ---------------------------------------------------------------------------
 
-async fn define_table(graph: &Graph, spec: &TableSpec) -> Result<()> {
-    if spec.managed_by.is_user() {
-        return Ok(());
-    }
-    let schema_mode = if spec.table_schema.is_some() {
-        "SCHEMAFULL"
-    } else {
-        "SCHEMALESS"
-    };
-    let stmt = if spec.is_relation {
-        if spec.from_tables.is_empty() || spec.to_tables.is_empty() {
-            format!(
-                "DEFINE TABLE IF NOT EXISTS {} TYPE RELATION {schema_mode}",
-                spec.table_name
-            )
-        } else {
-            format!(
-                "DEFINE TABLE IF NOT EXISTS {} TYPE RELATION FROM {} TO {} {schema_mode}",
-                spec.table_name,
-                spec.from_tables.join("|"),
-                spec.to_tables.join("|"),
-            )
-        }
-    } else {
-        format!(
-            "DEFINE TABLE IF NOT EXISTS {} {schema_mode}",
-            spec.table_name
-        )
-    };
-    graph
-        .db
-        .query(stmt)
-        .await
-        .map_err(surreal_err)?
-        .check()
-        .map_err(surreal_err)?;
-    if let Some(schema) = &spec.table_schema {
-        for (name, column) in schema.columns() {
-            if name == "id" {
-                continue;
-            }
-            let type_expr = column.type_expr();
-            graph
-                .db
-                .query(format!(
-                    "DEFINE FIELD IF NOT EXISTS {name} ON {} TYPE {type_expr}",
-                    spec.table_name
-                ))
-                .await
-                .map_err(surreal_err)?
-                .check()
-                .map_err(surreal_err)?;
-        }
-    }
-    Ok(())
-}
-
-/// Apply incremental field changes to an existing system-managed table: drop
-/// undeclared fields and overwrite the type of changed ones. (Added fields are
-/// handled by `DEFINE FIELD IF NOT EXISTS` in `define_table`.) The `id` field is
-/// never altered here.
-async fn apply_field_changes(
+/// Define a system-managed table and its fields, in one round trip: `DEFINE
+/// TABLE IF NOT EXISTS`, one `DEFINE FIELD IF NOT EXISTS` per schema column,
+/// then `REMOVE FIELD` for each of `drop_fields` and `DEFINE FIELD OVERWRITE`
+/// for each of `retype_fields` (the `id` field is never altered). Nothing is
+/// sent for a user-managed table.
+async fn define_table(
     graph: &Graph,
     spec: &TableSpec,
     drop_fields: &[String],
@@ -1809,65 +1907,137 @@ async fn apply_field_changes(
     if spec.managed_by.is_user() {
         return Ok(());
     }
-    let Some(schema) = &spec.table_schema else {
-        return Ok(());
+    run_query(
+        graph,
+        &define_table_statements(spec, drop_fields, retype_fields)?,
+    )
+    .await
+}
+
+/// The statements [`define_table`] sends.
+fn define_table_statements(
+    spec: &TableSpec,
+    drop_fields: &[String],
+    retype_fields: &[String],
+) -> Result<String> {
+    validate_ident(&spec.table_name, "table name")?;
+    let table = &spec.table_name;
+    let schema_mode = if spec.table_schema.is_some() {
+        "SCHEMAFULL"
+    } else {
+        "SCHEMALESS"
     };
-    for name in drop_fields {
-        graph
-            .db
-            .query(format!(
-                "REMOVE FIELD IF EXISTS {name} ON {}",
-                spec.table_name
-            ))
-            .await
-            .map_err(surreal_err)?
-            .check()
-            .map_err(surreal_err)?;
-    }
-    for name in retype_fields {
-        if let Some(col) = schema.columns().get(name) {
-            let type_expr = col.type_expr();
-            graph
-                .db
-                .query(format!(
-                    "DEFINE FIELD OVERWRITE {name} ON {} TYPE {type_expr}",
-                    spec.table_name
-                ))
-                .await
-                .map_err(surreal_err)?
-                .check()
-                .map_err(surreal_err)?;
+    let mut statements = if spec.is_relation {
+        if spec.from_tables.is_empty() || spec.to_tables.is_empty() {
+            format!("DEFINE TABLE IF NOT EXISTS {table} TYPE RELATION {schema_mode};\n")
+        } else {
+            format!(
+                "DEFINE TABLE IF NOT EXISTS {table} TYPE RELATION FROM {} TO {} {schema_mode};\n",
+                spec.from_tables.join("|"),
+                spec.to_tables.join("|"),
+            )
+        }
+    } else {
+        format!("DEFINE TABLE IF NOT EXISTS {table} {schema_mode};\n")
+    };
+    if let Some(schema) = &spec.table_schema {
+        for (name, column) in schema.columns() {
+            if name == "id" {
+                continue;
+            }
+            let type_expr = column.type_expr();
+            statements.push_str(&format!(
+                "DEFINE FIELD IF NOT EXISTS {name} ON {table} TYPE {type_expr};\n"
+            ));
+        }
+        for name in drop_fields {
+            validate_ident(name, "field name")?;
+            statements.push_str(&format!("REMOVE FIELD IF EXISTS {name} ON {table};\n"));
+        }
+        for name in retype_fields {
+            if let Some(col) = schema.columns().get(name) {
+                let type_expr = col.type_expr();
+                statements.push_str(&format!(
+                    "DEFINE FIELD OVERWRITE {name} ON {table} TYPE {type_expr};\n"
+                ));
+            }
         }
     }
-    Ok(())
+    Ok(statements)
 }
 
 async fn remove_table(graph: &Graph, table_name: &str) -> Result<()> {
     validate_ident(table_name, "table name")?;
-    graph
-        .db
-        .query(format!("REMOVE TABLE IF EXISTS {table_name}"))
-        .await
-        .map_err(surreal_err)?
-        .check()
-        .map_err(surreal_err)?;
+    run_query(graph, &format!("REMOVE TABLE IF EXISTS {table_name}")).await
+}
+
+/// The most record actions one transaction (one round trip) carries.
+const MAX_ACTIONS_PER_TXN: usize = 500;
+/// How many times a chunk is sent when it keeps hitting a transaction conflict.
+const MAX_ATTEMPTS: u32 = 5;
+/// The backoff before the second attempt; it doubles each attempt, with jitter.
+const RETRY_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+async fn apply_records(graph: &Graph, spec: &TableSpec, actions: Vec<RecordAction>) -> Result<()> {
+    for chunk in record_batches(spec, actions)? {
+        apply_chunk(graph, chunk).await?;
+    }
     Ok(())
 }
 
-async fn apply_records(graph: &Graph, spec: &TableSpec, actions: Vec<RecordAction>) -> Result<()> {
-    if actions.is_empty() {
-        return Ok(());
+/// Send one chunk, retried when its transaction conflicts.
+async fn apply_chunk(graph: &Graph, chunk: RecordChunk) -> Result<()> {
+    retry_on_conflict(|| async {
+        let mut response = graph
+            .db
+            .query(chunk.surql.as_str())
+            .bind(chunk.params.clone())
+            .await?;
+        first_real_error(response.take_errors()).map_or(Ok(()), Err)
+    })
+    .await
+    .map_err(surreal_err)
+}
+
+/// Run `send` until it succeeds or fails with anything but a transaction
+/// conflict (another writer touched the same records, and SurrealDB says the
+/// operation can be retried), at most [`MAX_ATTEMPTS`] times, with exponential
+/// backoff and jitter, as Python's `_apply_chunk`.
+async fn retry_on_conflict<F, Fut>(mut send: F) -> std::result::Result<(), surrealdb::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = std::result::Result<(), surrealdb::Error>>,
+{
+    let mut backoff = RETRY_INITIAL_BACKOFF;
+    let mut attempt = 1;
+    loop {
+        match send().await {
+            Err(error) if attempt < MAX_ATTEMPTS && is_transaction_conflict(&error) => {
+                tokio::time::sleep(backoff.mul_f64(1.0 + jitter())).await;
+                backoff *= 2;
+                attempt += 1;
+            }
+            result => return result,
+        }
     }
-    // Ensure the table exists for system-managed targets (idempotent).
-    if spec.managed_by.is_system() {
-        define_table(graph, spec).await?;
+}
+
+fn is_transaction_conflict(error: &surrealdb::Error) -> bool {
+    if matches!(error.query_details(), Some(QueryError::TransactionConflict)) {
+        return true;
     }
-    let statements = record_statements(spec, actions)?;
-    let mut response = graph.db.query(statements).await.map_err(surreal_err)?;
-    match first_real_error(response.take_errors()) {
-        Some(error) => Err(surreal_err(error)),
-        None => Ok(()),
-    }
+    let message = error.to_string().to_lowercase();
+    message.contains("can be retried") || message.contains("conflict")
+}
+
+/// A number in `[0, 1)` from the clock, enough to spread retries of
+/// concurrent writers without a random-number dependency.
+fn jitter() -> f64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    f64::from(nanos % 1_000) / 1_000.0
 }
 
 /// The error to report for a failed batch. When one statement of a transaction
@@ -1897,80 +2067,146 @@ fn is_echo(error: &surrealdb::Error) -> bool {
     )
 }
 
-/// The SurrealQL of one batch of record actions: one transaction, ordered by
-/// [`RecordWrite::rank`].
-fn record_statements(spec: &TableSpec, mut actions: Vec<RecordAction>) -> Result<String> {
+/// One transaction of record writes: a script with one `FOR` loop per shape
+/// of write, and the records each loop runs over, bound as typed parameters.
+#[derive(Clone, Debug)]
+struct RecordChunk {
+    surql: String,
+    params: Variables,
+}
+
+impl RecordChunk {
+    /// The number of statements in the transaction, between `BEGIN` and
+    /// `COMMIT`: one per shape of write, not one per record.
+    #[cfg(test)]
+    fn statement_count(&self) -> usize {
+        self.surql.matches("FOR $r IN ").count()
+    }
+}
+
+/// Group the actions of one batch into transactions of at most
+/// [`MAX_ACTIONS_PER_TXN`], ordered by [`RecordWrite::rank`]. Within a chunk,
+/// the writes of one shape (the same kind and the same field names) run in one
+/// `FOR` loop over one bound parameter, so the script's size is bounded by the
+/// number of shapes, and every value travels as a typed parameter.
+fn record_batches(spec: &TableSpec, mut actions: Vec<RecordAction>) -> Result<Vec<RecordChunk>> {
     validate_ident(&spec.table_name, "table name")?;
     actions.sort_by_key(|action| action.write.rank()); // stable
-    let schema = spec.table_schema.as_ref();
+    let mut chunks = Vec::with_capacity(actions.len().div_ceil(MAX_ACTIONS_PER_TXN));
+    let mut actions = actions.into_iter().peekable();
+    while actions.peek().is_some() {
+        let chunk: Vec<RecordAction> = actions.by_ref().take(MAX_ACTIONS_PER_TXN).collect();
+        chunks.push(record_chunk(spec, chunk)?);
+    }
+    Ok(chunks)
+}
 
-    let mut statements = String::from("BEGIN TRANSACTION;\n");
+/// The script and parameters of one transaction (see [`record_batches`]).
+fn record_chunk(spec: &TableSpec, actions: Vec<RecordAction>) -> Result<RecordChunk> {
+    let schema = spec.table_schema.as_ref();
+    // Loops in order of first appearance, which [`record_batches`] made the
+    // rank order; each loop's records are bound as `$g<index>`.
+    let mut loops: Vec<(String, Vec<Value>)> = Vec::new();
+    let mut loop_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for RecordAction { record_id, write } in actions {
-        let record_ref = format!("{}:{}", spec.table_name, record_id.surrealql());
-        match write {
+        let id = Value::RecordId(record_id.to_record_id(&spec.table_name));
+        let (body, record) = match write {
             RecordWrite::Upsert(changes) => {
-                let set = set_clause(schema, &changes.set, &changes.unset)?;
-                statements.push_str(&format!("UPSERT {record_ref}{set} RETURN NONE;\n"));
+                let set = set_clause(&changes.set, &changes.unset)?;
+                (
+                    format!("UPSERT $r.id{set} RETURN NONE;"),
+                    record_params(id, fields_params(schema, &changes.set)?),
+                )
             }
             RecordWrite::SetFields(changes) => {
-                let set = set_clause(schema, &changes.set, &changes.unset)?;
-                let missing = json_text(&format!("fields target record missing: {record_ref}"))?;
-                statements.push_str(&format!(
-                    "LET $updated = (UPDATE ONLY {record_ref}{set} RETURN id);\n\
-                     IF $updated = NONE {{ THROW {missing}; }};\n"
-                ));
+                let set = set_clause(&changes.set, &changes.unset)?;
+                (
+                    format!(
+                        "LET $n = (UPDATE ONLY $r.id{set} RETURN id); \
+                         IF $n = NONE {{ THROW 'fields target record missing: ' + <string>$r.id; }};"
+                    ),
+                    record_params(id, fields_params(schema, &changes.set)?),
+                )
             }
             RecordWrite::UnsetFields(names) => {
                 // Nothing to unset when the group owned no fields.
-                if !names.is_empty() {
-                    let set = set_clause(schema, &Map::new(), &names)?;
-                    statements.push_str(&format!("UPDATE {record_ref}{set} RETURN NONE;\n"));
+                if names.is_empty() {
+                    continue;
                 }
+                let set = set_clause(&Map::new(), &names)?;
+                (
+                    format!("UPDATE $r.id{set} RETURN NONE;"),
+                    record_params(id, Object::new()),
+                )
             }
             RecordWrite::Relate { fields, endpoints } => {
                 validate_ident(&endpoints.from_table, "relation from table name")?;
                 validate_ident(&endpoints.to_table, "relation to table name")?;
-                let from_ref =
-                    format!("{}:{}", endpoints.from_table, endpoints.from_id.surrealql());
-                let to_ref = format!("{}:{}", endpoints.to_table, endpoints.to_id.surrealql());
-                let content = content_object(schema, &fields)?;
-                statements.push_str(&format!(
-                    "DELETE {record_ref}; RELATE {from_ref}->{record_ref}->{to_ref} CONTENT {content};\n"
-                ));
+                let mut record = record_params(id, fields_params(schema, &fields)?);
+                record.insert(
+                    "f",
+                    Value::RecordId(endpoints.from_id.to_record_id(&endpoints.from_table)),
+                );
+                record.insert(
+                    "t",
+                    Value::RecordId(endpoints.to_id.to_record_id(&endpoints.to_table)),
+                );
+                (
+                    "DELETE $r.id RETURN NONE; \
+                     RELATE ($r.f)->($r.id)->($r.t) CONTENT $r.c RETURN NONE;"
+                        .to_string(),
+                    record,
+                )
             }
-            RecordWrite::Delete => {
-                statements.push_str(&format!("DELETE {record_ref};\n"));
+            RecordWrite::Delete => (
+                "DELETE $r.id RETURN NONE;".to_string(),
+                record_params(id, Object::new()),
+            ),
+        };
+        let index = match loop_index.get(&body) {
+            Some(index) => *index,
+            None => {
+                loops.push((body.clone(), Vec::new()));
+                loop_index.insert(body, loops.len() - 1);
+                loops.len() - 1
             }
-        }
+        };
+        loops[index].1.push(Value::Object(record));
     }
-    statements.push_str("COMMIT TRANSACTION;\n");
-    Ok(statements)
+
+    let mut surql = String::from("BEGIN TRANSACTION;\n");
+    let mut params = Variables::new();
+    for (index, (body, records)) in loops.into_iter().enumerate() {
+        surql.push_str(&format!("FOR $r IN $g{index} {{ {body} }};\n"));
+        params.insert(format!("g{index}"), records);
+    }
+    surql.push_str("COMMIT TRANSACTION;\n");
+    Ok(RecordChunk { surql, params })
 }
 
-fn json_text<T: Serialize + ?Sized>(value: &T) -> Result<String> {
-    serde_json::to_string(value)
-        .map_err(|e| Error::engine(format!("serialize SurrealDB record: {e}")))
+/// One record of a loop's parameter: its id and its field values, `c`.
+fn record_params(id: Value, content: Object) -> Object {
+    let mut record = Object::new();
+    record.insert("id", id);
+    record.insert("c", Value::Object(content));
+    record
 }
 
 /// A ` SET` clause with one assignment per field: `set` fields take their
-/// value and `unset` fields take `NONE`, which removes them. An assignment
-/// replaces the field's value whole, nested objects included (a `MERGE` would
-/// merge them, and so keep nested keys the row stops declaring). Empty when
-/// there is nothing to assign. Field names are validated identifiers.
-fn set_clause(
-    schema: Option<&TableSchema>,
-    set: &Map<String, JsonValue>,
-    unset: &[String],
-) -> Result<String> {
+/// value from the bound record (`$r.c`) and `unset` fields take `NONE`, which
+/// removes them. An assignment replaces the field's value whole, nested
+/// objects included (a `MERGE` would merge them, and so keep nested keys the
+/// row stops declaring). Empty when there is nothing to assign. Field names
+/// are validated identifiers.
+fn set_clause(set: &Map<String, JsonValue>, unset: &[String]) -> Result<String> {
     let mut parts = Vec::with_capacity(set.len() + unset.len());
     for name in unset {
         validate_ident(name, "field name")?;
         parts.push(format!("`{name}` = NONE"));
     }
-    for (name, value) in set {
+    for name in set.keys() {
         validate_ident(name, "field name")?;
-        let column = schema.and_then(|schema| schema.columns.get(name));
-        parts.push(format!("`{name}` = {}", surql_value(name, column, value)?));
+        parts.push(format!("`{name}` = $r.c.`{name}`"));
     }
     if parts.is_empty() {
         return Ok(String::new());
@@ -1978,49 +2214,52 @@ fn set_clause(
     Ok(format!(" SET {}", parts.join(", ")))
 }
 
-/// A SurrealQL object literal for a relation's `CONTENT`.
-fn content_object(schema: Option<&TableSchema>, fields: &Map<String, JsonValue>) -> Result<String> {
-    let mut parts = Vec::with_capacity(fields.len());
+/// The field values of one record as a bound object, each in the type its
+/// column calls for.
+fn fields_params(schema: Option<&TableSchema>, fields: &Map<String, JsonValue>) -> Result<Object> {
+    let mut content = Object::new();
     for (name, value) in fields {
         let column = schema.and_then(|schema| schema.columns.get(name));
-        parts.push(format!(
-            "{}: {}",
-            json_text(name)?,
-            surql_value(name, column, value)?
-        ));
+        content.insert(name.clone(), surreal_value(name, column, value)?);
     }
-    Ok(format!("{{{}}}", parts.join(", ")))
+    Ok(content)
 }
 
-/// A top-level field value as SurrealQL. `null` is `NONE` (what an `option<T>`
-/// field takes). The value of a `datetime`, `uuid`, `decimal`, `duration` or
-/// `bytes` column is written as a cast or typed literal, as Python sends typed
-/// parameters, and a value such a column cannot take is an error. Any other
-/// value is its JSON, which SurrealQL reads as native arrays and objects.
-fn surql_value(name: &str, column: Option<&ColumnDef>, value: &JsonValue) -> Result<String> {
+/// A top-level field value as a SurrealDB value. `null` is `NONE` (what an
+/// `option<T>` field takes). The value of a `datetime`, `uuid`, `decimal`,
+/// `duration` or `bytes` column arrives in that type, as Python sends typed
+/// CBOR parameters, and a value such a column cannot take is an error. Any
+/// other value is sent as it is: arrays and objects become native arrays and
+/// objects.
+fn surreal_value(name: &str, column: Option<&ColumnDef>, value: &JsonValue) -> Result<Value> {
     if value.is_null() {
-        return Ok("NONE".to_string());
+        return Ok(Value::None);
     }
     let surreal_type = column.map(|c| c.surreal_type.trim());
     let typed = match (surreal_type, value) {
-        (Some("datetime"), JsonValue::String(s)) => {
-            Some(format!("<datetime> {}", json_text(&datetime_text(s))?))
-        }
-        (Some("uuid"), JsonValue::String(_)) => Some(format!("<uuid> {}", json_text(value)?)),
-        (Some("decimal"), JsonValue::String(_) | JsonValue::Number(_)) => {
-            Some(format!("<decimal> {}", json_text(value)?))
-        }
-        (Some("duration"), JsonValue::String(_)) => {
-            Some(format!("<duration> {}", json_text(value)?))
-        }
-        (Some("duration"), JsonValue::Object(_)) => duration_literal(value),
+        (Some("datetime"), JsonValue::String(s)) => datetime_text(s)
+            .parse::<Datetime>()
+            .ok()
+            .map(Value::Datetime),
+        (Some("uuid"), JsonValue::String(s)) => s.parse::<Uuid>().ok().map(Value::Uuid),
+        (Some("decimal"), JsonValue::String(s)) => s
+            .parse::<Decimal>()
+            .ok()
+            .map(|d| Value::Number(Number::Decimal(d))),
+        (Some("decimal"), JsonValue::Number(n)) => n
+            .to_string()
+            .parse::<Decimal>()
+            .ok()
+            .map(|d| Value::Number(Number::Decimal(d))),
+        (Some("duration"), JsonValue::String(s)) => s.parse::<Duration>().ok().map(Value::Duration),
+        (Some("duration"), JsonValue::Object(_)) => duration_value(value).map(Value::Duration),
         (Some("bytes"), JsonValue::Array(items)) => items
             .iter()
             .map(|item| item.as_u64().and_then(|byte| u8::try_from(byte).ok()))
             .collect::<Option<Vec<u8>>>()
-            .map(|bytes| format!("encoding::base64::decode(\"{}\")", base64_text(&bytes))),
+            .map(|bytes| Value::Bytes(Bytes::from(bytes))),
         (Some("datetime" | "uuid" | "decimal" | "duration" | "bytes"), _) => None,
-        _ => return json_text(value),
+        _ => return Ok(value.clone().into_value()),
     };
     typed.ok_or_else(|| {
         Error::engine(format!(
@@ -2040,38 +2279,15 @@ fn datetime_text(value: &str) -> String {
     }
 }
 
-/// A duration literal (`5s250ns`) from a serialized `std::time::Duration`
-/// (`{"secs": …, "nanos": …}`).
-fn duration_literal(value: &JsonValue) -> Option<String> {
+/// A duration from a serialized `std::time::Duration` (`{"secs": …, "nanos": …}`).
+fn duration_value(value: &JsonValue) -> Option<Duration> {
     let object = value.as_object()?;
     if object.len() != 2 {
         return None;
     }
     let secs = object.get("secs")?.as_u64()?;
-    let nanos = object.get("nanos")?.as_u64()?;
-    Some(match (secs, nanos) {
-        (secs, 0) => format!("{secs}s"),
-        (0, nanos) => format!("{nanos}ns"),
-        (secs, nanos) => format!("{secs}s{nanos}ns"),
-    })
-}
-
-/// Standard-alphabet base64 without padding; `encoding::base64::decode`
-/// accepts it in every SurrealDB version, while padding is rejected by some.
-fn base64_text(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let group = chunk.iter().enumerate().fold(0u32, |acc, (i, byte)| {
-            acc | (u32::from(*byte) << (16 - 8 * i))
-        });
-        for i in 0..=chunk.len() {
-            out.push(char::from(
-                ALPHABET[((group >> (18 - 6 * i)) & 0x3f) as usize],
-            ));
-        }
-    }
-    out
+    let nanos = u32::try_from(object.get("nanos")?.as_u64()?).ok()?;
+    Some(Duration::new(secs, nanos))
 }
 
 // ---------------------------------------------------------------------------
@@ -2166,14 +2382,48 @@ mod tests {
         value.as_object().unwrap().clone()
     }
 
+    fn upsert(id: &str, set: JsonValue, unset: &[&str]) -> RecordAction {
+        RecordAction {
+            record_id: string_id(id),
+            write: RecordWrite::Upsert(FieldChanges {
+                set: fields(set),
+                unset: unset.iter().map(|s| s.to_string()).collect(),
+            }),
+        }
+    }
+
+    fn delete(id: &str) -> RecordAction {
+        RecordAction {
+            record_id: string_id(id),
+            write: RecordWrite::Delete,
+        }
+    }
+
+    /// The records bound to loop `index` of a chunk.
+    fn bound_records(chunk: &RecordChunk, index: usize) -> Vec<Object> {
+        let Some(Value::Array(records)) = chunk.params.get(&format!("g{index}")) else {
+            panic!("loop {index} has no bound records: {chunk:?}");
+        };
+        records
+            .iter()
+            .map(|record| match record {
+                Value::Object(object) => object.clone(),
+                other => panic!("a bound record is not an object: {other:?}"),
+            })
+            .collect()
+    }
+
+    fn one_chunk(spec: &TableSpec, actions: Vec<RecordAction>) -> RecordChunk {
+        let mut chunks = record_batches(spec, actions).unwrap();
+        assert_eq!(chunks.len(), 1);
+        chunks.pop().unwrap()
+    }
+
     #[test]
     fn a_batch_unsets_then_upserts_then_sets_fields() {
         let spec = TableSpec::table("person".to_string(), None, ManagedBy::System);
         let actions = vec![
-            RecordAction {
-                record_id: string_id("gone"),
-                write: RecordWrite::Delete,
-            },
+            delete("gone"),
             RecordAction {
                 record_id: string_id("ann"),
                 write: RecordWrite::SetFields(FieldChanges {
@@ -2181,31 +2431,48 @@ mod tests {
                     unset: vec!["rank".to_string()],
                 }),
             },
-            RecordAction {
-                record_id: string_id("ann"),
-                write: RecordWrite::Upsert(FieldChanges {
-                    set: fields(serde_json::json!({
-                        "name": "Ann",
-                        "nick": null,
-                        "meta": { "en": 1 },
-                    })),
-                    unset: vec!["age".to_string()],
-                }),
-            },
+            upsert(
+                "ann",
+                serde_json::json!({ "name": "Ann", "nick": null, "meta": { "en": 1 } }),
+                &["age"],
+            ),
             RecordAction {
                 record_id: string_id("old"),
                 write: RecordWrite::UnsetFields(vec!["score".to_string()]),
             },
         ];
+        let chunk = one_chunk(&spec, actions);
         assert_eq!(
-            record_statements(&spec, actions).unwrap(),
+            chunk.surql,
             "BEGIN TRANSACTION;\n\
-             UPDATE person:`old` SET `score` = NONE RETURN NONE;\n\
-             UPSERT person:`ann` SET `age` = NONE, `meta` = {\"en\":1}, `name` = \"Ann\", `nick` = NONE RETURN NONE;\n\
-             LET $updated = (UPDATE ONLY person:`ann` SET `rank` = NONE, `score` = 7 RETURN id);\n\
-             IF $updated = NONE { THROW \"fields target record missing: person:`ann`\"; };\n\
-             DELETE person:`gone`;\n\
+             FOR $r IN $g0 { UPDATE $r.id SET `score` = NONE RETURN NONE; };\n\
+             FOR $r IN $g1 { UPSERT $r.id SET `age` = NONE, `meta` = $r.c.`meta`, `name` = $r.c.`name`, `nick` = $r.c.`nick` RETURN NONE; };\n\
+             FOR $r IN $g2 { LET $n = (UPDATE ONLY $r.id SET `rank` = NONE, `score` = $r.c.`score` RETURN id); \
+             IF $n = NONE { THROW 'fields target record missing: ' + <string>$r.id; }; };\n\
+             FOR $r IN $g3 { DELETE $r.id RETURN NONE; };\n\
              COMMIT TRANSACTION;\n"
+        );
+        // Every value travels as a bound parameter; `null` is `NONE`.
+        let [ann] = &bound_records(&chunk, 1)[..] else {
+            panic!("expected one upsert");
+        };
+        assert_eq!(
+            ann.get("id"),
+            Some(&Value::RecordId(RecordId::new("person", "ann")))
+        );
+        let Some(Value::Object(content)) = ann.get("c") else {
+            panic!("no content: {ann:?}");
+        };
+        assert_eq!(content.get("name"), Some(&Value::String("Ann".to_string())));
+        assert_eq!(content.get("nick"), Some(&Value::None));
+        assert_eq!(
+            content.get("meta"),
+            Some(&serde_json::json!({ "en": 1 }).into_value())
+        );
+        assert_eq!(content.get("age"), None);
+        assert_eq!(
+            bound_records(&chunk, 3)[0].get("id"),
+            Some(&Value::RecordId(RecordId::new("person", "gone")))
         );
     }
 
@@ -2215,23 +2482,17 @@ mod tests {
     fn a_removed_group_does_not_erase_a_field_the_record_takes_over() {
         let spec = TableSpec::table("person".to_string(), None, ManagedBy::System);
         let actions = vec![
-            RecordAction {
-                record_id: string_id("ann"),
-                write: RecordWrite::Upsert(FieldChanges {
-                    set: fields(serde_json::json!({ "score": 9 })),
-                    unset: vec![],
-                }),
-            },
+            upsert("ann", serde_json::json!({ "score": 9 }), &[]),
             RecordAction {
                 record_id: string_id("ann"),
                 write: RecordWrite::UnsetFields(vec!["score".to_string()]),
             },
         ];
         assert_eq!(
-            record_statements(&spec, actions).unwrap(),
+            one_chunk(&spec, actions).surql,
             "BEGIN TRANSACTION;\n\
-             UPDATE person:`ann` SET `score` = NONE RETURN NONE;\n\
-             UPSERT person:`ann` SET `score` = 9 RETURN NONE;\n\
+             FOR $r IN $g0 { UPDATE $r.id SET `score` = NONE RETURN NONE; };\n\
+             FOR $r IN $g1 { UPSERT $r.id SET `score` = $r.c.`score` RETURN NONE; };\n\
              COMMIT TRANSACTION;\n"
         );
     }
@@ -2258,12 +2519,200 @@ mod tests {
             },
         ];
         assert_eq!(
-            record_statements(&spec, actions).unwrap(),
+            one_chunk(&spec, actions).surql,
             "BEGIN TRANSACTION;\n\
-             UPSERT person:`ann` RETURN NONE;\n\
-             LET $updated = (UPDATE ONLY person:`ann` RETURN id);\n\
-             IF $updated = NONE { THROW \"fields target record missing: person:`ann`\"; };\n\
+             FOR $r IN $g0 { UPSERT $r.id RETURN NONE; };\n\
+             FOR $r IN $g1 { LET $n = (UPDATE ONLY $r.id RETURN id); \
+             IF $n = NONE { THROW 'fields target record missing: ' + <string>$r.id; }; };\n\
              COMMIT TRANSACTION;\n"
+        );
+    }
+
+    /// A batch of any size costs a bounded number of round trips: one
+    /// transaction per `MAX_ACTIONS_PER_TXN` actions, and within it one
+    /// statement per shape of write, not one per record.
+    #[test]
+    fn a_large_batch_is_sent_in_bounded_round_trips() {
+        let spec = TableSpec::table("person".to_string(), None, ManagedBy::System);
+        let mut actions = Vec::new();
+        for i in 0..300 {
+            actions.push(delete(&format!("gone{i}")));
+        }
+        for i in 0..1200 {
+            actions.push(upsert(
+                &format!("p{i}"),
+                serde_json::json!({ "name": format!("P{i}"), "score": i }),
+                &[],
+            ));
+        }
+        let chunks = record_batches(&spec, actions).unwrap();
+        assert_eq!(chunks.len(), 3);
+        let mut upserts = 0;
+        let mut deletes = 0;
+        for chunk in &chunks {
+            assert!(chunk.statement_count() <= 2, "{}", chunk.surql);
+            let bound: usize = (0..chunk.statement_count())
+                .map(|index| bound_records(chunk, index).len())
+                .sum();
+            assert!(bound <= MAX_ACTIONS_PER_TXN);
+            upserts += chunk.surql.matches("UPSERT $r.id").count();
+            deletes += chunk.surql.matches("DELETE $r.id").count();
+        }
+        // Upserts come before deletes, so the first two chunks are upserts
+        // only and the deletes share the last chunk with the remaining ones.
+        assert_eq!(chunks[0].statement_count(), 1);
+        assert_eq!(chunks[1].statement_count(), 1);
+        assert_eq!(chunks[2].statement_count(), 2);
+        assert_eq!(upserts, 3);
+        assert_eq!(deletes, 1);
+        let total: usize = chunks
+            .iter()
+            .flat_map(|chunk| (0..chunk.statement_count()).map(move |i| (chunk, i)))
+            .map(|(chunk, index)| bound_records(chunk, index).len())
+            .sum();
+        assert_eq!(total, 1500);
+    }
+
+    /// Rows of one table that declare different field sets each get a loop
+    /// of their own: the field list is part of the statement.
+    #[test]
+    fn rows_with_different_fields_get_their_own_statement() {
+        let spec = TableSpec::table("person".to_string(), None, ManagedBy::System);
+        let actions = vec![
+            upsert("a", serde_json::json!({ "name": "A" }), &[]),
+            upsert("b", serde_json::json!({ "name": "B", "age": 3 }), &[]),
+            upsert("c", serde_json::json!({ "name": "C" }), &[]),
+        ];
+        let chunk = one_chunk(&spec, actions);
+        assert_eq!(chunk.statement_count(), 2);
+        assert_eq!(bound_records(&chunk, 0).len(), 2);
+        assert_eq!(bound_records(&chunk, 1).len(), 1);
+    }
+
+    /// One loop serves relations between any tables: the endpoint tables
+    /// travel in the bound record ids.
+    #[test]
+    fn relations_bind_their_endpoints() {
+        let spec = TableSpec::relation(
+            "knows".to_string(),
+            vec!["person".to_string(), "org".to_string()],
+            vec!["person".to_string()],
+            None,
+            ManagedBy::System,
+        );
+        let relate = |id: &str, from_table: &str, from_id: &str| RecordAction {
+            record_id: string_id(id),
+            write: RecordWrite::Relate {
+                fields: fields(serde_json::json!({ "since": 2020 })),
+                endpoints: RelationEndpoints {
+                    from_table: from_table.to_string(),
+                    from_id: string_id(from_id),
+                    to_table: "person".to_string(),
+                    to_id: RecordIdValue::Number("7".to_string()),
+                },
+            },
+        };
+        let chunk = one_chunk(
+            &spec,
+            vec![relate("r1", "person", "ann"), relate("r2", "org", "acme")],
+        );
+        assert_eq!(
+            chunk.surql,
+            "BEGIN TRANSACTION;\n\
+             FOR $r IN $g0 { DELETE $r.id RETURN NONE; \
+             RELATE ($r.f)->($r.id)->($r.t) CONTENT $r.c RETURN NONE; };\n\
+             COMMIT TRANSACTION;\n"
+        );
+        let [r1, r2] = &bound_records(&chunk, 0)[..] else {
+            panic!("expected two relations");
+        };
+        assert_eq!(
+            r1.get("id"),
+            Some(&Value::RecordId(RecordId::new("knows", "r1")))
+        );
+        assert_eq!(
+            r1.get("f"),
+            Some(&Value::RecordId(RecordId::new("person", "ann")))
+        );
+        assert_eq!(
+            r1.get("t"),
+            Some(&Value::RecordId(RecordId::new("person", 7i64)))
+        );
+        assert_eq!(
+            r2.get("f"),
+            Some(&Value::RecordId(RecordId::new("org", "acme")))
+        );
+    }
+
+    fn conflict() -> surrealdb::Error {
+        surrealdb::Error::internal("The transaction can be retried".to_string())
+    }
+
+    /// `results` are what each attempt returns; the last repeats. Gives the
+    /// number of attempts made and the outcome.
+    async fn attempts(
+        results: Vec<std::result::Result<(), surrealdb::Error>>,
+    ) -> (usize, std::result::Result<(), surrealdb::Error>) {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let outcome = retry_on_conflict(|| {
+            let index = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let result = results[index.min(results.len() - 1)].clone();
+            async move { result }
+        })
+        .await;
+        (calls.into_inner(), outcome)
+    }
+
+    #[tokio::test]
+    async fn a_conflicted_chunk_is_retried_until_it_lands() {
+        let (calls, outcome) = attempts(vec![Err(conflict()), Err(conflict()), Ok(())]).await;
+        assert_eq!(calls, 3);
+        assert!(outcome.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_chunk_that_keeps_conflicting_fails_after_the_last_attempt() {
+        let (calls, outcome) = attempts(vec![Err(conflict())]).await;
+        assert_eq!(calls, MAX_ATTEMPTS as usize);
+        assert!(is_transaction_conflict(&outcome.unwrap_err()));
+    }
+
+    #[tokio::test]
+    async fn any_other_error_is_not_retried() {
+        let other = surrealdb::Error::internal("Expected `string` but found `3`".to_string());
+        let (calls, outcome) = attempts(vec![Err(other)]).await;
+        assert_eq!(calls, 1);
+        assert!(!is_transaction_conflict(&outcome.unwrap_err()));
+    }
+
+    #[test]
+    fn a_table_is_defined_in_one_script() {
+        let schema = TableSchema::new([
+            ("name", ColumnDef::new("string")),
+            ("age", ColumnDef::new("int").nullable()),
+            ("old", ColumnDef::new("string")),
+        ])
+        .unwrap();
+        let spec = TableSpec::table("person".to_string(), Some(schema), ManagedBy::System);
+        assert_eq!(
+            define_table_statements(&spec, &["gone".to_string()], &["age".to_string()]).unwrap(),
+            "DEFINE TABLE IF NOT EXISTS person SCHEMAFULL;\n\
+             DEFINE FIELD IF NOT EXISTS age ON person TYPE option<int>;\n\
+             DEFINE FIELD IF NOT EXISTS name ON person TYPE string;\n\
+             DEFINE FIELD IF NOT EXISTS old ON person TYPE string;\n\
+             REMOVE FIELD IF EXISTS gone ON person;\n\
+             DEFINE FIELD OVERWRITE age ON person TYPE option<int>;\n"
+        );
+        let relation = TableSpec::relation(
+            "knows".to_string(),
+            vec!["person".to_string()],
+            vec!["person".to_string(), "org".to_string()],
+            None,
+            ManagedBy::System,
+        );
+        assert_eq!(
+            define_table_statements(&relation, &[], &[]).unwrap(),
+            "DEFINE TABLE IF NOT EXISTS knows TYPE RELATION FROM person TO org|person SCHEMALESS;\n"
         );
     }
 
@@ -2298,7 +2747,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_columns_are_written_as_typed_values() {
+    fn typed_columns_are_sent_as_typed_values() {
         let set = fields(serde_json::json!({
             "at": "2024-05-01T10:00:00+02:00",
             "day": "2024-05-01",
@@ -2310,17 +2759,44 @@ mod tests {
             "tags": ["a", "b"],
             "untyped": "2024-05-01",
         }));
+        let content = fields_params(Some(&typed_schema()), &set).unwrap();
         assert_eq!(
-            set_clause(Some(&typed_schema()), &set, &[]).unwrap(),
-            " SET `at` = <datetime> \"2024-05-01T10:00:00+02:00\", \
-             `blob` = encoding::base64::decode(\"aGk\"), \
-             `day` = <datetime> \"2024-05-01T00:00:00Z\", \
-             `naive` = <datetime> \"2024-05-01T10:00:00Z\", \
-             `price` = <decimal> \"12.50\", \
-             `tags` = [\"a\",\"b\"], \
-             `took` = 5s250ns, \
-             `uid` = <uuid> \"67e55044-10b1-426f-9247-bb680e5fe0c8\", \
-             `untyped` = \"2024-05-01\""
+            content.get("at"),
+            Some(&Value::Datetime("2024-05-01T08:00:00Z".parse().unwrap()))
+        );
+        assert_eq!(
+            content.get("day"),
+            Some(&Value::Datetime("2024-05-01T00:00:00Z".parse().unwrap()))
+        );
+        assert_eq!(
+            content.get("naive"),
+            Some(&Value::Datetime("2024-05-01T10:00:00Z".parse().unwrap()))
+        );
+        assert_eq!(
+            content.get("uid"),
+            Some(&Value::Uuid(
+                "67e55044-10b1-426f-9247-bb680e5fe0c8".parse().unwrap()
+            ))
+        );
+        assert_eq!(
+            content.get("price"),
+            Some(&Value::Number(Number::Decimal("12.50".parse().unwrap())))
+        );
+        assert_eq!(
+            content.get("took"),
+            Some(&Value::Duration(Duration::new(5, 250)))
+        );
+        assert_eq!(
+            content.get("blob"),
+            Some(&Value::Bytes(Bytes::from(b"hi".to_vec())))
+        );
+        assert_eq!(
+            content.get("tags"),
+            Some(&serde_json::json!(["a", "b"]).into_value())
+        );
+        assert_eq!(
+            content.get("untyped"),
+            Some(&Value::String("2024-05-01".to_string()))
         );
     }
 
@@ -2329,6 +2805,7 @@ mod tests {
         let schema = typed_schema();
         for (name, value) in [
             ("at", serde_json::json!(1714557600)),
+            ("at", serde_json::json!("yesterday")),
             ("uid", serde_json::json!(7)),
             ("price", serde_json::json!(true)),
             ("took", serde_json::json!({ "secs": 5 })),
@@ -2336,31 +2813,10 @@ mod tests {
             ("blob", serde_json::json!("aGk")),
         ] {
             let set = fields(serde_json::json!({ name: value }));
-            let message = set_clause(Some(&schema), &set, &[])
-                .unwrap_err()
-                .to_string();
+            let message = fields_params(Some(&schema), &set).unwrap_err().to_string();
             assert!(message.contains(&format!("{name:?}")), "{message}");
             assert!(message.contains("cannot take the value"), "{message}");
         }
-    }
-
-    #[test]
-    fn a_typed_string_is_a_cast_over_an_escaped_string() {
-        let schema = typed_schema();
-        let set = fields(serde_json::json!({ "uid": "x\"; DELETE person; \"" }));
-        assert_eq!(
-            set_clause(Some(&schema), &set, &[]).unwrap(),
-            " SET `uid` = <uuid> \"x\\\"; DELETE person; \\\"\""
-        );
-    }
-
-    #[test]
-    fn base64_is_unpadded() {
-        assert_eq!(base64_text(b""), "");
-        assert_eq!(base64_text(b"f"), "Zg");
-        assert_eq!(base64_text(b"fo"), "Zm8");
-        assert_eq!(base64_text(b"foo"), "Zm9v");
-        assert_eq!(base64_text(&[0xfb, 0xff]), "+/8");
     }
 
     #[test]
