@@ -9,7 +9,8 @@ from cocoindex.cli import _utf8_when_piped
 
 def test_piped_output_in_a_legacy_encoding_switches_to_utf8() -> None:
     raw = io.BytesIO()
-    stream = io.TextIOWrapper(raw, encoding="cp1252")
+    # No newline translation, so the bytes are the same on Windows.
+    stream = io.TextIOWrapper(raw, encoding="cp1252", newline="\n")
     _utf8_when_piped(stream)
     stream.write("✓ Dropped App (target states reverted · <0.1s)\n")
     stream.flush()
