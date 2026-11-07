@@ -1056,13 +1056,15 @@ impl Ctx {
         let child_path = self.child_path(comp_ctx, key);
         let stable_path = child_path.to_string();
         let fn_ctx = Arc::new(FnCallContext::default());
-        let Some(pending) = mount_live_prepare(comp_ctx, &fn_ctx, child_path, comp_ctx.live())
-            .map_err(|e| Error::engine(format!("{e}")))?
-        else {
+        let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path, comp_ctx.live())
+            .map_err(|e| Error::engine(format!("{e}")))?;
+        // Before the return below: a skipped mount still counts as a mount of
+        // the calling function, so it is not memoized.
+        let _frame = self.frame_guard(fn_ctx);
+        let Some(pending) = pending else {
             // The update's component selector leaves this component out.
             return Ok(());
         };
-        let _frame = self.frame_guard(fn_ctx);
         let result = pending
             .complete()
             .await
@@ -1235,14 +1237,15 @@ impl Ctx {
         let key_str = key_label(&key);
         let child_path = self.child_path(comp_ctx, key);
         let fn_ctx = Arc::new(FnCallContext::default());
-        let Some(pending) =
-            mount_live_prepare(comp_ctx, &fn_ctx, child_path.clone(), comp_ctx.live())
-                .map_err(|e| Error::engine(format!("{e}")))?
-        else {
+        let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path.clone(), comp_ctx.live())
+            .map_err(|e| Error::engine(format!("{e}")))?;
+        // Before the return below: a skipped mount still counts as a mount of
+        // the calling function, so it is not memoized.
+        let _frame = self.frame_guard(fn_ctx);
+        let Some(pending) = pending else {
             // The update's component selector leaves this component out.
             return Ok(());
         };
-        let _frame = self.frame_guard(fn_ctx);
         let result = pending
             .complete()
             .await

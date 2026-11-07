@@ -448,6 +448,22 @@ impl AppStore {
                             app_store
                                 .write_tracking_info_raw(wtxn, &owner_path, &bytes)
                                 .await?;
+                            // The owner no longer holds what its memo, and the
+                            // memo of each ancestor, say it declares: a hit
+                            // would leave the target state to whoever took it,
+                            // and delete it with them. An owner that is not run
+                            // in this update (a selector leaves it out) would
+                            // otherwise stand on that memo in a later one.
+                            let mut memo_path = owner_path.as_ref();
+                            loop {
+                                app_store
+                                    .delete_component_memo_in_txn(wtxn, &memo_path.into())
+                                    .await?;
+                                let Some((parent, _)) = memo_path.split_parent() else {
+                                    break;
+                                };
+                                memo_path = parent;
+                            }
                         }
                         for (fp, segment_key) in &plan.segment_names {
                             app_store
@@ -595,6 +611,7 @@ impl AppStore {
 /// `selector` is the selector the component's run is under, if any. The run
 /// did not decide about an on-disk child the selector does not cover, so that
 /// child is neither removed nor tombstoned (see [`remove_undeclared_child`]).
+/// Returns whether any such child stayed: the subtree is then not up to date.
 ///
 /// Used by [`AppStore::commit`]: the AppStore opens the commit txn,
 /// then invokes the engine-supplied [`ExistenceReconciler`] which in
@@ -606,7 +623,8 @@ pub async fn reconcile_child_existence<'a>(
     component_path: &StablePath,
     child_path_set: Option<&'a ChildStablePathSet>,
     selector: Option<&ComponentSelector>,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut kept_unselected = false;
     let mut queue: VecDeque<Level<'a>> = VecDeque::new();
     queue.push_back(Level {
         path: component_path.clone(),
@@ -640,7 +658,7 @@ pub async fn reconcile_child_existence<'a>(
                 }
                 (None, Some(_)) => {
                     if let Some((key, info)) = existing_next.take() {
-                        remove_undeclared_child(
+                        kept_unselected |= remove_undeclared_child(
                             wtxn,
                             app_store,
                             selector,
@@ -654,7 +672,7 @@ pub async fn reconcile_child_existence<'a>(
                         .await?;
                     }
                     for (key, info) in existing_iter.by_ref() {
-                        remove_undeclared_child(
+                        kept_unselected |= remove_undeclared_child(
                             wtxn,
                             app_store,
                             selector,
@@ -683,7 +701,7 @@ pub async fn reconcile_child_existence<'a>(
                         let (key, info) = existing_next
                             .take()
                             .ok_or_else(|| internal_error!("invariance violation"))?;
-                        remove_undeclared_child(
+                        kept_unselected |= remove_undeclared_child(
                             wtxn,
                             app_store,
                             selector,
@@ -704,6 +722,12 @@ pub async fn reconcile_child_existence<'a>(
                         let (_, existing_info) = existing_next
                             .take()
                             .ok_or_else(|| internal_error!("invariance violation"))?;
+                        // A skipped mount: whatever the store holds here stays.
+                        if matches!(curr_path_set, StablePathSet::Skipped) {
+                            curr_next = curr_iter.next();
+                            existing_next = existing_iter.next();
+                            continue;
+                        }
                         let new_node_type = node_type_for(curr_path_set);
                         // Declared as a directory only because a selected path
                         // lies below, the component on disk is unselected: it
@@ -715,6 +739,7 @@ pub async fn reconcile_child_existence<'a>(
                             && selector.is_some_and(|selector| {
                                 !selector.covers(&level.path.concat_part(curr_key.clone()))
                             });
+                        kept_unselected |= keeps_unselected_component;
 
                         if existing_info.node_type != new_node_type && !keeps_unselected_component {
                             app_store
@@ -758,6 +783,11 @@ pub async fn reconcile_child_existence<'a>(
         }
 
         for (stable_key, path_set) in children_to_add {
+            // A mount the selector left out, or a directory of nothing else,
+            // leaves no trace in the store.
+            if !path_set.has_executed_component() {
+                continue;
+            }
             let node_type = node_type_for(path_set);
             app_store
                 .write_child_existence(
@@ -781,7 +811,7 @@ pub async fn reconcile_child_existence<'a>(
                 .await?;
         }
     }
-    Ok(())
+    Ok(kept_unselected)
 }
 
 struct Level<'a> {
@@ -799,6 +829,8 @@ struct Level<'a> {
 ///   components below it did go away. A component stays whole: what lies below
 ///   it is its own to reconcile, and deleting it would delete unselected
 ///   descendants too.
+///
+/// Returns whether the child stayed.
 #[allow(clippy::too_many_arguments)]
 async fn remove_undeclared_child<'a>(
     wtxn: &mut WriteTxn<'_>,
@@ -810,12 +842,12 @@ async fn remove_undeclared_child<'a>(
     component_path: &StablePath,
     queue: &mut VecDeque<Level<'a>>,
     buffered_tombstones: &mut Vec<StablePath>,
-) -> Result<()> {
+) -> Result<bool> {
     if let Some(selector) = selector {
         let path = parent_path.concat_part(stable_key.clone());
         match selector.classify(&path) {
             ComponentSelection::Selected => {}
-            ComponentSelection::Unselected => return Ok(()),
+            ComponentSelection::Unselected => return Ok(true),
             ComponentSelection::AncestorOfSelected => {
                 if info.node_type == StablePathNodeType::Directory {
                     queue.push_back(Level {
@@ -823,7 +855,7 @@ async fn remove_undeclared_child<'a>(
                         child_path_set: None,
                     });
                 }
-                return Ok(());
+                return Ok(true);
             }
         }
     }
@@ -837,7 +869,8 @@ async fn remove_undeclared_child<'a>(
         component_path,
         queue,
         buffered_tombstones,
-    )
+    )?;
+    Ok(false)
 }
 
 fn del_child<'a>(
@@ -866,7 +899,7 @@ fn del_child<'a>(
 fn node_type_for(path_set: &StablePathSet) -> StablePathNodeType {
     match path_set {
         StablePathSet::Directory(_) => StablePathNodeType::Directory,
-        StablePathSet::Component => StablePathNodeType::Component,
+        StablePathSet::Component | StablePathSet::Skipped => StablePathNodeType::Component,
     }
 }
 

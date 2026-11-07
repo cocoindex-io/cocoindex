@@ -19,7 +19,7 @@ use crate::engine::execution::{
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
-use crate::state::component_selector::{ComponentSelector, MountDecision};
+use crate::state::component_selector::{ComponentSelection, ComponentSelector, MountDecision};
 use crate::state::stable_path::{StablePath, StablePathRef};
 use crate::state::stable_path_set::StablePathSet;
 use crate::state::target_state_path::{TargetProviderDeps, TargetStatePath};
@@ -329,6 +329,9 @@ pub(crate) struct ComponentRunOutcome {
     /// outcome's own list is never what a component reports upward about
     /// itself: a component is listed by its parent, not by its own outcome.
     open_children: Vec<StablePath>,
+    /// A selector left out a child of the component or of a descendant, so the
+    /// subtree is not up to date: no memo may say it is.
+    left_out_children: bool,
 }
 
 impl ComponentRunOutcome {
@@ -355,6 +358,7 @@ impl ComponentRunOutcome {
             target_provider_deps,
             cannot_skip,
             open_children: Vec::new(),
+            left_out_children: false,
         }
     }
 
@@ -364,6 +368,7 @@ impl ComponentRunOutcome {
         self.target_provider_deps.extend(other.target_provider_deps);
         self.cannot_skip |= other.cannot_skip;
         self.open_children.extend(other.open_children);
+        self.left_out_children |= other.left_out_children;
     }
 }
 
@@ -967,10 +972,15 @@ impl<Prof: EngineProfile> Component<Prof> {
         processor: Prof::ComponentProc,
         deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
+        // An unselected child runs for its value, not to be reprocessed.
+        let selector = parent_ctx.component_selector();
+        let unselected = selector.is_some_and(|selector| {
+            selector.classify(self.stable_path()) == ComponentSelection::Unselected
+        });
         let child_ctx = self.new_processor_context_for_build(
             Some(parent_ctx),
             parent_ctx.processing_stats().clone(),
-            parent_ctx.full_reprocess(),
+            parent_ctx.full_reprocess() && !unselected,
             parent_ctx.live(), // use_mount inherits live from parent
             parent_ctx.preview_collector().cloned(),
             parent_ctx.host_ctx().clone(),
@@ -981,7 +991,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             None,
             // A use_mount child always runs, selected or not: its parent is
             // waiting for its value.
-            ComponentSelector::scoped_to(parent_ctx.component_selector(), self.stable_path()),
+            ComponentSelector::scoped_to(selector, self.stable_path()),
         )?;
         self.run(processor, child_ctx, deadline, deadline).await
     }
@@ -994,13 +1004,15 @@ impl<Prof: EngineProfile> Component<Prof> {
         processor: Prof::ComponentProc,
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
-        // An unselected child stops here: not run, and not in the parent's
-        // `child_path_set`. The parent's commit keeps its on-disk row all the
-        // same (`reconcile_child_existence`).
+        // An unselected child stops here: not run, and the parent's commit
+        // keeps what the store holds for it (`reconcile_child_existence`).
         let component_selector =
             match ComponentSelector::for_mount(parent_ctx.component_selector(), self.stable_path())
             {
-                MountDecision::Skip => return Ok(ComponentExecutionHandle::finished()),
+                MountDecision::Skip => {
+                    parent_ctx.record_skipped_mount(self.stable_path())?;
+                    return Ok(ComponentExecutionHandle::finished());
+                }
                 MountDecision::Run(component_selector) => component_selector,
             };
         // Store `on_error` on the child's build context too, so the
@@ -1541,13 +1553,14 @@ impl<Prof: EngineProfile> Component<Prof> {
                             // entry's return value must not be reused.
                             // - The run observed one key in two states: no stored
                             //   state can validate its output.
-                            // - The run is under a selector: it may have left
-                            //   children unrun, and a memo would tell the next
-                            //   update that this subtree is up to date. Its
-                            //   ancestors are under the selector too, so none of
-                            //   them stores one either.
+                            // - A selector left out a child here or below: a memo
+                            //   would tell the next update that this subtree is
+                            //   up to date. The outcome carries this up, so no
+                            //   ancestor stores one either.
+                            children_outcome.left_out_children |=
+                                processor_context.left_out_children();
                             let comp_memo = if data_dep_conflict.is_some()
-                                || processor_context.component_selector().is_some()
+                                || children_outcome.left_out_children
                             {
                                 if memo_fp_to_store.is_some() {
                                     delete_component_memo(processor_context).await?;

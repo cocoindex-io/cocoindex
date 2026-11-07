@@ -66,9 +66,20 @@ pub fn mount_live_prepare<Prof: EngineProfile>(
 
     let component_selector =
         match ComponentSelector::for_mount(parent_ctx.component_selector(), &child_stable_path) {
-            MountDecision::Skip => return Ok(None),
+            MountDecision::Skip => {
+                parent_ctx.record_skipped_mount(&child_stable_path)?;
+                return Ok(None);
+            }
             MountDecision::Run(component_selector) => component_selector,
         };
+    // A live component reports nothing up (see `MountLivePending::complete`), so
+    // what its runs leave out is taken as left out here.
+    if component_selector
+        .as_ref()
+        .is_some_and(ComponentSelector::can_leave_out_children)
+    {
+        parent_ctx.mark_left_out_children();
+    }
 
     // Register the child in the parent's child_path_set and get providers
     // in a single lock acquisition.
@@ -107,6 +118,15 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             component_selector,
         } = self;
 
+        // A run that applies nothing, or runs this component only to reach
+        // selected paths below, does not stand in for what is already running:
+        // a preview from a UI must not end the live update of the app it looks
+        // at. Its controller runs beside that one, uninstalled.
+        let replaces_running = parent_ctx.preview_collector().is_none()
+            && !component_selector
+                .as_ref()
+                .is_some_and(ComponentSelector::can_leave_out_children);
+
         // 2. If existing live state, cancel and drain it (with 30s timeout).
         //
         // Without a timeout, a prior incarnation wedged in non-yielding
@@ -119,7 +139,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         // `update_full` reconciles. This trades quiescence for liveness —
         // same trade `App::drop_app` makes (see "drop_app" contract in
         // specs/live_component/design.md).
-        if let Some(existing_state) = child.live_state() {
+        if replaces_running && let Some(existing_state) = child.live_state() {
             let drain_fut = existing_state.cancel_and_drain();
             if tokio::time::timeout(
                 std::time::Duration::from_secs(LIVE_COMPONENT_DRAIN_TIMEOUT_SECS),
@@ -191,7 +211,9 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         // by `child.live_state`, the Weak in `live_components` upgrades for
         // the lifetime of the live component (or until cancel-and-drain
         // releases the strong ref).
-        child.set_live_state(state.clone());
+        if replaces_running || child.live_state().is_none() {
+            child.set_live_state(state.clone());
+        }
         parent_ctx
             .app_ctx()
             .register_live_component(Arc::downgrade(&state));
@@ -502,6 +524,12 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     /// [`ComponentProcessorContext::component_selector`]. It holds for the whole
     /// update, live events included.
     component_selector: Option<ComponentSelector>,
+    /// What a run under a selector wrote through
+    /// [`Self::write_committed_state`]: it keeps it for its own reads, and does
+    /// not persist it. Such a value says something about the whole component
+    /// (a full scan is done, a logic version is current), which a run that left
+    /// children out has not earned.
+    selective_committed_state: Arc<parking_lot::Mutex<HashMap<StableKey, Vec<u8>>>>,
     /// The mounting run's store handle, which persists nothing in a preview
     /// (see [`ComponentProcessorContext::app_store`]).
     app_store: AppStore,
@@ -548,6 +576,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             live,
             preview_collector,
             component_selector,
+            selective_committed_state: Default::default(),
             app_store,
             providers,
             lender,
@@ -580,6 +609,9 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// set-reduces, and not participating in any commit, so it is safe in the
     /// non-committing `process_live` context.
     pub async fn read_committed_state(&self, key: &StableKey) -> Result<Option<Vec<u8>>> {
+        if let Some(value) = self.selective_committed_state.lock().get(key) {
+            return Ok(Some(value.clone()));
+        }
         self.app_store
             .read_user_state(
                 self.component.stable_path(),
@@ -601,6 +633,16 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// value for the run instead, so a later [`Self::read_committed_state`]
     /// reads it back.
     pub async fn write_committed_state(&self, key: &StableKey, value: Vec<u8>) -> Result<()> {
+        if self
+            .component_selector
+            .as_ref()
+            .is_some_and(ComponentSelector::can_leave_out_children)
+        {
+            self.selective_committed_state
+                .lock()
+                .insert(key.clone(), value);
+            return Ok(());
+        }
         self.app_store
             .write_user_state_standalone(
                 self.component.stable_path(),
@@ -674,6 +716,16 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         Ok(())
     }
 
+    /// The update's selector leaves out a mount at `subpath`. [`Self::update`]
+    /// and [`Self::mount_inner_live`] act on it themselves; a host may ask first,
+    /// to avoid preparing the mount.
+    pub fn skips_subpath(&self, subpath: &StablePath) -> bool {
+        matches!(
+            ComponentSelector::for_mount(self.component_selector.as_ref(), subpath),
+            MountDecision::Skip
+        )
+    }
+
     /// Mount a child component incrementally. Same-subpath rapid calls are
     /// coalesced — only the most-recently-queued op runs; older ones
     /// resolve as `Superseded`. Returns immediately after dispatching;
@@ -688,9 +740,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         processor: Prof::ComponentProc,
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
-        if let MountDecision::Skip =
-            ComponentSelector::for_mount(self.component_selector.as_ref(), &subpath)
-        {
+        if self.skips_subpath(&subpath) {
             return Ok(ComponentExecutionHandle::finished());
         }
         self.dispatch(

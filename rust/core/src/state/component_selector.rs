@@ -11,12 +11,13 @@ use crate::state::stable_path::{StableKey, StablePath};
 ///
 /// A tree with a `HashMap` per level, so that classifying a path costs one
 /// lookup per path part however many paths are selected (a page of an
-/// observability UI selects tens of them). The tree also holds, at each level,
-/// the keys selected below it: what a source that reads by key needs to read
-/// those keys rather than list everything.
+/// observability UI selects tens of them).
 #[derive(Debug, Clone)]
 pub struct ComponentSelector {
     root: Arc<SelectorNode>,
+    /// This view belongs to a run inside a selected subtree: every path below
+    /// it is selected. The update as a whole may still leave components out.
+    within_selected: bool,
 }
 
 #[derive(Debug, Default)]
@@ -63,10 +64,14 @@ impl ComponentSelector {
         }
         Self {
             root: Arc::new(root),
+            within_selected: false,
         }
     }
 
     pub fn classify(&self, path: &StablePath) -> ComponentSelection {
+        if self.within_selected {
+            return ComponentSelection::Selected;
+        }
         let mut node = &*self.root;
         for key in path.iter() {
             if node.selected {
@@ -89,25 +94,37 @@ impl ComponentSelector {
         self.classify(path) == ComponentSelection::Selected
     }
 
+    /// A run under this view can leave out something it mounts. False inside a
+    /// selected subtree, from where on the run is an ordinary one. That never
+    /// comes back on the way down, so the ancestors of a run with this true
+    /// have it true too.
+    pub(crate) fn can_leave_out_children(&self) -> bool {
+        !self.within_selected
+    }
+
+    /// The whole app is selected, so the update is a plain one.
+    pub(crate) fn selects_everything(&self) -> bool {
+        self.root.selected
+    }
+
     /// The selector a run of the component at `path` is under, given the
-    /// selector of the run that started it. A selected subtree has none: from
-    /// there on the run is an ordinary one. This never comes back on the way
-    /// down, so an ancestor of a run under a selector is under it too.
+    /// selector of the run that started it.
     pub(crate) fn scoped_to(selector: Option<&Self>, path: &StablePath) -> Option<Self> {
-        selector.filter(|selector| !selector.covers(path)).cloned()
+        selector.map(|selector| Self {
+            root: selector.root.clone(),
+            within_selected: selector.covers(path),
+        })
     }
 
     /// See [`MountDecision`]. A child the parent waits for a value from
     /// (`use_mount`, the root) always runs, so it takes [`Self::scoped_to`].
     pub(crate) fn for_mount(selector: Option<&Self>, path: &StablePath) -> MountDecision {
-        let Some(selector) = selector else {
-            return MountDecision::Run(None);
-        };
-        match selector.classify(path) {
-            ComponentSelection::Selected => MountDecision::Run(None),
-            ComponentSelection::AncestorOfSelected => MountDecision::Run(Some(selector.clone())),
-            ComponentSelection::Unselected => MountDecision::Skip,
+        if selector
+            .is_some_and(|selector| selector.classify(path) == ComponentSelection::Unselected)
+        {
+            return MountDecision::Skip;
         }
+        MountDecision::Run(Self::scoped_to(selector, path))
     }
 }
 
@@ -206,12 +223,16 @@ mod tests {
     }
 
     #[test]
-    fn scoping_drops_the_selector_inside_a_selected_subtree() {
+    fn scoping_inside_a_selected_subtree_covers_everything_below() {
         let selector = ComponentSelector::new([path(&[s("process"), s("a")])]);
-        let scoped = |target: &StablePath| ComponentSelector::scoped_to(Some(&selector), target);
-        assert!(scoped(&path(&[s("process")])).is_some());
-        assert!(scoped(&path(&[s("other")])).is_some());
-        assert!(scoped(&path(&[s("process"), s("a")])).is_none());
+        let scoped =
+            |target: &StablePath| ComponentSelector::scoped_to(Some(&selector), target).unwrap();
+        assert!(scoped(&path(&[s("process")])).can_leave_out_children());
+        assert!(scoped(&path(&[s("other")])).can_leave_out_children());
+        let inside = scoped(&path(&[s("process"), s("a")]));
+        assert!(!inside.can_leave_out_children());
+        assert!(inside.covers(&path(&[s("process"), s("a"), s("x")])));
+        assert!(!inside.selects_everything());
         assert!(ComponentSelector::scoped_to(None, &path(&[s("process")])).is_none());
     }
 }

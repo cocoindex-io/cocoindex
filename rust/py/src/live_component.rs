@@ -16,6 +16,10 @@ pub struct PyLiveComponentController(pub Arc<LiveComponentController<PyEnginePro
 
 #[pymethods]
 impl PyLiveComponentController {
+    pub fn skips_subpath(&self, stable_path: PyStablePath) -> bool {
+        self.0.skips_subpath(&stable_path.0)
+    }
+
     pub fn update_full_async<'py>(
         &self,
         py: Python<'py>,

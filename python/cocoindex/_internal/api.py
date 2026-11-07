@@ -312,6 +312,12 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
     return pyvalue.get(fn_ret_deserializer(processor_fn))
 
 
+def _skips_mount(parent_ctx: ComponentContext, child_path: core.StablePath) -> bool:
+    return core.skips_mount(
+        child_path, parent_ctx._core_processor_ctx, parent_ctx._core_fn_call_ctx
+    )
+
+
 async def _mount_live_component(
     parent_ctx: ComponentContext,
     child_path: core.StablePath,
@@ -405,6 +411,11 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
 
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
+
+    # Asked before anything is prepared: a live component's constructor and a
+    # memo key are user code, which an unselected component must not run.
+    if _skips_mount(parent_ctx, child_path):
+        return ComponentMountHandle([])
 
     if is_live_component_class(processor_fn):
         instance = processor_fn(*args, **kwargs)
@@ -507,6 +518,8 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     child_path = build_child_path(parent_ctx, subpath)
 
     if isinstance(items, LiveMapFeed):
+        if _skips_mount(parent_ctx, child_path):
+            return ComponentMountHandle([])
         # Live data source: the per-item `fn` (whether a plain function or a
         # LiveComponent class) is dispatched through `mount()` / `operator.update()`
         # inside `_MountEachLiveComponent`, both of which already handle live
@@ -524,6 +537,8 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
 
     async def _mount_one(key: StableKey, item: Any) -> None:
         item_path = child_path.concat(key)
+        if _skips_mount(parent_ctx, item_path):
+            return
         if fn_is_live:
             instance = fn(item, *extra_args, **kwargs)
             handle = await _mount_live_component(parent_ctx, item_path, instance)
