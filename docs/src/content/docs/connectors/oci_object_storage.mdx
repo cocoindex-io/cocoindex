@@ -115,7 +115,7 @@ let app = Environment::builder()
     .await?;
 ```
 
-`OciClient::connect()` reads an API-key profile from `~/.oci/config` (or `OCI_CONFIG_FILE`), profile `DEFAULT` (or `OCI_PROFILE` / `OCI_CLI_PROFILE`). `OciClient::from_config(OciConfig { tenancy, user, fingerprint, key_file, region, pass_phrase })?` takes the profile's values directly; `OciConfig::from_file(path, profile)?` parses one. The private key is a PKCS#8 or PKCS#1 PEM; a profile with a `pass_phrase` opens an encrypted PKCS#8 key (`BEGIN ENCRYPTED PRIVATE KEY`, as `oci setup config` writes one). A key in the legacy OpenSSL encryption (`Proc-Type: 4,ENCRYPTED`) is rejected: re-encode it with `openssl pkcs8 -topk8`.
+`OciClient::connect()` reads an API-key profile from `~/.oci/config` (or `OCI_CONFIG_FILE`), profile `DEFAULT` (or `OCI_PROFILE` / `OCI_CLI_PROFILE`). `OciClient::from_config(OciConfig { tenancy, user, fingerprint, key_file, region, pass_phrase })?` takes the profile's values directly; `OciConfig::from_file(path, profile)?` parses one. The private key is a PKCS#8 or PKCS#1 PEM; a profile with a `pass_phrase` opens an encrypted PKCS#8 key, as `oci setup config` writes one. A key in the legacy OpenSSL encryption (`Proc-Type: 4,ENCRYPTED`) is rejected: re-encode it with `openssl pkcs8 -topk8`.
 
 To run as the compute instance itself (an instance principal), build the client with `OciClient::from_instance_principal()`:
 
