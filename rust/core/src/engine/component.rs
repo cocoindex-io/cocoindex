@@ -589,7 +589,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         });
 
         if report_to_stdout {
-            crate::engine::progress_display::spawn_group_plain_report(
+            crate::engine::progress_display::report_group_stats(
                 group_stats.clone(),
                 title,
                 live,
@@ -1643,7 +1643,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     let message = message.lines().find(|l| !l.trim().is_empty());
                     processing_stats.record_failure(crate::engine::stats::FailureRecord {
                         processor: final_processor_name.to_string(),
-                        component: self.stable_path().to_string(),
+                        component: self.stable_path().clone(),
                         message: message.unwrap_or_default().trim().to_string(),
                     });
                 }

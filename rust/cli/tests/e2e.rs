@@ -148,7 +148,12 @@ fn update_preview_ls_show_drop() {
     let text = stdout(&update);
     assert!(text.contains("Running app 'FixtureApp'"), "{text}");
     assert!(text.contains("fixture: processed 2"), "{text}");
-    assert!(text.contains("✅ mount:upper: 2 total | 2 added"), "{text}");
+    assert!(text.contains("✓ Done in "), "{text}");
+    assert!(
+        text.lines()
+            .any(|l| l.trim_start().starts_with("✓ mount:upper") && l.ends_with("  2 added")),
+        "{text}"
+    );
     assert!(
         text.contains("[Stats] processed 3, wrote 3, skipped 0, deleted 0"),
         "{text}"

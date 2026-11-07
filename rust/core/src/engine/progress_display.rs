@@ -8,6 +8,7 @@ use crate::engine::stats::{
     ProcessingStats, ProcessingStatsGroup, TERMINATED_VERSION, VersionedProcessingStats,
 };
 use crate::prelude::*;
+use crate::state::stable_path::{StableKey, StablePath};
 
 /// Spinner characters (braille pattern), cycled on each redraw.
 const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -235,6 +236,11 @@ fn format_duration(d: Duration) -> String {
     }
 }
 
+/// `singular` for exactly 1, `plural` otherwise.
+fn plural(n: u64, singular: &'static str, plural: &'static str) -> &'static str {
+    if n == 1 { singular } else { plural }
+}
+
 /// Runs per second: one decimal below 10, whole above.
 fn format_rate(per_sec: f64) -> String {
     if per_sec < 10.0 {
@@ -254,29 +260,34 @@ fn display_name(name: &str) -> &str {
     }
 }
 
-/// A component path as people read it: `item/3` for `/"item"/"3"`. The quotes
-/// only go when every part is a plain quoted string or a number; anything else
-/// keeps the exact form `cocoindex show` takes.
-pub(crate) fn readable_path(path: &str) -> String {
-    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    let plain = |p: &&str| {
-        let quoted = p.len() >= 2 && p.starts_with('"') && p.ends_with('"');
-        let inner = if quoted { &p[1..p.len() - 1] } else { p };
-        !inner.is_empty()
-            && !inner.contains(['"', '\\'])
-            && (quoted || inner.chars().all(|c| c.is_ascii_digit() || c == '-'))
-    };
-    if path.trim_start_matches('/').is_empty() {
+/// A component path as people read it: `item/3` for `/"item"/"3"`, and
+/// `process_doc/guide/page-7.md` for `/@process_doc/"guide/page-7.md"`.
+/// Only when every key is an integer, a symbol or a string without quotes,
+/// backslashes or control characters; any other key keeps the exact form
+/// `cocoindex show` takes.
+fn readable_path(path: &StablePath) -> String {
+    if path.0.is_empty() {
         return "(root)".to_string();
     }
-    if !parts.iter().all(plain) {
-        return path.to_string();
-    }
-    parts
+    let plain: Option<Vec<String>> = path
+        .0
         .iter()
-        .map(|p| p.trim_matches('"'))
-        .collect::<Vec<_>>()
-        .join("/")
+        .map(|key| match key {
+            StableKey::Int(i) => Some(i.to_string()),
+            StableKey::Symbol(s) => Some(s.to_string()),
+            StableKey::Str(s)
+                if !s.is_empty()
+                    && !s.chars().any(|c| matches!(c, '"' | '\\') || c.is_control()) =>
+            {
+                Some(s.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    match plain {
+        Some(parts) => parts.join("/"),
+        None => path.to_string(),
+    }
 }
 
 /// The bar of a running component, `cells` wide: a heavy cyan fill with a
@@ -510,9 +521,14 @@ fn status_line(spec: &BlockSpec<'_>, ready: bool, totals: Totals, style: &Style)
                 .styled(RED, format!("{} failed", totals.failed));
         }
         if totals.unfinished > 0 {
-            line = line
-                .styled(GRAY, " · ")
-                .styled(YELLOW, format!("{} runs unfinished", totals.unfinished));
+            line = line.styled(GRAY, " · ").styled(
+                YELLOW,
+                format!(
+                    "{} {} unfinished",
+                    totals.unfinished,
+                    plural(totals.unfinished, "run", "runs")
+                ),
+            );
         }
         match (spec.live, ready_in) {
             (true, Some(r)) => line.styled(GRAY, format!(" (ready in {r})")),
@@ -644,12 +660,50 @@ fn stats_block_lines(
     )
 }
 
+/// A stats block to render outside this module, in the format of the
+/// engine's own display: for a front end that draws progress itself, such as
+/// the Rust CLI, which gets the stats from its child process.
+pub struct BlockRequest<'a> {
+    pub snapshot: &'a VersionedProcessingStats,
+    pub live: bool,
+    /// The last block of the run: final status, and the failures listed.
+    pub finished: bool,
+    pub start_time: Instant,
+    /// When the run became ready (live mode).
+    pub ready_time: Option<Instant>,
+    /// Spinner frame for the status line; `None` draws a static mark.
+    pub spinner_idx: Option<usize>,
+    /// The terminal's width when the block is drawn on one: lines then fit
+    /// it, colored unless `NO_COLOR` is set. `None` renders plain, whole lines.
+    pub terminal_width: Option<usize>,
+}
+
+/// The lines of the block `request` describes: a status line and one row per
+/// component.
+pub fn render_block(request: &BlockRequest<'_>) -> Vec<String> {
+    let spec = BlockSpec {
+        title: None,
+        live: request.live,
+        finished: request.finished,
+        start_time: request.start_time,
+        ready_time: request.ready_time,
+    };
+    let style = match request.terminal_width {
+        Some(width) => Style::terminal(width, request.spinner_idx),
+        None => Style {
+            spinner_idx: request.spinner_idx,
+            ..Style::PLAIN
+        },
+    };
+    stats_block_lines(&spec, request.snapshot, &style)
+}
+
 /// The stdout file descriptor.
 const STDOUT_FD: i32 = 1;
 
-/// Get terminal width from a given fd, defaulting to 80.
+/// The width of the terminal on `fd`, or 80 when `fd` is not a terminal.
 #[cfg(unix)]
-fn terminal_width_from_fd(fd: i32) -> usize {
+pub fn terminal_width_from_fd(fd: i32) -> usize {
     unsafe {
         let mut ws: nix::libc::winsize = std::mem::zeroed();
         if nix::libc::ioctl(fd, nix::libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 {
@@ -660,7 +714,7 @@ fn terminal_width_from_fd(fd: i32) -> usize {
 }
 
 #[cfg(not(unix))]
-fn terminal_width_from_fd(_fd: i32) -> usize {
+pub fn terminal_width_from_fd(_fd: i32) -> usize {
     80
 }
 
@@ -1164,7 +1218,7 @@ async fn render_plain(
 /// terminal, the group becomes a section of its in-place region, and prints
 /// its final block once when it terminates. Otherwise a standalone plain
 /// reporter prints scrolling blocks, and ends when the group terminates.
-pub(crate) fn spawn_group_plain_report(
+pub(crate) fn report_group_stats(
     stats: ProcessingStats,
     title: String,
     live: bool,
@@ -1247,10 +1301,22 @@ mod tests {
         status_line(spec, ready, totals, &Style::PLAIN).render(&Style::PLAIN)
     }
 
-    fn failure(processor: &str, path: &str, message: &str) -> FailureRecord {
+    fn path(keys: &[StableKey]) -> StablePath {
+        StablePath(keys.to_vec().into())
+    }
+
+    fn s(text: &str) -> StableKey {
+        StableKey::Str(text.into())
+    }
+
+    fn item(n: &str) -> StablePath {
+        path(&[s("item"), s(n)])
+    }
+
+    fn failure(processor: &str, component: StablePath, message: &str) -> FailureRecord {
         FailureRecord {
             processor: processor.to_string(),
-            component: path.to_string(),
+            component,
             message: message.to_string(),
         }
     }
@@ -1411,6 +1477,17 @@ mod tests {
     }
 
     #[test]
+    fn test_one_unfinished_run_is_singular() {
+        let totals = Totals {
+            failed: 0,
+            unfinished: 1,
+        };
+        let line = status_line(&spec(false, true, 1.0, None), true, totals, &Style::PLAIN)
+            .render(&Style::PLAIN);
+        assert_eq!(line, "! Stopped after 1.0s · 1 run unfinished");
+    }
+
+    #[test]
     fn test_format_duration() {
         assert_eq!(format_duration(Duration::from_secs_f64(9.94)), "9.9s");
         assert_eq!(format_duration(Duration::from_secs(125)), "2m 05s");
@@ -1447,12 +1524,26 @@ mod tests {
 
     #[test]
     fn test_readable_path() {
-        assert_eq!(readable_path(r#"/"item"/"3""#), "item/3");
-        assert_eq!(readable_path(r#"/"item"/3"#), "item/3");
-        assert_eq!(readable_path("/"), "(root)");
-        // A key that is not a plain string keeps the exact form.
-        assert_eq!(readable_path(r#"/"a\"b"/"3""#), r#"/"a\"b"/"3""#);
-        assert_eq!(readable_path(r#"/"x"/(1, 2)"#), r#"/"x"/(1, 2)"#);
+        assert_eq!(readable_path(&item("3")), "item/3");
+        assert_eq!(
+            readable_path(&path(&[s("item"), StableKey::Int(3)])),
+            "item/3"
+        );
+        assert_eq!(readable_path(&path(&[])), "(root)");
+        // `mount_each` paths start with a symbol, and keys can hold a `/`.
+        assert_eq!(
+            readable_path(&path(&[
+                StableKey::Symbol("process_doc".into()),
+                s("guide/page-7.md")
+            ])),
+            "process_doc/guide/page-7.md"
+        );
+        // A key that is not plain keeps the exact form.
+        assert_eq!(readable_path(&path(&[s("a\"b"), s("3")])), r#"/"a\"b"/"3""#);
+        assert_eq!(
+            readable_path(&path(&[s("x"), StableKey::Bool(true)])),
+            r#"/"x"/true"#
+        );
     }
 
     #[test]
@@ -1462,14 +1553,12 @@ mod tests {
         snapshot
             .stats
             .insert("process_item".to_string(), group(40, 31, 0, 9));
-        snapshot.failures.push(failure(
-            "process_item",
-            r#"/"item"/"3""#,
-            "ValueError: boom",
-        ));
         snapshot
             .failures
-            .push(failure("process_item", r#"/"item"/"10""#, "KeyError: x"));
+            .push(failure("process_item", item("3"), "ValueError: boom"));
+        snapshot
+            .failures
+            .push(failure("process_item", item("10"), "KeyError: x"));
         let titled = BlockSpec {
             title: Some("Docs"),
             ..spec(false, true, 2.0, None)
@@ -1489,6 +1578,43 @@ mod tests {
         assert_eq!(running.len(), 3, "scrolling blocks list no failures");
     }
 
+    /// A log line that arrives after the display ended must pass through, and
+    /// the region must not be drawn again: nothing would clear it, and it
+    /// would stay on screen above the final block (seen with `drop`).
+    #[cfg(unix)]
+    #[test]
+    fn test_closed_region_passes_output_through_without_redrawing() {
+        use std::io::Read;
+        use std::os::fd::FromRawFd;
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { nix::libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+
+        let mut region = Region {
+            live: false,
+            start_time: Instant::now(),
+            num_lines: 0,
+            ready_time: None,
+            spinner_idx: 0,
+            closed: false,
+        };
+        let mut snapshot = VersionedProcessingStats::default();
+        snapshot.stats.insert("proc".to_string(), group(2, 1, 0, 0));
+        region.redraw(write_fd, b"", &snapshot);
+        assert!(region.num_lines > 0);
+        region.close(write_fd);
+        region.redraw(write_fd, b"late log\n", &snapshot);
+        assert_eq!(region.num_lines, 0);
+        unsafe { nix::libc::close(write_fd) };
+
+        let mut out = String::new();
+        unsafe { std::fs::File::from_raw_fd(read_fd) }
+            .read_to_string(&mut out)
+            .unwrap();
+        let (_, after) = out.rsplit_once("late log\n").unwrap();
+        assert_eq!(after, "", "the region was drawn again after it closed");
+    }
+
     #[test]
     fn test_region_nests_groups_under_the_root() {
         let mut root = VersionedProcessingStats::default();
@@ -1496,11 +1622,8 @@ mod tests {
         let mut docs = VersionedProcessingStats::default();
         docs.stats
             .insert("process_item".to_string(), group(10, 3, 0, 1));
-        docs.failures.push(failure(
-            "process_item",
-            r#"/"item"/"3""#,
-            "ValueError: boom",
-        ));
+        docs.failures
+            .push(failure("process_item", item("3"), "ValueError: boom"));
         let sections = [
             Section {
                 title: None,

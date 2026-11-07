@@ -503,6 +503,13 @@ async def _setup(
     return app, await _attach(app, fake)
 
 
+# Float rounding allowed above a wait's upper bound. A wait is computed as
+# `deadline - clock()` with `deadline = clock() + x`; Windows' monotonic clock
+# moves in ~15.6 ms steps, so both reads can return the same `t`, and
+# `(t + x) - t` comes out a hair above `x` for a large `t`.
+_ROUNDING = 1e-9
+
+
 @pytest.fixture
 def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     """The waits the connector asks for, recorded instead of slept: real 429
@@ -797,7 +804,7 @@ class TestGet:
             # all, but only the 100 s counts toward the cap.
             assert await ctx.get(_ROUTE_CHANNEL, _CHANNEL) == fake.channels[_CHANNEL]
         assert len(sleeps) == 2
-        assert 249.0 < sleeps[0] <= 250.0
+        assert 249.0 < sleeps[0] <= 250.0 + _ROUNDING
         assert sleeps[1] == 100.0
 
     async def test_other_4xx_not_retried(self, sleeps: list[float]) -> None:
@@ -905,7 +912,7 @@ class TestPacing:
             assert sleeps == []
             await ctx.get(_ROUTE_CHANNEL, _CHANNEL)
             assert len(sleeps) == 1
-            assert 2.0 < sleeps[0] <= 2.5
+            assert 2.0 < sleeps[0] <= 2.5 + _ROUNDING
             await ctx.get(_ROUTE_CHANNEL, _OTHER_CHANNEL)
             await ctx.get(_ROUTE_CHANNEL, _OTHER_CHANNEL)
         assert len(sleeps) == 1
@@ -931,7 +938,7 @@ class TestPacing:
         assert len(sleeps) == 2
         assert sleeps[0] == 0.5
         # What's left of the reset after the first wait.
-        assert 3.9 < sleeps[1] <= 4.0
+        assert 3.9 < sleeps[1] <= 4.0 + _ROUNDING
 
     async def test_concurrent_requests_share_the_bucket(
         self,
@@ -1032,7 +1039,7 @@ class TestPacing:
         # The rest of the extension is waited out too, before the request is
         # sent, and with no token taken between the two waits.
         assert len(sleeps) == 2
-        assert 0.29 < sleeps[0] <= 0.3
+        assert 0.29 < sleeps[0] <= 0.3 + _ROUNDING
         assert 0.35 < sleeps[1] < 0.45
         assert fake.count(path) == 1
         assert limiter.acquired == 1

@@ -1,9 +1,11 @@
+import codecs
+import io
 import logging
 import os
 import signal
 import sys
 import time
-from typing import Any, AsyncIterator, NamedTuple
+from typing import Any, AsyncIterator, Literal, NamedTuple, TextIO
 import pathlib
 
 import click
@@ -15,6 +17,7 @@ import asyncio
 import cocoindex as coco
 from cocoindex._internal.app import App
 from cocoindex._internal import banner as _banner
+from cocoindex._internal.update_stats import DisplayMode, display_mode
 from cocoindex._internal import core as _core
 from cocoindex._internal.environment import (
     Environment,
@@ -40,6 +43,23 @@ from cocoindex._internal.stable_path import StablePath
 # ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
+
+
+def _utf8_when_piped(stream: TextIO) -> None:
+    """Write UTF-8 to `stream` when it is piped to a file or another process.
+
+    Python encodes piped output in the locale's encoding, cp1252 on most
+    Windows machines, which has no `✓`. The engine's progress display writes
+    UTF-8 to the same stream, so this keeps one encoding in it. A terminal is
+    left alone: Python writes a Windows console in UTF-16 whatever the
+    encoding, and a Unix terminal's locale is already UTF-8.
+    """
+    if (
+        isinstance(stream, io.TextIOWrapper)
+        and not stream.isatty()
+        and codecs.lookup(stream.encoding).name != "utf-8"
+    ):
+        stream.reconfigure(encoding="utf-8")
 
 
 def _setup_logging() -> None:
@@ -94,8 +114,6 @@ class _TerminalLogFormatter(logging.Formatter):
 def _say_stopping() -> None:
     """Acknowledge Ctrl+C. A progress display on a terminal says it in its
     final line (`Stopped after …`), so stay quiet then."""
-    from cocoindex._internal.update_stats import DisplayMode, display_mode
-
     if display_mode() is not DisplayMode.TERMINAL:
         print("\nStopping…")
 
@@ -248,7 +266,7 @@ def _print_header(action: str, env: Environment) -> None:
         click.echo(f"{_banner.version_label()} · {action} · {where}")
 
 
-def _say_done(mark: str, text: str, detail: str = "") -> None:
+def _say_done(mark: Literal["ok", "info"], text: str, detail: str = "") -> None:
     """A one-line result in the progress display's voice: `✓ text (detail)`.
     `mark` is `ok` (✓, green) or `info` (●, cyan)."""
     glyph, code = {"ok": ("✓", "32"), "info": ("●", "36")}[mark]
@@ -614,6 +632,8 @@ async def _print_tree_streaming(
 )
 def cli(env_file: str | None = None, app_dir: str | None = "") -> None:
     """CLI for CocoIndex."""
+    _utf8_when_piped(sys.stdout)
+    _utf8_when_piped(sys.stderr)
     _setup_logging()
 
     dotenv_path = env_file or find_dotenv(usecwd=True)
