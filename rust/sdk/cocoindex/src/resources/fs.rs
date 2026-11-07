@@ -121,31 +121,11 @@ mod live {
         poll_interval: Duration,
         rescan_interval: Option<Duration>,
         watch_guard: SingleWatcherGuard,
-        /// The files currently fed to the subscriber, with the size and
-        /// modification time each was last fed at: what the last scan found,
+        /// The keys currently fed to the subscriber: what the last scan found,
         /// kept up to date by every update and delete since. A path that
         /// disappears is resolved against it (a moved-away directory removes
-        /// every key under it) without walking the tree, and an event that
-        /// leaves a file's size and mtime as they were (an attribute change,
-        /// a duplicate notification) does not re-run its component, as the
-        /// memo of a function over a file trusts an unchanged mtime.
-        known: Mutex<BTreeMap<String, FileStamp>>,
-    }
-
-    /// A file's size and modification time as last fed to the subscriber.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    struct FileStamp {
-        size: u64,
-        modified: std::time::SystemTime,
-    }
-
-    impl FileStamp {
-        fn of(entry: &FileEntry) -> Self {
-            Self {
-                size: entry.size,
-                modified: entry.modified,
-            }
-        }
+        /// every key under it) without walking the tree.
+        known_keys: Mutex<BTreeSet<String>>,
     }
 
     impl DirWalker {
@@ -164,7 +144,7 @@ mod live {
                 poll_interval: Duration::from_secs(1),
                 rescan_interval: Some(DEFAULT_RESCAN_INTERVAL),
                 watch_guard: SingleWatcherGuard::new("LiveDirWalker"),
-                known: Mutex::new(BTreeMap::new()),
+                known_keys: Mutex::new(BTreeSet::new()),
             }
         }
     }
@@ -186,8 +166,8 @@ mod live {
             self
         }
 
-        fn known(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, FileStamp>> {
-            self.known.lock().unwrap_or_else(|e| e.into_inner())
+        fn known_keys(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
+            self.known_keys.lock().unwrap_or_else(|e| e.into_inner())
         }
 
         /// The subscriber's key for an event path, or `None` when the path is
@@ -262,16 +242,16 @@ mod live {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                         // Gone: the file under that key, or every file under
                         // that directory.
-                        let known = self.known();
-                        if known.contains_key(&key) {
+                        let known = self.known_keys();
+                        if known.contains(&key) {
                             deletes.insert(key);
                         } else {
                             let prefix = format!("{key}/");
                             deletes.extend(
                                 known
                                     .range(prefix.clone()..)
-                                    .take_while(|(k, _)| k.starts_with(&prefix))
-                                    .map(|(k, _)| k.clone()),
+                                    .take_while(|k| k.starts_with(&prefix))
+                                    .cloned(),
                             );
                         }
                     }
@@ -285,15 +265,15 @@ mod live {
                     continue;
                 }
                 subscriber.delete(key.clone()).await?;
-                self.known().remove(&key);
+                self.known_keys().remove(&key);
             }
+            // Every event re-runs its file's component, as in the Python SDK:
+            // an equal size and mtime is not proof of equal content (a rewrite
+            // in the mtime's own tick keeps it), so whether the work can be
+            // skipped is the file memo state's decision, not the feed's.
             for (key, entry) in updates {
-                let stamp = FileStamp::of(&entry);
-                if self.known().get(&key) == Some(&stamp) {
-                    continue;
-                }
                 subscriber.update(key.clone(), entry).await?;
-                self.known().insert(key, stamp);
+                self.known_keys().insert(key);
             }
             Ok(())
         }
@@ -371,10 +351,7 @@ mod live {
             let items = tokio::task::spawn_blocking(move || walker.items())
                 .await
                 .map_err(|e| Error::engine(format!("directory walk task panicked: {e}")))??;
-            *self.known() = items
-                .iter()
-                .map(|(key, entry)| (key.clone(), FileStamp::of(entry)))
-                .collect();
+            *self.known_keys() = items.iter().map(|(key, _)| key.clone()).collect();
             Ok(items)
         }
     }
