@@ -97,6 +97,9 @@ azure_blob = [
     "dep:quick-xml",
     "chrono",
     "chrono/clock",
+    # `TokenCredential::AzureCli` runs `az account get-access-token`.
+    "tokio/process",
+    "tokio/time",
 ]
 lancedb = [
     "dep:lancedb",

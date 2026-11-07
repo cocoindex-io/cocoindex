@@ -83,14 +83,16 @@ finally:
 <Fragment slot="rust">
 
 ```rust
+use cocoindex::connectors::azure_blob::{ContainerClient, Credential, TokenCredential};
+
 let client = ContainerClient::new(
     "https://myaccount.blob.core.windows.net",
     "docs",
-    Credential::BearerToken(token),
+    Credential::TokenCredential(TokenCredential::Default),
 )?;
 ```
 
-The Rust SDK has no `DefaultAzureCredential`. `Credential::BearerToken` takes a Microsoft Entra ID access token for the `https://storage.azure.com/` resource, such as the one `az account get-access-token --resource https://storage.azure.com/` prints. The client does not renew the token.
+`TokenCredential::Default` is the Rust form of `DefaultAzureCredential`: it takes the first source that is configured where the process runs, a service principal from `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`, the managed identity of the Azure resource the process runs on, or the account signed in with `az login`. `TokenCredential::ClientSecret`, `TokenCredential::ManagedIdentity` and `TokenCredential::AzureCli` name one source. The client renews the token as it expires. `Credential::BearerToken` takes an access token for the `https://storage.azure.com/` resource that you obtained yourself, such as the one `az account get-access-token --resource https://storage.azure.com/` prints, and does not renew it.
 
 </Fragment>
 </LangTabs>
