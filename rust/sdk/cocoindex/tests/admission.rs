@@ -6,7 +6,7 @@
 
 mod admission_common;
 
-use admission_common::count_admitted;
+use admission_common::assert_admits;
 use cocoindex::Environment;
 
 #[tokio::test]
@@ -20,7 +20,7 @@ async fn default_limit_is_1024_components() {
         .app("admission_default")
         .await
         .unwrap();
-    assert_eq!(count_admitted(&app, 1030).await, 1024);
+    assert_admits(&app, 1024, 1030).await;
 }
 
 #[tokio::test]
@@ -35,5 +35,5 @@ async fn builder_limit_bounds_components() {
         .app("admission_builder")
         .await
         .unwrap();
-    assert_eq!(count_admitted(&app, 10).await, 3);
+    assert_admits(&app, 3, 10).await;
 }
