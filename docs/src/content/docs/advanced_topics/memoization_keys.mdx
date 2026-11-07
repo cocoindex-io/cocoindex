@@ -496,7 +496,15 @@ Logic, arguments and context values are known before a body runs. Some bodies re
 ```rust
 use cocoindex::Fingerprint;
 
-type FileState = (u64, Fingerprint);
+// The mtime is `None` until it settles: a rewrite in the same timestamp tick keeps the
+// mtime, so only an mtime older than any filesystem's tick (FAT: 2 s) at the read can
+// vouch for the content later.
+type FileState = (Option<u64>, Fingerprint);
+
+fn settled(mtime: u64) -> Option<u64> {
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    (now.saturating_sub(mtime) >= 3_000_000_000).then_some(mtime)
+}
 
 fn file_kind() -> DataDep<String, FileState> {
     DataDep::new("test-file", move |key: String, prev: FileState| async move {
@@ -505,11 +513,11 @@ fn file_kind() -> DataDep<String, FileState> {
             return MemoStateDecision::new(&prev, false);
         }
         let mtime = modified_nanos(&path);
-        if mtime == prev.0 {
+        if Some(mtime) == prev.0 {
             return MemoStateDecision::new(&prev, true);
         }
         let digest = Fingerprint::from_bytes(&std::fs::read(&path)?);
-        MemoStateDecision::new(&(mtime, digest), digest == prev.1)
+        MemoStateDecision::new(&(settled(mtime), digest), digest == prev.1)
     })
     .unwrap()
 }
@@ -522,7 +530,7 @@ fn read(ctx: &Ctx, kind: &DataDep<String, FileState>, path: &Path) -> Result<Vec
     ctx.use_data_dep(
         kind,
         &path.to_string_lossy().into_owned(),
-        &(mtime, Fingerprint::from_bytes(&data)),
+        &(settled(mtime), Fingerprint::from_bytes(&data)),
     )?;
     Ok(data)
 }
