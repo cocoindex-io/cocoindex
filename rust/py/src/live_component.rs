@@ -96,6 +96,7 @@ impl PyLiveComponentController {
     /// branch). Returns `(inner_controller, readiness_handle)` — caller
     /// constructs a Python `LiveComponentOperator` for the inner instance,
     /// then calls `inner_controller.start(instance.process_live(operator))`.
+    /// Returns `None` when the update's selector leaves the child out.
     pub fn mount_inner_live_async<'py>(
         &self,
         py: Python<'py>,
@@ -107,9 +108,11 @@ impl PyLiveComponentController {
                 .mount_inner_live(stable_path.0)
                 .await
                 .into_py_result()?;
-            let py_controller = PyLiveComponentController(Arc::new(result.controller));
-            let py_handle = PyComponentMountHandle::from_handle(result.readiness_handle);
-            Ok((py_controller, py_handle))
+            Ok(result.map(|result| {
+                let py_controller = PyLiveComponentController(Arc::new(result.controller));
+                let py_handle = PyComponentMountHandle::from_handle(result.readiness_handle);
+                (py_controller, py_handle)
+            }))
         })
     }
 
@@ -173,9 +176,13 @@ pub fn mount_live_async<'py>(
 
     // Async phase: no borrows needed, all data is owned.
     future_into_py(py, async move {
+        // `None`: the update's selector leaves the component out.
+        let Some(pending) = pending else {
+            return Ok(None);
+        };
         let result = pending.complete().await.into_py_result()?;
         let py_controller = PyLiveComponentController(Arc::new(result.controller));
         let py_handle = PyComponentMountHandle::from_handle(result.readiness_handle);
-        Ok((py_controller, py_handle))
+        Ok(Some((py_controller, py_handle)))
     })
 }

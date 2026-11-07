@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import os
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import (
@@ -25,6 +25,7 @@ from .function import (
     create_core_component_processor,
     fn_ret_deserializer,
 )
+from .stable_path import StablePath
 from .update_stats import (
     UpdateSnapshot,
     UpdateStats,
@@ -177,6 +178,22 @@ async def show_progress(
     return pyvalue.get(fn_ret_deserializer(handle._main_fn))  # type: ignore[no-any-return]
 
 
+def _core_component_selector(
+    component_selector: Iterable[StablePath] | None,
+) -> list[core.StablePath] | None:
+    if component_selector is None:
+        return None
+    paths: list[core.StablePath] = []
+    for path in component_selector:
+        if not isinstance(path, StablePath):
+            raise TypeError(
+                f"component_selector takes StablePath values, got {path!r}. "
+                'Build one from coco.ROOT_PATH, e.g. coco.ROOT_PATH / "process" / key.'
+            )
+        paths.append(path._core)
+    return paths
+
+
 @dataclass(frozen=True)
 class AppConfig:
     name: str
@@ -284,6 +301,7 @@ class App(Generic[P, R]):
         full_reprocess: bool = False,
         live: bool = False,
         preview: bool = False,
+        component_selector: Iterable[StablePath] | None = None,
     ) -> UpdateHandle[R]:
         """
         Start an update and return a handle for tracking progress and awaiting the result.
@@ -297,11 +315,17 @@ class App(Generic[P, R]):
                 after mark_ready).
             preview: If True, compute target actions without applying them.
                 The handle's result will be a list of raw action objects.
+            component_selector: If given, run only these components and what is
+                needed to reach them, leaving every other component as it is: not
+                run, and its target states kept even if its source item is gone.
+                A path selects its whole subtree. See the "Updating part of an
+                app" section of the App docs.
 
         Returns:
             An UpdateHandle that provides access to stats(), watch(), and result().
         """
         deadline_context = _deadline_for_engine()
+        core_selector = _core_component_selector(component_selector)
 
         async def _init() -> core.UpdateHandle:
             env, core_app = await self._get_core_env_app()
@@ -321,6 +345,7 @@ class App(Generic[P, R]):
                 preview=preview,
                 host_ctx=env._context_provider,
                 deadline=deadline_context,
+                component_selector=core_selector,
             )
 
         return UpdateHandle(
@@ -336,6 +361,7 @@ class App(Generic[P, R]):
         full_reprocess: bool = False,
         live: bool = False,
         preview: bool = False,
+        component_selector: Iterable[StablePath] | None = None,
     ) -> R | list[Any]:
         """
         Update the app synchronously (run the app once to process all pending changes).
@@ -349,10 +375,16 @@ class App(Generic[P, R]):
                 after mark_ready).
             preview: If True, compute target actions without applying them.
                 Returns a list of raw action objects instead of the main function result.
+            component_selector: If given, run only these components and what is
+                needed to reach them, leaving every other component as it is: not
+                run, and its target states kept even if its source item is gone.
+                A path selects its whole subtree. See the "Updating part of an
+                app" section of the App docs.
 
         Returns:
             The result of the main function, or a list of actions in preview mode.
         """
+        core_selector = _core_component_selector(component_selector)
         env, core_app = self._get_core_env_app_sync()
         root_path = core.StablePath()
         deadline_context = _deadline_for_engine()
@@ -375,6 +407,7 @@ class App(Generic[P, R]):
                 live=live,
                 preview=preview,
                 deadline=deadline_context,
+                component_selector=core_selector,
             )
         if preview:
             return pyvalue  # type: ignore[no-any-return]
