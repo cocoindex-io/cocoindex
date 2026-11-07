@@ -81,8 +81,14 @@ pub const LMDB_MAX_DBS_ENV: &str = "COCOINDEX_LMDB_MAX_DBS";
 /// none (read by [`Environment::from_registered`]).
 pub const LMDB_MAP_SIZE_ENV: &str = "COCOINDEX_LMDB_MAP_SIZE";
 
+/// Environment variable for the number of components an app runs at once
+/// when the builder sets none, read when the app is created, as in Python.
+pub const MAX_INFLIGHT_COMPONENTS_ENV: &str = "COCOINDEX_MAX_INFLIGHT_COMPONENTS";
+
 /// LMDB maximum number of named databases when nothing sets it.
 pub const DEFAULT_LMDB_MAX_DBS: u32 = 1024;
+/// Components an app runs at once when nothing sets it (Python's default).
+pub const DEFAULT_MAX_INFLIGHT_COMPONENTS: usize = 1024;
 /// LMDB map size in bytes (4 GiB) when nothing sets it.
 pub const DEFAULT_LMDB_MAP_SIZE: usize = 0x1_0000_0000;
 
@@ -189,10 +195,18 @@ impl Environment {
     /// # Errors
     /// Returns an error if the app's state store cannot be created.
     pub async fn app(&self, name: &str) -> Result<App> {
+        // Resolved per app, as Python's `App.__init__` does: the builder's
+        // value, else the environment variable, else the default.
+        let max_inflight_components = match self.inner.max_inflight_components {
+            Some(limit) => limit,
+            None => {
+                env_setting(MAX_INFLIGHT_COMPONENTS_ENV)?.unwrap_or(DEFAULT_MAX_INFLIGHT_COMPONENTS)
+            }
+        };
         let core_app = CoreApp::new(
             name,
             self.inner.core_env.clone(),
-            self.inner.max_inflight_components,
+            Some(max_inflight_components),
         )
         .await
         .map_err(|e| Error::engine(format!("failed to create app: {e}")))?;
@@ -210,14 +224,12 @@ impl Environment {
     }
 
     /// Create an app in this environment (blocking). Convenience for sync
-    /// callers — creates a tokio runtime internally and awaits [`Self::app`].
+    /// callers — awaits [`Self::app`] on the engine's runtime.
     ///
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
     pub fn app_blocking(&self, name: &str) -> Result<App> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.app(name))
+        block_on(self.app(name))
     }
 }
 
@@ -302,6 +314,8 @@ impl EnvironmentBuilder {
     }
 
     /// Limit the number of concurrently processing components (per app).
+    /// Default: the `COCOINDEX_MAX_INFLIGHT_COMPONENTS` environment variable
+    /// when the app is created, else 1024, as in Python.
     pub fn max_inflight_components(mut self, value: usize) -> Self {
         self.max_inflight_components = Some(value);
         self
@@ -394,10 +408,18 @@ impl EnvironmentBuilder {
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
     pub fn build_blocking(self) -> Result<Environment> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.build())
+        block_on(self.build())
     }
+}
+
+/// Run `fut` to completion on the engine's runtime, for the `*_blocking`
+/// wrappers. The runtime is shared by every app in the process (the engine
+/// spawns component tasks on it), so no wrapper builds a runtime of its own.
+///
+/// # Panics
+/// Panics if called from within an async runtime; use the async form there.
+fn block_on<F: Future>(fut: F) -> F::Output {
+    cocoindex_core::engine::runtime::get_runtime().block_on(fut)
 }
 
 /// Read an integer setting from the environment; `Ok(None)` when unset.
@@ -464,9 +486,7 @@ impl AppBuilder {
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
     pub fn build_blocking(self) -> Result<App> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.build())
+        block_on(self.build())
     }
 }
 
@@ -524,7 +544,7 @@ impl App {
     }
 
     /// Convenience: synchronously open an app with a specific DB path. Same
-    /// as [`Self::open`] but blocks on a tokio runtime internally.
+    /// as [`Self::open`] but blocks on the engine's runtime.
     ///
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
@@ -685,9 +705,7 @@ impl App {
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.preview(f))
+        block_on(self.preview(f))
     }
 
     /// Start an update and return a handle for progress/stat polling.
@@ -806,8 +824,8 @@ impl App {
         }
     }
 
-    /// Run the pipeline (blocking). Convenience for sync callers — creates a
-    /// tokio runtime internally.
+    /// Run the pipeline (blocking). Convenience for sync callers — runs on
+    /// the engine's runtime.
     ///
     /// # Panics
     /// Panics if called from within an active tokio runtime (use `update`
@@ -818,9 +836,7 @@ impl App {
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.update(f))
+        block_on(self.update(f))
     }
 
     /// Run the pipeline once with explicit update options (blocking).
@@ -833,9 +849,7 @@ impl App {
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.update_with_options(options, f))
+        block_on(self.update_with_options(options, f))
     }
 
     /// Start dropping all persisted app state and return a handle.
@@ -858,9 +872,7 @@ impl App {
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
     pub fn drop_state_blocking(&self) -> Result<()> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.drop_state())
+        block_on(self.drop_state())
     }
 
     /// Get the app name.

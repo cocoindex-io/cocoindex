@@ -165,7 +165,7 @@ async def extract_relationships(content: str) -> list[Triple]:
 @coco.fn(memo=True)
 async def process_file(
     file: localfs.File,
-    document_table: neo4j.TableTarget[Document],
+    document_table: neo4j.NodeTarget[Document],
 ) -> DocTriples:
     content = await file.read_text()
     filename = file.file_path.path.as_posix()
@@ -207,9 +207,9 @@ A single component takes every file's triples and declares the cross-document pa
 @coco.fn
 async def build_graph(
     docs: list[DocTriples],
-    entity_table: neo4j.TableTarget[Entity],
-    relationship_rel: neo4j.RelationTarget[Relationship],
-    mention_rel: neo4j.RelationTarget[Any],
+    entity_table: neo4j.NodeTarget[Entity],
+    relationship_rel: neo4j.RelationshipTarget[Relationship],
+    mention_rel: neo4j.RelationshipTarget[Any],
 ) -> None:
     entities: set[str] = set()
     mentions: set[tuple[str, str]] = set()  # (filename, entity value)
@@ -222,7 +222,7 @@ async def build_graph(
             mentions.add((doc.filename, t.object))
 
             rel_id = await generate_id((t.subject, t.predicate, t.object))
-            relationship_rel.declare_relation(
+            relationship_rel.declare_relationship(
                 from_id=t.subject,
                 to_id=t.object,
                 record=Relationship(id=rel_id, predicate=t.predicate),
@@ -232,7 +232,7 @@ async def build_graph(
         entity_table.declare_record(row=Entity(value=value))
 
     for filename, entity in mentions:
-        mention_rel.declare_relation(from_id=filename, to_id=entity)
+        mention_rel.declare_relationship(from_id=filename, to_id=entity)
 ```
 
 Two details carry the correctness:
@@ -240,29 +240,29 @@ Two details carry the correctness:
 - **Stable edge identity.** [`generate_id`](/docs/common_resources/id_generation/) hashes the triple, so the same `(subject, predicate, object)` always maps to the same edge — re-asserting a fact in another doc is a no-op, not a duplicate.
 - **Entities live here, not in phase 1.** Concepts are shared across documents, so no single file's component can own them. The graph component owns the entity set as one target state; when the set of triples changes, CocoIndex diffs it — entities no longer named anywhere are deleted from Neo4j along with their edges.
 
-This is plain Python doing set-dedup in memory — no framework abstractions. The declarative part is only at the boundary: `declare_record` / `declare_relation` say what should exist, and the engine reconciles.
+This is plain Python doing set-dedup in memory — no framework abstractions. The declarative part is only at the boundary: `declare_record` / `declare_relationship` say what should exist, and the engine reconciles.
 
 ## Wire it up: app_main
 
-`app_main` mounts the targets and runs the two phases. Node tables come first, because relation targets are declared *between* two node tables — that's how the connector knows each edge's endpoint labels and keys:
+`app_main` mounts the targets and runs the two phases. Node tables come first, because relationship targets are declared *between* two node tables — that's how the connector knows each edge's endpoint labels and keys:
 
 ```python title="main.py"
 @coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
-    document_table = await neo4j.mount_table_target(
+    document_table = await neo4j.mount_node_target(
         KG_DB,
         "Document",
         await neo4j.TableSchema.from_class(Document, primary_key="filename"),
         primary_key="filename",
     )
-    entity_table = await neo4j.mount_table_target(
+    entity_table = await neo4j.mount_node_target(
         KG_DB,
         "Entity",
         await neo4j.TableSchema.from_class(Entity, primary_key="value"),
         primary_key="value",
     )
 
-    relationship_rel = await neo4j.mount_relation_target(
+    relationship_rel = await neo4j.mount_relationship_target(
         KG_DB,
         "RELATIONSHIP",
         entity_table,
@@ -270,7 +270,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         await neo4j.TableSchema.from_class(Relationship, primary_key="id"),
         primary_key="id",
     )
-    mention_rel = await neo4j.mount_relation_target(
+    mention_rel = await neo4j.mount_relationship_target(
         KG_DB, "MENTION", document_table, entity_table
     )
 

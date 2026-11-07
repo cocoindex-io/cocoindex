@@ -43,6 +43,7 @@ hashlink = "0.11"
 hex = "0.4.3"
 indexmap = { version = "2.12.1", features = ["serde"] }
 nix = { version = "0.30", features = ["fs", "term"] }
+unicode-width = "0.2"
 itertools = "0.14.0"
 parking_lot = "0.12.5"
 pyo3 = { version = "0.29.0", features = ["auto-initialize", "chrono", "uuid"] }

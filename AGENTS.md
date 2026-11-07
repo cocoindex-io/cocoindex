@@ -33,15 +33,16 @@ uv tool install prek                         # one-time; some hooks also need `p
 prek run ruff-check ruff-format --all-files  # Lint (applying safe fixes), then format Python code (same as CI)
 cargo fmt                                    # Format Rust code
 ./dev/run_cargo_clippy.sh                    # Lint Rust code other than the Rust SDK and its CLI (same as CI)
-./dev/run_cargo_clippy_sdk.sh                # Lint the Rust SDK and its CLI, `rust/cli` (same as CI)
+./dev/run_cargo_clippy_sdk.sh                # Lint the Rust SDK and its CLI, `rust/cli` (same as the daily CI)
 ```
 
 ### Pre-submission Checks
 
-CI enforces the full pre-commit hook suite from `.pre-commit-config.yaml`, which
-covers more than the commands above — notably regenerating the CLI docs
-(`docs/src/content/docs/cli.mdx`) whenever `cli.py` changes. Before pushing, run
-the hooks whose inputs your branch changed, as PR CI does:
+CI enforces the pre-commit hook suite from `.pre-commit-config.yaml`, which covers
+more than the commands above — notably regenerating the CLI docs
+(`docs/src/content/docs/cli.mdx`) whenever `cli.py` changes. The Rust SDK hooks,
+described below, are the exception. Before pushing, run the hooks whose inputs
+your branch changed, as PR CI does:
 
 ```bash
 prek run --from-ref origin/main --to-ref HEAD
@@ -51,8 +52,11 @@ prek run --from-ref origin/main --to-ref HEAD
 (`cargo-test-sdk`, `cargo-clippy-sdk`, `cargo-test-rust-externs`) included. The
 Rust SDK isn't launched yet, so those hooks run only for a change under
 `rust/sdk/`, `rust/cli/`, `examples/rust/` or `benchmarks/*/rust/`, not for a change to the
-code the SDK builds on. The `Rust SDK Daily` workflow runs them on `main` every
-day and files an issue when they fail.
+code the SDK builds on. CI runs them on no pull request and in no merge group,
+even for a change to the SDK, because they are slow, so the local run is the only
+check before such a change lands. The `Rust SDK Daily` workflow runs them on
+`main` every day and files an issue when they fail;
+`gh workflow run rust_sdk_daily.yml --ref <branch>` runs them on a branch.
 
 ### Pull Requests and CI
 
@@ -360,8 +364,8 @@ The current codebase is for CocoIndex v1, which is a fundamental redesign from C
 
 Releases are tagged `v<version>` and follow semver:
 
-- A **minor** release (`1.2.0`) is cut from `main` and carries everything landed since the previous minor.
-- A **patch** release (`1.1.1`) is cut from the minor's release branch, `release/1.1`. The branch starts at the minor's tag (`v1.1.0`) and takes only backports from `main`: fixes, dependency bumps that fix an advisory in what the wheel ships, and docs changes that describe released behavior. A fix makes released behavior match its documentation or intent without adding a way to call CocoIndex; a new API, parameter, connector or option is never backported, experimental or not. The branch is created when its first backport is needed, and only the newest minor's branch takes backports. `dev/agent-skills/backport/SKILL.md` lands a backport; `dev/agent-skills/create-release/SKILL.md` cuts the release.
+- A **minor** release (`1.2.0`) is cut from `main` and carries everything landed since the previous minor. Once it's published, its release branch, `release/1.2`, is created from its tag; a major release (`2.0.0`, `release/2.0`) does the same, and a prerelease (`1.2.0-rc.1`) creates none.
+- A **patch** release (`1.1.1`) is cut from the minor's release branch, `release/1.1`. The branch starts at the minor's tag (`v1.1.0`) and takes only backports from `main`: fixes, dependency bumps that fix an advisory in what the wheel ships, and docs changes that describe released behavior. A fix makes released behavior match its documentation or intent without adding a way to call CocoIndex; a new API, parameter, connector or option is never backported, experimental or not. Only the newest minor's branch takes backports. `dev/agent-skills/backport/SKILL.md` lands a backport; `dev/agent-skills/create-release/SKILL.md` cuts the release.
 - **Experimental** APIs, labelled so in their docs (such as `coco.DataDep`), are outside the compatibility promise: a later release, including a minor one, may change or remove them.
 
 The docs site shows the docs of the latest release: a release deploys the docs from its tagged commit when GitHub lists it as the repository's "Latest" release. Docs for an unreleased feature stay on `main` until the minor that ships it; a docs change that describes released behavior is backported like a fix. The on-demand docs deploy (`docs_release.yml`) runs from the latest release's branch, not from `main`.

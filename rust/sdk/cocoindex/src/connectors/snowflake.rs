@@ -535,6 +535,21 @@ impl TableSchema {
         Self::new(columns, primary_key)
     }
 
+    /// Replace the type of one column of a schema derived from a row with
+    /// `column`'s type and its [`ColumnDef::parse_json`] flag (Python's
+    /// `column_overrides={"col": SnowflakeType("VARIANT", use_parse_json=True)}`), keeping the column's derived
+    /// nullability.
+    pub fn with_column_type(mut self, field_name: &str, column: ColumnDef) -> Result<Self> {
+        validate_sql_type(&column.snowflake_type)?;
+        let def = self
+            .columns
+            .get_mut(field_name)
+            .ok_or_else(|| crate::row_schema::unknown_column_error("Snowflake", field_name))?;
+        def.snowflake_type = column.snowflake_type;
+        def.use_parse_json = column.use_parse_json;
+        Ok(self)
+    }
+
     /// Columns in DDL order: primary-key columns first (in key order), then the
     /// rest by name.
     fn ordered_columns(&self) -> Vec<(&String, &ColumnDef)> {
@@ -1718,6 +1733,35 @@ mod tests {
                 &BTreeMap::new()
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn column_type_override_changes_type_and_parse_json() {
+        #[derive(crate::SchemaFields)]
+        #[allow(dead_code)]
+        struct Row {
+            id: i64,
+            payload: Option<String>,
+        }
+        let schema = TableSchema::from_row::<Row>(["id"])
+            .unwrap()
+            .with_column_type("payload", ColumnDef::new("VARIANT").parse_json())
+            .unwrap();
+        // The derived nullability stays.
+        assert_eq!(
+            schema.columns()["payload"],
+            ColumnDef::new("VARIANT").parse_json()
+        );
+        let row = json!({"id": 1, "payload": "{\"a\":1}"});
+        let (sql, _) =
+            merge_statement("\"t\"", &schema, &[row.as_object().unwrap().clone()]).unwrap();
+        assert!(sql.contains("PARSE_JSON(?) AS \"payload\""), "{sql}");
+        assert!(
+            TableSchema::from_row::<Row>(["id"])
+                .unwrap()
+                .with_column_type("missing", ColumnDef::new("VARIANT"))
+                .is_err()
         );
     }
 

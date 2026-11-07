@@ -194,9 +194,9 @@ async def extract_meeting(section_text: str) -> ExtractedMeeting:
 @coco.fn(memo=True)
 async def process_file(
     file: google_drive.DriveFile,
-    meeting_table: neo4j.TableTarget[Meeting],
-    task_table: neo4j.TableTarget[Task],
-    decided_rel: neo4j.RelationTarget[Any],
+    meeting_table: neo4j.NodeTarget[Meeting],
+    task_table: neo4j.NodeTarget[Task],
+    decided_rel: neo4j.RelationshipTarget[Any],
 ) -> list[MeetingExtraction]:
     text = await file.read_text()
     note_file = file.file_path.path.as_posix()
@@ -212,7 +212,7 @@ async def process_file(
         )
         for task in extracted.tasks:
             task_table.declare_record(row=Task(description=task.description))
-            decided_rel.declare_relation(from_id=meeting_id, to_id=task.description)
+            decided_rel.declare_relationship(from_id=meeting_id, to_id=task.description)
 
         extractions.append(MeetingExtraction(
             meeting_id=meeting_id,
@@ -287,9 +287,9 @@ With the canonical mapping in hand, one component declares the `Person` nodes an
 async def create_person_relations(
     meetings: list[MeetingExtraction],
     persons: ResolvedEntities,
-    person_table: neo4j.TableTarget[Person],
-    attended_rel: neo4j.RelationTarget[Any],
-    assigned_rel: neo4j.RelationTarget[Any],
+    person_table: neo4j.NodeTarget[Person],
+    attended_rel: neo4j.RelationshipTarget[Any],
+    assigned_rel: neo4j.RelationshipTarget[Any],
 ) -> None:
     for canonical_name in persons.canonicals():
         person_table.declare_record(row=Person(name=canonical_name))
@@ -301,7 +301,7 @@ async def create_person_relations(
         for p in m.participants:
             attendees.setdefault(persons.canonical_of(p), False)
         for canonical, is_organizer in attendees.items():
-            attended_rel.declare_relation(
+            attended_rel.declare_relationship(
                 from_id=canonical, to_id=m.meeting_id,
                 record=AttendedRel(is_organizer=is_organizer),
             )
@@ -309,33 +309,33 @@ async def create_person_relations(
         # ASSIGNED_TO — dedup per (canonical person, task).
         for task_desc, assignees in m.task_assignees:
             for canonical in {persons.canonical_of(a) for a in assignees}:
-                assigned_rel.declare_relation(from_id=canonical, to_id=task_desc)
+                assigned_rel.declare_relationship(from_id=canonical, to_id=task_desc)
 ```
 
 Two details carry the correctness here. Resolution happens *before* aggregation, so two raw names that resolve to the same person collapse into one `ATTENDED` edge instead of two. And because the canonical names are the primary keys, re-asserting the same attendance or assignment from another note is a no-op, not a duplicate.
 
 ## Wire it up: app_main
 
-`app_main` mounts the targets and runs the three phases. Node tables come first, because relation targets are declared *between* two node tables — that's how the connector knows each edge's endpoint labels and keys:
+`app_main` mounts the targets and runs the three phases. Node tables come first, because relationship targets are declared *between* two node tables — that's how the connector knows each edge's endpoint labels and keys:
 
 ```python title="main.py"
 @coco.fn
 async def app_main() -> None:
-    meeting_table = await neo4j.mount_table_target(
+    meeting_table = await neo4j.mount_node_target(
         KG_DB, "Meeting",
         await neo4j.TableSchema.from_class(Meeting, primary_key="id"), primary_key="id")
-    person_table = await neo4j.mount_table_target(
+    person_table = await neo4j.mount_node_target(
         KG_DB, "Person",
         await neo4j.TableSchema.from_class(Person, primary_key="name"), primary_key="name")
-    task_table = await neo4j.mount_table_target(
+    task_table = await neo4j.mount_node_target(
         KG_DB, "Task",
         await neo4j.TableSchema.from_class(Task, primary_key="description"), primary_key="description")
 
     # ATTENDED carries is_organizer; DECIDED and ASSIGNED_TO carry no payload, so
     # they mount without a schema and the connector derives PKs from endpoints.
-    attended_rel = await neo4j.mount_relation_target(KG_DB, "ATTENDED", person_table, meeting_table)
-    decided_rel = await neo4j.mount_relation_target(KG_DB, "DECIDED", meeting_table, task_table)
-    assigned_rel = await neo4j.mount_relation_target(KG_DB, "ASSIGNED_TO", person_table, task_table)
+    attended_rel = await neo4j.mount_relationship_target(KG_DB, "ATTENDED", person_table, meeting_table)
+    decided_rel = await neo4j.mount_relationship_target(KG_DB, "DECIDED", meeting_table, task_table)
+    assigned_rel = await neo4j.mount_relationship_target(KG_DB, "ASSIGNED_TO", person_table, task_table)
 
     source = google_drive.GoogleDriveSource(
         service_account_credential_path=os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"],

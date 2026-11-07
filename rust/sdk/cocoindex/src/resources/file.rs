@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use cocoindex_utils::fingerprint::Fingerprint;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Serialize, Serializer, ser::SerializeTuple};
@@ -18,7 +19,9 @@ use crate::error::{Error, Result};
 /// A file path with an optional stable base key.
 ///
 /// The resolved location may move, while [`FilePath::memo_key`] stays stable
-/// when callers supply the same logical base key.
+/// when callers supply the same logical base key ([`FilePath::with_base_dir`],
+/// or `FilePath::under_context_dir` for a directory the environment provides
+/// under a `ContextKey`, as Python's `FilePath(path, base_dir=SOURCE_DIR)`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct FilePath {
     base_key: Option<Arc<str>>,
@@ -106,6 +109,52 @@ impl FilePath {
             return None;
         }
         Some(self.with_path(parent.to_path_buf()))
+    }
+
+    /// The path's logical ancestors, nearest first (cf. `PurePath.parents`,
+    /// without its final `.` entry).
+    pub fn parents(&self) -> Vec<FilePath> {
+        let mut parents = Vec::new();
+        let mut current = self.parent();
+        while let Some(parent) = current {
+            current = parent.parent();
+            parents.push(parent);
+        }
+        parents
+    }
+
+    /// Whether `base` is this path or one of its ancestors (cf.
+    /// `PurePath.is_relative_to`).
+    pub fn is_relative_to(&self, base: impl AsRef<Path>) -> bool {
+        self.path.starts_with(base.as_ref())
+    }
+
+    /// Match the path against a glob `pattern` with `PurePath.match` semantics:
+    /// a relative pattern is matched from the right, component by component
+    /// (`*` and `?` stay within one component; `**` is not special); an
+    /// absolute pattern must match the whole path. An invalid pattern never
+    /// matches.
+    pub fn matches(&self, pattern: &str) -> bool {
+        let pattern = pattern.replace('\\', "/");
+        let pattern_parts: Vec<&str> = pattern.split('/').filter(|p| !p.is_empty()).collect();
+        if pattern_parts.is_empty() {
+            return false;
+        }
+        let parts = self.parts();
+        // `has_root`, not `is_absolute`: on Windows `/docs/a.md` has a root
+        // but no drive, and pathlib anchors on the root alone.
+        let anchored = pattern.starts_with('/');
+        if anchored && (!self.path.has_root() || parts.len() != pattern_parts.len() + 1) {
+            return false;
+        }
+        if parts.len() < pattern_parts.len() {
+            return false;
+        }
+        parts
+            .iter()
+            .rev()
+            .zip(pattern_parts.iter().rev())
+            .all(|(part, glob)| Glob::new(glob).is_ok_and(|g| g.compile_matcher().is_match(part)))
     }
 
     /// All file-name suffixes, e.g. `a.tar.gz` -> `[".tar", ".gz"]` (cf.
@@ -199,10 +248,14 @@ pub struct FileMetadata {
 
 /// A file's full content, and when the read that produced it started.
 struct CachedContent {
-    bytes: Vec<u8>,
+    bytes: Bytes,
     read_at: SystemTime,
 }
 
+/// Per-file cache of metadata, full content and content fingerprint.
+///
+/// The content is held as [`Bytes`], so every [`FileLike::read`] after the
+/// first is a reference-count bump, not a copy of the file.
 #[derive(Default)]
 pub struct FileContentCache {
     metadata: Mutex<Option<FileMetadata>>,
@@ -255,7 +308,9 @@ pub trait FileLike: Send + Sync {
         Ok(metadata)
     }
 
-    async fn read(&self) -> Result<Vec<u8>> {
+    /// The whole file, from the cache after the first call. Cloning the
+    /// returned [`Bytes`] shares the buffer.
+    async fn read(&self) -> Result<Bytes> {
         {
             let guard = self.cache().full_content.lock().await;
             if let Some(content) = guard.as_ref() {
@@ -263,7 +318,7 @@ pub trait FileLike: Send + Sync {
             }
         }
         let read_at = SystemTime::now();
-        let bytes = self.read_impl(None).await?;
+        let bytes = Bytes::from(self.read_impl(None).await?);
         *self.cache().full_content.lock().await = Some(CachedContent {
             bytes: bytes.clone(),
             read_at,
@@ -271,18 +326,30 @@ pub trait FileLike: Send + Sync {
         Ok(bytes)
     }
 
-    async fn read_size(&self, size: usize) -> Result<Vec<u8>> {
+    /// The first `size` bytes: a slice of the cached content when the file
+    /// was read before, a bounded read otherwise.
+    async fn read_size(&self, size: usize) -> Result<Bytes> {
         {
             let guard = self.cache().full_content.lock().await;
             if let Some(content) = guard.as_ref() {
-                return Ok(content.bytes.iter().take(size).copied().collect());
+                return Ok(content.bytes.slice(..size.min(content.bytes.len())));
             }
         }
-        self.read_impl(Some(size)).await
+        Ok(Bytes::from(self.read_impl(Some(size)).await?))
     }
 
+    /// The content as text: BOM-detected encoding (UTF-8/16/32), else UTF-8,
+    /// with invalid sequences replaced by U+FFFD. The Python defaults.
     async fn read_text(&self) -> Result<String> {
         Ok(decode_bytes(&self.read().await?))
+    }
+
+    /// The content as text in `encoding` (a WHATWG label such as `"latin1"` or
+    /// `"utf-16le"`, or `"utf-32le"`/`"utf-32be"`; `None` detects by BOM, else
+    /// UTF-8), with `errors` deciding what an undecodable sequence does. Cf.
+    /// Python `read_text(encoding=..., errors=...)`.
+    async fn read_text_with(&self, encoding: Option<&str>, errors: DecodeErrors) -> Result<String> {
+        decode_bytes_with(&self.read().await?, encoding, errors)
     }
 
     async fn content_fingerprint(&self) -> Result<Fingerprint> {
@@ -295,8 +362,10 @@ pub trait FileLike: Send + Sync {
         let metadata = self.metadata().await?;
         let fp = match metadata.content_fingerprint {
             Some(fp) => fp,
-            None => Fingerprint::from(&self.read().await?)
-                .map_err(|e| Error::engine(format!("file fingerprint error: {e}")))?,
+            // One hasher update over the content, as the Python SDK's
+            // `fingerprint_bytes` does; `Fingerprint::from` would serialize
+            // the bytes one by one.
+            None => Fingerprint::from_bytes(&self.read().await?),
         };
         *self.cache().content_fingerprint.lock().await = Some(fp);
         Ok(fp)
@@ -535,49 +604,119 @@ pub mod system_time_serde {
     }
 }
 
+/// What an undecodable byte sequence does when reading text (cf. Python's
+/// `errors` argument to `bytes.decode`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DecodeErrors {
+    /// Replace it with U+FFFD (the default).
+    #[default]
+    Replace,
+    /// Drop it.
+    Ignore,
+    /// Fail the read.
+    Strict,
+}
+
+/// Decode `bytes` as text, detecting the encoding by BOM (UTF-8/16/32) and
+/// falling back to UTF-8, with invalid sequences replaced by U+FFFD.
 pub fn decode_bytes(bytes: &[u8]) -> String {
-    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        let (text, _had_errors) = encoding_rs::UTF_8.decode_with_bom_removal(bytes);
-        return text.into_owned();
+    decode_bytes_with(bytes, None, DecodeErrors::Replace)
+        .expect("replacing decode errors never fails")
+}
+
+/// Decode `bytes` as text in `encoding` (`None` detects by BOM, else UTF-8),
+/// handling undecodable sequences per `errors`. See
+/// [`FileLike::read_text_with`].
+pub fn decode_bytes_with(
+    bytes: &[u8],
+    encoding: Option<&str>,
+    errors: DecodeErrors,
+) -> Result<String> {
+    let Some(label) = encoding else {
+        return decode_detected(bytes, errors);
+    };
+    let normalized = label.trim().to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "utf-32" | "utf-32-le" | "utf-32le" => decode_utf32(bytes, false, errors),
+        "utf-32-be" | "utf-32be" => decode_utf32(bytes, true, errors),
+        // Python's `utf-8-sig` strips a BOM; encoding_rs's UTF-8 does not.
+        "utf-8-sig" => decode_with(
+            encoding_rs::UTF_8,
+            bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes),
+            errors,
+        ),
+        _ => {
+            let encoding = encoding_rs::Encoding::for_label(normalized.as_bytes())
+                .ok_or_else(|| Error::engine(format!("unknown text encoding {label:?}")))?;
+            decode_with(encoding, bytes, errors)
+        }
+    }
+}
+
+fn decode_detected(bytes: &[u8], errors: DecodeErrors) -> Result<String> {
+    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return decode_with(encoding_rs::UTF_8, rest, errors);
     }
     // UTF-32 must be checked BEFORE UTF-16: a UTF-32LE BOM (FF FE 00 00) starts
     // with the UTF-16LE BOM (FF FE). `encoding_rs` has no UTF-32 decoder, so
     // decode it by hand.
-    if bytes.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) {
-        return decode_utf32(&bytes[4..], false);
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE, 0x00, 0x00]) {
+        return decode_utf32(rest, false, errors);
     }
-    if bytes.starts_with(&[0x00, 0x00, 0xFE, 0xFF]) {
-        return decode_utf32(&bytes[4..], true);
+    if let Some(rest) = bytes.strip_prefix(&[0x00, 0x00, 0xFE, 0xFF]) {
+        return decode_utf32(rest, true, errors);
     }
-    if bytes.starts_with(&[0xFF, 0xFE]) {
-        let (text, _had_errors) = encoding_rs::UTF_16LE.decode_with_bom_removal(bytes);
-        return text.into_owned();
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return decode_with(encoding_rs::UTF_16LE, rest, errors);
     }
-    if bytes.starts_with(&[0xFE, 0xFF]) {
-        let (text, _had_errors) = encoding_rs::UTF_16BE.decode_with_bom_removal(bytes);
-        return text.into_owned();
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return decode_with(encoding_rs::UTF_16BE, rest, errors);
     }
-    let (text, _encoding, _had_errors) = encoding_rs::UTF_8.decode(bytes);
-    text.into_owned()
+    decode_with(encoding_rs::UTF_8, bytes, errors)
 }
 
-/// Decode UTF-32 (BOM already stripped) into a `String`, replacing invalid code
-/// points with U+FFFD (mirrors lossy decoding of the other encodings).
-fn decode_utf32(bytes: &[u8], big_endian: bool) -> String {
-    bytes
-        .chunks(4)
-        .map(|chunk| {
-            if chunk.len() < 4 {
-                return '\u{FFFD}';
+/// Decode with an `encoding_rs` encoding (BOM already stripped). `encoding_rs`
+/// only replaces, so `Ignore` strips the replacement characters it inserted
+/// and `Strict` fails when it inserted any.
+fn decode_with(
+    encoding: &'static encoding_rs::Encoding,
+    bytes: &[u8],
+    errors: DecodeErrors,
+) -> Result<String> {
+    let (text, had_errors) = encoding.decode_without_bom_handling(bytes);
+    if !had_errors {
+        return Ok(text.into_owned());
+    }
+    match errors {
+        DecodeErrors::Replace => Ok(text.into_owned()),
+        DecodeErrors::Ignore => Ok(text.chars().filter(|c| *c != '\u{FFFD}').collect()),
+        DecodeErrors::Strict => Err(Error::engine(format!(
+            "invalid {} byte sequence in text",
+            encoding.name()
+        ))),
+    }
+}
+
+/// Decode UTF-32 (BOM already stripped) into a `String`; an invalid code point
+/// or a trailing partial code unit is an undecodable sequence.
+fn decode_utf32(bytes: &[u8], big_endian: bool, errors: DecodeErrors) -> Result<String> {
+    let mut text = String::with_capacity(bytes.len() / 4);
+    for chunk in bytes.chunks(4) {
+        let decoded = match <[u8; 4]>::try_from(chunk) {
+            Ok(unit) if big_endian => char::from_u32(u32::from_be_bytes(unit)),
+            Ok(unit) => char::from_u32(u32::from_le_bytes(unit)),
+            Err(_) => None,
+        };
+        match (decoded, errors) {
+            (Some(c), _) => text.push(c),
+            (None, DecodeErrors::Replace) => text.push('\u{FFFD}'),
+            (None, DecodeErrors::Ignore) => {}
+            (None, DecodeErrors::Strict) => {
+                return Err(Error::engine("invalid UTF-32 code unit in text"));
             }
-            let code = if big_endian {
-                u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-            } else {
-                u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-            };
-            char::from_u32(code).unwrap_or('\u{FFFD}')
-        })
-        .collect()
+        }
+    }
+    Ok(text)
 }
 
 fn build_glob(pattern: &str) -> Result<globset::Glob> {
@@ -649,14 +788,20 @@ mod tests {
         assert_eq!(file.metadata().await.unwrap().size, 11);
         assert_eq!(file.metadata_reads.load(Ordering::SeqCst), 1);
 
-        assert_eq!(file.read().await.unwrap(), b"hello world");
-        assert_eq!(file.read().await.unwrap(), b"hello world");
-        assert_eq!(file.read_size(5).await.unwrap(), b"hello");
+        let first_read = file.read().await.unwrap();
+        let second_read = file.read().await.unwrap();
+        assert_eq!(first_read, b"hello world"[..]);
+        assert_eq!(second_read, b"hello world"[..]);
+        assert_eq!(file.read_size(5).await.unwrap(), b"hello"[..]);
+        assert_eq!(file.read_size(100).await.unwrap(), b"hello world"[..]);
         assert_eq!(file.reads.load(Ordering::SeqCst), 1);
+        // A cached read shares the buffer instead of copying it.
+        assert_eq!(first_read.as_ptr(), second_read.as_ptr());
 
         let first = file.content_fingerprint().await.unwrap();
         let second = file.content_fingerprint().await.unwrap();
         assert_eq!(first, second);
+        assert_eq!(first, Fingerprint::from_bytes(b"hello world"));
         assert_eq!(file.reads.load(Ordering::SeqCst), 1);
     }
 
@@ -805,6 +950,88 @@ mod tests {
         // A bare filename has no parent; a hidden file has no suffixes.
         assert!(FilePath::new("file.txt").parent().is_none());
         assert!(FilePath::new(".bashrc").suffixes().is_empty());
+    }
+
+    #[test]
+    fn file_path_parents_is_relative_to_and_matches_follow_pathlib() {
+        let p = FilePath::new("docs/a/report.md");
+        let parents: Vec<String> = p.parents().iter().map(FilePath::as_posix).collect();
+        assert_eq!(parents, vec!["docs/a", "docs"]);
+        assert!(FilePath::new("file.txt").parents().is_empty());
+
+        assert!(p.is_relative_to("docs"));
+        assert!(p.is_relative_to("docs/a"));
+        assert!(p.is_relative_to("docs/a/report.md"));
+        assert!(!p.is_relative_to("doc"));
+        assert!(!p.is_relative_to("other"));
+
+        // A relative pattern matches from the right, one component at a time.
+        assert!(p.matches("*.md"));
+        assert!(p.matches("a/*.md"));
+        assert!(p.matches("docs/a/report.md"));
+        assert!(!p.matches("docs/*.md"));
+        assert!(!p.matches("*.py"));
+        assert!(!p.matches("x/docs/a/report.md"));
+        // An absolute pattern must match the whole path.
+        let abs = FilePath::new("/docs/a/report.md");
+        assert!(abs.matches("/docs/a/*.md"));
+        assert!(!abs.matches("/a/*.md"));
+        assert!(!p.matches("/docs/a/report.md"));
+        // `*` does not cross a separator, and an invalid pattern never matches.
+        assert!(!p.matches("docs/*"));
+        assert!(!p.matches("[invalid"));
+    }
+
+    #[test]
+    fn decode_bytes_with_explicit_encoding_and_error_modes() {
+        // An explicit encoding wins over detection.
+        assert_eq!(
+            decode_bytes_with(b"caf\xe9", Some("latin1"), DecodeErrors::Replace).unwrap(),
+            "café"
+        );
+        assert_eq!(
+            decode_bytes_with(b"h\0i\0", Some("utf-16le"), DecodeErrors::Replace).unwrap(),
+            "hi"
+        );
+        assert_eq!(
+            decode_bytes_with(b"\xEF\xBB\xBFhi", Some("utf-8-sig"), DecodeErrors::Strict).unwrap(),
+            "hi"
+        );
+        assert_eq!(
+            decode_bytes_with(b"h\0\0\0", Some("utf-32"), DecodeErrors::Strict).unwrap(),
+            "h"
+        );
+        assert!(decode_bytes_with(b"x", Some("no-such-encoding"), DecodeErrors::Replace).is_err());
+
+        // The error modes, Python's `errors=`.
+        assert_eq!(
+            decode_bytes_with(b"a\xFFb", None, DecodeErrors::Replace).unwrap(),
+            "a\u{fffd}b"
+        );
+        assert_eq!(
+            decode_bytes_with(b"a\xFFb", None, DecodeErrors::Ignore).unwrap(),
+            "ab"
+        );
+        assert!(decode_bytes_with(b"a\xFFb", None, DecodeErrors::Strict).is_err());
+        assert_eq!(
+            decode_bytes_with(b"ok", None, DecodeErrors::Strict).unwrap(),
+            "ok"
+        );
+        // A trailing partial UTF-32 unit is an error in strict mode.
+        assert!(decode_bytes_with(b"\xFF\xFE\0\0h\0\0", None, DecodeErrors::Strict).is_err());
+    }
+
+    #[tokio::test]
+    async fn file_like_read_text_with_uses_the_cached_content() {
+        let file = MockFile::new(None);
+        assert_eq!(file.read_text().await.unwrap(), "hello world");
+        assert_eq!(
+            file.read_text_with(Some("ascii"), DecodeErrors::Strict)
+                .await
+                .unwrap(),
+            "hello world"
+        );
+        assert_eq!(file.reads.load(Ordering::SeqCst), 1);
     }
 
     #[test]

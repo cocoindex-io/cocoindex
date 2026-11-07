@@ -86,9 +86,24 @@
     feature = "doris",
     feature = "lancedb",
     feature = "qdrant",
-    feature = "turbopuffer"
+    feature = "turbopuffer",
+    feature = "neo4j",
+    feature = "falkordb",
+    feature = "bigquery",
+    feature = "snowflake",
+    feature = "surrealdb"
 ))]
-use crate::error::{Error, Result};
+use crate::error::Error;
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
+    feature = "qdrant",
+    feature = "turbopuffer",
+    feature = "surrealdb"
+))]
+use crate::error::Result;
 
 #[cfg(any(
     feature = "postgres",
@@ -115,7 +130,8 @@ pub(crate) fn require_resolved_vector_dimension(connector: &str, field_name: &st
     feature = "doris",
     feature = "lancedb",
     feature = "qdrant",
-    feature = "turbopuffer"
+    feature = "turbopuffer",
+    feature = "surrealdb"
 ))]
 pub(crate) fn vector_dimension_error(
     connector: &str,
@@ -131,7 +147,8 @@ pub(crate) fn vector_dimension_error(
     feature = "postgres",
     feature = "sqlite",
     feature = "doris",
-    feature = "lancedb"
+    feature = "lancedb",
+    feature = "surrealdb"
 ))]
 pub(crate) async fn provided_vector_schema(
     connector: &str,
@@ -151,7 +168,8 @@ pub(crate) async fn provided_vector_schema(
     feature = "doris",
     feature = "lancedb",
     feature = "qdrant",
-    feature = "turbopuffer"
+    feature = "turbopuffer",
+    feature = "surrealdb"
 ))]
 pub(crate) fn zero_vector_dimension_error(connector: &str, field_name: &str) -> Error {
     vector_dimension_error(
@@ -179,7 +197,8 @@ pub(crate) fn unknown_vector_field_error(connector: &str, field_name: &str) -> E
     feature = "postgres",
     feature = "sqlite",
     feature = "doris",
-    feature = "lancedb"
+    feature = "lancedb",
+    feature = "surrealdb"
 ))]
 pub(crate) fn not_vector_field_error(connector: &str, field_name: &str) -> Error {
     Error::engine(format!(
@@ -191,7 +210,12 @@ pub(crate) fn not_vector_field_error(connector: &str, field_name: &str) -> Error
     feature = "postgres",
     feature = "sqlite",
     feature = "doris",
-    feature = "lancedb"
+    feature = "lancedb",
+    feature = "neo4j",
+    feature = "falkordb",
+    feature = "bigquery",
+    feature = "snowflake",
+    feature = "surrealdb"
 ))]
 pub(crate) fn unknown_column_error(connector: &str, field_name: &str) -> Error {
     Error::engine(format!(

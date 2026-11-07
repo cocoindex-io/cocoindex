@@ -9,7 +9,9 @@
 //!     cargo run -- query "your query"
 //!
 //! What the Rust SDK provides:
-//!   - walk / memo / mount_each / ContextKey      -> from `cocoindex`
+//!   - source            : `walk_dir(..).live()` + `ctx.mount_each_live` (cf. `localfs.walk_dir(live=True)` + `coco.mount_each`)
+//!   - per-file compute  : `#[cocoindex::function(memo)]` declaring its rows (cf. `@coco.fn(memo=True)`)
+//!   - per-chunk compute : `#[cocoindex::function]` under `ctx.map` (cf. `@coco.fn` under `coco.map`)
 //!   - tree-sitter chunking + language detection  -> `cocoindex::ops::text`
 //!   - embeddings (all-MiniLM-L6-v2, local ONNX)  -> `cocoindex::ops::sentence_transformers`
 //!   - Postgres/pgvector TableTarget sync          -> from `cocoindex`
@@ -31,6 +33,7 @@ const TABLE: &str = "code_embeddings";
 const TOP_K: i64 = 5;
 
 const INCLUDE_PATTERNS: &[&str] = &["**/*.py", "**/*.rs", "**/*.toml", "**/*.md", "**/*.mdx"];
+const EXCLUDE_PATTERNS: &[&str] = &["**/.*", "**/target", "**/node_modules"];
 
 // Shared Postgres target database.
 cocoindex::context_key!(static DB: postgres::Database);
@@ -58,50 +61,54 @@ struct CodeEmbeddingRow {
 // Pipeline
 // ---------------------------------------------------------------------------
 
-/// Process one file into desired embedding rows. Memoized by the file's
-/// fingerprint, while target row declarations still happen in the active
-/// pipeline.
+/// Embed one chunk and declare its row (cf. Python `process_chunk`).
 #[cocoindex::function]
-async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<CodeEmbeddingRow>> {
-    let filename = file.key();
-    let text = file.content_str()?;
+async fn process_chunk(
+    ctx: &Ctx,
+    chunk: Chunk,
+    text: &str,
+    filename: &str,
+    id_gen: &IdGenerator,
+    table: &postgres::TableTarget,
+) -> Result<()> {
+    let code = chunk.text(text);
+    let id = i64::try_from(id_gen.next_id(ctx, code).await?)
+        .map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
+    table.declare_row(
+        ctx,
+        &CodeEmbeddingRow {
+            id,
+            filename: filename.to_string(),
+            code: code.to_string(),
+            embedding: ctx.get_key(&EMBEDDER)?.embed(ctx, code).await?,
+            start_line: chunk.start.line as i32,
+            end_line: chunk.end.line as i32,
+        },
+    )
+}
 
-    let language = detect_code_language(&filename);
-    let splitter = RecursiveSplitter::new()?;
-    let chunks = splitter.split_with(
+/// Chunk and embed one file, declaring its rows (cf. Python `process_file`).
+/// Memoized on the file: an unchanged file keeps its rows without re-running.
+/// The table target is one per app, so it is not part of the memo key.
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_file(ctx: &Ctx, file: &FileEntry, table: &postgres::TableTarget) -> Result<()> {
+    let text = file.read_text().await?;
+    let filename = file.key();
+    let chunks = RecursiveSplitter::new()?.split_with(
         &text,
         RecursiveChunkConfig {
             chunk_size: 1000,
             min_chunk_size: Some(300),
             chunk_overlap: Some(300),
-            language,
+            language: detect_code_language(&filename),
         },
     );
-
-    if chunks.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let embedder = ctx.get_key(&EMBEDDER)?;
-    let codes: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
-    let embeddings = embedder.embed_batch(codes.clone()).await?;
-
-    let mut id_gen = IdGenerator::new();
-    let mut rows = Vec::with_capacity(chunks.len());
-    for ((chunk, code), embedding) in chunks.iter().zip(codes.into_iter()).zip(embeddings) {
-        let id = id_gen.next_id(&ctx, &code).await?;
-        let id =
-            i64::try_from(id).map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
-        rows.push(CodeEmbeddingRow {
-            id,
-            filename: filename.clone(),
-            code,
-            embedding,
-            start_line: chunk.start.line as i32,
-            end_line: chunk.end.line as i32,
-        });
-    }
-    Ok(rows)
+    let id_gen = IdGenerator::new();
+    ctx.map(chunks, async |chunk| {
+        process_chunk(ctx, chunk, &text, &filename, &id_gen, &table).await
+    })
+    .await?;
+    Ok(())
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
@@ -118,28 +125,21 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         },
     )?;
 
-    let files: Vec<(String, FileEntry)> = walk_items(&sourcedir, INCLUDE_PATTERNS)?
-        .into_iter()
-        .filter(|(_, f)| !is_excluded(&f.key()))
-        .collect();
-    println!(
-        "indexing {} files from {}",
-        files.len(),
-        sourcedir.display()
-    );
-
-    let rows_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
-
-    let mut count = 0usize;
-    for rows in &rows_by_file {
-        count += rows.len();
-        for row in rows {
-            table.declare_row(&ctx, row)?;
-        }
-    }
-
-    println!("indexed {count} chunks total");
-    Ok(())
+    // The source supports live watch (cf. Python `localfs.walk_dir(live=True)`).
+    let files = walk_dir(sourcedir)
+        .recursive(true)
+        .path_matcher(PatternFilePathMatcher::new(
+            INCLUDE_PATTERNS,
+            EXCLUDE_PATTERNS,
+        )?)
+        .live();
+    // One processing component per file: each file's rows sync and clean up
+    // with that file (cf. Python `coco.mount_each(process_file, files.items(), target_table)`).
+    ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
+        let table = table.clone();
+        async move { process_file(&ctx, &file, &table).await }
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -190,11 +190,6 @@ fn code_embedding_schema() -> Result<postgres::TableSchema> {
 fn vector_param(vec: &[f32]) -> String {
     let values = vec.iter().map(f32::to_string).collect::<Vec<_>>();
     format!("[{}]", values.join(","))
-}
-
-fn is_excluded(key: &str) -> bool {
-    key.split('/')
-        .any(|part| part.starts_with('.') || part == "target" || part == "node_modules")
 }
 
 fn db_err(e: sqlx::Error) -> Error {

@@ -16,7 +16,8 @@ doc = false
 
 [dependencies]
 # Protocol types (`cocoindex::cli::protocol`) shared with user binaries.
-cocoindex = { path = "../sdk/cocoindex" }
+# `google-drive sign-in` / `sign-out` call the connector's `UserAccount`.
+cocoindex = { path = "../sdk/cocoindex", features = ["google_drive"] }
 # State-db inspection for `ls --db` and `show`, without user code.
 cocoindex_core = { path = "../core", package = "cocoindex_core" }
 clap = { workspace = true }

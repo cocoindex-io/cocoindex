@@ -1,8 +1,11 @@
+import codecs
+import io
 import logging
 import os
 import signal
 import sys
-from typing import Any, AsyncIterator, NamedTuple
+import time
+from typing import Any, AsyncIterator, Literal, NamedTuple, TextIO
 import pathlib
 
 import click
@@ -13,6 +16,8 @@ from .user_app_loader import load_user_app, Error as UserAppLoaderError
 import asyncio
 import cocoindex as coco
 from cocoindex._internal.app import App
+from cocoindex._internal import banner as _banner
+from cocoindex._internal.update_stats import DisplayMode, display_mode
 from cocoindex._internal import core as _core
 from cocoindex._internal.environment import (
     Environment,
@@ -40,6 +45,23 @@ from cocoindex._internal.stable_path import StablePath
 # ---------------------------------------------------------------------------
 
 
+def _utf8_when_piped(stream: TextIO) -> None:
+    """Write UTF-8 to `stream` when it is piped to a file or another process.
+
+    Python encodes piped output in the locale's encoding, cp1252 on most
+    Windows machines, which has no `✓`. The engine's progress display writes
+    UTF-8 to the same stream, so this keeps one encoding in it. A terminal is
+    left alone: Python writes a Windows console in UTF-16 whatever the
+    encoding, and a Unix terminal's locale is already UTF-8.
+    """
+    if (
+        isinstance(stream, io.TextIOWrapper)
+        and not stream.isatty()
+        and codecs.lookup(stream.encoding).name != "utf-8"
+    ):
+        stream.reconfigure(encoding="utf-8")
+
+
 def _setup_logging() -> None:
     """Configure Python's root logger for CLI use.
 
@@ -52,11 +74,48 @@ def _setup_logging() -> None:
         level=level,
         force=True,
     )
+    # On a terminal, show records like the progress display shows its lines:
+    # a colored mark and the message. Logs that go to a file or a CI log keep
+    # the timestamped format.
+    if sys.stderr.isatty() and os.environ.get("TERM") != "dumb":
+        color = not os.environ.get("NO_COLOR")
+        for handler in logging.getLogger().handlers:
+            handler.setFormatter(_TerminalLogFormatter(color=color))
+
+
+class _TerminalLogFormatter(logging.Formatter):
+    """`✗ message` for errors, `! message` for warnings, `· message` below;
+    the mark is colored unless `color` is off (`NO_COLOR`)."""
+
+    def __init__(self, *, color: bool) -> None:
+        super().__init__()
+        self._color = color
+
+    def format(self, record: logging.LogRecord) -> str:
+        if record.levelno >= logging.ERROR:
+            mark, code = "✗", "31"
+        elif record.levelno >= logging.WARNING:
+            mark, code = "!", "33"
+        else:
+            mark, code = "·", "2"
+        if self._color:
+            mark = f"\x1b[{code}m{mark}\x1b[0m"
+        text = f"{mark} {record.getMessage()}"
+        if record.exc_info:
+            text += "\n" + self.formatException(record.exc_info)
+        return text
 
 
 # ---------------------------------------------------------------------------
 # Graceful cancellation helpers
 # ---------------------------------------------------------------------------
+
+
+def _say_stopping() -> None:
+    """Acknowledge Ctrl+C. A progress display on a terminal says it in its
+    final line (`Stopped after …`), so stay quiet then."""
+    if display_mode() is not DisplayMode.TERMINAL:
+        print("\nStopping…")
 
 
 def _run_async_cmd(coro_fn: Any, *, quiet: bool = False) -> None:
@@ -73,7 +132,7 @@ def _run_async_cmd(coro_fn: Any, *, quiet: bool = False) -> None:
         cancelled = True
         _core.cancel_all()
         if not quiet:
-            print("\nStopping...")
+            _say_stopping()
         # Restore default handler so a second Ctrl+C kills immediately.
         signal.signal(signal.SIGINT, signal.SIG_DFL)
 
@@ -90,7 +149,7 @@ def _run_async_cmd(coro_fn: Any, *, quiet: bool = False) -> None:
         asyncio.run(_wrapper())
     except KeyboardInterrupt:
         if not quiet:
-            print("\nStopping...")
+            _say_stopping()
     finally:
         signal.signal(signal.SIGINT, prev_handler)
 
@@ -191,6 +250,37 @@ def _format_db_path(env: Environment) -> str:
         return str(path)
     except Exception:
         return str(path)
+
+
+def _print_header(action: str, env: Environment) -> None:
+    """Print a command's header: the coconut banner on a terminal, otherwise
+    the same facts on one line."""
+    where = (
+        f"{env.name} · {env.settings.db_path}"
+        if env.name
+        else str(env.settings.db_path)
+    )
+    if _banner.enabled():
+        click.echo(_banner.render(_banner.version_label(), action, where))
+    else:
+        click.echo(f"{_banner.version_label()} · {action} · {where}")
+
+
+def _say_done(mark: Literal["ok", "info"], text: str, detail: str = "") -> None:
+    """A one-line result in the progress display's voice: `✓ text (detail)`.
+    `mark` is `ok` (✓, green) or `info` (●, cyan)."""
+    glyph, code = {"ok": ("✓", "32"), "info": ("●", "36")}[mark]
+    detail = f" ({detail})" if detail else ""
+    if _banner.enabled():
+        click.echo(
+            f"\x1b[{code}m{glyph}\x1b[0m \x1b[1m{text}\x1b[0m\x1b[90m{detail}\x1b[0m"
+        )
+    else:
+        click.echo(f"{glyph} {text}{detail}")
+
+
+def _format_secs(secs: float) -> str:
+    return "<0.1s" if secs < 0.05 else f"{secs:.1f}s"
 
 
 def _confirm_yes(prompt: str) -> bool:
@@ -542,6 +632,8 @@ async def _print_tree_streaming(
 )
 def cli(env_file: str | None = None, app_dir: str | None = "") -> None:
     """CLI for CocoIndex."""
+    _utf8_when_piped(sys.stdout)
+    _utf8_when_piped(sys.stderr)
     _setup_logging()
 
     dotenv_path = env_file or find_dotenv(usecwd=True)
@@ -1073,22 +1165,26 @@ def update(
         try:
             env = await app._environment._get_env()
             if not quiet:
-                print(
-                    f"Running app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
-                )
+                verb = "Previewing" if preview else "Watching" if live else "Updating"
+                _print_header(f"{verb} {app._name}", env)
 
             if preview:
                 handle = app.update(
                     full_reprocess=full_reprocess,
                     preview=True,
                 )
+                started = time.monotonic()
                 actions: list[Any] = await handle.result()
-                click.echo("Preview: planned target actions")
+                took = f"preview · {_format_secs(time.monotonic() - started)}"
                 if actions:
+                    n = len(actions)
+                    _say_done(
+                        "info", f"{n} planned change{'s' if n != 1 else ''}", took
+                    )
                     for action in actions:
                         click.echo(f"  {action!r}")
                 else:
-                    click.echo("  No target actions planned.")
+                    _say_done("ok", "Nothing to change", took)
                 return
 
             # --reset: drop existing state first (equivalent to `cocoindex drop ...`)
@@ -1155,14 +1251,12 @@ def drop(app_target: str, force: bool = False, quiet: bool = False) -> None:
             persisted_names = _get_persisted_app_names(env)
 
             if not quiet:
-                click.echo(
-                    f"Preparing to drop app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
-                )
+                _print_header(f"Dropping {app._name}", env)
 
             if app._name not in persisted_names:
                 if not quiet:
-                    click.echo(
-                        f"App '{app._name}' has no persisted state. Nothing to drop."
+                    _say_done(
+                        "ok", "Nothing to drop", f"{app._name} has no stored state"
                     )
                 return
 
@@ -1174,10 +1268,13 @@ def drop(app_target: str, force: bool = False, quiet: bool = False) -> None:
                         click.echo("Drop operation aborted.")
                     return
 
+            started = time.monotonic()
             await app.drop()
             if not quiet:
-                click.echo(
-                    f"Dropped app '{app._name}' from environment '{env.name}' and reverted its target states."
+                _say_done(
+                    "ok",
+                    f"Dropped {app._name}",
+                    f"target states reverted · {_format_secs(time.monotonic() - started)}",
                 )
         finally:
             await _stop_all_environments()

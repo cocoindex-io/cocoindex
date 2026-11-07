@@ -71,7 +71,8 @@ async fn declare(
                 &PRODUCER,
                 topic,
                 kafka::KafkaTopicOptions::default(),
-            )?;
+            )
+            .await?;
             for (k, v) in &messages {
                 target.declare_message(&ctx, k, v)?;
             }
@@ -508,5 +509,68 @@ async fn kafka_source_consumer_group_resumes_from_committed_offsets() -> Result<
         vec!["v2".to_string()],
         "a live run with a consumer group resumes from the committed offsets"
     );
+    Ok(())
+}
+
+/// Records what a `LiveStream<Vec<u8>>` delivered and when it became ready.
+#[derive(Default)]
+struct PayloadRecorder {
+    payloads: Mutex<Vec<Vec<u8>>>,
+    ready: std::sync::atomic::AtomicBool,
+}
+
+#[cocoindex::async_trait]
+impl cocoindex::LiveStreamSubscriber<Vec<u8>> for PayloadRecorder {
+    async fn send(&self, message: Vec<u8>) -> Result<cocoindex::ReadyHandle> {
+        self.payloads.lock().unwrap().push(message);
+        Ok(cocoindex::ReadyHandle::immediate())
+    }
+
+    async fn mark_ready(&self) {
+        self.ready.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// `topic_as_stream(..).payloads()` watched directly as a `LiveStream`, with a
+/// consumer wrapped around a caller-built client: every value is delivered
+/// (the tombstone is not), and readiness is signalled once the records that
+/// existed when the watch started are processed.
+#[tokio::test]
+async fn kafka_stream_payloads_watch_delivers_values_and_marks_ready() -> Result<()> {
+    let Some(brokers) = brokers() else {
+        eprintln!("skipping live Kafka payload stream test; KAFKA_BOOTSTRAP_SERVERS is not set");
+        return Ok(());
+    };
+    let broker_refs: Vec<&str> = brokers.iter().map(String::as_str).collect();
+    let topic = unique_topic("payloads");
+    let producer = kafka::KafkaProducer::connect(&broker_refs).await?;
+    producer.ensure_topic(&topic, 2).await?;
+    produce_raw(&brokers, &topic, 0, Some("k"), Some("a"), BTreeMap::new()).await?;
+    produce_raw(&brokers, &topic, 1, Some("k"), None, BTreeMap::new()).await?;
+    produce_raw(&brokers, &topic, 1, None, Some("b"), BTreeMap::new()).await?;
+
+    let client = ClientBuilder::new(brokers.clone())
+        .build()
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("client: {e}")))?;
+    let consumer = kafka::KafkaConsumer::from_client(client, brokers.join(","), None)?;
+    let stream = kafka::topic_as_stream(&consumer, [topic.clone()]).payloads();
+    let recorder = PayloadRecorder::default();
+    let outcome = tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::select! {
+            r = cocoindex::LiveStream::watch(&stream, &recorder) => r,
+            _ = async {
+                while !recorder.ready.load(std::sync::atomic::Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            } => Ok(()),
+        }
+    })
+    .await;
+    assert!(outcome.is_ok(), "the stream did not become ready in time");
+    outcome.unwrap()?;
+    let mut got = recorder.payloads.lock().unwrap().clone();
+    got.sort();
+    assert_eq!(got, vec![b"a".to_vec(), b"b".to_vec()]);
     Ok(())
 }

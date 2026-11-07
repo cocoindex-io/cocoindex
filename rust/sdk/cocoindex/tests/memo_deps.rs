@@ -138,13 +138,13 @@ async fn records(ctx: &Ctx, test: &str, name: &str, value: &str) -> Result<Strin
 #[cocoindex::function(memo)]
 async fn caller_full(ctx: &Ctx, test: &str, value: &str) -> Result<String> {
     increment(&format!("{test}/caller_full"));
-    records(ctx, &test, "rust", &value).await
+    records(ctx, test, "rust", value).await
 }
 
 #[cocoindex::function(memo, logic_tracking = "self", version = 1)]
 async fn caller_self(ctx: &Ctx, test: &str, value: &str) -> Result<String> {
     increment(&format!("{test}/caller_self"));
-    records(ctx, &test, "rust", &value).await
+    records(ctx, test, "rust", value).await
 }
 
 #[test]
@@ -482,7 +482,7 @@ fn session_body(ctx: &Ctx, test: &str, name: &str) -> Result<String> {
 
 #[cocoindex::function(memo)]
 async fn session(ctx: &Ctx, test: &str, name: &str) -> Result<String> {
-    session_body(ctx, &test, &name)
+    session_body(ctx, test, name)
 }
 
 #[test]
@@ -533,7 +533,7 @@ fn a_memoized_function_is_reused_while_its_reads_are_unchanged() {
 #[cocoindex::function(memo, logic_tracking = "self", version = 1)]
 async fn outer_self(ctx: &Ctx, test: &str, name: &str) -> Result<String> {
     increment(&format!("{test}/run.outer"));
-    Ok(format!("outer:{}", session(ctx, &test, &name).await?))
+    Ok(format!("outer:{}", session(ctx, test, name).await?))
 }
 
 #[test]
@@ -633,7 +633,7 @@ fn an_open_component_is_reused_while_its_reads_are_unchanged() {
 #[cocoindex::function(memo)]
 async fn conflicting(ctx: &Ctx, test: &str) -> Result<()> {
     increment(&format!("{test}/run"));
-    let kind = kind(&test);
+    let kind = kind(test);
     ctx.use_data_dep(&kind, &"k".to_string(), &(1, Fingerprint::from_bytes(b"x")))?;
     ctx.use_data_dep(&kind, &"k".to_string(), &(2, Fingerprint::from_bytes(b"x")))?;
     Ok(())

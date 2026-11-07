@@ -22,6 +22,8 @@ pub mod lancedb;
 pub mod neo4j;
 #[cfg(feature = "oci_object_storage")]
 pub mod oci_object_storage;
+#[cfg(any(feature = "kafka", feature = "iggy"))]
+mod partition_tail;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 #[cfg(feature = "qdrant")]

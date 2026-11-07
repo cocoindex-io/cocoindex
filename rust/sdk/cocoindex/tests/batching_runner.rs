@@ -488,3 +488,85 @@ async fn gpu_runner_holds_the_gpu_per_physical_batch_and_per_retried_half() {
         "the rejected pair is retried as halves: {batches:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// A user-defined runner: any `Runner` bounds a function's bodies its own way
+// ---------------------------------------------------------------------------
+
+/// Runs at most `permits` bodies at once, and tags each with a task-local the
+/// body reads, as `GPURunner` sets `current_gpu()`.
+struct Permits(tokio::sync::Semaphore);
+
+tokio::task_local! {
+    static UNDER_PERMITS: bool;
+}
+
+#[async_trait::async_trait]
+impl cocoindex::Runner for Permits {
+    async fn run(&self, body: cocoindex::RunnerBody<'_>) -> Result<cocoindex::RunnerOutput> {
+        let _permit = self
+            .0
+            .acquire()
+            .await
+            .map_err(|e| Error::engine(e.to_string()))?;
+        UNDER_PERMITS.scope(true, body).await
+    }
+}
+
+static PERMITS_IN_FLIGHT: InFlight = InFlight::new();
+
+#[cocoindex::function(memo, runner = Permits(tokio::sync::Semaphore::new(2)))]
+async fn two_at_once(_ctx: &Ctx, item: i64) -> Result<i64> {
+    PERMITS_IN_FLIGHT.enter();
+    assert!(UNDER_PERMITS.get(), "the body runs inside the runner");
+    sleep(Duration::from_millis(30)).await;
+    PERMITS_IN_FLIGHT.leave();
+    Ok(item + 1)
+}
+
+#[tokio::test]
+async fn user_runner_bounds_calls_of_a_plain_function() {
+    PERMITS_IN_FLIGHT.reset();
+    let (app, _dir) = temp_app("user_runner_plain").await;
+    let outputs = app
+        .update(|ctx| async move {
+            let calls = (0..5).map(|item| two_at_once(&ctx, item));
+            futures::future::join_all(calls)
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>>>()
+        })
+        .await
+        .unwrap();
+    assert_eq!(outputs, vec![1, 2, 3, 4, 5]);
+    assert_eq!(PERMITS_IN_FLIGHT.peak.load(Ordering::SeqCst), 2);
+}
+
+static PERMITS_BATCH_IN_FLIGHT: InFlight = InFlight::new();
+
+#[cocoindex::function(batching, max_batch_size = 2, runner = Permits(tokio::sync::Semaphore::new(1)))]
+async fn one_batch_at_once(_ctx: &Ctx, items: Vec<i64>) -> Result<Vec<i64>> {
+    PERMITS_BATCH_IN_FLIGHT.enter();
+    assert!(UNDER_PERMITS.get());
+    sleep(Duration::from_millis(30)).await;
+    PERMITS_BATCH_IN_FLIGHT.leave();
+    Ok(items.into_iter().map(|item| item * 2).collect())
+}
+
+#[tokio::test]
+async fn user_runner_bounds_physical_batches() {
+    PERMITS_BATCH_IN_FLIGHT.reset();
+    let (app, _dir) = temp_app("user_runner_batching").await;
+    let outputs = app
+        .update(|ctx| async move {
+            let calls = (0..6).map(|item| one_batch_at_once(&ctx, item));
+            futures::future::join_all(calls)
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>>>()
+        })
+        .await
+        .unwrap();
+    assert_eq!(outputs, vec![0, 2, 4, 6, 8, 10]);
+    assert_eq!(PERMITS_BATCH_IN_FLIGHT.peak.load(Ordering::SeqCst), 1);
+}

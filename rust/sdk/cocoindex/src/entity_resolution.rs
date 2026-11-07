@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -145,12 +146,48 @@ impl Default for ResolveOptions {
     }
 }
 
-#[derive(Clone)]
 struct EntityInfo {
     name: String,
-    normalized_vec: Vec<f32>,
     is_existing: bool,
 }
+
+/// The entities' unit vectors, one row per entity in `EntityInfo` order,
+/// stored contiguously (Python's FAISS flat index holds the same matrix).
+struct VectorMatrix {
+    dimension: usize,
+    data: Vec<f32>,
+}
+
+impl VectorMatrix {
+    fn row(&self, index: usize) -> &[f32] {
+        &self.data[index * self.dimension..(index + 1) * self.dimension]
+    }
+
+    /// Cosine similarity of two rows: their dot product, as both are unit
+    /// vectors.
+    fn similarity(&self, a: usize, b: usize) -> f32 {
+        dot(self.row(a), self.row(b))
+    }
+}
+
+/// Dot product in eight lanes, so the compiler vectorizes it.
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    const LANES: usize = 8;
+    let mut lanes = [0.0f32; LANES];
+    let (a_chunks, a_tail) = a.as_chunks::<LANES>();
+    let (b_chunks, b_tail) = b.as_chunks::<LANES>();
+    for (x, y) in a_chunks.iter().zip(b_chunks) {
+        for lane in 0..LANES {
+            lanes[lane] += x[lane] * y[lane];
+        }
+    }
+    let tail: f32 = a_tail.iter().zip(b_tail).map(|(x, y)| x * y).sum();
+    lanes.iter().sum::<f32>() + tail
+}
+
+/// Fewer rows than this and the all-pairs partition runs on the caller's
+/// task; from here on it is spread over blocking threads.
+const PARALLEL_PARTITION_MIN_ROWS: usize = 256;
 
 #[derive(Default)]
 struct ComponentEvents {
@@ -228,6 +265,10 @@ where
     .await?;
     let dimension = embeddings.first().map_or(0, Vec::len);
     let mut infos = Vec::with_capacity(entity_list.len());
+    let mut matrix = VectorMatrix {
+        dimension,
+        data: Vec::with_capacity(entity_list.len() * dimension),
+    };
     for (name, vec) in entity_list.iter().zip(embeddings) {
         if vec.len() != dimension {
             return Err(Error::engine(format!(
@@ -235,23 +276,27 @@ where
                 vec.len()
             )));
         }
+        push_normalized(&mut matrix.data, vec)?;
         infos.push(EntityInfo {
             name: name.clone(),
-            normalized_vec: normalize(vec)?,
             is_existing: is_existing_canonical.is_some_and(|f| f(name)),
         });
     }
+    let matrix = Arc::new(matrix);
 
-    let components = partition_components(&infos, options.max_distance);
-    let entity_map: HashMap<String, EntityInfo> = infos
+    let components = partition_components(&matrix, options.max_distance).await?;
+    let entity_map: HashMap<&str, usize> = infos
         .iter()
-        .map(|info| (info.name.clone(), info.clone()))
+        .enumerate()
+        .map(|(index, info)| (info.name.as_str(), index))
         .collect();
 
     // Components are disjoint and never reference each other's entities, so
     // resolve them concurrently (cf. Python's `asyncio.gather`). Each component
     // owns its local dedup/candidate-index/events and borrows the shared,
-    // immutable `entity_map` and `resolve_pair`.
+    // immutable entities, vectors and `resolve_pair`.
+    let infos = &infos;
+    let matrix = &*matrix;
     let entity_map_ref = &entity_map;
     // Each component's events live outside its future, so the events a
     // component produced before a failure survive the cancellation of its
@@ -260,33 +305,26 @@ where
         .iter()
         .map(|_| ComponentEvents::default())
         .collect();
-    let component_futures =
-        components
-            .into_iter()
-            .zip(component_events.iter_mut())
-            .map(|(component, events)| {
-                let component_infos: Vec<EntityInfo> = component
-                    .into_iter()
-                    .map(|idx| infos[idx].clone())
-                    .collect();
-                async move {
-                    let mut component_dedup = BTreeMap::new();
-                    let mut candidate_index =
-                        CandidateIndex::new(options.max_distance, options.top_n);
-                    resolve_component(
-                        ctx,
-                        &component_infos,
-                        entity_map_ref,
-                        &mut component_dedup,
-                        &mut candidate_index,
-                        options.existing_policy,
-                        resolve_pair,
-                        events,
-                    )
-                    .await?;
-                    Ok::<_, Error>(component_dedup)
-                }
-            });
+    let component_futures = components.into_iter().zip(component_events.iter_mut()).map(
+        |(component, events)| async move {
+            let mut component_dedup = BTreeMap::new();
+            let mut candidate_index =
+                CandidateIndex::new(matrix, options.max_distance, options.top_n);
+            resolve_component(
+                ctx,
+                infos,
+                &component,
+                entity_map_ref,
+                &mut component_dedup,
+                &mut candidate_index,
+                options.existing_policy,
+                resolve_pair,
+                events,
+            )
+            .await?;
+            Ok::<_, Error>(component_dedup)
+        },
+    );
     // The first failure drops (cancels) the remaining components.
     let results = futures::future::try_join_all(component_futures).await;
 
@@ -303,25 +341,30 @@ where
     Ok(ResolvedEntities { dedup })
 }
 
+/// Resolve the entities at `members` (indexes into `infos`, ascending).
 #[allow(clippy::too_many_arguments)]
 async fn resolve_component<R: PairResolver + Sync>(
     ctx: &Ctx,
     infos: &[EntityInfo],
-    entity_map: &HashMap<String, EntityInfo>,
+    members: &[usize],
+    entity_map: &HashMap<&str, usize>,
     dedup: &mut BTreeMap<String, Option<String>>,
-    candidate_index: &mut CandidateIndex,
+    candidate_index: &mut CandidateIndex<'_>,
     existing_policy: ExistingCanonicalPolicy,
     resolve_pair: &R,
     events: &mut ComponentEvents,
 ) -> Result<()> {
-    let (pass_1, pass_2): (Vec<_>, Vec<_>) = match existing_policy {
-        ExistingCanonicalPolicy::Pinned => infos.iter().partition(|info| info.is_existing),
-        ExistingCanonicalPolicy::Preferred => (Vec::new(), infos.iter().collect()),
+    let (pass_1, pass_2): (Vec<usize>, Vec<usize>) = match existing_policy {
+        ExistingCanonicalPolicy::Pinned => {
+            members.iter().partition(|index| infos[**index].is_existing)
+        }
+        ExistingCanonicalPolicy::Preferred => (Vec::new(), members.to_vec()),
     };
 
-    for info in pass_1 {
+    for index in pass_1 {
+        let info = &infos[index];
         dedup.insert(info.name.clone(), None);
-        candidate_index.add(info);
+        candidate_index.add(index);
         events.pass_1.push(ResolutionEvent {
             entity: info.name.clone(),
             canonical: info.name.clone(),
@@ -332,11 +375,12 @@ async fn resolve_component<R: PairResolver + Sync>(
         });
     }
 
-    for info in pass_2 {
-        let candidates = candidate_index.search(info, dedup);
+    for index in pass_2 {
+        let info = &infos[index];
+        let candidates = candidate_index.search(infos, index, dedup);
         if candidates.is_empty() {
             dedup.insert(info.name.clone(), None);
-            candidate_index.add(info);
+            candidate_index.add(index);
             events.pass_2.push(ResolutionEvent {
                 entity: info.name.clone(),
                 canonical: info.name.clone(),
@@ -353,8 +397,8 @@ async fn resolve_component<R: PairResolver + Sync>(
             .await?;
         validate_pair_decision(&info.name, &candidates, &decision)?;
         let (canonical, repointed) =
-            apply_pair_decision(info, &decision, entity_map, dedup, existing_policy)?;
-        candidate_index.add(info);
+            apply_pair_decision(infos, index, &decision, entity_map, dedup, existing_policy)?;
+        candidate_index.add(index);
         events.pass_2.push(ResolutionEvent {
             entity: info.name.clone(),
             canonical,
@@ -368,18 +412,21 @@ async fn resolve_component<R: PairResolver + Sync>(
 }
 
 fn apply_pair_decision(
-    info: &EntityInfo,
+    infos: &[EntityInfo],
+    index: usize,
     decision: &PairDecision,
-    entity_map: &HashMap<String, EntityInfo>,
+    entity_map: &HashMap<&str, usize>,
     dedup: &mut BTreeMap<String, Option<String>>,
     existing_policy: ExistingCanonicalPolicy,
 ) -> Result<(String, Option<String>)> {
+    let info = &infos[index];
     let Some(matched) = &decision.matched else {
         dedup.insert(info.name.clone(), None);
         return Ok((info.name.clone(), None));
     };
     let matched_info = entity_map
-        .get(matched)
+        .get(matched.as_str())
+        .map(|matched_index| &infos[*matched_index])
         .ok_or_else(|| Error::engine(format!("unknown matched entity: {matched}")))?;
     if new_wins(info, matched_info, decision, existing_policy) {
         dedup.insert(info.name.clone(), None);
@@ -427,39 +474,51 @@ fn validate_pair_decision(
     Ok(())
 }
 
-#[derive(Default)]
-struct CandidateIndex {
-    indexed: Vec<EntityInfo>,
+/// The already-resolved entities of one component, searched by similarity
+/// for each new entity (Python's `_CandidateIndex` over a FAISS flat index).
+struct CandidateIndex<'a> {
+    matrix: &'a VectorMatrix,
+    /// Indexes of the entities added so far.
+    indexed: Vec<usize>,
     max_distance: f32,
     top_n: usize,
 }
 
-impl CandidateIndex {
-    fn new(max_distance: f32, top_n: usize) -> Self {
+impl<'a> CandidateIndex<'a> {
+    fn new(matrix: &'a VectorMatrix, max_distance: f32, top_n: usize) -> Self {
         Self {
+            matrix,
             indexed: Vec::new(),
             max_distance,
             top_n,
         }
     }
 
-    fn add(&mut self, info: &EntityInfo) {
-        self.indexed.push(info.clone());
+    fn add(&mut self, index: usize) {
+        self.indexed.push(index);
     }
 
-    fn search(&self, info: &EntityInfo, dedup: &BTreeMap<String, Option<String>>) -> Vec<String> {
+    /// The up to `top_n` canonical names of indexed entities within
+    /// `max_distance` of entity `index`, best first.
+    fn search(
+        &self,
+        infos: &[EntityInfo],
+        index: usize,
+        dedup: &BTreeMap<String, Option<String>>,
+    ) -> Vec<String> {
         if self.top_n == 0 {
             return Vec::new();
         }
         let threshold = 1.0 - self.max_distance;
+        let name = &infos[index].name;
         let mut scored: Vec<(f32, String)> = self
             .indexed
             .iter()
             .filter_map(|candidate| {
-                let score = cosine(&info.normalized_vec, &candidate.normalized_vec);
-                (score >= threshold).then(|| (score, chain_walk(dedup, &candidate.name)))
+                let score = self.matrix.similarity(index, *candidate);
+                (score >= threshold).then(|| (score, chain_walk(dedup, &infos[*candidate].name)))
             })
-            .filter(|(_, name)| name != &info.name)
+            .filter(|(_, candidate)| candidate != name)
             .collect();
         scored.sort_by(|(a_score, a_name), (b_score, b_name)| {
             b_score.total_cmp(a_score).then_with(|| a_name.cmp(b_name))
@@ -478,29 +537,88 @@ impl CandidateIndex {
     }
 }
 
-fn partition_components(infos: &[EntityInfo], max_distance: f32) -> Vec<Vec<usize>> {
-    let n = infos.len();
+/// Connected components of the graph with an edge between every pair of
+/// entities within `max_distance` (Python's `_partition_components`): a
+/// superset of any candidate pair the resolution loop can surface, so
+/// entities of different components never meet. Each component lists its
+/// members ascending; components are ordered by their first member.
+///
+/// Every pair is compared, so the work is spread over blocking threads, each
+/// taking every k-th row (rows get shorter as they go, so a stride balances
+/// them); the caller's task only joins the edges.
+async fn partition_components(
+    matrix: &Arc<VectorMatrix>,
+    max_distance: f32,
+) -> Result<Vec<Vec<usize>>> {
+    let n = matrix.data.len() / matrix.dimension.max(1);
     if n == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
+    let threshold = 1.0 - max_distance;
+    let num_workers = if n < PARALLEL_PARTITION_MIN_ROWS {
+        1
+    } else {
+        std::thread::available_parallelism().map_or(1, |p| p.get())
+    };
     let mut parent: Vec<usize> = (0..n).collect();
-    for i in 0..n {
-        for j in (i + 1)..n {
-            if cosine(&infos[i].normalized_vec, &infos[j].normalized_vec) >= 1.0 - max_distance {
-                let ri = find(&mut parent, i);
-                let rj = find(&mut parent, j);
-                if ri != rj {
-                    parent[ri] = rj;
-                }
+    if num_workers == 1 {
+        for (i, j) in similar_pairs(matrix, 0, 1, threshold) {
+            union(&mut parent, i, j);
+        }
+    } else {
+        let workers = (0..num_workers).map(|worker| {
+            let matrix = matrix.clone();
+            tokio::task::spawn_blocking(move || {
+                similar_pairs(&matrix, worker, num_workers, threshold)
+            })
+        });
+        for edges in futures::future::join_all(workers).await {
+            let edges =
+                edges.map_err(|e| Error::engine(format!("entity partition task panicked: {e}")))?;
+            for (i, j) in edges {
+                union(&mut parent, i, j);
             }
         }
     }
-    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    // Keyed by the component's first (smallest) member, so the order does
+    // not depend on which member became the root.
+    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for i in 0..n {
         let root = find(&mut parent, i);
-        groups.entry(infos[root].name.clone()).or_default().push(i);
+        groups.entry(root).or_default().push(i);
     }
-    groups.into_values().collect()
+    let mut components: Vec<Vec<usize>> = groups.into_values().collect();
+    components.sort_by_key(|members| members[0]);
+    Ok(components)
+}
+
+/// The pairs `(i, j)`, `i < j`, with similarity at or above `threshold`, for
+/// the rows `i ≡ worker (mod stride)`.
+fn similar_pairs(
+    matrix: &VectorMatrix,
+    worker: usize,
+    stride: usize,
+    threshold: f32,
+) -> Vec<(usize, usize)> {
+    let n = matrix.data.len() / matrix.dimension.max(1);
+    let mut pairs = Vec::new();
+    for i in (worker..n).step_by(stride) {
+        let row = matrix.row(i);
+        for j in (i + 1)..n {
+            if dot(row, matrix.row(j)) >= threshold {
+                pairs.push((i, j));
+            }
+        }
+    }
+    pairs
+}
+
+fn union(parent: &mut [usize], i: usize, j: usize) {
+    let ri = find(parent, i);
+    let rj = find(parent, j);
+    if ri != rj {
+        parent[ri] = rj;
+    }
 }
 
 fn find(parent: &mut [usize], mut x: usize) -> usize {
@@ -511,24 +629,19 @@ fn find(parent: &mut [usize], mut x: usize) -> usize {
     x
 }
 
-/// Scale to unit length. A zero vector stays zero (it then matches nothing),
-/// as FAISS `normalize_L2` leaves it in the Python SDK.
-fn normalize(mut vec: Vec<f32>) -> Result<Vec<f32>> {
+/// Append `vec` scaled to unit length. A zero vector stays zero (it then
+/// matches nothing), as FAISS `normalize_L2` leaves it in the Python SDK.
+fn push_normalized(data: &mut Vec<f32>, vec: Vec<f32>) -> Result<()> {
     let norm = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
     if !norm.is_finite() {
         return Err(Error::engine("entity embedding has a non-finite norm"));
     }
     if norm == 0.0 {
-        return Ok(vec);
+        data.extend(vec);
+    } else {
+        data.extend(vec.iter().map(|value| value / norm));
     }
-    for value in &mut vec {
-        *value /= norm;
-    }
-    Ok(vec)
-}
-
-fn cosine(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
+    Ok(())
 }
 
 fn chain_walk(dedup: &BTreeMap<String, Option<String>>, name: &str) -> String {

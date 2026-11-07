@@ -175,7 +175,7 @@ async fn qdrant_target_supports_uuid_point_ids() -> Result<()> {
     let uuid_a = "11111111-1111-1111-1111-111111111111";
     let uuid_b = "22222222-2222-2222-2222-222222222222";
 
-    let run = |ids: Vec<&'static str>| {
+    let run = |ids: Vec<String>| {
         let conn = conn.clone();
         let collection = collection.clone();
         let coco_db = coco_db.clone();
@@ -207,7 +207,7 @@ async fn qdrant_target_supports_uuid_point_ids() -> Result<()> {
                             vec![0.0, 1.0, 0.0]
                         };
                         // String/UUID point id (via From<&str>).
-                        target.declare_point(&ctx, *id, v, payload("f.md", id))?;
+                        target.declare_point(&ctx, id.as_str(), v, payload("f.md", id))?;
                     }
                     Ok(())
                 }
@@ -229,7 +229,7 @@ async fn qdrant_target_supports_uuid_point_ids() -> Result<()> {
     };
 
     // Upsert two UUID-keyed points.
-    run(vec![uuid_a, uuid_b]).await;
+    run(vec![uuid_a.to_string(), uuid_b.to_string()]).await;
     assert_eq!(
         count(conn.clone(), collection.clone()).await,
         2,
@@ -241,12 +241,20 @@ async fn qdrant_target_supports_uuid_point_ids() -> Result<()> {
         "UUID-keyed point is searchable"
     );
 
-    // Drop one UUID point → orphan reconciled away by UUID id.
-    run(vec![uuid_a]).await;
+    // Drop one UUID point → orphan reconciled away by UUID id. The kept point
+    // is declared in another text form of its UUID: that names the same point
+    // and the same target state, so it is updated in place, not duplicated.
+    let upper_a = uuid_a.to_uppercase();
+    run(vec![upper_a.clone()]).await;
     assert_eq!(
         count(conn.clone(), collection.clone()).await,
         1,
-        "orphaned UUID point deleted"
+        "orphaned UUID point deleted; the upper-case form updates the same point"
+    );
+    let hits = qdrant::vector_search(&conn, &collection, vec![1.0, 0.0, 0.0], 1).await?;
+    assert_eq!(
+        hits[0].payload["text"], upper_a,
+        "the point declared under the upper-case form carries its new payload"
     );
 
     let _ = conn.client().delete_collection(&collection).await;

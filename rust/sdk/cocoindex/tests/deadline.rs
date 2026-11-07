@@ -385,12 +385,12 @@ async fn rust_sdk_deadline_conformance_subset() {
 }
 
 #[tokio::test]
-async fn mount_each_drains_started_siblings_on_deadline_error() {
+async fn use_mount_each_drains_started_siblings_on_deadline_error() {
     // One child failing with DeadlineExceeded must not drop its started
     // siblings: every started item runs to completion (including its
     // commit), then the first error is returned. Child B only begins its
     // work after A has already failed, so B's committed row below is only
-    // possible if mount_each drained instead of cancelling.
+    // possible if use_mount_each drained instead of cancelling.
     let _clock = TestClockGuard::new();
     let (app, _dir) = temp_app("mount_each_drain").await;
     let applied: Arc<Mutex<Vec<WriteAction>>> = Arc::new(Mutex::new(Vec::new()));
@@ -403,7 +403,7 @@ async fn mount_each_drains_started_siblings_on_deadline_error() {
             let gate = gate.clone();
             async move {
                 let out = ctx
-                    .mount_each(
+                    .use_mount_each(
                         ["a", "b"],
                         |item| item.to_string(),
                         move |child, item| {
@@ -429,7 +429,7 @@ async fn mount_each_drains_started_siblings_on_deadline_error() {
                     .await;
                 assert!(
                     matches!(out, Err(ref e) if e.is_deadline_exceeded()),
-                    "mount_each must surface A's deadline error"
+                    "use_mount_each must surface A's deadline error"
                 );
                 Ok(())
             }
@@ -444,6 +444,6 @@ async fn mount_each_drains_started_siblings_on_deadline_error() {
             key: "\"row-1\"".to_string(),
             value: "b-done".to_string(),
         }],
-        "B's started work must drain to commit before mount_each returns"
+        "B's started work must drain to commit before use_mount_each returns"
     );
 }

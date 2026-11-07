@@ -8,16 +8,19 @@
 //!   cargo run -- query "your query"    # pgvector similarity search
 //!
 //! Set `AZURE_STORAGE_ACCOUNT` and `AZURE_STORAGE_CONTAINER` (and optional
-//! `AZURE_BLOB_PREFIX`), plus one credential: `AZURE_STORAGE_KEY` (account
+//! `AZURE_BLOB_PREFIX`), plus a credential: `AZURE_STORAGE_KEY` (account
 //! key), `AZURE_STORAGE_SAS_TOKEN` or `AZURE_STORAGE_ACCESS_TOKEN` (a Microsoft
-//! Entra ID token). `AZURE_STORAGE_ACCOUNT_URL` overrides the account URL, for
-//! the Azurite emulator.
+//! Entra ID token); with none of them, the client gets an Entra ID token as
+//! `DefaultAzureCredential` does (`AZURE_TENANT_ID` / `AZURE_CLIENT_ID` /
+//! `AZURE_CLIENT_SECRET`, a managed identity, or the `az login` account).
+//! `AZURE_STORAGE_ACCOUNT_URL` overrides the account URL, for the Azurite
+//! emulator.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use cocoindex::connectors::azure_blob::{
-    self, AzureBlobFile, ContainerClient, Credential, ListOptions,
+    self, AzureBlobFile, ContainerClient, Credential, ListOptions, TokenCredential,
 };
 use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
@@ -70,7 +73,7 @@ async fn process_file(ctx: &Ctx, file: AzureBlobFile) -> Result<Vec<DocEmbedding
     let embeddings = ctx.get_key(&EMBEDDER)?.embed_batch(texts.clone()).await?;
 
     let filename = file.key();
-    let mut id_gen = IdGenerator::new();
+    let id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(texts.len());
     for (chunk_text, embedding) in texts.into_iter().zip(embeddings) {
         let id = id_gen.next_id(ctx, &chunk_text).await?;
@@ -121,7 +124,7 @@ async fn app_main(ctx: Ctx, prefix: String) -> Result<()> {
         client.container_name()
     );
 
-    let rows_by_file = mount_each!(
+    let rows_by_file = use_mount_each!(
         files.into_iter().map(|f| (f.key(), f)),
         |file| process_file(ctx, file)
     )
@@ -208,9 +211,7 @@ fn container_client() -> Result<ContainerClient> {
     } else if let Some(token) = env_var("AZURE_STORAGE_ACCESS_TOKEN") {
         Credential::BearerToken(token)
     } else {
-        return Err(Error::engine(
-            "set AZURE_STORAGE_KEY, AZURE_STORAGE_SAS_TOKEN or AZURE_STORAGE_ACCESS_TOKEN",
-        ));
+        Credential::TokenCredential(TokenCredential::Default)
     };
     ContainerClient::new(&account_url, container, credential)
 }

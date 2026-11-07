@@ -6,11 +6,17 @@ description: >
   environment variable, and understand how the limit bounds a hierarchy of
   components without deadlocking it.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 CocoIndex executes each [processing component](../programming_guide/processing_component) as a unit of concurrent work. By default, up to **1024** processing components can run at the same time per app. When components perform resource-intensive work (e.g., calling external APIs, running ML models), or each holds a sizeable piece of data (e.g., a file's contents) while it runs, you may want a tighter limit.
 
 ## Setting the limit
 
 Set `max_inflight_components` in `AppConfig`:
+
+{/* Rust: rust/sdk/cocoindex/src/app.rs (AppBuilder::max_inflight_components, EnvironmentBuilder::max_inflight_components) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 app = coco.App(
@@ -19,6 +25,22 @@ app = coco.App(
     sourcedir=pathlib.Path("./data"),
 )
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let app = App::builder("MyPipeline")
+    .db_path("./coco_state")
+    .max_inflight_components(4)
+    .build()
+    .await?;
+```
+
+`EnvironmentBuilder` has the same `max_inflight_components` setter; the limit is per app, and every app of the environment gets it.
+
+</Fragment>
+</LangTabs>
 
 With `max_inflight_components=4`, at most 4 processing components execute at the same time. When a component finishes, the next pending one starts. A `mount()`, `use_mount()` or `mount_each()` call waits while no slot is free, so a parent cannot run ahead of its children without bound: a loop that mounts a child per source item advances only as fast as children finish.
 
@@ -30,7 +52,7 @@ You can also set the limit via the `COCOINDEX_MAX_INFLIGHT_COMPONENTS` environme
 export COCOINDEX_MAX_INFLIGHT_COMPONENTS=4
 ```
 
-**Precedence:** `AppConfig` value > environment variable > default (1024).
+**Precedence:** `AppConfig` value (in Rust, the builder's `max_inflight_components`) > environment variable > default (1024). Rust reads the variable when an app is created.
 
 ## Nested mounts: a parent lends its slot
 
@@ -61,3 +83,139 @@ A few related rules:
 * A live component mounted by another live component's update counts as part of that live component.
 
 Fairness only decides which waiting component gets a slot that frees up. It never takes a slot from a running component, and the lending above works the same way.
+
+## Other concurrency controls in the Rust SDK
+
+The component limit bounds how many components run at once. The Rust SDK has three more controls, each on a smaller unit of work.
+
+### Concurrent items with `ctx.map`
+
+`ctx.map(items, f)` runs `f` for every item at once, inside the current component, and collects the results in input order. Every started item runs to completion; then the first error in input order is returned. Use `ctx.mount_each` instead when each item should be its own component.
+
+{/* Rust: rust/sdk/cocoindex/src/ctx.rs (Ctx::map doc comment) */}
+<LangTabs>
+<Fragment slot="python">
+
+```python
+results = await coco.map(process_task, tasks)
+```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let results = ctx.map(tasks, |task| async move {
+    Ok(format!("processed {task}"))
+}).await?;
+```
+
+</Fragment>
+</LangTabs>
+
+### Batch size of a batched function
+
+A `#[cocoindex::function(batching, max_batch_size = N)]` body receives up to `N` items at once; concurrent single-item calls are grouped into physical batches of at most that size. See [Batching](../programming_guide/function#batching) for the attribute, and `Error::retry_with_smaller_batch` for a batch the backend rejects.
+
+{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (function macro docs), rust/sdk/cocoindex/tests/batching_runner.rs */}
+<LangTabs>
+<Fragment slot="python">
+
+```python
+@coco.fn.as_async(memo=True, batching=True, max_batch_size=32)
+async def embed(texts: list[str]) -> list[list[float]]:
+    ...
+```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(memo, batching, max_batch_size = 32)]
+async fn embed(ctx: &Ctx, texts: Vec<String>) -> Result<Vec<Vec<f32>>> { /* ... */ }
+
+// Called with one item; the engine groups concurrent calls into batches.
+let embedding: Vec<f32> = embed(ctx, text).await?;
+```
+
+</Fragment>
+</LangTabs>
+
+### GPU runners
+
+`runner = cocoindex::GPU` makes each call hold one whole GPU from the process-wide pool while its body runs, so bodies on one GPU run one at a time. `runner = cocoindex::GPURunner::fraction(0.5)` holds half a GPU, so two calls share one. With `batching`, each physical batch holds the share instead. Inside the body, `cocoindex::current_gpu()`, `current_gpus()` and `current_gpu_fraction()` report the assignment.
+
+{/* Rust: rust/sdk/cocoindex/tests/batching_runner.rs (whole_gpu, half_gpu, gpu_batch), rust/sdk/cocoindex/src/runner.rs */}
+<LangTabs>
+<Fragment slot="python">
+
+```python
+@coco.fn.as_async(memo=True, batching=True, max_batch_size=16, runner=coco.GPU)
+async def embed(texts: list[str]) -> list[list[float]]:
+    ...
+```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::num::NonZeroUsize;
+use cocoindex::{GPU, GPURunner, configure_gpu_pool};
+
+#[cocoindex::function(runner = GPU)]
+async fn whole_gpu(_ctx: &Ctx, item: i64) -> Result<i64> {
+    let device = cocoindex::current_gpu(); // Some(index) inside the body
+    // ...
+    Ok(item + 1)
+}
+
+#[cocoindex::function(memo, runner = GPURunner::fraction(0.5))]
+async fn half_gpu(_ctx: &Ctx, item: i64) -> Result<i64> {
+    assert_eq!(cocoindex::current_gpu_fraction(), Some(0.5));
+    Ok(item * 10)
+}
+
+#[cocoindex::function(batching, max_batch_size = 2, runner = GPU)]
+async fn gpu_batch(_ctx: &Ctx, items: Vec<i64>) -> Result<Vec<i64>> {
+    Ok(items.into_iter().map(|item| item * 3).collect())
+}
+
+// Before the first GPU function runs: the pool has two GPUs.
+configure_gpu_pool(NonZeroUsize::new(2).unwrap());
+```
+
+The pool size is detected from `COCOINDEX_NUM_GPUS`, then `CUDA_VISIBLE_DEVICES`, then `nvidia-smi`, and falls back to one. `configure_gpu_pool(n)` overrides it; call it before any function with a runner runs.
+
+</Fragment>
+</LangTabs>
+
+Python's GPU subprocess mode (`COCOINDEX_RUN_GPU_IN_SUBPROCESS`) and its dedicated GPU thread exist for the GIL and CUDA's fork rules. A Rust body runs on the Tokio runtime and has neither problem, so the Rust SDK has no equivalent.
+
+### Rate limiting outbound calls
+
+`RateLimiter` is a token bucket for calls to an external service, for example a source or target connector that must stay under an API's rate limit. `acquire(n).await` waits until `n` tokens are available; concurrent callers are served in FIFO order. Clones share one bucket.
+
+{/* Rust: rust/sdk/cocoindex/src/resources/rate_limit.rs */}
+<LangTabs>
+<Fragment slot="python">
+
+```python
+from cocoindex.resources.rate_limit import RateLimiter
+
+limiter = RateLimiter(max_rows_per_second=10.0)
+await limiter.acquire(1)
+```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::time::Duration;
+use cocoindex::RateLimiter;
+
+// 10 calls per second; a `burst_window` of one second matches the Python default.
+let limiter = RateLimiter::new(10.0, Duration::from_secs(1))?;
+limiter.acquire(1).await?;
+```
+
+</Fragment>
+</LangTabs>

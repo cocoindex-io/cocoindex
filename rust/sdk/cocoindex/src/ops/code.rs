@@ -27,19 +27,29 @@
 //! let pat = CodePattern::new(r"evaluate_model(\(A*\))", "python", 3).unwrap();
 //! assert!(pat.might_match("evaluate_model(x, y)"));
 //! assert!(!pat.might_match("x = 1"));
+//!
+//! // Render a match with the head lines of its enclosing scopes as context.
+//! use cocoindex::ops::code::render_match;
+//! let ast = CodeAst::new("class A:\n    def f(self):\n        return 1\n", "python").unwrap();
+//! let m = ast.matches(r"return \X").unwrap();
+//! let view = render_match(&ast, &m[0]);
+//! assert!(view.text.starts_with("class A:"));
+//! assert!(view.text.contains("return 1"));
 //! # }
 //! ```
 
 use std::collections::HashMap;
 
 use cocoindex_code_ast::tree_sitter::Tree;
-use cocoindex_code_ast::{LineIndex, OutputPosition, ParseOutcome};
+use cocoindex_code_ast::view::{self, render_ranges};
+use cocoindex_code_ast::{LineIndex, OutputPosition, ParseOutcome, TextRange};
 use cocoindex_code_match::lang;
 use cocoindex_code_match::{Pattern, Prefilter, index_terms_in_tree};
 use cocoindex_ops_text::split::{RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig};
 
 use crate::error::{Error, Result};
 use crate::resources::chunk::{Chunk, TextPosition};
+use crate::resources::view::{SegmentKind, SourceView, ViewSegment};
 
 pub use cocoindex_code_ast::CodeSource;
 
@@ -257,6 +267,13 @@ impl CodeAst {
         self.source.text()
     }
 
+    /// The underlying [`CodeSource`] handle (text + cached parse), for
+    /// consumers that take one, such as
+    /// [`RecursiveSplitter::split_source`](crate::ops::text::RecursiveSplitter::split_source).
+    pub fn code_source(&self) -> &CodeSource<'static> {
+        &self.source
+    }
+
     /// Find every match of a pattern string, compiling it on the spot. Reuses the
     /// AST parse. Prefer [`matches_with`](CodeAst::matches_with) when matching the
     /// same pattern across many ASTs.
@@ -381,4 +398,52 @@ pub fn match_code(pattern: &str, source: &str, language: &str) -> Result<Vec<Cod
 pub fn index_terms(source: &str, language: &str, min_len: usize) -> Result<Vec<String>> {
     let ast = CodeAst::parse_owned(source.to_string(), language.to_string())?;
     Ok(ast.index_terms(min_len))
+}
+
+/// Render a match as a [`SourceView`]: the head lines of its enclosing scopes
+/// as context frames (outermost first), the matched range(s) verbatim, and
+/// elision cues where material is omitted. Mirrors Python's `render_match`.
+///
+/// The view's [`start`](SourceView::start)/[`end`](SourceView::end) (frames
+/// excluded) equal the match's span. Matched ranges are rendered exactly, with
+/// no widening to line starts.
+///
+/// `ast` is the parse the match came from (e.g. `file_match.ast`); its cached
+/// tree is reused.
+pub fn render_match(ast: &CodeAst, m: &CodeMatch) -> SourceView {
+    let ranges: Vec<TextRange> = m
+        .chunks
+        .iter()
+        .map(|c| TextRange::new(c.start.byte_offset, c.end.byte_offset))
+        .collect();
+    convert_view(render_ranges(&ast.source, &ranges))
+}
+
+fn convert_view(view: view::SourceView) -> SourceView {
+    let mut char_cursor = 0;
+    let segments = view
+        .segments
+        .into_iter()
+        .map(|seg| {
+            let rendered_start = char_cursor;
+            char_cursor += view.text[seg.text_range.start..seg.text_range.end]
+                .chars()
+                .count();
+            ViewSegment {
+                start: pos_from(seg.range.start, seg.start),
+                end: pos_from(seg.range.end, seg.end),
+                kind: match seg.kind {
+                    view::SegmentKind::Frame => SegmentKind::Frame,
+                    view::SegmentKind::Content => SegmentKind::Content,
+                },
+                summary: seg.summary,
+                rendered_start,
+                rendered_end: char_cursor,
+            }
+        })
+        .collect();
+    SourceView {
+        text: view.text,
+        segments,
+    }
 }

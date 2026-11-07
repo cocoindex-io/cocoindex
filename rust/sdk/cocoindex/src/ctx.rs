@@ -2,7 +2,6 @@
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
-use std::fmt::Display;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -18,6 +17,8 @@ use cocoindex_core::engine::live_component::mount_live_prepare;
 use cocoindex_core::engine::target_state::TargetStateProvider;
 use cocoindex_core::state::stable_path::{StableKey, StablePath, StablePathRef};
 use cocoindex_utils::fingerprint::Fingerprint;
+use futures::stream::{Stream, StreamExt};
+use rustc_hash::FxHashSet;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -28,8 +29,10 @@ use crate::live_component::{
     ExceptionContext, ExceptionHandler, ExceptionSource, LiveComponent, LiveMapView,
     MountEachLiveComponent, MountKind, build_chained_on_error, new_operator, start_process_live,
 };
+use crate::logic::FnLogicEntry;
 use crate::memo::{MemoInput, MemoStateDecision, MemoStateValue};
 use crate::profile::{BoxedHandler, BoxedProcessor, RustProfile, Value};
+use crate::target_state::IntoStableKey;
 use crate::user_state::{IntoStateKey, StateHandle};
 
 type ContextFingerprinter<T> = Arc<dyn Fn(&str, &T) -> Result<Fingerprint> + Send + Sync>;
@@ -423,32 +426,32 @@ impl Ctx {
     fn child_path(
         &self,
         comp_ctx: &ComponentProcessorContext<RustProfile>,
-        key: &str,
+        key: StableKey,
     ) -> StablePath {
-        self.mount_base_path(comp_ctx)
-            .concat_part(StableKey::Str(Arc::from(key)))
+        self.mount_base_path(comp_ctx).concat_part(key)
     }
 
     /// Return a clone of this `Ctx` whose child mounts go under `key`, below
-    /// the current path: `ctx.with_subpath(&"process")` followed by
+    /// the current path: `ctx.with_subpath("process")` followed by
     /// `use_mount!("a.md", ...)` mounts at `process/a.md`. The Rust analogue of
     /// a `with coco.component_subpath("process"):` block in Python. Chain calls
     /// for a multi-part subpath.
+    ///
+    /// `key` is any [`IntoStableKey`]: a string, an integer, a UUID, bytes, a
+    /// [`StableKey`] (for a symbol or an array), or a reference to one.
     ///
     /// The scoped context still belongs to the same component: target states
     /// declared through it are the component's own, and
     /// [`Ctx::use_state`] is an error inside a subpath, as in Python, because
     /// the state would be owned by the component but keyed as if by a child.
     #[must_use = "returns a new scoped Ctx; the original is unchanged"]
-    pub fn with_subpath<K: Display>(&self, key: &K) -> Self {
+    pub fn with_subpath<K: IntoStableKey>(&self, key: K) -> Self {
         let mut scoped = self.clone();
         scoped.subpath = self
             .subpath
             .iter()
             .cloned()
-            .chain(std::iter::once(StableKey::Str(Arc::from(
-                key.to_string().as_str(),
-            ))))
+            .chain(std::iter::once(key.into_stable_key()))
             .collect();
         scoped
     }
@@ -481,10 +484,7 @@ impl Ctx {
     #[doc(hidden)]
     pub async fn __coco_tracked_fn<T, F, Fut>(
         &self,
-        module_path: &'static str,
-        fn_name: &'static str,
-        code_hash: u64,
-        deps_fp: Option<Fingerprint>,
+        logic: &'static FnLogicEntry,
         propagate_children_fn_logic: bool,
         f: F,
     ) -> Result<T>
@@ -492,7 +492,7 @@ impl Ctx {
         F: FnOnce(Ctx) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        let fp = fn_logic_fingerprint(module_path, fn_name, code_hash, deps_fp)?;
+        let fp = logic.fingerprint()?;
         // `propagate_children_fn_logic` is the `logic_tracking` mode lowered by
         // the `#[function]` macro: `true` for `"full"` (default — a transitively
         // called function's logic change also invalidates this one), `false` for
@@ -688,8 +688,8 @@ impl Ctx {
     }
 }
 
-/// The logic fingerprint of one `#[cocoindex::function]`. Must match the one
-/// registered at startup (see `crate::logic`). `deps_fp` is the fingerprint of
+/// The logic fingerprint of one `#[cocoindex::function]`, computed once per
+/// function by [`FnLogicEntry::fingerprint`]. `deps_fp` is the fingerprint of
 /// the function's `deps = ...` value, folded in so a change to it moves the
 /// function's logic exactly as a body edit does.
 pub(crate) fn fn_logic_fingerprint(
@@ -1041,9 +1041,9 @@ impl Ctx {
     /// In catch-up mode this runs `f` once and returns. In live mode it runs
     /// once, marks the component ready, then repeats after `interval` until the
     /// app/live component is cancelled.
-    pub async fn auto_refresh<K, F, Fut>(&self, key: &K, interval: Duration, f: F) -> Result<()>
+    pub async fn auto_refresh<K, F, Fut>(&self, key: K, interval: Duration, f: F) -> Result<()>
     where
-        K: Display,
+        K: IntoStableKey,
         F: Fn(Ctx) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
@@ -1051,8 +1051,9 @@ impl Ctx {
             return f(self.clone()).await;
         };
 
-        let key_str = key.to_string();
-        let child_path = self.child_path(comp_ctx, &key_str);
+        let key = key.into_stable_key();
+        let key_str = key_label(&key);
+        let child_path = self.child_path(comp_ctx, key);
         let stable_path = child_path.to_string();
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path, comp_ctx.live())
@@ -1122,12 +1123,12 @@ impl Ctx {
     ///
     /// A failure in the component's processing is logged, not returned; use
     /// [`Ctx::mount_live_with_handler`] to observe or propagate it.
-    pub async fn mount_live<K, C>(&self, key: &K, component: C) -> Result<()>
+    pub async fn mount_live<K, C>(&self, key: K, component: C) -> Result<()>
     where
-        K: Display,
+        K: IntoStableKey,
         C: LiveComponent,
     {
-        self.mount_live_impl(key.to_string(), Arc::new(component), None)
+        self.mount_live_impl(key.into_stable_key(), Arc::new(component), None)
             .await
     }
 
@@ -1136,17 +1137,17 @@ impl Ctx {
     /// `Ok(())` to swallow a failure or `Err(_)` to propagate it.
     pub async fn mount_live_with_handler<K, C, H>(
         &self,
-        key: &K,
+        key: K,
         component: C,
         handler: H,
     ) -> Result<()>
     where
-        K: Display,
+        K: IntoStableKey,
         C: LiveComponent,
         H: Fn(&Error, &ExceptionContext) -> Result<()> + Send + Sync + 'static,
     {
         let handler: ExceptionHandler = Arc::new(handler);
-        self.mount_live_impl(key.to_string(), Arc::new(component), Some(handler))
+        self.mount_live_impl(key.into_stable_key(), Arc::new(component), Some(handler))
             .await
     }
 
@@ -1156,13 +1157,13 @@ impl Ctx {
     /// individually. The analogue of [`Ctx::mount_each`] for live sources.
     pub async fn mount_each_live<Key, K, V, Feed, F, Fut>(
         &self,
-        key: &Key,
+        key: Key,
         feed: Feed,
         process_fn: F,
     ) -> Result<()>
     where
-        Key: Display,
-        K: Display + Send + Sync + 'static,
+        Key: IntoStableKey,
+        K: std::fmt::Display + Send + Sync + 'static,
         V: Send + Sync + 'static,
         Feed: LiveMapView<K, V>,
         F: Fn(Ctx, V) -> Fut + Send + Sync + 'static,
@@ -1191,24 +1192,25 @@ impl Ctx {
     ) -> Result<()>
     where
         I: IntoIterator,
-        K: Display,
+        K: IntoStableKey,
         F: Fn(I::Item) -> C,
         C: LiveComponent,
     {
-        let mut keys = rustc_hash::FxHashSet::default();
+        let mut keys = FxHashSet::default();
         let mut components = Vec::new();
         for item in items {
-            let key = key_fn(&item).to_string();
+            let key = key_fn(&item).into_stable_key();
             if !keys.insert(key.clone()) {
                 return Err(Error::engine(format!(
-                    "duplicate key `{key}` in mount_each_live_component batch"
+                    "duplicate key `{}` in mount_each_live_component batch",
+                    key_label(&key)
                 )));
             }
             components.push((key, make_component(item)));
         }
         let futs: Vec<_> = components
             .into_iter()
-            .map(|(key, component)| async move { self.mount_live(&key, component).await })
+            .map(|(key, component)| async move { self.mount_live(key, component).await })
             .collect();
         futures::future::try_join_all(futs).await?;
         Ok(())
@@ -1216,7 +1218,7 @@ impl Ctx {
 
     async fn mount_live_impl(
         &self,
-        key_str: String,
+        key: StableKey,
         instance: Arc<dyn LiveComponent>,
         handler: Option<ExceptionHandler>,
     ) -> Result<()> {
@@ -1226,7 +1228,8 @@ impl Ctx {
             return instance.process(self.clone()).await;
         };
 
-        let child_path = self.child_path(comp_ctx, &key_str);
+        let key_str = key_label(&key);
+        let child_path = self.child_path(comp_ctx, key);
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path.clone(), comp_ctx.live())
             .map_err(|e| Error::engine(format!("{e}")))?;
@@ -1279,6 +1282,9 @@ impl Ctx {
     /// handler returns `Err`. The parent's own completion still waits for every
     /// child it mounted.
     ///
+    /// `key` is any [`IntoStableKey`]: a string, an integer, a UUID, bytes, a
+    /// [`StableKey`], or a reference to one.
+    ///
     /// Prefer the `mount!` macro for a `#[cocoindex::function]` call: it adds
     /// the function's logic and arguments as the component-memo fingerprint, so
     /// an unchanged child is skipped. This method always runs `f`.
@@ -1288,7 +1294,7 @@ impl Ctx {
     /// ```no_run
     /// # use cocoindex::ctx::Ctx;
     /// # async fn doc(ctx: &Ctx) -> cocoindex::error::Result<()> {
-    /// let handle = ctx.mount(&"child", |child_ctx| async move {
+    /// let handle = ctx.mount("child", |child_ctx| async move {
     ///     // declare target states ...
     ///     Ok(())
     /// }).await?;
@@ -1296,13 +1302,13 @@ impl Ctx {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn mount<K, F, Fut>(&self, key: &K, f: F) -> Result<ComponentMountHandle>
+    pub async fn mount<K, F, Fut>(&self, key: K, f: F) -> Result<ComponentMountHandle>
     where
-        K: Display,
+        K: IntoStableKey,
         F: FnOnce(Ctx) -> Fut + Send + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
-        self.__mount_fp(key.to_string(), None, f).await
+        self.__mount_fp(key.into_stable_key(), None, f).await
     }
 
     /// Background mount with an explicit component-memo fingerprint. The
@@ -1311,7 +1317,7 @@ impl Ctx {
     #[doc(hidden)]
     pub async fn __mount_fp<F, Fut>(
         &self,
-        key: String,
+        key: StableKey,
         memo: Option<crate::mount::ComponentMemo>,
         f: F,
     ) -> Result<ComponentMountHandle>
@@ -1329,8 +1335,38 @@ impl Ctx {
                 deadline: self.deadline,
             });
         };
+        let processor_name = format!("mount:{}", key_label(&key));
+        let handle = self
+            .mount_background(comp_ctx, key, processor_name, memo, f)
+            .await?;
+        Ok(ComponentMountHandle {
+            inner: MountHandleInner::Core(vec![handle]),
+            deadline: self.deadline,
+        })
+    }
 
-        let child_path = self.child_path(comp_ctx, &key);
+    /// Mount `f` under `key` on its own task, reported as `processor_name`,
+    /// and return the engine handle to wait for it. The one background mount
+    /// path: [`Ctx::mount`] / `mount!` and every item of [`Ctx::mount_each`]
+    /// / `mount_each!` go through it.
+    ///
+    /// Admission is bounded by the app's `max_inflight_components`: when the
+    /// pool is full this waits before spawning, so a parent streaming items
+    /// into `mount_each` runs ahead of its children only as far as the pool
+    /// allows, as in Python.
+    async fn mount_background<F, Fut>(
+        &self,
+        comp_ctx: &ComponentProcessorContext<RustProfile>,
+        key: StableKey,
+        processor_name: String,
+        memo: Option<crate::mount::ComponentMemo>,
+        f: F,
+    ) -> Result<ComponentExecutionHandle>
+    where
+        F: FnOnce(Ctx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let child_path = self.child_path(comp_ctx, key);
         let fn_ctx = Arc::new(FnCallContext::default());
         let child_component = comp_ctx
             .component()
@@ -1343,7 +1379,6 @@ impl Ctx {
         let state = self.state.clone();
         let has_context_memo_state = state.context.has_memo_state_fns();
         let handler_chain = self.handler_chain.clone();
-        let processor_name = format!("mount:{key}");
         let processor = BoxedProcessor::new(
             {
                 let handler_chain = handler_chain.clone();
@@ -1357,6 +1392,7 @@ impl Ctx {
                         handler_chain.clone(),
                         DeadlineContext::NONE,
                     );
+                    // The body returns `()`: no value is serialized or stored.
                     Box::pin(async move {
                         f(ctx).await?;
                         Ok(Value::unit())
@@ -1381,27 +1417,23 @@ impl Ctx {
                 source: ExceptionSource::Component,
             },
         );
-        let handle = child_component
+        child_component
             .mount(comp_ctx, processor, on_error)
             .await
-            .map_err(Error::from)?;
-        Ok(ComponentMountHandle {
-            inner: MountHandleInner::Core(handle),
-            deadline: self.deadline,
-        })
+            .map_err(Error::from)
     }
 
     /// Named sub-component. Creates a child scope in the pipeline tree.
     ///
     /// The key determines the child's stable path for memoization and
-    /// target state tracking.
+    /// target state tracking; it is any [`IntoStableKey`].
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # use cocoindex::ctx::Ctx;
     /// # async fn doc(ctx: &Ctx) -> cocoindex::error::Result<()> {
-    /// let val = ctx.scope(&"child", |child_ctx| async move {
+    /// let val = ctx.scope("child", |child_ctx| async move {
     ///     Ok(42)
     /// }).await?;
     /// # Ok(())
@@ -1412,19 +1444,19 @@ impl Ctx {
     ///
     /// Returns an error if the closure returns an error, or if stable
     /// path/component tracking fails internally.
-    pub async fn scope<K, T, F, Fut>(&self, key: &K, f: F) -> Result<T>
+    pub async fn scope<K, T, F, Fut>(&self, key: K, f: F) -> Result<T>
     where
-        K: Display,
+        K: IntoStableKey,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
         F: FnOnce(Ctx) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        self.__use_mount_fp(key.to_string(), None, f).await
+        self.__use_mount_fp(key.into_stable_key(), None, f).await
     }
 
     /// Foreground mount with an explicit component-memo fingerprint. The
-    /// `mount!` / `use_mount!` / `mount_each!` macros call this; `scope` is the
-    /// `memo = None` (always-run) case kept for direct use and tests.
+    /// `use_mount!` macro calls this; `scope` is the `memo = None`
+    /// (always-run) case kept for direct use and tests.
     ///
     /// When `memo` is `Some`, the engine checks its fingerprint and argument states before running the child
     /// and skips the whole component on an unchanged hit (see
@@ -1432,7 +1464,7 @@ impl Ctx {
     #[doc(hidden)]
     pub async fn __use_mount_fp<T, F, Fut>(
         &self,
-        key: String,
+        key: StableKey,
         memo: Option<crate::mount::ComponentMemo>,
         f: F,
     ) -> Result<T>
@@ -1441,17 +1473,17 @@ impl Ctx {
         F: FnOnce(Ctx) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        let processor_name = format!("mount:{key}");
+        let processor_name = format!("mount:{}", key_label(&key));
         self.use_mount_named(key, processor_name, memo, f).await
     }
 
     /// Foreground mount under `key`, reported (stats, `show -l`) as
-    /// `processor_name`. Items of one `mount_each` share a name, the way
+    /// `processor_name`. Items of one `use_mount_each` share a name, the way
     /// Python names a processor after its function, so per-item mounts do not
     /// produce one stats line per item.
     async fn use_mount_named<T, F, Fut>(
         &self,
-        key: String,
+        key: StableKey,
         processor_name: String,
         memo: Option<crate::mount::ComponentMemo>,
         f: F,
@@ -1467,7 +1499,7 @@ impl Ctx {
             return f(child_ctx).await;
         };
 
-        let child_path = self.child_path(comp_ctx, &key);
+        let child_path = self.child_path(comp_ctx, key);
 
         let fn_ctx = Arc::new(FnCallContext::default());
         let child_component = comp_ctx
@@ -1512,38 +1544,256 @@ impl Ctx {
         .with_context_memo_state(has_context_memo_state)
         .with_state_inputs(memo.map(|memo| memo.state_inputs).unwrap_or_default());
 
-        let handle = match child_component
+        let handle = child_component
             .use_mount(comp_ctx, processor, self.deadline)
             .await
-        {
-            Ok(handle) => handle,
-            Err(err) => {
-                return Err(Error::from(err));
-            }
-        };
-        let value = handle.result(Some(comp_ctx)).await;
-        let value = match value {
-            Ok(value) => value,
-            Err(err) => {
-                return Err(Error::from(err));
-            }
-        };
-        let result: T = match value.deserialize() {
-            Ok(result) => result,
-            Err(err) => {
-                return Err(Error::engine(format!("{err}")));
-            }
-        };
-        Ok(result)
+            .map_err(Error::from)?;
+        let value = handle.result(Some(comp_ctx)).await.map_err(Error::from)?;
+        value
+            .deserialize()
+            .map_err(|err| Error::engine(format!("{err}")))
     }
 
-    /// Per-item foreground mounts with component-memo fingerprints, the runtime
-    /// behind `mount_each!`. Each `(key, value)` pair becomes a child component
-    /// at `prefix/key` (or `key` when `prefix` is `None`); `memo_of` computes
-    /// the value's component-memo fingerprint and `body` runs the entry
-    /// function under the child scope. All children run concurrently.
+    /// Mount one background child component per item, keyed by `key_fn`, and
+    /// return one handle for all of them. The Rust analogue of Python's
+    /// `coco.mount_each` for a plain iterable: `items` is consumed as the
+    /// children are mounted, each child runs on its own task under the app's
+    /// `max_inflight_components` limit, and the parent neither waits for them
+    /// nor takes a value from them (see [`Ctx::mount`] for how a child's
+    /// failure is reported). For items whose values the caller needs, use
+    /// [`Ctx::use_mount_each`]; for an async source, [`Ctx::mount_each_stream`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use cocoindex::ctx::Ctx;
+    /// # async fn doc(ctx: &Ctx, tasks: Vec<String>) -> cocoindex::error::Result<()> {
+    /// let handle = ctx.mount_each(
+    ///     tasks,
+    ///     |task| task.clone(), // use the task string as the child key
+    ///     |child_ctx, task| async move {
+    ///         // declare target states ...
+    ///         Ok(())
+    ///     }
+    /// ).await?;
+    /// handle.ready().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// All items are reported under one processor name, `mount_each`, in
+    /// update stats and `cocoindex show -l`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `key_fn` yields the same key twice, or when a
+    /// child cannot be mounted. A child's own failure is not an error here.
+    pub async fn mount_each<I, K, F, Fut>(
+        &self,
+        items: I,
+        key_fn: impl Fn(&I::Item) -> K,
+        f: F,
+    ) -> Result<ComponentMountHandle>
+    where
+        I: IntoIterator,
+        I::Item: Send + 'static,
+        K: IntoStableKey,
+        F: Fn(Ctx, I::Item) -> Fut + Send + Clone + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let keyed = items
+            .into_iter()
+            .map(|item| (key_fn(&item).into_stable_key(), item));
+        self.mount_each_keyed(
+            futures::stream::iter(keyed),
+            None,
+            "mount_each".to_string(),
+            |_| Ok(None),
+            f,
+        )
+        .await
+    }
+
+    /// Like [`Ctx::mount_each`] for an async source of `(key, item)` pairs: a
+    /// child is mounted as each pair arrives, so the source is read at the
+    /// pace the children are admitted. The analogue of passing an async
+    /// iterable to Python's `coco.mount_each`.
+    pub async fn mount_each_stream<S, K, V, F, Fut>(
+        &self,
+        items: S,
+        f: F,
+    ) -> Result<ComponentMountHandle>
+    where
+        S: Stream<Item = (K, V)>,
+        K: IntoStableKey,
+        V: Send + 'static,
+        F: Fn(Ctx, V) -> Fut + Send + Clone + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        self.mount_each_keyed(
+            items.map(|(key, value)| (key.into_stable_key(), value)),
+            None,
+            "mount_each".to_string(),
+            |_| Ok(None),
+            f,
+        )
+        .await
+    }
+
+    /// Per-item background mounts with component-memo fingerprints, the
+    /// runtime behind `mount_each!`. Each `(key, value)` pair becomes a child
+    /// component at `prefix/key` (or `key` when `prefix` is `None`); `memo_of`
+    /// computes the value's component-memo fingerprint and `body` runs the
+    /// entry function under the child scope.
     #[doc(hidden)]
-    pub async fn __mount_each_fp<K, V, M, B, Fut, T>(
+    pub async fn __mount_each_fp<K, V, M, B, Fut>(
+        &self,
+        items: impl IntoIterator<Item = (K, V)>,
+        prefix: Option<&str>,
+        memo_of: M,
+        body: B,
+    ) -> Result<ComponentMountHandle>
+    where
+        K: IntoStableKey,
+        V: Send + 'static,
+        M: Fn(&V) -> Result<Option<crate::mount::ComponentMemo>>,
+        B: Fn(Ctx, V) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let processor_name = format!("mount:{}", prefix.unwrap_or("mount_each"));
+        let keyed = items
+            .into_iter()
+            .map(|(key, value)| (key.into_stable_key(), value));
+        self.mount_each_keyed(
+            futures::stream::iter(keyed),
+            prefix,
+            processor_name,
+            memo_of,
+            body,
+        )
+        .await
+    }
+
+    /// The one `mount_each` path: stream `(key, value)` pairs, mount each in
+    /// the background under `prefix` (a child path part, as Python's
+    /// `mount_each` subpath) and gather the handles. Duplicate keys are an
+    /// error, as in Python.
+    async fn mount_each_keyed<S, V, M, B, Fut>(
+        &self,
+        items: S,
+        prefix: Option<&str>,
+        processor_name: String,
+        memo_of: M,
+        body: B,
+    ) -> Result<ComponentMountHandle>
+    where
+        S: Stream<Item = (StableKey, V)>,
+        V: Send + 'static,
+        M: Fn(&V) -> Result<Option<crate::mount::ComponentMemo>>,
+        B: Fn(Ctx, V) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        self.check_cancellation()?;
+        let parent = match prefix {
+            Some(prefix) => self.with_subpath(prefix),
+            None => self.clone(),
+        };
+        let mut keys = FxHashSet::default();
+        let mut items = std::pin::pin!(items);
+        let Some(comp_ctx) = &parent.comp_ctx else {
+            // No pipeline context — run the bodies one by one; the handle
+            // reports the first failure.
+            let mut outcome = Ok(());
+            while let Some((key, value)) = items.next().await {
+                check_unique_key(&mut keys, key)?;
+                if let Err(err) = body(parent.child(None), value).await
+                    && outcome.is_ok()
+                {
+                    outcome = Err(err);
+                }
+            }
+            return Ok(ComponentMountHandle {
+                inner: MountHandleInner::Immediate(outcome),
+                deadline: self.deadline,
+            });
+        };
+        let mut handles = Vec::new();
+        while let Some((key, value)) = items.next().await {
+            parent.check_cancellation()?;
+            check_unique_key(&mut keys, key.clone())?;
+            let memo = memo_of(&value)?;
+            let body = body.clone();
+            let handle = parent
+                .mount_background(comp_ctx, key, processor_name.clone(), memo, move |child| {
+                    body(child, value)
+                })
+                .await?;
+            handles.push(handle);
+        }
+        Ok(ComponentMountHandle {
+            inner: MountHandleInner::Core(handles),
+            deadline: self.deadline,
+        })
+    }
+
+    /// Run a closure for each item in its own child scope, in the foreground,
+    /// and return the values in input order: the per-item form of
+    /// [`Ctx::scope`] / `use_mount!`, where [`Ctx::mount_each`] is the
+    /// per-item form of [`Ctx::mount`].
+    ///
+    /// Each item gets its own `Ctx` child scope keyed by `key_fn(item)`. All
+    /// closures run concurrently; every started item runs to completion, then
+    /// the first error in input order is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use cocoindex::ctx::Ctx;
+    /// # async fn doc(ctx: &Ctx, tasks: Vec<String>) -> cocoindex::error::Result<()> {
+    /// let results = ctx.use_mount_each(
+    ///     tasks,
+    ///     |task| task.clone(), // use the task string as scope key
+    ///     |child_ctx, task| async move {
+    ///         Ok(format!("processed {task}"))
+    ///     }
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// All items are reported under one processor name, `use_mount_each`, in
+    /// update stats and `cocoindex show -l`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any of the closures fail. The first encountered error
+    /// is returned.
+    pub async fn use_mount_each<I, K, F, Fut, T>(
+        &self,
+        items: I,
+        key_fn: impl Fn(&I::Item) -> K,
+        f: F,
+    ) -> Result<Vec<T>>
+    where
+        I: IntoIterator,
+        I::Item: Send + 'static,
+        K: IntoStableKey,
+        T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
+        F: Fn(Ctx, I::Item) -> Fut + Send + Clone + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
+        let keyed = items
+            .into_iter()
+            .map(|item| (key_fn(&item).into_stable_key(), item));
+        self.use_mount_each_keyed(keyed, None, "use_mount_each".to_string(), |_| Ok(None), f)
+            .await
+    }
+
+    /// Per-item foreground mounts with component-memo fingerprints, the
+    /// runtime behind `use_mount_each!`: [`Ctx::__mount_each_fp`] with the
+    /// values returned in input order.
+    #[doc(hidden)]
+    pub async fn __use_mount_each_fp<K, V, M, B, Fut, T>(
         &self,
         items: impl IntoIterator<Item = (K, V)>,
         prefix: Option<&str>,
@@ -1551,49 +1801,56 @@ impl Ctx {
         body: B,
     ) -> Result<Vec<T>>
     where
-        K: Display,
+        K: IntoStableKey,
         V: Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
         M: Fn(&V) -> Result<Option<crate::mount::ComponentMemo>>,
         B: Fn(Ctx, V) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        let mut keys = rustc_hash::FxHashSet::default();
-        let mut keyed = Vec::new();
-        for (key, value) in items {
-            let key = key.to_string();
-            if !keys.insert(key.clone()) {
-                return Err(Error::engine(format!(
-                    "duplicate key `{key}` in mount_each batch"
-                )));
-            }
-            let memo = memo_of(&value)?;
-            let (subpath, processor_name) = match prefix {
-                Some(prefix) => (format!("{prefix}/{key}"), format!("mount:{prefix}")),
-                None => (key.clone(), format!("mount:{key}")),
-            };
-            keyed.push((subpath, processor_name, memo, value));
-        }
-
-        let futs: Vec<_> = keyed
+        let processor_name = format!("mount:{}", prefix.unwrap_or("use_mount_each"));
+        let keyed = items
             .into_iter()
-            .map(|(subpath, processor_name, memo, value)| {
-                let body = body.clone();
-                async move {
-                    self.use_mount_named(subpath, processor_name, memo, move |child| {
-                        body(child, value)
-                    })
-                    .await
-                }
-            })
-            .collect();
+            .map(|(key, value)| (key.into_stable_key(), value));
+        self.use_mount_each_keyed(keyed, prefix, processor_name, memo_of, body)
+            .await
+    }
 
-        let outcomes = futures::future::join_all(futs).await;
-        let mut values = Vec::with_capacity(outcomes.len());
-        for outcome in outcomes {
-            values.push(outcome?);
+    async fn use_mount_each_keyed<V, M, B, Fut, T>(
+        &self,
+        items: impl IntoIterator<Item = (StableKey, V)>,
+        prefix: Option<&str>,
+        processor_name: String,
+        memo_of: M,
+        body: B,
+    ) -> Result<Vec<T>>
+    where
+        V: Send + 'static,
+        T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
+        M: Fn(&V) -> Result<Option<crate::mount::ComponentMemo>>,
+        B: Fn(Ctx, V) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
+        let parent = match prefix {
+            Some(prefix) => self.with_subpath(prefix),
+            None => self.clone(),
+        };
+        let mut keys = FxHashSet::default();
+        let mut futs = Vec::new();
+        for (key, value) in items {
+            check_unique_key(&mut keys, key.clone())?;
+            let memo = memo_of(&value)?;
+            let body = body.clone();
+            let parent = &parent;
+            let processor_name = processor_name.clone();
+            futs.push(async move {
+                parent
+                    .use_mount_named(key, processor_name, memo, move |child| body(child, value))
+                    .await
+            });
         }
-        Ok(values)
+        let outcomes = futures::future::join_all(futs).await;
+        outcomes.into_iter().collect()
     }
 
     /// Cached computation. If `key` hasn't changed since the last run,
@@ -1633,95 +1890,21 @@ impl Ctx {
     pub async fn memo<K, T, F, Fut>(&self, key: &K, f: F) -> Result<T>
     where
         K: Serialize,
-        T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-        F: FnOnce(Ctx) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<T>> + Send + 'static,
+        T: Serialize + for<'de> Deserialize<'de>,
+        F: FnOnce(Ctx) -> Fut,
+        Fut: Future<Output = Result<T>>,
     {
         crate::memo::cached(self, key, f).await
     }
 
-    /// Run a closure concurrently for each item, creating a child scope per item.
+    /// Run a closure concurrently for each item within the current scope (no
+    /// child scopes). The analogue of Python's `coco.map`: the items run on
+    /// the caller's task and start in input order, as tasks of one asyncio
+    /// loop do. For CPU-bound work, spawn it from the closure
+    /// (`tokio::task::spawn_blocking`).
     ///
-    /// Each item gets its own `Ctx` child scope keyed by `key_fn(item)`.
-    /// All closures run concurrently; every started item runs to
-    /// completion, then the first error in input order is returned.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use cocoindex::ctx::Ctx;
-    /// # async fn doc(ctx: &Ctx, tasks: Vec<String>) -> cocoindex::error::Result<()> {
-    /// let results = ctx.mount_each(
-    ///     tasks,
-    ///     |task| task.clone(), // use the task string as scope key
-    ///     |child_ctx, task| async move {
-    ///         Ok(format!("processed {task}"))
-    ///     }
-    /// ).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// All items are reported under one processor name, `mount_each`, in
-    /// update stats and `cocoindex show -l`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any of the closures fail. The first encountered error
-    /// is returned.
-    pub async fn mount_each<I, K, F, Fut, T>(
-        &self,
-        items: I,
-        key_fn: impl Fn(&I::Item) -> K,
-        f: F,
-    ) -> Result<Vec<T>>
-    where
-        I: IntoIterator,
-        I::Item: Send + 'static,
-        K: Display,
-        T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-        F: Fn(Ctx, I::Item) -> Fut + Send + Clone + 'static,
-        Fut: Future<Output = Result<T>> + Send + 'static,
-    {
-        let mut keys = rustc_hash::FxHashSet::default();
-        let mut keyed = Vec::new();
-
-        for item in items {
-            let key = key_fn(&item).to_string();
-            if !keys.insert(key.clone()) {
-                return Err(Error::engine(format!(
-                    "duplicate key `{}` in mount_each batch",
-                    key
-                )));
-            }
-            keyed.push((key, item));
-        }
-
-        let futs: Vec<_> = keyed
-            .into_iter()
-            .map(|(key, item)| {
-                let f = f.clone();
-                async move {
-                    self.use_mount_named(key, "mount_each".to_string(), None, move |child| {
-                        f(child, item)
-                    })
-                    .await
-                }
-            })
-            .collect();
-
-        let outcomes = futures::future::join_all(futs).await;
-        let mut values = Vec::with_capacity(outcomes.len());
-        for outcome in outcomes {
-            values.push(outcome?);
-        }
-        Ok(values)
-    }
-
-    /// Run a closure concurrently for each item within the current scope (no child scopes).
-    ///
-    /// Like `futures::future::join_all` plus result collection: every started
-    /// item runs to completion, then the first error in input order is returned.
+    /// Every started item runs to completion, then the first error in input
+    /// order is returned.
     ///
     /// # Examples
     ///
@@ -1743,27 +1926,49 @@ impl Ctx {
         I: IntoIterator,
         T: Send + 'static,
         F: Fn(I::Item) -> Fut,
-        Fut: Future<Output = Result<T>> + Send + 'static,
+        // The futures are awaited in place, so they may borrow from the caller
+        // (the source text, a shared `IdGenerator`, the target): `async |x| ...`.
+        Fut: Future<Output = Result<T>> + Send,
     {
         self.check_cancellation()?;
         let deadline = self.deadline;
         let futs: Vec<_> = items
             .into_iter()
             .map(|item| async {
+                // A task may start after the caller's deadline moved forward
+                // while earlier tasks were being scheduled.
                 deadline.check().map_err(Error::from)?;
                 let result = f(item).await;
+                // Do not let a value returned after the deadline look
+                // successful to the caller.
                 if result.is_ok() {
                     deadline.check().map_err(Error::from)?;
                 }
                 result
             })
             .collect();
-        let outcomes = futures::future::join_all(futs).await;
-        let mut values = Vec::with_capacity(outcomes.len());
-        for outcome in outcomes {
-            values.push(outcome?);
-        }
-        Ok(values)
+        futures::future::join_all(futs).await.into_iter().collect()
+    }
+}
+
+/// `key` as it reads in a processor name: the bare text of a string or
+/// symbol key, the [`StableKey`] display form otherwise.
+fn key_label(key: &StableKey) -> String {
+    match key {
+        StableKey::Str(text) | StableKey::Symbol(text) => text.to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Record `key` in `keys`, or fail: a `mount_each` batch mounts each key once.
+fn check_unique_key(keys: &mut FxHashSet<StableKey>, key: StableKey) -> Result<()> {
+    if keys.insert(key.clone()) {
+        Ok(())
+    } else {
+        Err(Error::engine(format!(
+            "duplicate key `{}` in mount_each batch",
+            key_label(&key)
+        )))
     }
 }
 
@@ -1777,24 +1982,34 @@ pub struct ComponentMountHandle {
 }
 
 enum MountHandleInner {
-    Core(ComponentExecutionHandle),
-    /// Standalone use (no pipeline): the body already ran.
+    /// One handle per child: a `mount` has one, a `mount_each` one per item.
+    Core(Vec<ComponentExecutionHandle>),
+    /// Standalone use (no pipeline): the bodies already ran.
     Immediate(Result<()>),
 }
 
 impl ComponentMountHandle {
-    /// Wait until the component is ready: its body has run and its target
+    /// Wait until every component is ready: its body has run and its target
     /// states are synced. Returns `Err` only when the caller's deadline expires
-    /// or an exception handler in scope propagated the child's failure (see
+    /// or an exception handler in scope propagated a child's failure (see
     /// [`Ctx::with_exception_handler`]); an unhandled failure is logged and
     /// resolves `Ok`, as in Python.
     pub async fn ready(self) -> Result<()> {
         self.deadline.check()?;
         match self.inner {
-            MountHandleInner::Core(handle) => handle.ready().await?,
-            MountHandleInner::Immediate(outcome) => outcome?,
+            MountHandleInner::Core(handles) => {
+                for handle in handles {
+                    handle.ready().await?;
+                    // The child is ready; check the caller's own deadline
+                    // before it continues or waits on the next child.
+                    self.deadline.check()?;
+                }
+            }
+            MountHandleInner::Immediate(outcome) => {
+                outcome?;
+                self.deadline.check()?;
+            }
         }
-        self.deadline.check()?;
         Ok(())
     }
 }

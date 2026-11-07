@@ -7,6 +7,8 @@ description: >
 ---
 CocoIndex CLI is a standalone tool for managing and inspecting your apps.
 
+This page describes the CLI for Python projects. A Rust project has its own `cocoindex` binary with the same subcommands; see [The CLI for Rust projects](./cli_rust). Both read the same state database format, so `show --db PATH --app-name NAME` works on either tool against an app the other SDK wrote.
+
 ## Invoke the CLI
 
 Once CocoIndex is installed, you can invoke the CLI directly using the `cocoindex` command. Most commands require an `APP_TARGET` argument, which tells the CLI where your app definitions are located.

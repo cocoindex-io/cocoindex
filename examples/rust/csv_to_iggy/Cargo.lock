@@ -731,7 +731,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "walkdir",
 ]
 
 [[package]]
@@ -761,6 +760,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "unicode-width",
  "uuid",
 ]
 

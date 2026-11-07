@@ -482,8 +482,8 @@ async fn check_lists_reads_and_filters(client: &ContainerClient) -> Result<()> {
         FileLike::content_fingerprint(&a).await?,
         FileLike::content_fingerprint(listed_a).await?
     );
-    assert_eq!(a.read().await?, b"# A\nalpha");
-    assert_eq!(a.read_size(3).await?, b"# A");
+    assert_eq!(&a.read().await?[..], b"# A\nalpha");
+    assert_eq!(&a.read_size(3).await?[..], b"# A");
 
     // --- read by name: whole, ranged, past the end, zero bytes, empty blob ---
     assert_eq!(
@@ -623,7 +623,7 @@ async fn mount_each_pipeline_reprocesses_only_changed_blobs() -> Result<()> {
                 .list()
                 .await?;
             let sizes = ctx
-                .mount_each(
+                .use_mount_each(
                     files,
                     |f| f.key(),
                     |child, file| async move { process(&child, &file).await },

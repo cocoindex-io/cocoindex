@@ -8,18 +8,27 @@
 //! column can be defined from the model's dimension, and [`Embedder`] so it
 //! plugs into `resolve_entities` directly.
 //!
+//! As in Python (`runner=coco.GPU`), each batch runs under the GPU runner:
+//! batches take turns on the GPU pool, one at a time per GPU, so a burst of
+//! calls never starts more inferences than there are GPUs (one, when none is
+//! detected).
+//!
 //! # What `fastembed` cannot do
 //!
 //! Python's embedder takes `prompt_name`, `normalize_embeddings` and `device`.
 //! `fastembed` has no prompt registry (prepend the model's query/document
-//! prefix to the text yourself), always L2-normalizes its output, and runs on
-//! the ONNX Runtime execution providers compiled into the binary (CPU by
-//! default). Those three options therefore have no Rust counterpart.
+//! prefix to the text yourself) and always L2-normalizes its output, so those
+//! two options have no Rust counterpart. The device is chosen through ONNX
+//! Runtime execution providers instead: [`SentenceTransformerEmbedder::load_with`]
+//! takes the providers to try, such as CUDA, which the binary must compile in
+//! through the `ort` crate's features (`cuda`, `coreml`, …); without any, the
+//! model runs on the CPU.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+pub use fastembed::ExecutionProviderDispatch;
 use fastembed::{
     InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
     UserDefinedEmbeddingModel,
@@ -63,7 +72,7 @@ impl serde::Serialize for ScheduledEmbedder {
     }
 }
 
-#[crate::function(memo, batching, max_batch_size = 64)]
+#[crate::function(memo, batching, max_batch_size = 64, runner = crate::GPU)]
 async fn embed_scheduled(
     _ctx: &Ctx,
     texts: Vec<String>,
@@ -168,13 +177,28 @@ impl SentenceTransformerEmbedder {
     /// Loading downloads and initializes the ONNX model, so it runs on a
     /// blocking thread.
     pub async fn load(model_name_or_path: impl Into<String>) -> Result<Self> {
+        Self::load_with(model_name_or_path, Vec::new()).await
+    }
+
+    /// Like [`load`](Self::load), running the model on the first of
+    /// `execution_providers` that ONNX Runtime can start (Python's `device`).
+    /// A provider is registered when its `ort` feature is compiled in, e.g.
+    /// `ort::execution_providers::CUDAExecutionProvider::default().build()`
+    /// with the `cuda` feature; otherwise ONNX Runtime falls back to the CPU.
+    pub async fn load_with(
+        model_name_or_path: impl Into<String>,
+        execution_providers: Vec<ExecutionProviderDispatch>,
+    ) -> Result<Self> {
         let model_name = model_name_or_path.into();
-        tokio::task::spawn_blocking(move || Self::load_blocking(&model_name))
+        tokio::task::spawn_blocking(move || Self::load_blocking(&model_name, execution_providers))
             .await
             .map_err(|e| Error::engine(format!("embedder load task panicked: {e}")))?
     }
 
-    fn load_blocking(model_name: &str) -> Result<Self> {
+    fn load_blocking(
+        model_name: &str,
+        execution_providers: Vec<ExecutionProviderDispatch>,
+    ) -> Result<Self> {
         let suffix = |code: &str| code.rsplit('/').next().unwrap_or(code).to_string();
         let wanted_suffix = suffix(model_name);
         let registered = TextEmbedding::list_supported_models()
@@ -188,7 +212,9 @@ impl SentenceTransformerEmbedder {
 
         let (model, dimension) = match registered {
             Some(info) => {
-                let model = TextEmbedding::try_new(InitOptions::new(info.model)).map_err(|e| {
+                let options =
+                    InitOptions::new(info.model).with_execution_providers(execution_providers);
+                let model = TextEmbedding::try_new(options).map_err(|e| {
                     Error::engine(format!("load embedding model `{model_name}`: {e}"))
                 })?;
                 (model, info.dim)
@@ -196,9 +222,17 @@ impl SentenceTransformerEmbedder {
             None => {
                 let path = Path::new(model_name);
                 let model = if path.is_dir() {
-                    load_user_defined(&LocalDir(path.to_path_buf()), model_name)?
+                    load_user_defined(
+                        &LocalDir(path.to_path_buf()),
+                        model_name,
+                        execution_providers,
+                    )?
                 } else {
-                    load_user_defined(&HfHubRepo::open(model_name)?, model_name)?
+                    load_user_defined(
+                        &HfHubRepo::open(model_name)?,
+                        model_name,
+                        execution_providers,
+                    )?
                 };
                 // The export does not state its output dimension in one agreed
                 // place, so measure it.
@@ -249,7 +283,11 @@ impl SentenceTransformerEmbedder {
     }
 }
 
-fn load_user_defined(files: &dyn ModelFiles, model_name: &str) -> Result<TextEmbedding> {
+fn load_user_defined(
+    files: &dyn ModelFiles,
+    model_name: &str,
+    execution_providers: Vec<ExecutionProviderDispatch>,
+) -> Result<TextEmbedding> {
     let required = |relative: &str| -> Result<Vec<u8>> {
         files.read(relative)?.ok_or_else(|| {
             Error::engine(format!(
@@ -281,7 +319,8 @@ fn load_user_defined(files: &dyn ModelFiles, model_name: &str) -> Result<TextEmb
     if let Some(pooling_config) = files.read(POOLING_CONFIG_FILE)? {
         model = model.with_pooling(pooling_from_config(&pooling_config, model_name)?);
     }
-    TextEmbedding::try_new_from_user_defined(model, InitOptionsUserDefined::default())
+    let options = InitOptionsUserDefined::default().with_execution_providers(execution_providers);
+    TextEmbedding::try_new_from_user_defined(model, options)
         .map_err(|e| Error::engine(format!("load embedding model `{model_name}`: {e}")))
 }
 
@@ -324,7 +363,7 @@ impl VectorSchemaProvider for SentenceTransformerEmbedder {
 
 #[async_trait]
 impl Embedder for SentenceTransformerEmbedder {
-    /// Memoized and batched, like the inherent
+    /// Memoized, batched and run on the GPU pool, like the inherent
     /// [`embed`](SentenceTransformerEmbedder::embed).
     async fn embed(&self, ctx: &Ctx, text: &str) -> Result<Vec<f32>> {
         SentenceTransformerEmbedder::embed(self, ctx, text).await
@@ -333,7 +372,10 @@ impl Embedder for SentenceTransformerEmbedder {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use futures::future::join_all;
 
@@ -412,6 +454,65 @@ mod tests {
             "concurrent misses should be coalesced into a batch"
         );
         assert!(batches.iter().all(|batch| batch.len() <= 64));
+    }
+
+    /// Counts the model's batches running at once, as the ONNX session would
+    /// see them.
+    #[derive(Default)]
+    struct SlowModel {
+        now: AtomicUsize,
+        peak: AtomicUsize,
+        batches: AtomicUsize,
+    }
+
+    impl EmbeddingModel for SlowModel {
+        fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+            let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(now, Ordering::SeqCst);
+            self.batches.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(20));
+            self.now.fetch_sub(1, Ordering::SeqCst);
+            Ok(texts
+                .into_iter()
+                .map(|text| vec![text.len() as f32])
+                .collect())
+        }
+    }
+
+    /// Python runs `_embed` under `runner=coco.GPU`: with one GPU in the pool
+    /// (the default when none is detected), batches take turns, so a burst of
+    /// calls never runs two inferences at once.
+    #[tokio::test]
+    async fn batches_run_one_at_a_time_per_gpu() {
+        crate::configure_gpu_pool(NonZeroUsize::new(1).unwrap());
+        let model = Arc::new(SlowModel::default());
+        let embedder = SentenceTransformerEmbedder {
+            model: model.clone(),
+            model_name: "slow-model".to_string(),
+            dimension: 1,
+        };
+        let (_tempdir, app) = test_app("sentence_transformer_gpu_runner").await;
+        let texts: Vec<String> = (0..200).map(|index| format!("text-{index}")).collect();
+
+        app.update(move |ctx| async move {
+            join_all(texts.into_iter().map(|text| embedder.embed(&ctx, text)))
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>>>()?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            model.batches.load(Ordering::SeqCst) >= 4,
+            "200 texts in batches of at most 64 take at least four batches"
+        );
+        assert_eq!(
+            model.peak.load(Ordering::SeqCst),
+            1,
+            "batches run one at a time on one GPU"
+        );
     }
 
     struct NeverMatches;

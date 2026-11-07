@@ -306,9 +306,10 @@ async def test_stats_group_report_to_stdout_plain(
     # Give the detached plain reporter a tick to flush its final block.
     await asyncio.sleep(0.2)
     out = capfd.readouterr().out
-    # Title-prefixed header (#3) and an explicit terminated marker (#4).
-    assert "[Stats: Indexing]" in out
-    assert "(terminated)" in out
+    # The group's title starts each status line (#3), and the final block
+    # says it is done (#4).
+    assert "Indexing · Running…" in out or "Indexing · Done in" in out
+    assert "✓ Indexing · Done in" in out
 
 
 # --- 11. live member: group readies + splits out, no hang ---
@@ -389,6 +390,5 @@ async def test_stats_group_report_to_stdout_interval(
     await handle.result()
     await asyncio.sleep(0.2)
     out = capfd.readouterr().out
-    # A custom refresh interval still produces the labeled group report.
-    assert "[Stats: Indexing]" in out
-    assert "(terminated)" in out
+    # A custom refresh interval still produces the titled group report.
+    assert "✓ Indexing · Done in" in out

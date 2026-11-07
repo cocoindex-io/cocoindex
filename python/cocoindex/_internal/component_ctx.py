@@ -24,9 +24,18 @@ from cocoindex._internal.environment import Environment
 
 from . import core
 from .stable_path import StableKey
-from .update_stats import StatsGroupHandle, _resolve_report_to_stdout
+from .update_stats import (
+    StatsGroupHandle,
+    _resolve_report_to_stdout,
+    DisplayMode,
+    display_mode,
+    readable_path,
+)
 
 _logger = logging.getLogger(__name__)
+# Component failures reported beside a progress display go out under the
+# package's own name: those lines are for people, not tied to this module.
+_failure_logger = logging.getLogger("cocoindex")
 
 T = TypeVar("T")
 
@@ -182,7 +191,23 @@ class ComponentContext:
             if node is None:
                 # No handlers registered — log directly without building
                 # the ExceptionContext metadata at all. Don't propagate.
-                _logger.error("component build failed: %s", exc, exc_info=exc)
+                mode = display_mode()
+                if mode is not None:
+                    # A progress display lists the failures. On a terminal it
+                    # shows each one, so the log keeps it at DEBUG; in
+                    # scrolling output one line each says when it happened.
+                    # The traceback is at DEBUG either way.
+                    message = "%s failed: %s: %s"
+                    args = (readable_path(str(stable_path)), type(exc).__name__, exc)
+                    if mode is DisplayMode.TERMINAL:
+                        _failure_logger.debug(message, *args)
+                    else:
+                        _failure_logger.error(message, *args)
+                    _failure_logger.debug(
+                        "traceback of the failure above", exc_info=exc
+                    )
+                else:
+                    _logger.error("component build failed: %s", exc, exc_info=exc)
                 return
 
             env_name = self._env.name

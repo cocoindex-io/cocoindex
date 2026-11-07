@@ -172,7 +172,7 @@ async fn index() -> Result<()> {
                 let orders = sample_orders()
                     .into_iter()
                     .map(|order| (order.order_id.clone(), order));
-                let rows = mount_each!(orders, |order| process_order(ctx, order)).await?;
+                let rows = use_mount_each!(orders, |order| process_order(ctx, order)).await?;
                 for row in &rows {
                     table.declare_row(&ctx, row)?;
                 }

@@ -15,8 +15,10 @@
 //! - [`ApiTranscriber`] calls `POST {base_url}/audio/transcriptions` with the
 //!   audio as a multipart upload, reading the bytes from any [`FileLike`].
 //!   `transcribe` is memoized by the file's identity and content.
-//! - [`ApiChatClient`] calls `POST {base_url}/chat/completions`;
-//!   [`LlmPairResolver`] builds on it and memoizes each decision.
+//! - [`ApiChatClient`] calls `POST {base_url}/chat/completions` in JSON mode;
+//!   [`ApiChatClient::extract`] deserializes the answer into a type and
+//!   memoizes it per conversation, and [`LlmPairResolver`] builds on the
+//!   client and memoizes each decision.
 //!
 //! Every request is bounded by the op's `timeout` (10 minutes by default):
 //! fast failures (408/409/425/429/5xx, a refused or reset connection) are
@@ -28,6 +30,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{Mutex, Semaphore};
@@ -499,14 +502,19 @@ impl ApiTranscriber {
     /// Transcribe raw audio bytes directly, without memoization, using
     /// `filename` for the upload's filename (the extension lets the server
     /// infer the audio format).
-    pub async fn transcribe_bytes(&self, bytes: Vec<u8>, filename: String) -> Result<String> {
-        self.request_transcription(None, bytes, filename).await
+    pub async fn transcribe_bytes(
+        &self,
+        bytes: impl Into<bytes::Bytes>,
+        filename: String,
+    ) -> Result<String> {
+        self.request_transcription(None, bytes.into(), filename)
+            .await
     }
 
     async fn request_transcription(
         &self,
         ctx: Option<&Ctx>,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
         filename: String,
     ) -> Result<String> {
         let url = self.endpoint.url("audio/transcriptions");
@@ -515,9 +523,10 @@ impl ApiTranscriber {
             .send_with_retry(
                 ctx,
                 || {
-                    // A fresh body per attempt: the upload is consumed by a send.
+                    // A fresh body per attempt: the upload is consumed by a
+                    // send. Cloning `Bytes` shares the buffer.
                     let part =
-                        reqwest::multipart::Part::bytes(bytes.clone()).file_name(filename.clone());
+                        reqwest::multipart::Part::stream(bytes.clone()).file_name(filename.clone());
                     let mut form = reqwest::multipart::Form::new()
                         .text("model", self.model.clone())
                         .part("file", part);
@@ -546,7 +555,7 @@ struct TranscriptionResponse {
 use crate::entity_resolution::{CanonicalSide, PairDecision, PairResolver};
 
 /// A single chat message (`role` + `content`).
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, crate::MemoInput)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
@@ -619,6 +628,21 @@ impl ApiChatClient {
         self.request_chat_json(None, messages).await
     }
 
+    /// Run a chat completion in JSON mode and deserialize the answer into
+    /// `T`, memoized through the engine by the model, the endpoint and the
+    /// messages: the way to extract structured data with an LLM inside an
+    /// update (Python's `litellm` call with a `response_format` model). The
+    /// prompt has to describe the JSON shape `T` deserializes from.
+    pub async fn extract<T: DeserializeOwned>(
+        &self,
+        ctx: &Ctx,
+        messages: &[ChatMessage],
+    ) -> Result<T> {
+        let content = chat_json_memoized(ctx, self, messages).await?;
+        serde_json::from_str(&content)
+            .map_err(|e| Error::engine(format!("chat response was not the expected JSON: {e}")))
+    }
+
     async fn request_chat_json(
         &self,
         ctx: Option<&Ctx>,
@@ -652,6 +676,26 @@ impl ApiChatClient {
             .map(|c| c.message.content)
             .ok_or_else(|| Error::engine("chat API returned no choices"))
     }
+}
+
+/// A client's memo identity is the model and the endpoint: what can change an
+/// answer. The key, timeout and in-flight cap cannot, and are absent. So a
+/// `detect_change` context key holding a client invalidates memoized work
+/// when the model or endpoint changes.
+#[async_trait]
+impl MemoInput for ApiChatClient {
+    fn write_memo_key(&self, writer: &mut crate::memo::MemoKeyWriter<'_>) -> Result<()> {
+        writer.write(&(&self.model, &self.endpoint.base_url))
+    }
+}
+
+#[crate::function(memo)]
+async fn chat_json_memoized(
+    ctx: &Ctx,
+    client: &ApiChatClient,
+    messages: &[ChatMessage],
+) -> Result<String> {
+    client.request_chat_json(Some(ctx), messages).await
 }
 
 #[derive(Deserialize)]
@@ -709,7 +753,7 @@ async fn resolve_pair_memoized(
     candidates: &[String],
     resolver: &LlmPairResolver,
 ) -> Result<PairDecision> {
-    resolver.request_decision(ctx, &entity, &candidates).await
+    resolver.request_decision(ctx, entity, candidates).await
 }
 
 impl LlmPairResolver {

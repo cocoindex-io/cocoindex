@@ -1,9 +1,10 @@
-//! `ls`, `show`, `update` and `drop`.
+//! `ls`, `show`, `update`, `drop`, and the `google-drive` sign-in.
 
 use std::path::{Path, PathBuf};
 
 use cocoindex::app::DB_PATH_ENV;
 use cocoindex::cli::protocol::{AppInfo, Event, Outcome};
+use cocoindex::connectors::gdrive;
 
 use crate::build::{self, BuildOpts};
 use crate::child::{self, Interrupt, Output};
@@ -431,6 +432,54 @@ pub async fn drop_app(args: DropArgs) -> CliResult<()> {
         }
         Outcome::Completed => println!("Dropped app '{app_name}'."),
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// google-drive sign-in / sign-out
+// ---------------------------------------------------------------------------
+
+/// The account at `token_path`, or at the connector's default token file.
+fn google_account(token_path: Option<PathBuf>) -> CliResult<gdrive::UserAccount> {
+    match token_path {
+        Some(path) => Ok(gdrive::UserAccount::with_token_path(path)),
+        None => gdrive::UserAccount::new().map_err(|e| CliError::failure(e.to_string())),
+    }
+}
+
+pub async fn google_drive_sign_in(
+    client_secrets: Option<PathBuf>,
+    token_path: Option<PathBuf>,
+) -> CliResult<()> {
+    if let Some(path) = &client_secrets
+        && !path.is_file()
+    {
+        return Err(CliError::usage(format!(
+            "Invalid value for 'CLIENT_SECRETS': File '{}' does not exist.",
+            path.display()
+        )));
+    }
+    let email = google_account(token_path)?
+        .sign_in(client_secrets.as_deref())
+        .await
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    println!("Signed in as {email}.");
+    Ok(())
+}
+
+pub async fn google_drive_sign_out(token_path: Option<PathBuf>) -> CliResult<()> {
+    let existed = google_account(token_path)?
+        .sign_out()
+        .await
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    println!(
+        "{}",
+        if existed {
+            "Signed out."
+        } else {
+            "No sign-in was stored."
+        }
+    );
     Ok(())
 }
 

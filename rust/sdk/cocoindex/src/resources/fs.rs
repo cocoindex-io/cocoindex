@@ -7,7 +7,6 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
-use walkdir::WalkDir;
 
 use crate::ctx::{ContextKey, Ctx};
 use crate::error::{Error, Result};
@@ -47,6 +46,8 @@ impl DirWalker {
         self
     }
 
+    /// `(key, file)` pairs for `mount_each`, sorted by key. Blocks on the
+    /// directory walk; see [`walk`](Self::walk).
     pub fn items(&self) -> Result<Vec<(String, FileEntry)>> {
         Ok(self
             .walk()?
@@ -55,8 +56,17 @@ impl DirWalker {
             .collect())
     }
 
+    /// Walk the directory and return its matching files, sorted by relative
+    /// path. This blocks on filesystem I/O: call it before the pipeline starts
+    /// or from a blocking context. A live feed ([`live`](Self::live)) walks on
+    /// a blocking thread.
+    ///
+    /// Symlinked directories are followed (a cycle is not entered twice), and
+    /// a directory this process cannot read is skipped, as in the Python SDK.
     pub fn walk(&self) -> Result<Vec<FileEntry>> {
-        walk_internal(&self.root, self.recursive, self.matcher.as_ref())
+        let mut files = walk_files(&self.root, Path::new(""), self.recursive, &*self.matcher)?;
+        files.sort_by(|a, b| a.relative.cmp(&b.relative));
+        Ok(files)
     }
 }
 
@@ -69,19 +79,35 @@ pub use live::LiveDirWalker;
 
 #[cfg(feature = "fs_live")]
 mod live {
-    use super::{DirWalker, FileEntry};
+    use super::{DirWalker, FileEntry, walk_files};
     use crate::error::{Error, Result};
     use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard};
     use async_trait::async_trait;
-    use notify::{Config, RecursiveMode, Watcher};
-    use std::path::PathBuf;
+    use notify::{Config, EventKind, RecursiveMode, Watcher};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
 
-    /// A live directory feed: a [`LiveMapView`] over a directory that re-scans on
+    /// How long after the first file event the feed keeps collecting further
+    /// events before it applies them, so that a burst (an editor's temp file
+    /// and rename, a `cp -r`) is applied once per path.
+    const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
+
+    /// The default [`LiveDirWalker::rescan_interval`], as in the Python SDK.
+    const DEFAULT_RESCAN_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+    /// A live directory feed: a [`LiveMapView`] over a directory that follows
     /// filesystem changes. Build it with [`DirWalker::live`] and feed it to
     /// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live) — the catch-up scan
-    /// walks the directory once, then each filesystem change triggers a re-scan
-    /// so files are mounted/removed as they appear and disappear (the Rust
-    /// analogue of Python's `walk_dir(..., live=True)`).
+    /// walks the directory once, then each file event updates or deletes that
+    /// file's component alone (the Rust analogue of Python's
+    /// `walk_dir(..., live=True)`): a created or modified file is mounted or
+    /// re-processed, a deleted or moved-away file (or directory) has its
+    /// components removed, and a directory that appears is walked and its files
+    /// mounted. Only an event queue overflow and the periodic
+    /// [`rescan_interval`](LiveDirWalker::rescan_interval) walk the whole tree.
     ///
     /// Changes come from the platform's native file events (inotify, FSEvents,
     /// ReadDirectoryChangesW), as Python's `watchdog` observer does. Where the
@@ -92,8 +118,14 @@ mod live {
         walker: DirWalker,
         watch_root: PathBuf,
         recursive: bool,
-        poll_interval: std::time::Duration,
+        poll_interval: Duration,
+        rescan_interval: Option<Duration>,
         watch_guard: SingleWatcherGuard,
+        /// The keys currently fed to the subscriber: what the last scan found,
+        /// kept up to date by every update and delete since. A path that
+        /// disappears is resolved against it (a moved-away directory removes
+        /// every key under it) without walking the tree.
+        known_keys: Mutex<BTreeSet<String>>,
     }
 
     impl DirWalker {
@@ -109,8 +141,10 @@ mod live {
                 walker: self,
                 watch_root,
                 recursive,
-                poll_interval: std::time::Duration::from_secs(1),
+                poll_interval: Duration::from_secs(1),
+                rescan_interval: Some(DEFAULT_RESCAN_INTERVAL),
                 watch_guard: SingleWatcherGuard::new("LiveDirWalker"),
+                known_keys: Mutex::new(BTreeSet::new()),
             }
         }
     }
@@ -118,24 +152,176 @@ mod live {
     impl LiveDirWalker {
         /// Set how often the directory is polled for changes when the native
         /// watcher is unavailable (default 1s).
-        pub fn poll_interval(mut self, interval: std::time::Duration) -> Self {
+        pub fn poll_interval(mut self, interval: Duration) -> Self {
             self.poll_interval = interval;
             self
         }
+
+        /// Set the interval between periodic full rescans, which recreate the
+        /// OS-level watcher and walk the whole directory, as a defence against
+        /// events the platform dropped (e.g. macOS FSEvents silently stopping).
+        /// Defaults to one hour; `None` disables the rescan.
+        pub fn rescan_interval(mut self, interval: Option<Duration>) -> Self {
+            self.rescan_interval = interval;
+            self
+        }
+
+        fn known_keys(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
+            self.known_keys.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        /// The subscriber's key for an event path, or `None` when the path is
+        /// not a file this walker can yield: outside the root, the root itself,
+        /// below the top level of a non-recursive walk, or under a directory
+        /// the matcher prunes.
+        fn relative_key(&self, path: &Path) -> Option<(PathBuf, String)> {
+            let relative = path
+                .strip_prefix(&self.watch_root)
+                .or_else(|_| path.strip_prefix(self.walker.root.resolve()))
+                .ok()?;
+            if relative.as_os_str().is_empty() {
+                return None;
+            }
+            let mut ancestors = relative
+                .ancestors()
+                .skip(1)
+                .filter(|p| !p.as_os_str().is_empty());
+            if !self.recursive && ancestors.next().is_some() {
+                return None;
+            }
+            if !ancestors.all(|dir| self.walker.matcher.is_dir_included(dir)) {
+                return None;
+            }
+            Some((
+                relative.to_path_buf(),
+                crate::resources::file::path_key(relative),
+            ))
+        }
+
+        /// Walk the files under `relative` (a directory) on a blocking thread.
+        async fn walk_subtree(&self, relative: PathBuf) -> Result<Vec<FileEntry>> {
+            let root = self.walker.root.clone();
+            let recursive = self.recursive;
+            let matcher = self.walker.matcher.clone();
+            tokio::task::spawn_blocking(move || walk_files(&root, &relative, recursive, &*matcher))
+                .await
+                .map_err(|e| Error::engine(format!("directory walk task panicked: {e}")))?
+        }
+
+        /// Resolve a batch of changed paths into per-key updates and deletes
+        /// and apply them to the subscriber.
+        async fn apply_changes(
+            &self,
+            subscriber: &LiveMapSubscriber<String, FileEntry>,
+            paths: BTreeSet<PathBuf>,
+        ) -> Result<()> {
+            let mut updates: BTreeMap<String, FileEntry> = BTreeMap::new();
+            let mut deletes: BTreeSet<String> = BTreeSet::new();
+            for path in paths {
+                let Some((relative, key)) = self.relative_key(&path) else {
+                    continue;
+                };
+                match tokio::fs::metadata(&path).await {
+                    Ok(meta) if meta.is_file() => {
+                        if self.walker.matcher.is_file_included(&relative) {
+                            let entry =
+                                FileEntry::from_metadata(self.walker.root.clone(), relative, &meta);
+                            updates.insert(key, entry);
+                        }
+                    }
+                    Ok(meta) if meta.is_dir() => {
+                        // A directory that appeared (created, or moved in): its
+                        // files produced no events of their own, so walk it.
+                        if self.recursive && self.walker.matcher.is_dir_included(&relative) {
+                            for entry in self.walk_subtree(relative).await? {
+                                updates.insert(entry.key(), entry);
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // Gone: the file under that key, or every file under
+                        // that directory.
+                        let known = self.known_keys();
+                        if known.contains(&key) {
+                            deletes.insert(key);
+                        } else {
+                            let prefix = format!("{key}/");
+                            deletes.extend(
+                                known
+                                    .range(prefix.clone()..)
+                                    .take_while(|k| k.starts_with(&prefix))
+                                    .cloned(),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("fs watch: cannot stat {}: {e}", path.display());
+                    }
+                }
+            }
+            for key in deletes {
+                if updates.contains_key(&key) {
+                    continue;
+                }
+                subscriber.delete(key.clone()).await?;
+                self.known_keys().remove(&key);
+            }
+            // Every event re-runs its file's component, as in the Python SDK:
+            // an equal size and mtime is not proof of equal content (a rewrite
+            // in the mtime's own tick keeps it), so whether the work can be
+            // skipped is the file memo state's decision, not the feed's.
+            for (key, entry) in updates {
+                subscriber.update(key.clone(), entry).await?;
+                self.known_keys().insert(key);
+            }
+            Ok(())
+        }
     }
 
-    /// Watch `root`, sending `()` on every change, with the platform's native
+    /// What the watcher reports to the feed's loop.
+    enum FsChange {
+        /// The platform dropped events (an inotify queue overflow): walk the
+        /// whole tree.
+        Rescan,
+        /// Something changed at this path; what it is now is decided by a stat
+        /// after the debounce window.
+        Path(PathBuf),
+    }
+
+    /// Map a platform event to the changes the feed acts on. Access events
+    /// (an open or a close for reading) are dropped: on Linux the inotify
+    /// watch includes `IN_OPEN`, so the feed's own reads of the files it
+    /// processes would otherwise feed back as changes.
+    fn changes_of(event: notify::Event) -> Vec<FsChange> {
+        if event.need_rescan() {
+            return vec![FsChange::Rescan];
+        }
+        match event.kind {
+            EventKind::Access(_) => Vec::new(),
+            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
+                event.paths.into_iter().map(FsChange::Path).collect()
+            }
+            EventKind::Any | EventKind::Other => {
+                event.paths.into_iter().map(FsChange::Path).collect()
+            }
+        }
+    }
+
+    /// Watch `root`, sending each change to `tx`, with the platform's native
     /// backend; when creating or arming it fails, the poller takes over and
     /// the reason is logged. The returned watcher stops when dropped.
     fn start_watcher(
-        root: &std::path::Path,
+        root: &Path,
         mode: RecursiveMode,
-        poll_interval: std::time::Duration,
-        tx: tokio::sync::mpsc::UnboundedSender<()>,
+        poll_interval: Duration,
+        tx: mpsc::UnboundedSender<FsChange>,
     ) -> Result<Box<dyn Watcher + Send>> {
         let handler = move |res: notify::Result<notify::Event>| {
-            if res.is_ok() {
-                let _ = tx.send(());
+            if let Ok(event) = res {
+                for change in changes_of(event) {
+                    let _ = tx.send(change);
+                }
             }
         };
         let native = notify::RecommendedWatcher::new(handler.clone(), Config::default())
@@ -161,7 +347,12 @@ mod live {
     #[async_trait]
     impl LiveMapView<String, FileEntry> for LiveDirWalker {
         async fn scan(&self) -> Result<Vec<(String, FileEntry)>> {
-            self.walker.items()
+            let walker = self.walker.clone();
+            let items = tokio::task::spawn_blocking(move || walker.items())
+                .await
+                .map_err(|e| Error::engine(format!("directory walk task panicked: {e}")))??;
+            *self.known_keys() = items.iter().map(|(key, _)| key.clone()).collect();
+            Ok(items)
         }
     }
 
@@ -169,28 +360,156 @@ mod live {
     impl LiveMapFeed<String, FileEntry> for LiveDirWalker {
         async fn watch(&self, subscriber: LiveMapSubscriber<String, FileEntry>) -> Result<()> {
             let _watch_token = self.watch_guard.enter()?;
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+            let (tx, mut rx) = mpsc::unbounded_channel::<FsChange>();
             let mode = if self.recursive {
                 RecursiveMode::Recursive
             } else {
                 RecursiveMode::NonRecursive
             };
-            let _watcher = start_watcher(&self.watch_root, mode, self.poll_interval, tx)?;
+            let mut watcher =
+                start_watcher(&self.watch_root, mode, self.poll_interval, tx.clone())?;
             // The watcher reports only changes after the `watch` call just
             // above, while the framework's catch-up scan ran before this
             // method was called, so a file created or deleted between the two
             // would never produce an event: rescan once now that the watch is
             // armed, as the Python localfs source does.
             subscriber.update_all().await?;
-            // Re-scan on each (coalesced) batch of filesystem events: the live
-            // component's `update_all` re-runs `scan`, and `mount_each`
-            // reconciles added/removed files. The watcher is kept alive for the
-            // duration of this loop; dropping the future stops watching.
-            while rx.recv().await.is_some() {
-                while rx.try_recv().is_ok() {}
-                subscriber.update_all().await?;
+            let mut next_rescan = self
+                .rescan_interval
+                .map(|interval| tokio::time::Instant::now() + interval);
+            // The watcher is kept alive for the duration of this loop; dropping
+            // the future stops watching.
+            loop {
+                let first = match next_rescan {
+                    Some(deadline) => match tokio::time::timeout_at(deadline, rx.recv()).await {
+                        Ok(change) => change,
+                        Err(_elapsed) => {
+                            // Periodic rescan: a fresh OS-level watcher (the
+                            // old one may have silently stopped), stale events
+                            // dropped, then a full walk to catch whatever the
+                            // old watcher missed.
+                            drop(watcher);
+                            while rx.try_recv().is_ok() {}
+                            watcher = start_watcher(
+                                &self.watch_root,
+                                mode,
+                                self.poll_interval,
+                                tx.clone(),
+                            )?;
+                            subscriber.update_all().await?;
+                            next_rescan = self
+                                .rescan_interval
+                                .map(|interval| tokio::time::Instant::now() + interval);
+                            continue;
+                        }
+                    },
+                    None => rx.recv().await,
+                };
+                let Some(first) = first else { break };
+                // Collect the burst the first event belongs to.
+                let mut rescan = false;
+                let mut paths = BTreeSet::new();
+                let mut note = |change: FsChange| match change {
+                    FsChange::Rescan => rescan = true,
+                    FsChange::Path(path) => {
+                        paths.insert(path);
+                    }
+                };
+                note(first);
+                let window = tokio::time::sleep(EVENT_DEBOUNCE);
+                tokio::pin!(window);
+                loop {
+                    tokio::select! {
+                        () = &mut window => break,
+                        change = rx.recv() => match change {
+                            Some(change) => note(change),
+                            None => break,
+                        },
+                    }
+                }
+                if rescan {
+                    subscriber.update_all().await?;
+                } else {
+                    self.apply_changes(&subscriber, paths).await?;
+                }
             }
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn event(kind: EventKind, path: &str) -> notify::Event {
+            notify::Event::new(kind).add_path(PathBuf::from(path))
+        }
+
+        #[test]
+        fn access_events_are_dropped_and_changes_keep_their_path() {
+            use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
+            assert!(
+                changes_of(event(
+                    EventKind::Access(AccessKind::Open(AccessMode::Any)),
+                    "/r/a"
+                ))
+                .is_empty()
+            );
+            assert!(
+                changes_of(event(
+                    EventKind::Access(AccessKind::Close(AccessMode::Read)),
+                    "/r/a"
+                ))
+                .is_empty()
+            );
+            for kind in [
+                EventKind::Create(CreateKind::File),
+                EventKind::Modify(ModifyKind::Any),
+                EventKind::Remove(RemoveKind::Folder),
+            ] {
+                let changes = changes_of(event(kind, "/r/a"));
+                assert!(
+                    matches!(changes.as_slice(), [FsChange::Path(p)] if p == Path::new("/r/a"))
+                );
+            }
+            let overflow = event(EventKind::Other, "/r").set_flag(notify::event::Flag::Rescan);
+            assert!(matches!(
+                changes_of(overflow).as_slice(),
+                [FsChange::Rescan]
+            ));
+        }
+
+        #[test]
+        fn relative_key_prunes_what_the_walk_would_not_yield() {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let matcher =
+                super::super::PatternFilePathMatcher::new(std::iter::empty::<&str>(), ["**/.*"])
+                    .unwrap();
+            let live = super::super::walk_dir(root.clone())
+                .recursive(true)
+                .path_matcher(matcher.clone())
+                .live();
+            assert_eq!(
+                live.relative_key(&root.join("a/b.txt")).unwrap().1,
+                "a/b.txt"
+            );
+            assert!(live.relative_key(&root).is_none(), "the root itself");
+            assert!(
+                live.relative_key(&root.join(".git/objects/ab")).is_none(),
+                "a pruned dir"
+            );
+            assert!(
+                live.relative_key(Path::new("/elsewhere/x")).is_none(),
+                "outside the root"
+            );
+
+            let flat = super::super::walk_dir(root.clone()).live();
+            assert_eq!(flat.relative_key(&root.join("b.txt")).unwrap().1, "b.txt");
+            assert!(
+                flat.relative_key(&root.join("a/b.txt")).is_none(),
+                "below a flat walk"
+            );
         }
     }
 }
@@ -212,6 +531,21 @@ pub struct FileEntry {
 }
 
 impl FileEntry {
+    fn from_metadata(root: FilePath, relative: PathBuf, metadata: &std::fs::Metadata) -> Self {
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        Self {
+            root,
+            relative,
+            size: metadata.len(),
+            modified,
+            cache: Arc::new(FileContentCache::with_metadata(FileMetadata {
+                size: metadata.len(),
+                modified,
+                content_fingerprint: None,
+            })),
+        }
+    }
+
     /// Logical file path for this entry.
     pub fn file_path(&self) -> FilePath {
         self.root.join(&self.relative)
@@ -235,7 +569,9 @@ impl FileEntry {
             .unwrap_or("")
     }
 
-    /// Read file contents as bytes.
+    /// Read file contents as bytes, blocking the calling thread. In an async
+    /// function prefer [`FileLike::read`], which reads on the runtime's
+    /// blocking pool and caches the content.
     ///
     /// # Errors
     ///
@@ -244,7 +580,8 @@ impl FileEntry {
         std::fs::read(self.path()).map_err(Error::Io)
     }
 
-    /// Read file contents as UTF-8 string.
+    /// Read file contents as UTF-8 string, blocking the calling thread (see
+    /// [`content`](Self::content)); [`FileLike::read_text`] is the async form.
     ///
     /// # Errors
     ///
@@ -301,7 +638,7 @@ impl FileSourceItem for FileEntry {}
 crate::memo::impl_file_memo_input!(FileEntry);
 
 /// Walk a directory matching multiple glob patterns. Returns all matching files
-/// sorted by relative path.
+/// sorted by relative path. Blocks on the walk, like [`DirWalker::walk`].
 ///
 /// # Examples
 /// ```ignore
@@ -309,7 +646,10 @@ crate::memo::impl_file_memo_input!(FileEntry);
 /// ```
 pub fn walk(dir: impl AsRef<Path>, patterns: &[&str]) -> Result<Vec<FileEntry>> {
     let matcher = PatternFilePathMatcher::include(patterns.iter().copied())?;
-    walk_internal(&FilePath::new(dir.as_ref()), true, &matcher)
+    DirWalker::new(dir.as_ref())
+        .recursive(true)
+        .path_matcher(matcher)
+        .walk()
 }
 
 /// Like [`walk`], but yields `(stable key, file)` pairs ready to feed to
@@ -322,83 +662,153 @@ pub fn walk_items(dir: impl AsRef<Path>, patterns: &[&str]) -> Result<Vec<(Strin
         .collect())
 }
 
-fn walk_internal(
+/// The identity of a directory, for not entering a symlink cycle twice.
+#[cfg(unix)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DirId {
+    dev: u64,
+    ino: u64,
+}
+
+#[cfg(unix)]
+impl DirId {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        }
+    }
+}
+
+/// Walk the files under `start` (a directory relative to `root`; empty for
+/// the root itself), in directory order, with the matcher applied to paths
+/// relative to `root`. Mirrors the Python SDK's walk:
+/// * a symlink to a directory is followed, except into a directory that is
+///   already an ancestor (a cycle); a symlink to a file is a file,
+/// * a directory the process cannot read, and an entry that vanishes or
+///   cannot be stat-ed, are skipped,
+/// * the matcher decides on an entry's path before it is stat-ed, so an
+///   excluded file costs no system call beyond the directory listing.
+///
+/// A missing `start` yields no files; `start` not being a directory is an
+/// error.
+fn walk_files(
     root: &FilePath,
+    start: &Path,
     recursive: bool,
     matcher: &dyn FilePathMatcher,
 ) -> Result<Vec<FileEntry>> {
-    let dir = root.resolve();
-    let dir = dir.as_path();
-    let canonical_dir = match std::fs::canonicalize(dir) {
-        Ok(path) => path,
+    let root_fs = root.resolve();
+    let start_fs = root_fs.join(start);
+    let start_metadata = match std::fs::metadata(&start_fs) {
+        Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(Error::Io(err)),
     };
-    let mut files = Vec::new();
-
-    let walker = if recursive {
-        WalkDir::new(dir)
-    } else {
-        WalkDir::new(dir).max_depth(1)
-    };
-    for entry in walker.into_iter().filter_entry(|entry| {
-        if entry.depth() == 0 || !entry.file_type().is_dir() {
-            return true;
-        }
-        let path = entry.path();
-        let relative = path
-            .strip_prefix(dir)
-            .or_else(|_| path.strip_prefix(&canonical_dir));
-        relative.is_ok_and(|relative| matcher.is_dir_included(relative))
-    }) {
-        let entry = entry.map_err(|err| {
-            let message = err.to_string();
-            match err.into_io_error() {
-                Some(io_err) => Error::Io(io_err),
-                None => Error::engine(message),
-            }
-        })?;
-        let path = entry.path();
-        let relative = relative_path(dir, &canonical_dir, path)?;
-        let metadata = std::fs::metadata(path).map_err(Error::Io)?;
-        if metadata.is_dir() {
-            continue;
-        }
-        if !metadata.is_file() {
-            continue;
-        }
-        if !matcher.is_file_included(&relative) {
-            continue;
-        }
-
-        files.push(FileEntry {
-            root: root.clone(),
-            relative,
-            size: metadata.len(),
-            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-            cache: Arc::new(FileContentCache::with_metadata(FileMetadata {
-                size: metadata.len(),
-                modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                content_fingerprint: None,
-            })),
-        });
+    if !start_metadata.is_dir() {
+        return Err(Error::engine(format!(
+            "path is not a directory: {}",
+            start_fs.display()
+        )));
     }
 
-    files.sort_by(|a, b| a.relative.cmp(&b.relative));
-    Ok(files)
-}
+    struct PendingDir {
+        path: PathBuf,
+        relative: PathBuf,
+        #[cfg(unix)]
+        ancestors: Vec<DirId>,
+    }
 
-fn relative_path(root: &Path, canonical_root: &Path, path: &Path) -> Result<PathBuf> {
-    path.strip_prefix(root)
-        .or_else(|_| path.strip_prefix(canonical_root))
-        .map_err(|_| {
-            Error::engine(format!(
-                "walk path '{}' is outside root directory '{}'",
-                path.display(),
-                root.display()
-            ))
-        })
-        .map(Path::to_path_buf)
+    let mut files = Vec::new();
+    let mut pending = vec![PendingDir {
+        path: start_fs,
+        relative: start.to_path_buf(),
+        #[cfg(unix)]
+        ancestors: vec![DirId::of(&start_metadata)],
+    }];
+    while let Some(dir) = pending.pop() {
+        let entries = match std::fs::read_dir(&dir.path) {
+            Ok(entries) => entries,
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+                ) =>
+            {
+                continue;
+            }
+            Err(err) => return Err(Error::Io(err)),
+        };
+        let mut subdirs = Vec::new();
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            let relative = dir.relative.join(entry.file_name());
+            // The listing says what a non-symlink is; a symlink is what it
+            // points to (dangling: skipped), as Python's `is_dir`/`is_file`.
+            let (is_dir, is_file, metadata) = if file_type.is_symlink() {
+                match std::fs::metadata(&path) {
+                    Ok(metadata) => (metadata.is_dir(), metadata.is_file(), Some(metadata)),
+                    Err(_) => continue,
+                }
+            } else {
+                (file_type.is_dir(), file_type.is_file(), None)
+            };
+            if is_dir {
+                if !recursive || !matcher.is_dir_included(&relative) {
+                    continue;
+                }
+                #[cfg(unix)]
+                let ancestors = {
+                    let metadata = match metadata {
+                        Some(metadata) => metadata,
+                        None => match std::fs::metadata(&path) {
+                            Ok(metadata) => metadata,
+                            Err(_) => continue,
+                        },
+                    };
+                    let id = DirId::of(&metadata);
+                    if dir.ancestors.contains(&id) {
+                        continue;
+                    }
+                    let mut ancestors = dir.ancestors.clone();
+                    ancestors.push(id);
+                    ancestors
+                };
+                #[cfg(not(unix))]
+                if file_type.is_symlink() {
+                    // Without a stable directory identity a symlink cycle
+                    // cannot be detected: do not follow symlinked directories.
+                    continue;
+                }
+                subdirs.push(PendingDir {
+                    path,
+                    relative,
+                    #[cfg(unix)]
+                    ancestors,
+                });
+            } else if is_file {
+                if !matcher.is_file_included(&relative) {
+                    continue;
+                }
+                let metadata = match metadata {
+                    Some(metadata) => metadata,
+                    None => match std::fs::metadata(&path) {
+                        Ok(metadata) => metadata,
+                        Err(_) => continue,
+                    },
+                };
+                files.push(FileEntry::from_metadata(root.clone(), relative, &metadata));
+            }
+        }
+        // Push in reverse so the stack visits subdirectories in listing order.
+        pending.extend(subdirs.into_iter().rev());
+    }
+    Ok(files)
 }
 
 // ---------------------------------------------------------------------------
@@ -737,9 +1147,10 @@ impl TargetHandler<FsEntry> for FileHandler {
         let (base_key, path) = entry_path(&key)?;
 
         let desired_fp = match &desired {
-            Some(FsEntry::File { content, .. }) => {
-                Some(Fingerprint::from(content).map_err(Error::from)?)
-            }
+            // One hasher update over the content, as the Python target's
+            // `fingerprint_bytes`; `Fingerprint::from` would serialize the
+            // bytes one by one.
+            Some(FsEntry::File { content, .. }) => Some(Fingerprint::from_bytes(content)),
             Some(FsEntry::Dir { .. }) => Some(dir_fingerprint()),
             None => None,
         };
@@ -907,7 +1318,7 @@ mod tests {
     #[test]
     fn file_target_rewrites_unless_every_previous_state_matches() {
         let handler = FileHandler::default();
-        let fp = |content: &[u8]| Fingerprint::from(&content.to_vec()).unwrap();
+        let fp = Fingerprint::from_bytes;
 
         let unchanged = handler
             .reconcile(key("a.txt"), Some(file(b"A")), vec![fp(b"A")], false)
@@ -973,6 +1384,70 @@ mod tests {
             .reconcile(key("a.txt"), None, vec![], false)
             .unwrap();
         assert!(known_absent.is_none());
+    }
+
+    fn keys(files: &[FileEntry]) -> Vec<String> {
+        files.iter().map(FileEntry::key).collect()
+    }
+
+    #[test]
+    fn walk_follows_symlinked_dirs_once_and_skips_unreadable_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = &tmp.path().join("root");
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/b/deep.txt"), b"deep").unwrap();
+        std::fs::write(root.join("top.txt"), b"top").unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("linked.txt"), b"linked").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+            // A symlink to a directory elsewhere is followed; one back to an
+            // ancestor is a cycle and is not entered; a symlink to a file is a
+            // file; a dangling one is skipped.
+            symlink(&outside, root.join("a/link")).unwrap();
+            symlink(root, root.join("a/b/loop")).unwrap();
+            symlink(root.join("top.txt"), root.join("a/alias.txt")).unwrap();
+            symlink(root.join("missing"), root.join("a/dangling")).unwrap();
+            // A directory this process cannot list is skipped, not an error.
+            std::fs::create_dir(root.join("locked")).unwrap();
+            std::fs::write(root.join("locked/hidden.txt"), b"hidden").unwrap();
+            std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o000))
+                .unwrap();
+
+            let files = walk_dir(root).recursive(true).walk().unwrap();
+            std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            assert_eq!(
+                keys(&files),
+                [
+                    "a/alias.txt",
+                    "a/b/deep.txt",
+                    "a/link/linked.txt",
+                    "top.txt"
+                ]
+            );
+        }
+
+        // Non-recursive: the top level only.
+        let flat = walk_dir(root).walk().unwrap();
+        assert_eq!(keys(&flat), ["top.txt"]);
+
+        // A matcher prunes directories before they are listed and files before
+        // they are stat-ed.
+        let matched = walk_dir(root)
+            .recursive(true)
+            .path_matcher(PatternFilePathMatcher::new(["**/*.txt"], ["a/b"]).unwrap())
+            .walk()
+            .unwrap();
+        assert!(!keys(&matched).iter().any(|k| k.starts_with("a/b/")));
+        assert!(keys(&matched).contains(&"top.txt".to_string()));
+
+        // A missing root yields nothing; a file as root is an error.
+        assert!(walk_dir(root.join("nope")).walk().unwrap().is_empty());
+        assert!(walk_dir(root.join("top.txt")).walk().is_err());
     }
 
     #[test]

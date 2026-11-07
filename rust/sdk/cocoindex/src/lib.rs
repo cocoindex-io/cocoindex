@@ -69,8 +69,8 @@ pub use entity_resolution::{
 pub use error::{Error, Result};
 pub use memo::MemoInput;
 pub use resources::file::{
-    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
-    MatchAllFilePathMatcher, PatternFilePathMatcher,
+    DecodeErrors, FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher,
+    FileSourceItem, MatchAllFilePathMatcher, PatternFilePathMatcher,
 };
 pub use resources::fs::{
     DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
@@ -81,7 +81,8 @@ pub use resources::id::{
     generate_uuid_default,
 };
 pub use runner::{
-    GPU, GPURunner, configure_gpu_pool, current_gpu, current_gpu_fraction, current_gpus,
+    GPU, GPURunner, Runner, RunnerBody, RunnerOutput, configure_gpu_pool, current_gpu,
+    current_gpu_fraction, current_gpus,
 };
 // Re-exported so `#[cocoindex::function]` output can register each function's
 // logic fingerprint without the user crate needing a direct `linkme` dependency.
@@ -89,7 +90,8 @@ pub use runner::{
 pub use linkme;
 pub use live_component::{
     ExceptionContext, ExceptionHandler, ExceptionSource, LiveComponent, LiveComponentOperator,
-    LiveMapFeed, LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
+    LiveMapFeed, LiveMapSubscriber, LiveMapView, LiveStream, LiveStreamSubscriber, MountKind,
+    ReadyHandle, SingleWatcherGuard, SingleWatcherToken,
 };
 #[doc(hidden)]
 pub use logic::{COCO_FN_LOGIC, FnDeps, FnLogicEntry};
@@ -108,8 +110,13 @@ pub mod __private {
 }
 pub use resources::chunk::{Chunk, TextPosition};
 pub use resources::embedder::Embedder;
-pub use resources::live_map::LiveMap;
+pub use resources::live_map::{LiveMap, LiveMapKey};
 pub use resources::rate_limit::RateLimiter;
+pub use resources::view::{SegmentKind, SourceView, ViewSegment};
+// The content/memo fingerprint type: `memo::key_fingerprint_result`,
+// `FileMetadata::content_fingerprint` and `FileLike::content_fingerprint`
+// return it, and `MemoInput` accepts a precomputed one.
+pub use cocoindex_utils::fingerprint::Fingerprint;
 pub use resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,
@@ -130,6 +137,7 @@ pub use user_state::{IntoStateKey, StateHandle};
 // Re-export proc macros
 pub use cocoindex_macros::{
     MemoInput, SchemaFields, app, function, lifespan, main, mount, mount_each, use_mount,
+    use_mount_each,
 };
 pub use row_schema::{LogicalType, SchemaField, SchemaFields};
 
