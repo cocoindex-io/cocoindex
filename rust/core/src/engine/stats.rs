@@ -46,7 +46,7 @@ pub struct FailureRecord {
     /// The processor name the failure is counted under in the stats.
     pub processor: String,
     /// The component's path.
-    pub component: String,
+    pub component: crate::state::stable_path::StablePath,
     /// The first line of the error.
     pub message: String,
 }

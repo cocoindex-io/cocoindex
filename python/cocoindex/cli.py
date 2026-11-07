@@ -3,7 +3,7 @@ import os
 import signal
 import sys
 import time
-from typing import Any, AsyncIterator, NamedTuple
+from typing import Any, AsyncIterator, Literal, NamedTuple
 import pathlib
 
 import click
@@ -15,6 +15,7 @@ import asyncio
 import cocoindex as coco
 from cocoindex._internal.app import App
 from cocoindex._internal import banner as _banner
+from cocoindex._internal.update_stats import DisplayMode, display_mode
 from cocoindex._internal import core as _core
 from cocoindex._internal.environment import (
     Environment,
@@ -94,8 +95,6 @@ class _TerminalLogFormatter(logging.Formatter):
 def _say_stopping() -> None:
     """Acknowledge Ctrl+C. A progress display on a terminal says it in its
     final line (`Stopped after …`), so stay quiet then."""
-    from cocoindex._internal.update_stats import DisplayMode, display_mode
-
     if display_mode() is not DisplayMode.TERMINAL:
         print("\nStopping…")
 
@@ -248,7 +247,7 @@ def _print_header(action: str, env: Environment) -> None:
         click.echo(f"{_banner.version_label()} · {action} · {where}")
 
 
-def _say_done(mark: str, text: str, detail: str = "") -> None:
+def _say_done(mark: Literal["ok", "info"], text: str, detail: str = "") -> None:
     """A one-line result in the progress display's voice: `✓ text (detail)`.
     `mark` is `ok` (✓, green) or `info` (●, cyan)."""
     glyph, code = {"ok": ("✓", "32"), "info": ("●", "36")}[mark]

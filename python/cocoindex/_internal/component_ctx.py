@@ -33,6 +33,9 @@ from .update_stats import (
 )
 
 _logger = logging.getLogger(__name__)
+# Component failures reported beside a progress display go out under the
+# package's own name: those lines are for people, not tied to this module.
+_failure_logger = logging.getLogger("cocoindex")
 
 T = TypeVar("T")
 
@@ -189,21 +192,20 @@ class ComponentContext:
                 # No handlers registered — log directly without building
                 # the ExceptionContext metadata at all. Don't propagate.
                 mode = display_mode()
-                if mode is not DisplayMode.NONE:
+                if mode is not None:
                     # A progress display lists the failures. On a terminal it
                     # shows each one, so the log keeps it at DEBUG; in
                     # scrolling output one line each says when it happened.
                     # The traceback is at DEBUG either way.
                     message = "%s failed: %s: %s"
                     args = (readable_path(str(stable_path)), type(exc).__name__, exc)
-                    # Under the package's own logger name: this line is meant
-                    # for people, not tied to the module that writes it.
-                    logger = logging.getLogger("cocoindex")
                     if mode is DisplayMode.TERMINAL:
-                        logger.debug(message, *args)
+                        _failure_logger.debug(message, *args)
                     else:
-                        logger.error(message, *args)
-                    logger.debug("traceback of the failure above", exc_info=exc)
+                        _failure_logger.error(message, *args)
+                    _failure_logger.debug(
+                        "traceback of the failure above", exc_info=exc
+                    )
                 else:
                     _logger.error("component build failed: %s", exc, exc_info=exc)
                 return

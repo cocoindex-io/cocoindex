@@ -32,11 +32,10 @@ def _resolve_report_to_stdout(
 
 
 class DisplayMode(_enum.Enum):
-    """Where a progress display draws, if one runs. Component failures are
-    reported to suit it: the display lists them, so a traceback per failure
-    would only push it off screen."""
+    """Where a progress display draws. Component failures are reported to
+    suit it: the display lists them, so a traceback per failure would only
+    push it off screen."""
 
-    NONE = _enum.auto()
     TERMINAL = _enum.auto()
     PLAIN = _enum.auto()
 
@@ -45,32 +44,46 @@ class DisplayMode(_enum.Enum):
 _displays = {DisplayMode.TERMINAL: 0, DisplayMode.PLAIN: 0}
 
 
-def display_mode() -> DisplayMode:
-    """Where the progress display draws now; a terminal one wins."""
+def display_mode() -> DisplayMode | None:
+    """Where the progress display draws now, `None` when none runs; a
+    terminal one wins."""
     for mode in (DisplayMode.TERMINAL, DisplayMode.PLAIN):
         if _displays[mode] > 0:
             return mode
-    return DisplayMode.NONE
+    return None
 
 
 def readable_path(path: str) -> str:
-    """A component path as people read it: ``item/3`` for ``/"item"/"3"``.
-    Matches the progress display; keys that are not plain strings or numbers
-    keep the exact form ``cocoindex show`` takes."""
-    parts = path.strip("/").split("/")
-    if parts == [""]:
+    """A component path as people read it: ``item/3`` for ``/"item"/"3"``,
+    ``process_doc/guide/page-7.md`` for ``/@process_doc/"guide/page-7.md"``.
+    Matches the progress display: only when every key is an integer, a symbol
+    or a string without escapes; otherwise the exact form ``cocoindex show``
+    takes."""
+    rest = path.lstrip("/")
+    if not rest:
         return "(root)"
-
-    def plain(part: str) -> str | None:
-        if len(part) >= 2 and part[0] == part[-1] == '"':
-            inner = part[1:-1]
-            return inner if inner and not set(inner) & {'"', "\\"} else None
-        return part if part and all(c.isdigit() or c == "-" for c in part) else None
-
-    readable = [plain(p) for p in parts]
-    if any(r is None for r in readable):
-        return path
-    return "/".join(r for r in readable if r is not None)
+    parts: list[str] = []
+    while rest:
+        if rest[0] == '"':
+            end = rest.find('"', 1)
+            inner = rest[1:end] if end > 0 else ""
+            if end < 0 or not inner or "\\" in inner:
+                return path
+            parts.append(inner)
+            rest = rest[end + 1 :]
+        else:
+            token, _, _ = rest.partition("/")
+            if token.startswith("@") and len(token) > 1:
+                parts.append(token[1:])
+            elif token and all(c.isdigit() or c == "-" for c in token):
+                parts.append(token)
+            else:
+                return path
+            rest = rest[len(token) :]
+        if rest and not rest.startswith("/"):
+            return path
+        rest = rest[1:]
+    return "/".join(parts)
 
 
 @contextlib.contextmanager
