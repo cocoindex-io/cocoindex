@@ -10,7 +10,8 @@ pub use crate::entity_resolution::{
 pub use crate::error::{Error, Result};
 pub use crate::live_component::{
     ExceptionContext, ExceptionHandler, ExceptionSource, LiveComponent, LiveComponentOperator,
-    LiveMapFeed, LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
+    LiveMapFeed, LiveMapSubscriber, LiveMapView, LiveStream, LiveStreamSubscriber, MountKind,
+    ReadyHandle, SingleWatcherGuard, SingleWatcherToken,
 };
 pub use crate::resources::chunk::{Chunk, TextPosition};
 pub use crate::resources::embedder::Embedder;

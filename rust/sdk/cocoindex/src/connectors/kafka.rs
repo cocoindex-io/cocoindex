@@ -13,18 +13,22 @@
 //!   [`KafkaTopicOptions::deletion_value_fn`].
 //!
 //! The producer is provided under a [`ContextKey`] (as every connection in the
-//! Rust SDK is) and resolved when the target's actions apply. Use
-//! [`declare_kafka_topic_target`] / [`mount_kafka_topic_target`] to get a
-//! handle for declaring messages. [`KafkaProducer::ensure_topic`] is an
-//! explicit, idempotent topic-creation helper outside reconciliation.
+//! Rust SDK is) and resolved when the target's actions apply. [`kafka_topic_target`]
+//! builds the topic's [`TargetState`] for `mount_target` /
+//! `declare_target_state_with_child`; [`declare_kafka_topic_target`] /
+//! [`mount_kafka_topic_target`] wrap those and return a handle for declaring
+//! messages. [`KafkaProducer::ensure_topic`] is an explicit, idempotent
+//! topic-creation helper outside reconciliation.
 //!
 //! # Sources
 //!
-//! [`topic_as_map`] reads one topic as a keyed map (the latest value per message
-//! key; a tombstone removes the key) and [`topic_as_stream`] reads one or more
-//! topics as an append-only stream of every record. Both yield the full
-//! [`KafkaMessage`] (key, value, headers, partition, offset, timestamp), and both
-//! read every partition.
+//! [`topic_as_stream`] reads one or more topics as a [`LiveStream`] of every
+//! record ([`KafkaTopicStream`]; [`payloads`](KafkaTopicStream::payloads) is the
+//! `LiveStream<Vec<u8>>` view of the values) and [`topic_as_map`] reads one topic
+//! as a keyed map (the latest value per message key; a tombstone removes the
+//! key). Both yield the full [`KafkaMessage`] (key, value, headers, partition,
+//! offset, timestamp), both read every partition, and both are also
+//! [`LiveMapView`]s for [`Ctx::mount_each_live`](crate::Ctx::mount_each_live).
 //!
 //! A [`KafkaConsumer`] built with a
 //! [`consumer_group`](KafkaConsumerOptions::consumer_group) keeps its position:
@@ -38,14 +42,17 @@
 //!
 //! Uses [`rskafka`], a pure-Rust async Kafka client with no `librdkafka`/C
 //! dependency. SASL (PLAIN, SCRAM) and TLS are configured with
-//! [`KafkaConnectOptions`]. `rskafka` does not speak the consumer-group
-//! protocol, so a consumer group here is CocoIndex's own durable cursor, not a
-//! broker-side group: the broker does not see its lag, and two processes with
-//! the same group name do not share partitions between them.
+//! [`KafkaConnectOptions`]; a client built by the caller is wrapped with
+//! [`KafkaProducer::from_client`] / [`KafkaConsumer::from_client`]. `rskafka`
+//! does not speak the consumer-group protocol, so a consumer group here is
+//! CocoIndex's own durable cursor, not a broker-side group: the broker does not
+//! see its lag, and two processes with the same group name do not share
+//! partitions between them.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use cocoindex_utils::fingerprint::Fingerprint;
 use rskafka::client::partition::{Compression, OffsetAt, PartitionClient, UnknownTopicHandling};
@@ -54,14 +61,17 @@ use rskafka::record::{Record, RecordAndOffset};
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
+use crate::connectors::partition_tail::{PartitionSource, PartitionTail, watch_partitions};
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
 use crate::live_component::{
-    LiveComponentOperator, LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard,
+    LiveComponentOperator, LiveMapFeed, LiveMapSubscriber, LiveMapView, LiveStream,
+    LiveStreamSubscriber, ReadyHandle, SingleWatcherGuard,
 };
 use crate::target_state::{
-    SinkCache, StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
-    TargetStateProvider, declare_target_state, register_root_target_states_provider,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider,
+    declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 // ---------------------------------------------------------------------------
@@ -246,6 +256,17 @@ impl KafkaProducer {
         Ok(Self { client, state_id })
     }
 
+    /// Wrap an `rskafka` client the caller built (with a connection setup the
+    /// options cannot express), as the Python target takes the caller's
+    /// `AIOProducer`. `state_id` is the stable identity of the cluster (e.g.
+    /// its bootstrap-server list), never a credential.
+    pub fn from_client(client: Client, state_id: impl Into<String>) -> Self {
+        Self {
+            client: Arc::new(client),
+            state_id: Arc::from(state_id.into()),
+        }
+    }
+
     /// Stable identity (the bootstrap-server list).
     pub fn state_id(&self) -> &str {
         &self.state_id
@@ -294,8 +315,9 @@ impl KafkaProducer {
 // Public API: options + target + the constructor/declaration/mount split
 // ---------------------------------------------------------------------------
 
-/// Callback producing the value of a deletion record for a given message key.
-pub type DeletionValueFn = Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync>;
+/// Callback producing the value of a deletion record for a message key (the
+/// key as Kafka stores it: a `&str` key is its UTF-8 bytes).
+pub type DeletionValueFn = Arc<dyn Fn(&[u8]) -> Vec<u8> + Send + Sync>;
 
 /// Options for the Kafka topic target.
 #[derive(Clone, Default)]
@@ -303,6 +325,10 @@ pub struct KafkaTopicOptions {
     /// How to represent a deletion. `None` (default) produces a *tombstone* — a
     /// record with the message key and a null value. When set, the callback's
     /// return value is used as the record value instead.
+    ///
+    /// The callback lives in this process: a run that declares the topic target
+    /// (or drops the app from a process that did) applies it; `App::drop_state`
+    /// from a process that never declared the topic target produces tombstones.
     pub deletion_value_fn: Option<DeletionValueFn>,
 }
 
@@ -314,39 +340,58 @@ pub struct KafkaTopicTarget {
     topic: Arc<str>,
 }
 
-/// Declare a Kafka topic target and return a ready same-component handle.
-/// No external setup is needed, so this uses the same immediate provider path as
-/// [`mount_kafka_topic_target`].
+/// Build the composable [`TargetState`] of a Kafka topic (the spec
+/// constructor), for `mount_target` / `declare_target_state_with_child`.
+/// `producer` names the [`KafkaProducer`] provided in the environment; it is
+/// resolved when the messages are produced.
+pub fn kafka_topic_target(
+    ctx: &Ctx,
+    producer: &ContextKey<KafkaProducer>,
+    topic: impl Into<String>,
+    options: KafkaTopicOptions,
+) -> Result<TargetState<TopicSpec>> {
+    let topic = topic.into();
+    if topic.is_empty() {
+        return Err(Error::engine("kafka topic name must be non-empty"));
+    }
+    let key = TopicKey {
+        producer_key: producer.name().to_string(),
+        topic,
+    };
+    set_deletion_value_fn(&key, options.deletion_value_fn);
+    let provider = TOPIC_PROVIDER.get(ctx)?;
+    Ok(provider.target_state(key.stable_key(), TopicSpec {}))
+}
+
+/// Declare a Kafka topic target in the current component and return a handle
+/// for declaring messages (the message provider resolves at this component's
+/// commit).
 pub fn declare_kafka_topic_target(
     ctx: &Ctx,
     producer: &ContextKey<KafkaProducer>,
     topic: impl Into<String>,
     options: KafkaTopicOptions,
 ) -> Result<KafkaTopicTarget> {
-    mount_kafka_topic_target(ctx, producer, topic, options)
+    let topic = topic.into();
+    let ts = kafka_topic_target(ctx, producer, topic.clone(), options)?;
+    let messages = declare_target_state_with_child::<TopicSpec, Vec<u8>>(ctx, ts)?;
+    Ok(KafkaTopicTarget {
+        messages,
+        topic: Arc::from(topic),
+    })
 }
 
-/// Declare a Kafka topic target in the current component and return a handle
-/// for declaring messages. `producer` names the [`KafkaProducer`] provided in
-/// the environment; it is resolved when the messages are produced.
-pub fn mount_kafka_topic_target(
+/// Mount a Kafka topic target **foreground** (messages can be declared at once)
+/// and return a handle for declaring messages.
+pub async fn mount_kafka_topic_target(
     ctx: &Ctx,
     producer: &ContextKey<KafkaProducer>,
     topic: impl Into<String>,
     options: KafkaTopicOptions,
 ) -> Result<KafkaTopicTarget> {
     let topic = topic.into();
-    let messages = register_root_target_states_provider(
-        ctx,
-        // Stable connection identity = the ContextKey's name; the client is
-        // resolved at apply time from the host context, as the other targets do.
-        format!("cocoindex/kafka/topic/{}/{}", producer.name(), topic),
-        MessageHandler::new(
-            producer.name().to_string(),
-            topic.clone(),
-            options.deletion_value_fn,
-        ),
-    )?;
+    let ts = kafka_topic_target(ctx, producer, topic.clone(), options)?;
+    let messages = mount_target::<TopicSpec, Vec<u8>>(ctx, ts).await?;
     Ok(KafkaTopicTarget {
         messages,
         topic: Arc::from(topic),
@@ -375,17 +420,167 @@ impl KafkaTopicTarget {
             self.messages.target_state(key, value.as_ref().to_vec()),
         )
     }
+
+    /// [`declare_message`](Self::declare_message) with a binary key. A `&str`
+    /// key and its UTF-8 bytes are distinct target states but one Kafka key;
+    /// a key that switches between the two forms across runs is republished,
+    /// not deleted.
+    pub fn declare_message_bytes(
+        &self,
+        ctx: &Ctx,
+        key: &[u8],
+        value: impl AsRef<[u8]>,
+    ) -> Result<()> {
+        if key.is_empty() {
+            return Err(Error::engine(
+                "kafka declare_message_bytes: key must be non-empty",
+            ));
+        }
+        declare_target_state(
+            ctx,
+            self.messages
+                .target_state(StableKey::Bytes(Arc::from(key)), value.as_ref().to_vec()),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Message handler (root)
+// Topic handler (root, static) and its message child handler
 // ---------------------------------------------------------------------------
+
+/// Spec of a Kafka topic target (the declared container value). Topics are
+/// user-managed, so the spec carries nothing: the topic's identity is in its key.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopicSpec {}
+
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static TOPIC_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<TopicSpec, TopicHandler>("cocoindex/kafka/topic");
+
+/// A topic target state's key: the producer's `ContextKey` name plus the topic
+/// name. Mirrors Python's `_TopicKey`.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TopicKey {
+    producer_key: String,
+    topic: String,
+}
+
+impl TopicKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.producer_key)),
+            StableKey::Str(Arc::from(self.topic)),
+        ]))
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [StableKey::Str(producer_key), StableKey::Str(topic)] = &parts[..]
+        {
+            return Ok(Self {
+                producer_key: producer_key.to_string(),
+                topic: topic.to_string(),
+            });
+        }
+        Err(Error::engine(format!(
+            "unexpected kafka topic key: {key:?}"
+        )))
+    }
+}
+
+/// The deletion-value callbacks of the topic targets this process declared,
+/// looked up when a topic's message handler is built (the spec is persisted,
+/// a closure cannot be).
+static DELETION_VALUE_FNS: Mutex<Option<std::collections::HashMap<TopicKey, DeletionValueFn>>> =
+    Mutex::new(None);
+
+fn set_deletion_value_fn(key: &TopicKey, f: Option<DeletionValueFn>) {
+    let mut guard = DELETION_VALUE_FNS.lock().unwrap_or_else(|e| e.into_inner());
+    let fns = guard.get_or_insert_with(Default::default);
+    match f {
+        Some(f) => {
+            fns.insert(key.clone(), f);
+        }
+        None => {
+            fns.remove(key);
+        }
+    }
+}
+
+fn deletion_value_fn(key: &TopicKey) -> Option<DeletionValueFn> {
+    DELETION_VALUE_FNS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|fns| fns.get(key).cloned())
+}
+
+/// The topic-level action: nothing to apply (topics are user-managed); it
+/// carries the key the message child handler is built from.
+#[derive(Serialize, Deserialize)]
+struct TopicAction {
+    producer_key: String,
+    topic: String,
+}
+
+#[derive(Default)]
+struct TopicHandler {
+    sink: SinkCache<TopicAction>,
+}
+
+impl TargetHandler<TopicSpec> for TopicHandler {
+    type TrackingRecord = ();
+    type Action = TopicAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<TopicSpec>,
+        _prev: Vec<()>,
+        _prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<TopicAction, ()>>> {
+        let topic_key = TopicKey::from_stable_key(&key)?;
+        let action = TopicAction {
+            producer_key: topic_key.producer_key,
+            topic: topic_key.topic,
+        };
+        // Always emit when declared, so the sink builds the message child.
+        Ok(Some(TargetReconcileOutput {
+            action: match desired {
+                Some(_) => TargetAction::Update(action),
+                None => TargetAction::Delete(action),
+            },
+            sink: self.sink.get(topic_sink),
+            tracking_record: desired.map(|_| ()),
+            child_invalidation: None,
+        }))
+    }
+}
+
+fn topic_sink() -> TargetActionSink<TopicAction> {
+    TargetActionSink::from_async_fn_with_child_handler(
+        // Topics are not created or deleted, so there is nothing to apply.
+        |_actions| async { Ok(()) },
+        |action: &TopicAction| {
+            let key = TopicKey {
+                producer_key: action.producer_key.clone(),
+                topic: action.topic.clone(),
+            };
+            let deletion_value_fn = deletion_value_fn(&key);
+            Ok(ChildTargetDef::new::<Vec<u8>, _>(MessageHandler::new(
+                key.producer_key,
+                key.topic,
+                deletion_value_fn,
+            )))
+        },
+    )
+}
 
 /// What the sink should do for one message: produce a record with this value
 /// (`None` value = tombstone).
 #[derive(Serialize, Deserialize)]
 struct MessageAction {
-    key: String,
+    key: Vec<u8>,
     value: Option<Vec<u8>>,
 }
 
@@ -412,6 +607,17 @@ impl MessageHandler {
     }
 }
 
+/// The Kafka key of a message target state: a `Str` key is its UTF-8 bytes.
+fn message_key_bytes(key: &StableKey) -> Result<Vec<u8>> {
+    match key {
+        StableKey::Str(s) => Ok(s.as_bytes().to_vec()),
+        StableKey::Bytes(b) => Ok(b.to_vec()),
+        other => Err(Error::engine(format!(
+            "unexpected kafka message key: {other:?}"
+        ))),
+    }
+}
+
 impl TargetHandler<Vec<u8>> for MessageHandler {
     type TrackingRecord = Fingerprint;
     type Action = MessageAction;
@@ -423,21 +629,14 @@ impl TargetHandler<Vec<u8>> for MessageHandler {
         prev: Vec<Fingerprint>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<MessageAction, Fingerprint>>> {
-        let StableKey::Str(key) = &key else {
-            return Err(Error::engine(format!(
-                "unexpected kafka message key: {key:?}"
-            )));
-        };
-        let key = key.to_string();
-
+        let key = message_key_bytes(&key)?;
         let Some(decision) = decide_message(
             &key,
             desired.as_deref(),
             &prev,
             prev_may_be_missing,
             self.deletion_value_fn.as_ref(),
-        )?
-        else {
+        ) else {
             return Ok(None);
         };
 
@@ -494,33 +693,77 @@ impl MessageHandler {
                         .await?;
                     let timestamp = current_timestamp();
                     let mut by_partition: BTreeMap<i32, Vec<Record>> = BTreeMap::new();
-                    for action in actions {
-                        let msg = match action {
-                            TargetAction::Create(m)
-                            | TargetAction::Update(m)
-                            | TargetAction::Delete(m) => m,
-                        };
-                        let partition = partitions.partition_for_key(msg.key.as_bytes()).await?;
+                    for msg in dedupe_switched_keys(actions) {
+                        let partition = partitions.partition_for_key(&msg.key).await?;
                         by_partition.entry(partition).or_default().push(Record {
-                            key: Some(msg.key.into_bytes()),
+                            key: Some(msg.key),
                             value: msg.value,
                             headers: BTreeMap::new(),
                             timestamp,
                         });
                     }
-                    for (partition, records) in by_partition {
-                        partitions
-                            .client(partition)
-                            .await?
-                            .produce(records, Compression::NoCompression)
-                            .await
-                            .map_err(|e| Error::engine(format!("kafka produce: {e}")))?;
-                    }
-                    Ok(())
+                    produce_batches(by_partition, |partition, records| {
+                        let partitions = partitions.clone();
+                        async move {
+                            partitions
+                                .client(partition)
+                                .await?
+                                .produce(records, Compression::NoCompression)
+                                .await
+                                .map_err(|e| Error::engine(format!("kafka produce: {e}")))?;
+                            Ok(())
+                        }
+                    })
+                    .await
                 }
             },
         )
     }
+}
+
+/// A `Str` key and its UTF-8 bytes are distinct target states but one Kafka
+/// key. When a key switches between the two forms across runs, one batch
+/// carries both the new form's publish and the old form's deletion; the
+/// deletion would erase the record just published, so it is dropped.
+fn dedupe_switched_keys(actions: Vec<TargetAction<MessageAction>>) -> Vec<MessageAction> {
+    let messages: Vec<MessageAction> = actions
+        .into_iter()
+        .map(|action| match action {
+            TargetAction::Create(m) | TargetAction::Update(m) | TargetAction::Delete(m) => m,
+        })
+        .collect();
+    let published: std::collections::HashSet<&[u8]> = messages
+        .iter()
+        .filter(|m| m.value.is_some())
+        .map(|m| m.key.as_slice())
+        .collect();
+    let mut out = Vec::with_capacity(messages.len());
+    for m in &messages {
+        if m.value.is_none() && published.contains(m.key.as_slice()) {
+            continue;
+        }
+        out.push(MessageAction {
+            key: m.key.clone(),
+            value: m.value.clone(),
+        });
+    }
+    out
+}
+
+/// Produce every partition's batch at the same time, not one partition after
+/// another: a batch's round trip overlaps the others'.
+async fn produce_batches<F, Fut>(by_partition: BTreeMap<i32, Vec<Record>>, produce: F) -> Result<()>
+where
+    F: Fn(i32, Vec<Record>) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    futures::future::try_join_all(
+        by_partition
+            .into_iter()
+            .map(|(partition, records)| produce(partition, records)),
+    )
+    .await?;
+    Ok(())
 }
 
 /// A topic's partitions and their clients, loaded lazily on first produce.
@@ -596,6 +839,13 @@ async fn earliest_offset(pc: &PartitionClient) -> Result<i64> {
         .map_err(|e| Error::engine(format!("kafka get_offset: {e}")))
 }
 
+/// The partition's high watermark: the offset the next produced record gets.
+async fn latest_offset(pc: &PartitionClient) -> Result<i64> {
+    pc.get_offset(OffsetAt::Latest)
+        .await
+        .map_err(|e| Error::engine(format!("kafka get_offset: {e}")))
+}
+
 /// The partition index for a record key: librdkafka's default
 /// `consistent_random` partitioner (CRC32 of the key modulo the partition
 /// count), so the Rust and Python connectors place a key in the same
@@ -627,40 +877,33 @@ struct MessageDecision {
 /// * known-absent deletes are skipped,
 /// * other deletes produce a tombstone or `deletion_value_fn(key)`.
 fn decide_message(
-    key: &str,
+    key: &[u8],
     desired_value: Option<&[u8]>,
     prev_fps: &[Fingerprint],
     prev_may_be_missing: bool,
     deletion_value_fn: Option<&DeletionValueFn>,
-) -> Result<Option<MessageDecision>> {
-    let desired_fp = match desired_value {
-        Some(v) => Some(Fingerprint::from(&v.to_vec()).map_err(Error::from)?),
-        None => None,
-    };
-
+) -> Option<MessageDecision> {
     // Upsert path.
     if let Some(value) = desired_value {
-        let fp = desired_fp
-            .as_ref()
-            .expect("desired_fp set when value present");
-        if !prev_may_be_missing && !prev_fps.is_empty() && prev_fps.iter().all(|p| p == fp) {
-            return Ok(None);
+        let fp = Fingerprint::from_bytes(value);
+        if !prev_may_be_missing && !prev_fps.is_empty() && prev_fps.iter().all(|p| *p == fp) {
+            return None;
         }
-        return Ok(Some(MessageDecision {
+        return Some(MessageDecision {
             value: Some(value.to_vec()),
-            tracking: desired_fp,
-        }));
+            tracking: Some(fp),
+        });
     }
 
     // Delete path.
     if prev_fps.is_empty() && !prev_may_be_missing {
-        return Ok(None);
+        return None;
     }
     let value = deletion_value_fn.map(|f| f(key));
-    Ok(Some(MessageDecision {
+    Some(MessageDecision {
         value,
         tracking: None,
-    }))
+    })
 }
 
 /// Current wall-clock time as a chrono UTC timestamp, without requiring chrono's
@@ -750,14 +993,35 @@ impl KafkaConsumer {
         bootstrap_servers: &[&str],
         options: KafkaConsumerOptions,
     ) -> Result<Self> {
-        if options.consumer_group.as_deref() == Some("") {
+        let (client, state_id) = build_client(bootstrap_servers, options.connect).await?;
+        Self::with_group(client, state_id, options.consumer_group)
+    }
+
+    /// Wrap an `rskafka` client the caller built (with a connection setup the
+    /// options cannot express), as the Python sources take the caller's
+    /// `AIOConsumer`. `state_id` is the stable identity of the cluster (e.g.
+    /// its bootstrap-server list), never a credential; `consumer_group` is as
+    /// in [`KafkaConsumerOptions`].
+    pub fn from_client(
+        client: Client,
+        state_id: impl Into<String>,
+        consumer_group: Option<String>,
+    ) -> Result<Self> {
+        Self::with_group(Arc::new(client), Arc::from(state_id.into()), consumer_group)
+    }
+
+    fn with_group(
+        client: Arc<Client>,
+        state_id: Arc<str>,
+        consumer_group: Option<String>,
+    ) -> Result<Self> {
+        if consumer_group.as_deref() == Some("") {
             return Err(Error::engine("kafka: consumer_group must be non-empty"));
         }
-        let (client, state_id) = build_client(bootstrap_servers, options.connect).await?;
         Ok(Self {
             client,
             state_id,
-            consumer_group: options.consumer_group.map(Arc::from),
+            consumer_group: consumer_group.map(Arc::from),
         })
     }
 
@@ -790,14 +1054,62 @@ fn offset_state_key(group: &str, topic: &str, partition: i32) -> String {
     format!("cocoindex/kafka/offset/{group}/{topic}/{partition}")
 }
 
-/// How a source delivers one consumed message to its subscriber.
+/// The committed next offset, as the subscriber stores it (decimal text).
+fn encode_offset(offset: i64) -> Vec<u8> {
+    offset.to_string().into_bytes()
+}
+
+fn decode_offset(bytes: &[u8]) -> Result<i64> {
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| Error::engine("kafka: committed offset is not a number"))
+}
+
+/// How long one fetch waits at the broker for a record before it returns
+/// empty; also the loop's pacing while a partition is idle.
+const FETCH_MAX_WAIT_MS: i32 = 250;
+
+/// One partition of a watch: its client, and where the consumer group's
+/// cursor is committed (through the subscriber's live component).
+struct KafkaPartition<'a> {
+    topic: String,
+    partition: i32,
+    client: PartitionClient,
+    group: Option<&'a str>,
+    subscriber: &'a dyn LiveStreamSubscriber<KafkaMessage>,
+}
+
 #[crate::async_trait]
-trait Deliver: Send + Sync {
-    async fn deliver(
-        &self,
-        message: KafkaMessage,
-        subscriber: &LiveMapSubscriber<String, KafkaMessage>,
-    ) -> Result<()>;
+impl PartitionSource<KafkaMessage> for KafkaPartition<'_> {
+    async fn fetch(&self, offset: i64) -> Result<Vec<(i64, KafkaMessage)>> {
+        let (records, _hwm) = self
+            .client
+            .fetch_records(offset, 1..1_000_000, FETCH_MAX_WAIT_MS)
+            .await
+            .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
+        Ok(records
+            .into_iter()
+            .map(|r| {
+                (
+                    r.offset,
+                    KafkaMessage::from_record(&self.topic, self.partition, r),
+                )
+            })
+            .collect())
+    }
+
+    async fn commit(&self, next: i64) -> Result<()> {
+        if let Some(group) = self.group {
+            self.subscriber
+                .write_committed_state(
+                    &offset_state_key(group, &self.topic, self.partition),
+                    &encode_offset(next),
+                )
+                .await?;
+        }
+        Ok(())
+    }
 }
 
 /// The partition reading shared by [`KafkaTopicMap`] and [`KafkaTopicStream`]:
@@ -880,7 +1192,7 @@ impl TopicReader {
         };
         let mut starts: BTreeMap<(String, i32), i64> = BTreeMap::new();
         for (topic, id) in self.partitions().await? {
-            let committed: Option<i64> = operator
+            let committed: Option<Vec<u8>> = operator
                 .read_committed_state(offset_state_key(group, &topic, id))
                 .await?;
             let Some(offset) = committed else {
@@ -888,81 +1200,82 @@ impl TopicReader {
                 // since) needs the scan.
                 return Ok(false);
             };
-            starts.insert((topic, id), offset);
+            starts.insert((topic, id), decode_offset(&offset)?);
         }
         *self.watch_start.lock().await = starts;
         Ok(true)
     }
 
-    /// Tail every partition from `watch_start`, delivering each record through
-    /// `deliver`. With a consumer group, each partition's next offset is
-    /// committed after every fetched batch has been delivered (and so its child
-    /// components synced).
-    async fn watch(
-        &self,
-        deliver: &dyn Deliver,
-        subscriber: &LiveMapSubscriber<String, KafkaMessage>,
-    ) -> Result<()> {
+    /// Tail every partition from `watch_start` (the scan's end, the committed
+    /// cursor, or else the earliest retained record), delivering each record to
+    /// `subscriber`. With a consumer group, each partition's next offset is
+    /// committed after every fetched batch has been processed.
+    async fn watch(&self, subscriber: &dyn LiveStreamSubscriber<KafkaMessage>) -> Result<()> {
         let _watch_token = self.watch_guard.enter()?;
-        let mut offsets = self.watch_start.lock().await.clone();
-        let mut clients = Vec::new();
+        let starts = self.watch_start.lock().await.clone();
+        let group = self.consumer_group.as_deref();
+        let mut tails = Vec::new();
         for (topic, id) in self.partitions().await? {
             let pc = self.partition_client(&topic, id).await?;
             // A partition without a scan snapshot or cursor starts at its
             // earliest retained record, not offset 0, which retention may have
             // removed.
-            if let std::collections::btree_map::Entry::Vacant(slot) =
-                offsets.entry((topic.clone(), id))
-            {
-                slot.insert(earliest_offset(&pc).await?);
-            }
-            clients.push((topic, id, pc));
-        }
-        if let Some(group) = &self.consumer_group {
+            let start = match starts.get(&(topic.clone(), id)) {
+                Some(&offset) => offset,
+                None => earliest_offset(&pc).await?,
+            };
+            let high_watermark = latest_offset(&pc).await?;
+            let source = KafkaPartition {
+                topic,
+                partition: id,
+                client: pc,
+                group,
+                subscriber,
+            };
             // The scan's end (or the cursor read back) is the position the next
             // run resumes from if nothing new arrives.
-            for ((topic, id), offset) in &offsets {
-                subscriber
-                    .write_committed_state(offset_state_key(group, topic, *id), offset)
-                    .await?;
-            }
+            source.commit(start).await?;
+            tails.push(PartitionTail {
+                source,
+                start,
+                high_watermark,
+            });
         }
-        // Round-robin all partitions on one loop (one subscriber, used
-        // sequentially). Each partition fetch uses a short max-wait so the
-        // cycle stays responsive; an empty full cycle backs off briefly.
-        loop {
-            let mut got_any = false;
-            for (topic, id, pc) in &clients {
-                let key = (topic.clone(), *id);
-                let Some(&offset) = offsets.get(&key) else {
-                    continue;
-                };
-                let (records, _hwm) = pc
-                    .fetch_records(offset, 1..1_000_000, 250)
-                    .await
-                    .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
-                if records.is_empty() {
-                    continue;
-                }
-                got_any = true;
-                let mut next = offset;
-                for r in records {
-                    next = r.offset + 1;
-                    deliver
-                        .deliver(KafkaMessage::from_record(topic, *id, r), subscriber)
-                        .await?;
-                }
-                offsets.insert(key, next);
-                if let Some(group) = &self.consumer_group {
-                    subscriber
-                        .write_committed_state(offset_state_key(group, topic, *id), &next)
-                        .await?;
-                }
-            }
-            if !got_any {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            }
+        watch_partitions(tails, subscriber).await
+    }
+}
+
+/// Delivers a stream's messages to a [`LiveMapSubscriber`]: each message is
+/// keyed by `key_of`, mounted as a child (`Some(value)`) or deleted (`None`),
+/// and skipped when `key_of` yields nothing.
+struct StreamToMap<'a, F> {
+    map: &'a LiveMapSubscriber<String, KafkaMessage>,
+    key_of: F,
+}
+
+#[crate::async_trait]
+impl<F> LiveStreamSubscriber<KafkaMessage> for StreamToMap<'_, F>
+where
+    F: Fn(KafkaMessage) -> Option<(String, Option<KafkaMessage>)> + Send + Sync,
+{
+    async fn send(&self, message: KafkaMessage) -> Result<ReadyHandle> {
+        match (self.key_of)(message) {
+            None => Ok(ReadyHandle::immediate()),
+            Some((key, Some(value))) => self.map.start_update(key, value).await,
+            Some((key, None)) => self.map.start_delete(key).await,
         }
+    }
+
+    async fn mark_ready(&self) {
+        self.map.mark_ready().await;
+    }
+
+    async fn read_committed_state(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.map.read_committed_state(key).await
+    }
+
+    async fn write_committed_state(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.map.write_committed_state(key, &value.to_vec()).await
     }
 }
 
@@ -1019,30 +1332,18 @@ impl KafkaTopicMap {
 }
 
 #[crate::async_trait]
-impl Deliver for KafkaTopicMap {
-    async fn deliver(
-        &self,
-        message: KafkaMessage,
-        subscriber: &LiveMapSubscriber<String, KafkaMessage>,
-    ) -> Result<()> {
-        let Some((key, value)) = self.classify(message) else {
-            return Ok(());
-        };
-        match value {
-            Some(v) => subscriber.update(key, v).await,
-            None => subscriber.delete(key).await,
-        }
-    }
-}
-
-#[crate::async_trait]
 impl LiveMapFeed<String, KafkaMessage> for KafkaTopicMap {
     async fn skip_initial_scan(&self, operator: &LiveComponentOperator) -> Result<bool> {
         self.reader.skip_initial_scan(operator).await
     }
 
     async fn watch(&self, subscriber: LiveMapSubscriber<String, KafkaMessage>) -> Result<()> {
-        self.reader.watch(self, &subscriber).await
+        self.reader
+            .watch(&StreamToMap {
+                map: &subscriber,
+                key_of: |message| self.classify(message),
+            })
+            .await
     }
 }
 
@@ -1068,21 +1369,24 @@ impl LiveMapView<String, KafkaMessage> for KafkaTopicMap {
     }
 }
 
-/// A **keyless, append-only** feed over **all partitions** of one or more Kafka
-/// topics — the Rust analogue of Python's `topic_as_stream`.
+/// A **keyless, append-only** [`LiveStream`] of every record of one or more
+/// Kafka topics, across **all partitions** — the Rust analogue of Python's
+/// `topic_as_stream`. Tombstones (records with a `None` value) are delivered
+/// too, as Python's message-level stream does; [`payloads`](Self::payloads) is
+/// the `LiveStream<Vec<u8>>` view of the values, without them.
 ///
-/// Unlike [`KafkaTopicMap`], nothing is compacted or deleted: every record is
-/// delivered exactly once, keyed by its `"{topic}:{partition}:{offset}"`
-/// position, so each message becomes a distinct child under
-/// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live). Tombstones (records
-/// with a `None` value) are delivered too, as Python's message-level stream
-/// does; filter on [`KafkaMessage::value`] for the payloads view.
+/// [`watch`](LiveStream::watch) delivers each record to the subscriber,
+/// commits a partition's offset (with a consumer group) once the records up to
+/// it are processed, and marks the subscriber ready once every partition has
+/// caught up to the high watermark it had when the watch started.
 ///
-/// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads every partition up to
-/// its high-watermark and [`watch`](LiveMapFeed::watch) tails new records from
-/// there, or from the committed offsets of the consumer group. Re-running is
-/// idempotent: the position keys are stable, so a replayed catch-up reconciles
-/// to no-ops.
+/// It is also a [`LiveMapView`] for
+/// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live): each record becomes
+/// a distinct child keyed by its `"{topic}:{partition}:{offset}"` position;
+/// [`scan`](LiveMapView::scan) reads every partition up to its high-watermark
+/// and the feed's `watch` tails new records from there, or from the committed
+/// offsets of the consumer group. Re-running is idempotent: the position keys
+/// are stable, so a replayed catch-up reconciles to no-ops.
 pub struct KafkaTopicStream {
     reader: TopicReader,
 }
@@ -1101,19 +1405,24 @@ pub fn topic_as_stream(
     }
 }
 
+impl KafkaTopicStream {
+    /// The `LiveStream<Vec<u8>>` view of this stream: each record's value.
+    /// Tombstones are left out; subscribe at the [`KafkaMessage`] level for
+    /// them. Python's `TopicStream.payloads()`.
+    pub fn payloads(self) -> KafkaPayloadStream {
+        KafkaPayloadStream { stream: self }
+    }
+}
+
 /// The stream's child key for a message: its position.
 fn position_key(message: &KafkaMessage) -> String {
     format!("{}:{}:{}", message.topic, message.partition, message.offset)
 }
 
 #[crate::async_trait]
-impl Deliver for KafkaTopicStream {
-    async fn deliver(
-        &self,
-        message: KafkaMessage,
-        subscriber: &LiveMapSubscriber<String, KafkaMessage>,
-    ) -> Result<()> {
-        subscriber.update(position_key(&message), message).await
+impl LiveStream<KafkaMessage> for KafkaTopicStream {
+    async fn watch(&self, subscriber: &dyn LiveStreamSubscriber<KafkaMessage>) -> Result<()> {
+        self.reader.watch(subscriber).await
     }
 }
 
@@ -1135,13 +1444,59 @@ impl LiveMapFeed<String, KafkaMessage> for KafkaTopicStream {
     }
 
     async fn watch(&self, subscriber: LiveMapSubscriber<String, KafkaMessage>) -> Result<()> {
-        self.reader.watch(self, &subscriber).await
+        self.reader
+            .watch(&StreamToMap {
+                map: &subscriber,
+                key_of: |message| Some((position_key(&message), Some(message))),
+            })
+            .await
+    }
+}
+
+/// The `LiveStream<Vec<u8>>` view of a [`KafkaTopicStream`]: each record's
+/// value, tombstones left out. From [`KafkaTopicStream::payloads`].
+pub struct KafkaPayloadStream {
+    stream: KafkaTopicStream,
+}
+
+/// Adapts a payload subscriber to the message-level stream, acknowledging a
+/// tombstone at once.
+struct PayloadsAdapter<'a>(&'a dyn LiveStreamSubscriber<Vec<u8>>);
+
+#[crate::async_trait]
+impl LiveStreamSubscriber<KafkaMessage> for PayloadsAdapter<'_> {
+    async fn send(&self, message: KafkaMessage) -> Result<ReadyHandle> {
+        match message.value {
+            Some(value) => self.0.send(value).await,
+            None => Ok(ReadyHandle::immediate()),
+        }
+    }
+
+    async fn mark_ready(&self) {
+        self.0.mark_ready().await;
+    }
+
+    async fn read_committed_state(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.0.read_committed_state(key).await
+    }
+
+    async fn write_committed_state(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.0.write_committed_state(key, value).await
+    }
+}
+
+#[crate::async_trait]
+impl LiveStream<Vec<u8>> for KafkaPayloadStream {
+    async fn watch(&self, subscriber: &dyn LiveStreamSubscriber<Vec<u8>>) -> Result<()> {
+        self.stream.reader.watch(&PayloadsAdapter(subscriber)).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     #[test]
     fn partition_index_matches_librdkafka_consistent_partitioner() {
@@ -1153,15 +1508,13 @@ mod tests {
     }
 
     fn fp(bytes: &[u8]) -> Fingerprint {
-        Fingerprint::from(&bytes.to_vec()).unwrap()
+        Fingerprint::from_bytes(bytes)
     }
 
     // U1: upsert new state (no previous record, prev_may_be_missing).
     #[test]
     fn upsert_new_state() {
-        let d = decide_message("k1", Some(b"v1"), &[], true, None)
-            .unwrap()
-            .expect("should produce");
+        let d = decide_message(b"k1", Some(b"v1"), &[], true, None).expect("should produce");
         assert_eq!(d.value.as_deref(), Some(&b"v1"[..]));
         assert_eq!(d.tracking, Some(fp(b"v1")));
     }
@@ -1169,16 +1522,15 @@ mod tests {
     // U2: unchanged value with a matching previous fingerprint → skip.
     #[test]
     fn upsert_unchanged_skips() {
-        let d = decide_message("k1", Some(b"v1"), &[fp(b"v1")], false, None).unwrap();
+        let d = decide_message(b"k1", Some(b"v1"), &[fp(b"v1")], false, None);
         assert_eq!(d, None);
     }
 
     // U3: changed value → produce the new value.
     #[test]
     fn upsert_changed_value() {
-        let d = decide_message("k1", Some(b"v2"), &[fp(b"v1")], false, None)
-            .unwrap()
-            .expect("should produce");
+        let d =
+            decide_message(b"k1", Some(b"v2"), &[fp(b"v1")], false, None).expect("should produce");
         assert_eq!(d.value.as_deref(), Some(&b"v2"[..]));
         assert_eq!(d.tracking, Some(fp(b"v2")));
     }
@@ -1186,16 +1538,14 @@ mod tests {
     // U4: prev_may_be_missing forces a produce even when the fingerprint matches.
     #[test]
     fn upsert_prev_may_be_missing_forces_produce() {
-        let d = decide_message("k1", Some(b"v1"), &[fp(b"v1")], true, None).unwrap();
+        let d = decide_message(b"k1", Some(b"v1"), &[fp(b"v1")], true, None);
         assert!(d.is_some());
     }
 
     // U5: delete without a callback → tombstone (null value), no tracking record.
     #[test]
     fn delete_without_callback_is_tombstone() {
-        let d = decide_message("k1", None, &[fp(b"v1")], false, None)
-            .unwrap()
-            .expect("should tombstone");
+        let d = decide_message(b"k1", None, &[fp(b"v1")], false, None).expect("should tombstone");
         assert_eq!(d.value, None);
         assert_eq!(d.tracking, None);
     }
@@ -1203,9 +1553,9 @@ mod tests {
     // U6: delete with a deletion_value_fn → produce that value.
     #[test]
     fn delete_with_callback_uses_value() {
-        let f: DeletionValueFn = Arc::new(|k: &str| format!("deleted:{k}").into_bytes());
-        let d = decide_message("k1", None, &[fp(b"v1")], false, Some(&f))
-            .unwrap()
+        let f: DeletionValueFn =
+            Arc::new(|k: &[u8]| format!("deleted:{}", String::from_utf8_lossy(k)).into_bytes());
+        let d = decide_message(b"k1", None, &[fp(b"v1")], false, Some(&f))
             .expect("should produce deletion value");
         assert_eq!(d.value.as_deref(), Some(&b"deleted:k1"[..]));
         assert_eq!(d.tracking, None);
@@ -1214,8 +1564,58 @@ mod tests {
     // U7: delete with no previous record and prev known-present → skip.
     #[test]
     fn delete_no_prev_skips() {
-        let d = decide_message("k1", None, &[], false, None).unwrap();
+        let d = decide_message(b"k1", None, &[], false, None);
         assert_eq!(d, None);
+    }
+
+    // The tracking record is the raw-bytes fingerprint, as Python's
+    // `fingerprint_bytes` computes it, not a serde encoding of the bytes.
+    #[test]
+    fn tracking_record_is_the_raw_bytes_fingerprint() {
+        let d = decide_message(b"k", Some(b"v1"), &[], true, None).unwrap();
+        assert_eq!(d.tracking, Some(Fingerprint::from_bytes(b"v1")));
+        assert_ne!(
+            d.tracking,
+            Some(Fingerprint::from(&b"v1".to_vec()).unwrap())
+        );
+    }
+
+    #[test]
+    fn message_keys_are_str_or_bytes() {
+        assert_eq!(
+            message_key_bytes(&StableKey::Str(Arc::from("k"))).unwrap(),
+            b"k"
+        );
+        assert_eq!(
+            message_key_bytes(&StableKey::Bytes(Arc::from(&b"\x00k"[..]))).unwrap(),
+            b"\x00k"
+        );
+        assert!(message_key_bytes(&StableKey::Int(1)).is_err());
+    }
+
+    // A key that switched from `&str` to bytes (or back) between runs is
+    // published once, and the old form's deletion in the same batch is dropped.
+    #[test]
+    fn switched_key_form_drops_the_deletion() {
+        let out = dedupe_switched_keys(vec![
+            TargetAction::Delete(MessageAction {
+                key: b"k".to_vec(),
+                value: None,
+            }),
+            TargetAction::Create(MessageAction {
+                key: b"k".to_vec(),
+                value: Some(b"v".to_vec()),
+            }),
+            TargetAction::Delete(MessageAction {
+                key: b"gone".to_vec(),
+                value: None,
+            }),
+        ]);
+        let keys: Vec<(&[u8], bool)> = out
+            .iter()
+            .map(|m| (m.key.as_slice(), m.value.is_some()))
+            .collect();
+        assert_eq!(keys, vec![(&b"k"[..], true), (&b"gone"[..], false)]);
     }
 
     fn message(key: Option<&[u8]>, value: Option<&[u8]>) -> KafkaMessage {
@@ -1280,5 +1680,55 @@ mod tests {
             }
         );
         assert!(s.contains("PLAIN") && s.contains("\"u\"") && !s.contains("hunter2"));
+    }
+
+    #[test]
+    fn committed_offsets_round_trip_as_text() {
+        assert_eq!(decode_offset(&encode_offset(42)).unwrap(), 42);
+        assert!(decode_offset(b"x").is_err());
+    }
+
+    // Each partition's batch is produced at the same time as the others'.
+    #[tokio::test]
+    async fn produce_batches_overlaps_partitions() {
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_in_flight = Arc::new(AtomicUsize::new(0));
+        let by_partition: BTreeMap<i32, Vec<Record>> = (0..3).map(|p| (p, Vec::new())).collect();
+        produce_batches(by_partition, |_partition, _records| {
+            let in_flight = in_flight.clone();
+            let max_in_flight = max_in_flight.clone();
+            async move {
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                max_in_flight.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(max_in_flight.load(Ordering::SeqCst), 3);
+    }
+
+    // The payloads view hands each value through and acknowledges a tombstone
+    // without delivering it.
+    #[tokio::test]
+    async fn payloads_adapter_skips_tombstones() {
+        struct Collect(Mutex<Vec<Vec<u8>>>);
+        #[crate::async_trait]
+        impl LiveStreamSubscriber<Vec<u8>> for Collect {
+            async fn send(&self, message: Vec<u8>) -> Result<ReadyHandle> {
+                self.0.lock().unwrap().push(message);
+                Ok(ReadyHandle::immediate())
+            }
+            async fn mark_ready(&self) {}
+        }
+        let collect = Collect(Mutex::new(Vec::new()));
+        let adapter = PayloadsAdapter(&collect);
+        let h = adapter.send(message(Some(b"k"), None)).await.unwrap();
+        assert!(h.is_immediate());
+        let h = adapter.send(message(Some(b"k"), Some(b"v"))).await.unwrap();
+        assert!(h.is_immediate());
+        assert_eq!(collect.0.lock().unwrap().clone(), vec![b"v".to_vec()]);
     }
 }

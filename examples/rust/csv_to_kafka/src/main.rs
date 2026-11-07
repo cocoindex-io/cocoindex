@@ -92,7 +92,8 @@ async fn index(producer: KafkaProducer, topic: String) -> Result<()> {
                     &PRODUCER,
                     topic,
                     kafka::KafkaTopicOptions::default(),
-                )?;
+                )
+                .await?;
 
                 // The source supports live watch (cf. Python `localfs.walk_dir(live=True)`).
                 let files = walk_dir("./data")
