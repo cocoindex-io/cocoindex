@@ -4,6 +4,11 @@ description: >
   The @coco.fn decorator makes Python functions participate in CocoIndex's change
   detection, memoization, and execution pipeline — with async adapters, batching,
   and GPU-aware runners included.
+rust_title: "Declaring *functions* with #[cocoindex::function]"
+rust_description: >
+  The #[cocoindex::function] attribute makes Rust functions participate in
+  CocoIndex's change detection, memoization, and execution pipeline — with
+  batching and GPU-aware runners included.
 ---
 import LangTabs from '../../../components/LangTabs.astro';
 
@@ -11,7 +16,7 @@ import LangTabs from '../../../components/LangTabs.astro';
 Read [Core Concepts](./core_concepts) for change detection and function memoization, with diagrams.
 :::
 
-It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can decorate any Python function with `@coco.fn` when you want to add incremental capabilities to it. The decorated function is still a normal Python function: its signature stays the same, and you can call it normally.
+It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can mark any function with <Lang only="python">`@coco.fn`</Lang><Lang only="rust">`#[cocoindex::function]`</Lang> when you want to add incremental capabilities to it. The marked function is still a normal function: its signature stays the same, and you can call it normally.
 
 <LangTabs>
 <Fragment slot="python">
@@ -41,11 +46,27 @@ let text = process_file(&ctx, file).await?;
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 `@coco.fn` preserves the sync/async nature of the underlying function. Decorating a sync function yields a sync function; decorating an async function yields an async function.
 
+</Lang>
+
+<RustNote>
 The Rust SDK has no sync/async adapter (`as_async`, `as_sync`): a `#[cocoindex::function]` body is an `async fn` and runs on the Tokio runtime. Rust has no ambient component context: every function takes the component's `&Ctx` as its first argument, and the macro substitutes a scoped `Ctx` for the call.
+</RustNote>
+
+<Lang only="python">
 
 ## How to think about `@coco.fn`
+
+</Lang>
+
+<Lang only="rust">
+
+## How to think about `#[cocoindex::function]`
+
+</Lang>
 
 Decorating a function tells CocoIndex that calls to it are part of the incremental update engine. You still write normal Python, but CocoIndex can now:
 

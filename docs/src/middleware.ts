@@ -1,6 +1,6 @@
 import { defineMiddleware } from 'astro:middleware';
-import { getCollection } from 'astro:content';
-import { docSlug, DOCS_BASE as base } from './consts';
+import { DOCS_BASE as base } from './consts';
+import { pageRegistry } from './lib/lang';
 import { buildDocMarkdown, buildExampleMarkdown } from './lib/raw-markdown';
 import { readSkillFile, skillReferenceNames } from './lib/skill-files';
 
@@ -29,8 +29,10 @@ export const onRequest = defineMiddleware(async (context, next) => {
       const body = await buildExampleMarkdown(slug.slice('examples/'.length));
       if (body !== undefined) return markdown(body);
     }
-    const doc = (await getCollection('docs')).find((d) => docSlug(d.id) === slug);
-    if (doc) return markdown(buildDocMarkdown(doc));
+    const lang = slug.startsWith('rust/') ? 'rust' : 'python';
+    const route = lang === 'rust' ? slug.slice('rust/'.length) : slug;
+    const entry = (await pageRegistry()).at(lang, route);
+    if (entry) return markdown(buildDocMarkdown(entry.doc, lang, route));
   }
   return next();
 });

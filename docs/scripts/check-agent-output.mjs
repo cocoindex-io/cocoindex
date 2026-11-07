@@ -30,7 +30,7 @@ const contentFiles = (dir) => walk(dir, /\.mdx?$/);
 const read = (p) => readFileSync(p, 'utf8');
 
 // 1. Required artifacts exist; hosted references match the skill folder.
-for (const f of ['llms.txt', 'llms-full.txt', 'skill.md']) {
+for (const f of ['llms.txt', 'llms-full.txt', 'rust/llms.txt', 'rust/llms-full.txt', 'skill.md']) {
   if (!existsSync(join(DIST, f))) errors.push(`missing dist/${f}`);
 }
 const refNames = readdirSync(REFERENCES_DIR)
@@ -51,12 +51,30 @@ for (const name of refNames) {
 }
 
 // 2. Every content page has its .md twin: docs pages and example walkthroughs.
+//    A docs page has one twin per SDK language it lists (frontmatter
+//    `languages`, default both): /<route>.md for Python, /rust/<route>.md for
+//    Rust, where `route` defaults to the file's slug (src/lib/lang.ts).
 const docSlug = (src) =>
   relative(DOCS_SRC, src).replace(/\.mdx?$/, '').replace(/\/index$/, '');
 const postSlug = (src) => relative(POSTS_SRC, src).replace(/\.mdx?$/, '');
+const frontmatter = (src) => {
+  const m = /^---\n([\s\S]*?)\n---\n/.exec(read(src).replace(/\r\n/g, '\n'));
+  return m ? m[1] : '';
+};
+const docTwins = (src) => {
+  const fm = frontmatter(src);
+  const langs = /^languages:\s*\[([^\]]*)\]/m.exec(fm)?.[1]
+    .split(',')
+    .map((l) => l.trim())
+    .filter(Boolean) ?? ['python', 'rust'];
+  const route = /^route:\s*(\S+)/m.exec(fm)?.[1].replace(/^\/+|\/+$/g, '') ?? docSlug(src);
+  return langs.map((l) => (l === 'python' ? `${route}.md` : `${l}/${route}.md`));
+};
 for (const src of contentFiles(DOCS_SRC)) {
-  if (!existsSync(join(DIST, `${docSlug(src)}.md`)))
-    errors.push(`missing .md twin for docs page: ${docSlug(src)}`);
+  for (const twin of docTwins(src)) {
+    if (!existsSync(join(DIST, twin)))
+      errors.push(`missing .md twin for docs page ${docSlug(src)}: ${twin}`);
+  }
 }
 for (const src of contentFiles(POSTS_SRC)) {
   const slug = postSlug(src);
@@ -103,18 +121,21 @@ const survivingFences = (body) => {
   for (const m of s.matchAll(/\x00F(\d+)\x00/g)) out.push(fences[Number(m[1])]);
   return out;
 };
-const checkFences = (srcPath, outPath, label) => {
-  const out = agentFiles.get(outPath);
-  if (out === undefined) return;
+//    A docs page's fence belongs to one SDK language or both, so each fence
+//    must appear in at least one of the page's language twins.
+const checkFences = (srcPath, outPaths, label) => {
+  const outs = outPaths.map((p) => agentFiles.get(p)).filter((o) => o !== undefined);
+  if (!outs.length) return;
   for (const fence of survivingFences(read(srcPath).replace(/\r\n/g, '\n'))) {
-    if (!out.includes(fence)) errors.push(`fenced block corrupted in ${label}`);
+    if (!outs.some((out) => out.includes(fence))) errors.push(`fenced block corrupted in ${label}`);
   }
 };
 for (const src of contentFiles(DOCS_SRC)) {
-  checkFences(src, join(DIST, `${docSlug(src)}.md`), `${docSlug(src)}.md`);
+  const twins = docTwins(src);
+  checkFences(src, twins.map((t) => join(DIST, t)), twins.join(' / '));
 }
 for (const src of contentFiles(POSTS_SRC)) {
-  checkFences(src, join(DIST, 'examples', `${postSlug(src)}.md`), `examples/${postSlug(src)}.md`);
+  checkFences(src, [join(DIST, 'examples', `${postSlug(src)}.md`)], `examples/${postSlug(src)}.md`);
 }
 
 // 5. Each example's .env.example is a superset of its tracked .env — the
