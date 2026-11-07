@@ -22,7 +22,7 @@
 import { posix } from 'node:path';
 import type { CollectionEntry } from 'astro:content';
 import { getCollection, getEntry } from 'astro:content';
-import { DOCS_BASE, GITHUB_REPO, docSlug, docTitle, pageUrl, LLMS_TXT_URL, SKILL_MD_URL } from '../consts';
+import { DOCS_BASE, GITHUB_REPO, SITE_URL, docSlug, docTitle, pageUrl, LLMS_TXT_URL, SKILL_MD_URL } from '../consts';
 import { findExample } from '../data/examples';
 import { type Lang, DEFAULT_LANG, langPrefix, pageRegistry, stripOtherLanguage } from './lang';
 import { FENCE, INLINE_CODE, MDX_COMMENT } from './fence.mjs';
@@ -62,9 +62,17 @@ const memo = import.meta.env.DEV ? null : new Map<string, string>();
 // resolved against it and emitted as root-relative page URLs (/docs/<slug>/),
 // the form remark-link-checker gives the HTML pages; the .md twins serve the
 // body verbatim, and index pages sit one level shallower than their source.
-export function mdxToMarkdown(body: string, srcDir = '', lang?: Lang): string {
+// `pageHref` maps a linked page's file slug to its URL in the reader's
+// language tree (src/lib/lang.ts PageRegistry.resolve); without it, page links
+// go to the Python tree.
+export function mdxToMarkdown(
+  body: string,
+  srcDir = '',
+  lang?: Lang,
+  pageHref?: (fileSlug: string) => string | undefined,
+): string {
   const key = `${lang ?? ''}\u0000${srcDir}\u0000${body ?? ''}`;
-  const cached = memo?.get(key);
+  const cached = pageHref ? undefined : memo?.get(key);
   if (cached !== undefined) return cached;
 
   let s = (body ?? '').replace(/\r\n/g, '\n');
@@ -92,7 +100,8 @@ export function mdxToMarkdown(body: string, srcDir = '', lang?: Lang): string {
     const [rel, frag] = target.split('#');
     const path = posix.normalize(posix.join(srcDir, rel)).replace(/\/$/, '');
     if (path.startsWith('..')) return m;
-    return `](${DOCS_BASE}/${path}/${frag ? `#${frag}` : ''})`;
+    const href = pageHref?.(path.replace(/\/index$/, '')) ?? `${DOCS_BASE}/${path}/`;
+    return `](${href}${frag ? `#${frag}` : ''})`;
   });
 
   // 3. Flatten admonitions to a bold callout lead-in, keeping the body prose.
@@ -122,7 +131,7 @@ export function mdxToMarkdown(body: string, srcDir = '', lang?: Lang): string {
   s = s.replace(RESTORE_FENCE, (_m, i) => fences[Number(i)]);
 
   const out = s.trim();
-  memo?.set(key, out);
+  if (!pageHref) memo?.set(key, out);
   return out;
 }
 
@@ -143,7 +152,16 @@ export async function docStaticPaths() {
 
 // Shared top-of-page banner for every agent-facing .md twin: v1 guard, then
 // source/index/skill pointers. One format for docs pages and example pages.
-function buildGuard(slug: string, lead: string, extra = ''): string {
+function buildGuard(slug: string, lead: string, extra = '', lang: Lang = DEFAULT_LANG): string {
+  if (lang === 'rust') {
+    return (
+      `> ${lead}\n` +
+      `>\n` +
+      `> Source: ${pageUrl(slug)} · Rust docs index: ${new URL(`${DOCS_BASE}/rust/llms.txt`, SITE_URL)}` +
+      ` · Rust SDK tour: ${GITHUB_REPO}/blob/main/rust/sdk/SHOWCASE.md` +
+      ` · Rust examples: ${GITHUB_REPO}/tree/main/examples/rust${extra}`
+    );
+  }
   return (
     `> ${lead}\n` +
     `>\n` +
@@ -171,17 +189,27 @@ export function buildDocMarkdown(
   doc: CollectionEntry<'docs'>,
   lang: Lang = DEFAULT_LANG,
   route: string = docSlug(doc.id),
+  pageHref?: (fileSlug: string) => string | undefined,
 ): string {
   const data = doc.data as Record<string, unknown>;
   const rustTitle = lang === 'rust' && typeof data.rust_title === 'string' ? data.rust_title : undefined;
   const title = docTitle(doc.id, rustTitle ?? doc.data.title);
   const slug = `${langPrefix(lang)}${route}`;
-  const guard = buildGuard(
-    slug,
-    `**CocoIndex v1.** This page documents CocoIndex **v1** — a ground-up redesign ` +
-      `from v0. When writing code, ignore any v0 flow-builder DSL or deprecated decorators.`,
-  );
-  return `# ${title}\n\n${guard}\n\n${mdxToMarkdown(doc.body, docSrcDir(doc), lang)}\n`;
+  const guard =
+    lang === 'rust'
+      ? buildGuard(
+          slug,
+          `**CocoIndex v1, Rust SDK.** This page documents the CocoIndex **v1** Rust SDK ` +
+            `(the \`cocoindex\` crate). The Python SDK pages are at ${new URL(`${DOCS_BASE}/`, SITE_URL)}.`,
+          '',
+          lang,
+        )
+      : buildGuard(
+          slug,
+          `**CocoIndex v1.** This page documents CocoIndex **v1** — a ground-up redesign ` +
+            `from v0. When writing code, ignore any v0 flow-builder DSL or deprecated decorators.`,
+        );
+  return `# ${title}\n\n${guard}\n\n${mdxToMarkdown(doc.body ?? '', docSrcDir(doc), lang, pageHref)}\n`;
 }
 
 // Full Markdown body for an example walkthrough's /examples/<slug>.md twin.

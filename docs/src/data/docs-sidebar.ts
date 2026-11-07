@@ -97,6 +97,7 @@ export const sidebar: SidebarItem[] = [
       { type: 'doc', slug: 'ops', label: 'Overview' },
       { type: 'doc', slug: 'ops/entity_resolution', label: 'Entity resolution' },
       { type: 'doc', slug: 'ops/litellm', label: 'LiteLLM' },
+      { type: 'doc', slug: 'ops/model_apis', label: 'Model APIs' },
       { type: 'doc', slug: 'ops/sentence_transformers', label: 'Sentence transformers' },
       { type: 'doc', slug: 'ops/text', label: 'Text ops' },
     ],

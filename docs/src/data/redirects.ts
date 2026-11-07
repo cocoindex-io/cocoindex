@@ -93,4 +93,6 @@ export const redirects: Record<string, string> = {
   '/rust': '/docs/rust/getting_started/overview/',
   '/getting_started/rust_quickstart': '/docs/rust/getting_started/quickstart/',
   '/cli_rust': '/docs/rust/cli/',
+  // An unused, outdated copy of the CLI subcommand reference.
+  '/cli_commands': '/docs/cli/',
 };

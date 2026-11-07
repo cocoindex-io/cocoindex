@@ -173,25 +173,40 @@ for (const dir of readdirSync(EXAMPLES_DIR)) {
 //    Catches the drift class where a page ships in the sidebar but the
 //    hand-curated overview (tables / card grids) silently omits it — a
 //    Snowflake-sized hole in a page that claims to be exhaustive.
+//    Per SDK language: each tree's overview must link that tree's pages
+//    (a sidebar slot exists in a tree when a page there takes its route).
 {
   const sidebarSrc = read(here('../src/data/docs-sidebar.ts'));
   const slugs = [...sidebarSrc.matchAll(/\{ type: 'doc', slug: '([^']+)'/g)].map((m) => m[1]);
-  const sections = slugs.filter((s) => !s.includes('/'));
-  for (const section of sections) {
-    const pages = slugs.filter((s) => s.startsWith(`${section}/`));
-    if (!pages.length) continue;
-    const overviewPath = join(DIST, section, 'index.html');
-    if (!existsSync(overviewPath)) {
-      errors.push(`missing dist/${section}/index.html (section overview)`);
-      continue;
+  const trees = { python: new Set(), rust: new Set() };
+  for (const src of contentFiles(DOCS_SRC)) {
+    for (const twin of docTwins(src)) {
+      const route = twin.replace(/\.md$/, '');
+      if (route.startsWith('rust/')) trees.rust.add(route.slice('rust/'.length));
+      else trees.python.add(route);
     }
-    const html = read(overviewPath);
-    // scope to the article body so the sidebar's own nav links don't satisfy
-    // the check; fall back to the full page if the marker is absent.
-    const main = html.slice(html.indexOf('<main'), html.lastIndexOf('</main>') + 1) || html;
-    for (const page of pages) {
-      if (!main.includes(`/docs/${page}/`) && !main.includes(`/docs/${page}"`))
-        errors.push(`section overview /docs/${section}/ does not link /docs/${page}/`);
+  }
+  const sections = slugs.filter((s) => !s.includes('/'));
+  for (const [lang, tree] of Object.entries(trees)) {
+    const prefix = lang === 'python' ? '' : `${lang}/`;
+    for (const section of sections) {
+      if (!tree.has(section)) continue;
+      const pages = slugs.filter((s) => s.startsWith(`${section}/`) && tree.has(s));
+      if (!pages.length) continue;
+      const overviewPath = join(DIST, prefix, section, 'index.html');
+      if (!existsSync(overviewPath)) {
+        errors.push(`missing dist/${prefix}${section}/index.html (section overview)`);
+        continue;
+      }
+      const html = read(overviewPath);
+      // scope to the article body so the sidebar's own nav links don't satisfy
+      // the check; fall back to the full page if the marker is absent.
+      const main = html.slice(html.indexOf('<main'), html.lastIndexOf('</main>') + 1) || html;
+      for (const page of pages) {
+        const url = `/docs/${prefix}${page}`;
+        if (!main.includes(`${url}/`) && !main.includes(`${url}"`))
+          errors.push(`section overview /docs/${prefix}${section}/ does not link ${url}/`);
+      }
     }
   }
 }

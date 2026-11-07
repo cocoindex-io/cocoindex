@@ -78,8 +78,9 @@ export interface PageRegistry {
   at(lang: Lang, route: string): PageEntry | undefined;
   /** The page whose file slug is `fileSlug`. */
   byFile(fileSlug: string): PageEntry | undefined;
-  /** URL of the page a source link names (by file slug), in `lang`'s tree
-   *  when the page is there, else in the page's own language. */
+  /** URL of the page a source link names (by file slug): in `lang`'s tree
+   *  when the page is there, else its declared counterpart in `lang`, else
+   *  the page in its own language. */
   resolve(target: string, lang: Lang): { href: string; lang: Lang; route: string } | undefined;
   /** Where the language switch goes from `route` in `from` to `to`. */
   switchTarget(from: Lang, route: string, to: Lang): string;
@@ -123,12 +124,16 @@ async function build(): Promise<PageRegistry> {
   };
 
   // A link names a file: it opens that file's page in the reader's language
-  // when the page has one, else in the language it has.
+  // when the page has one, else the counterpart the page declares for that
+  // language, else the page in the language it has.
   const resolve: PageRegistry['resolve'] = (target, lang) => {
     const t = target.replace(/^\/+|\/+$/g, '');
     const e = files.get(t);
     if (!e) return undefined;
-    const l = e.languages.includes(lang) ? lang : e.languages[0];
+    if (e.languages.includes(lang)) return { href: langHref(lang, e.route), lang, route: e.route };
+    const c = e.counterpart[lang];
+    if (c && at(lang, c)) return { href: langHref(lang, c), lang, route: c };
+    const l = e.languages[0];
     return { href: langHref(l, e.route), lang: l, route: e.route };
   };
 

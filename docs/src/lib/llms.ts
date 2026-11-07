@@ -110,10 +110,6 @@ export async function llmsTxt(lang: Lang): Promise<string> {
 // walkthroughs) in one file, for LLMs and agents that want everything in a
 // single fetch. The llms.txt of the same language is the lighter index.
 
-// Include-fragments are embedded verbatim in their host page (cli.mdx inlines
-// cli_commands.mdx), so emitting them standalone would duplicate the content.
-const INCLUDE_FRAGMENTS = new Set(['cli_commands']);
-
 export async function llmsFullTxt(lang: Lang): Promise<string> {
   const reg = await pageRegistry();
   const indexUrl = new URL(`${DOCS_BASE}/${langPrefix(lang)}llms.txt`, SITE_URL).toString();
@@ -131,12 +127,12 @@ export async function llmsFullTxt(lang: Lang): Promise<string> {
   const seen = new Set<string>();
   const emit = (route: string) => {
     const e = reg.at(lang, route);
-    if (!e || seen.has(route) || INCLUDE_FRAGMENTS.has(e.fileSlug)) return;
+    if (!e || seen.has(route)) return;
     seen.add(route);
     const data = e.doc.data as Record<string, unknown>;
     const raw = lang === 'rust' && typeof data.rust_title === 'string' ? data.rust_title : e.doc.data.title;
     const title = docTitle(e.doc.id, raw);
-    out.push('', '---', '', `# ${title}`, '', `Source: ${langPageUrl(lang, route)}`, '', mdxToMarkdown(e.doc.body ?? '', docSrcDir(e.doc), lang));
+    out.push('', '---', '', `# ${title}`, '', `Source: ${langPageUrl(lang, route)}`, '', mdxToMarkdown(e.doc.body ?? '', docSrcDir(e.doc), lang, (s) => reg.resolve(s, lang)?.href));
   };
 
   // Sidebar order first, then any stray pages of the language not in the tree.
