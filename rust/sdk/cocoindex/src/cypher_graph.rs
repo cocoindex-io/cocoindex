@@ -23,6 +23,28 @@ use crate::target_state::{
 /// (the connector maps them to Bolt types / FalkorDB `CYPHER` header literals).
 pub(crate) type CypherParams = BTreeMap<String, JsonValue>;
 
+/// A data-bearing Cypher statement with its bound parameters.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CypherStatement {
+    pub(crate) cypher: String,
+    pub(crate) params: CypherParams,
+}
+
+/// How [`CypherExecutor::execute_batch`] ended, short of a failure to report.
+pub(crate) enum BatchOutcome {
+    Applied,
+    /// The transaction went over the server's memory limit and rolled back. The
+    /// same statements fail the same way again, so the chunk they apply is split
+    /// in two instead of retried (Python's `_is_memory_limit`).
+    OverMemoryLimit(Error),
+}
+
+/// One transaction applies at most this many record actions (Python's
+/// `_MAX_ACTIONS_PER_TXN`): a batch is otherwise unbounded. A chunk can still
+/// go over the server's transaction memory limit (large properties); it is
+/// then split in two.
+const MAX_ACTIONS_PER_TXN: usize = 1000;
+
 #[async_trait]
 pub(crate) trait CypherExecutor: Clone + Send + Sync + 'static {
     fn dialect(&self) -> &'static str;
@@ -39,6 +61,17 @@ pub(crate) trait CypherExecutor: Clone + Send + Sync + 'static {
     /// through here so user values are never interpolated into the query body
     /// (Neo4j binds Bolt params; FalkorDB uses the `CYPHER name=value` header).
     async fn execute_with_params(&self, cypher: &str, params: &CypherParams) -> Result<()>;
+
+    /// Execute data-bearing statements as one unit. Neo4j runs them in one
+    /// transaction; the default runs them one after the other, for a dialect
+    /// with no multi-statement transaction (FalkorDB).
+    async fn execute_batch(&self, statements: &[CypherStatement]) -> Result<BatchOutcome> {
+        for statement in statements {
+            self.execute_with_params(&statement.cypher, &statement.params)
+                .await?;
+        }
+        Ok(BatchOutcome::Applied)
+    }
 
     async fn execute_unique_constraint(
         &self,
@@ -295,6 +328,23 @@ impl TableSchema {
             }),
             primary_key,
         )
+    }
+
+    /// Replace the Cypher property type of one column of a schema derived
+    /// from a row (Python's `from_class(column_overrides={"col": …})`),
+    /// keeping its nullability.
+    pub fn with_column_type(
+        mut self,
+        field_name: &str,
+        cypher_type: impl Into<String>,
+    ) -> Result<Self> {
+        let def = self
+            .columns
+            .as_mut()
+            .and_then(|columns| columns.get_mut(field_name))
+            .ok_or_else(|| crate::row_schema::unknown_column_error("graph", field_name))?;
+        def.cypher_type = cypher_type.into();
+        Ok(self)
     }
 
     /// A schema with no declared columns (Python's `table_schema=None`): the
@@ -638,9 +688,10 @@ enum TableOp {
     Drop(TableSpec),
 }
 
+/// Action emitted by the record child handler. The table it belongs to is the
+/// record sink's, which captures the spec once for every action of a batch.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RecordAction {
-    spec: TableSpec,
     record_id: KeyValue,
     state: Option<RecordState>,
 }
@@ -1346,7 +1397,7 @@ fn node_index_sink<C: CypherExecutor>() -> TargetActionSink<NodeIndexAction> {
 struct RecordHandler<C> {
     sink: SinkCache<RecordAction>,
     graph_key: String,
-    spec: TableSpec,
+    spec: Arc<TableSpec>,
     _graph: PhantomData<fn() -> C>,
 }
 
@@ -1376,7 +1427,6 @@ impl<C: CypherExecutor> TargetHandler<RecordState> for RecordHandler<C> {
             return Ok(None);
         }
         let action = RecordAction {
-            spec: self.spec.clone(),
             record_id: key_value(key)?,
             state: desired,
         };
@@ -1388,7 +1438,9 @@ impl<C: CypherExecutor> TargetHandler<RecordState> for RecordHandler<C> {
         Ok(Some(TargetReconcileOutput {
             action,
             tracking_record: desired_fp,
-            sink: self.sink.get(|| record_sink::<C>(self.graph_key.clone())),
+            sink: self
+                .sink
+                .get(|| record_sink::<C>(self.graph_key.clone(), self.spec.clone())),
             child_invalidation: None,
         }))
     }
@@ -1433,26 +1485,33 @@ fn table_sink<C: CypherExecutor>() -> TargetActionSink<TableAction> {
             Ok(ChildTargetDef::new::<RecordState, _>(RecordHandler::<C> {
                 sink: SinkCache::default(),
                 graph_key: a.graph_key.clone(),
-                spec,
+                spec: Arc::new(spec),
                 _graph: PhantomData,
             }))
         },
     )
 }
 
-fn record_sink<C: CypherExecutor>(graph_key: String) -> TargetActionSink<RecordAction> {
+fn record_sink<C: CypherExecutor>(
+    graph_key: String,
+    spec: Arc<TableSpec>,
+) -> TargetActionSink<RecordAction> {
     TargetActionSink::from_async_fn_with_ctx(
         move |host_ctx, actions: Vec<TargetAction<RecordAction>>| {
             let graph_key = graph_key.clone();
+            let spec = spec.clone();
             async move {
                 let graph = resolve_graph::<C>(&host_ctx, &graph_key)?;
-                for action in actions {
-                    let (TargetAction::Create(action)
-                    | TargetAction::Update(action)
-                    | TargetAction::Delete(action)) = action;
-                    apply_record(graph.as_ref(), &action).await?;
-                }
-                Ok(())
+                let actions = actions
+                    .into_iter()
+                    .map(|action| {
+                        let (TargetAction::Create(action)
+                        | TargetAction::Update(action)
+                        | TargetAction::Delete(action)) = action;
+                        action
+                    })
+                    .collect();
+                apply_records(graph.as_ref(), &spec, actions).await
             }
         },
     )
@@ -1595,95 +1654,127 @@ async fn drop_table<C: CypherExecutor>(graph: &C, spec: &TableSpec) -> Result<()
     Ok(())
 }
 
-async fn apply_record<C: CypherExecutor>(graph: &C, action: &RecordAction) -> Result<()> {
-    match (&action.state, &action.spec.is_relation) {
+/// Apply a batch of one table's record actions: upserts first, then deletes,
+/// in transactions of at most [`MAX_ACTIONS_PER_TXN`] actions, one after the
+/// other. A failed transaction raises, so the batch's components are retried;
+/// earlier transactions stay committed, which is safe as the writes are
+/// idempotent (`MERGE`).
+async fn apply_records<C: CypherExecutor>(
+    graph: &C,
+    spec: &TableSpec,
+    actions: Vec<RecordAction>,
+) -> Result<()> {
+    let (upserts, deletes): (Vec<_>, Vec<_>) = actions
+        .into_iter()
+        .partition(|action| action.state.is_some());
+    let ordered: Vec<RecordAction> = upserts.into_iter().chain(deletes).collect();
+    for chunk in ordered.chunks(MAX_ACTIONS_PER_TXN) {
+        apply_chunk(graph, spec, chunk).await?;
+    }
+    Ok(())
+}
+
+/// Apply `chunk` as one unit ([`CypherExecutor::execute_batch`]); split it in
+/// two when it goes over the server's transaction memory limit.
+async fn apply_chunk<C: CypherExecutor>(
+    graph: &C,
+    spec: &TableSpec,
+    chunk: &[RecordAction],
+) -> Result<()> {
+    let statements = record_statements(spec, chunk)?;
+    match graph.execute_batch(&statements).await? {
+        BatchOutcome::Applied => Ok(()),
+        BatchOutcome::OverMemoryLimit(error) if chunk.len() == 1 => Err(error),
+        BatchOutcome::OverMemoryLimit(_) => {
+            let (first, second) = chunk.split_at(chunk.len() / 2);
+            Box::pin(apply_chunk(graph, spec, first)).await?;
+            Box::pin(apply_chunk(graph, spec, second)).await
+        }
+    }
+}
+
+/// The statements that apply `actions` (already in order), one `UNWIND $rows`
+/// statement per statement shape: the shape of a node upsert or delete is
+/// fixed by the table, a relation upsert's also by its endpoint tables. Rows
+/// of one shape keep their order, and so do the shapes (by first row).
+fn record_statements(spec: &TableSpec, actions: &[RecordAction]) -> Result<Vec<CypherStatement>> {
+    let mut statements: Vec<(String, Vec<JsonValue>)> = Vec::new();
+    for action in actions {
+        let (cypher, row) = record_statement(spec, action)?;
+        match statements.iter_mut().find(|(shape, _)| *shape == cypher) {
+            Some((_, rows)) => rows.push(row),
+            None => statements.push((cypher, vec![row])),
+        }
+    }
+    Ok(statements
+        .into_iter()
+        .map(|(cypher, rows)| CypherStatement {
+            cypher,
+            params: CypherParams::from([("rows".to_string(), JsonValue::Array(rows))]),
+        })
+        .collect())
+}
+
+/// The `UNWIND $rows AS row` statement that applies `action`, and the row it
+/// contributes to `$rows`.
+fn record_statement(spec: &TableSpec, action: &RecordAction) -> Result<(String, JsonValue)> {
+    let mut row = Map::new();
+    let cypher = match (&action.state, spec.is_relation) {
         (Some(state), false) => {
             let mut props = state.fields.clone();
-            props.remove(&action.spec.primary_key);
-            let mut params = CypherParams::new();
-            params.insert("key".to_string(), key_json(&action.record_id));
-            let set_clause = if props.is_empty() {
-                String::new()
-            } else {
-                params.insert("props".to_string(), JsonValue::Object(props));
-                " SET n += $props".to_string()
-            };
-            graph
-                .execute_with_params(
-                    &format!(
-                        "MERGE (n:`{}` {{`{}`: $key}}){}",
-                        action.spec.table_name, action.spec.primary_key, set_clause
-                    ),
-                    &params,
-                )
-                .await
+            props.remove(&spec.primary_key);
+            row.insert("key".to_string(), key_json(&action.record_id));
+            row.insert("props".to_string(), JsonValue::Object(props));
+            format!(
+                "UNWIND $rows AS row MERGE (n:`{}` {{`{}`: row.key}}) SET n += row.props",
+                spec.table_name, spec.primary_key
+            )
         }
         (None, false) => {
-            let mut params = CypherParams::new();
-            params.insert("key".to_string(), key_json(&action.record_id));
-            graph
-                .execute_with_params(
-                    &format!(
-                        "MATCH (n:`{}` {{`{}`: $key}}) DETACH DELETE n",
-                        action.spec.table_name, action.spec.primary_key
-                    ),
-                    &params,
-                )
-                .await
+            row.insert("key".to_string(), key_json(&action.record_id));
+            format!(
+                "UNWIND $rows AS row MATCH (n:`{}` {{`{}`: row.key}}) DETACH DELETE n",
+                spec.table_name, spec.primary_key
+            )
         }
         (Some(state), true) => {
             let rel = state
                 .relation
                 .as_ref()
                 .ok_or_else(|| Error::engine("relation record missing endpoints"))?;
-            let mut params = CypherParams::new();
-            params.insert("from_id".to_string(), key_json(&rel.from_id));
-            params.insert("to_id".to_string(), key_json(&rel.to_id));
-            params.insert("rel_id".to_string(), key_json(&action.record_id));
-            let set_clause = if state.fields.is_empty() {
-                String::new()
-            } else {
-                params.insert("props".to_string(), JsonValue::Object(state.fields.clone()));
-                " SET r += $props".to_string()
-            };
+            row.insert("from_id".to_string(), key_json(&rel.from_id));
+            row.insert("to_id".to_string(), key_json(&rel.to_id));
+            row.insert("rel_id".to_string(), key_json(&action.record_id));
+            row.insert("props".to_string(), JsonValue::Object(state.fields.clone()));
             let rel_pattern = format!(
-                "`{}` {{`{}`: $rel_id}}",
-                action.spec.table_name, action.spec.primary_key
+                "`{}` {{`{}`: row.rel_id}}",
+                spec.table_name, spec.primary_key
             );
             // The key identifies one relationship. An edge with this key
             // between other endpoints is this relationship before its
             // endpoints changed: delete it, or the MERGE would add a second
             // edge beside it.
-            graph
-                .execute_with_params(
-                    &format!(
-                        "MERGE (s:`{}` {{`{}`: $from_id}}) MERGE (t:`{}` {{`{}`: $to_id}}) \
-                         WITH s, t OPTIONAL MATCH (a)-[o:{rel_pattern}]->(b) WHERE a <> s OR b <> t \
-                         DELETE o WITH DISTINCT s, t \
-                         MERGE (s)-[r:{rel_pattern}]->(t){set_clause}",
-                        rel.from_table.table_name,
-                        rel.from_table.primary_key,
-                        rel.to_table.table_name,
-                        rel.to_table.primary_key,
-                    ),
-                    &params,
-                )
-                .await
+            format!(
+                "UNWIND $rows AS row \
+                 MERGE (s:`{}` {{`{}`: row.from_id}}) MERGE (t:`{}` {{`{}`: row.to_id}}) \
+                 WITH s, t, row OPTIONAL MATCH (a)-[o:{rel_pattern}]->(b) WHERE a <> s OR b <> t \
+                 DELETE o WITH DISTINCT s, t, row \
+                 MERGE (s)-[r:{rel_pattern}]->(t) SET r += row.props",
+                rel.from_table.table_name,
+                rel.from_table.primary_key,
+                rel.to_table.table_name,
+                rel.to_table.primary_key,
+            )
         }
         (None, true) => {
-            let mut params = CypherParams::new();
-            params.insert("rel_id".to_string(), key_json(&action.record_id));
-            graph
-                .execute_with_params(
-                    &format!(
-                        "MATCH ()-[r:`{}` {{`{}`: $rel_id}}]->() DELETE r",
-                        action.spec.table_name, action.spec.primary_key
-                    ),
-                    &params,
-                )
-                .await
+            row.insert("rel_id".to_string(), key_json(&action.record_id));
+            format!(
+                "UNWIND $rows AS row MATCH ()-[r:`{}` {{`{}`: row.rel_id}}]->() DELETE r",
+                spec.table_name, spec.primary_key
+            )
         }
-    }
+    };
+    Ok((cypher, JsonValue::Object(row)))
 }
 
 fn record_state<R: Serialize>(row: &R) -> Result<RecordState> {
@@ -2265,6 +2356,8 @@ mod tests {
         statements: Arc<std::sync::Mutex<Vec<String>>>,
         constraints: Arc<std::sync::Mutex<Vec<String>>>,
         param_calls: Arc<std::sync::Mutex<Vec<(String, CypherParams)>>>,
+        /// The number of statements of each `execute_batch` call.
+        batches: Arc<std::sync::Mutex<Vec<usize>>>,
     }
 
     impl RecordingGraph {
@@ -2274,6 +2367,7 @@ mod tests {
                 statements: Arc::new(std::sync::Mutex::new(Vec::new())),
                 constraints: Arc::new(std::sync::Mutex::new(Vec::new())),
                 param_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+                batches: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
         }
 
@@ -2287,6 +2381,10 @@ mod tests {
 
         fn param_calls(&self) -> Vec<(String, CypherParams)> {
             self.param_calls.lock().unwrap().clone()
+        }
+
+        fn batches(&self) -> Vec<usize> {
+            self.batches.lock().unwrap().clone()
         }
 
         /// A host context providing this graph under [`RECORDING`].
@@ -2349,6 +2447,15 @@ mod tests {
             Ok(())
         }
 
+        async fn execute_batch(&self, statements: &[CypherStatement]) -> Result<BatchOutcome> {
+            self.batches.lock().unwrap().push(statements.len());
+            for statement in statements {
+                self.execute_with_params(&statement.cypher, &statement.params)
+                    .await?;
+            }
+            Ok(BatchOutcome::Applied)
+        }
+
         async fn execute_unique_constraint(
             &self,
             op: &str,
@@ -2362,6 +2469,19 @@ mod tests {
                 .push(format!("{op} {entity_kind} {label}.{field}"));
             Ok(())
         }
+    }
+
+    /// The `$rows` a recorded statement binds.
+    fn rows(params: &CypherParams) -> &[JsonValue] {
+        params["rows"].as_array().unwrap()
+    }
+
+    fn person_spec(id_type: &str) -> TableSpec {
+        TableSpec::table(
+            "Person".to_string(),
+            TableSchema::new([("id", ColumnDef::new(id_type))], "id").unwrap(),
+            crate::statediff::ManagedBy::System,
+        )
     }
 
     #[cfg(feature = "falkordb")]
@@ -2379,11 +2499,6 @@ mod tests {
         fields.insert("id".to_string(), JsonValue::from("p1"));
         fields.insert("name".to_string(), JsonValue::from("O'Brien"));
         let action = RecordAction {
-            spec: TableSpec::table(
-                "Person".to_string(),
-                TableSchema::new([("id", ColumnDef::new("STRING"))], "id").unwrap(),
-                crate::statediff::ManagedBy::System,
-            ),
             record_id: KeyValue::Str("p1".to_string()),
             state: Some(RecordState {
                 fields,
@@ -2391,41 +2506,216 @@ mod tests {
             }),
         };
 
-        apply_record(&graph, &action).await.unwrap();
+        apply_records(&graph, &person_spec("STRING"), vec![action])
+            .await
+            .unwrap();
 
         let calls = graph.param_calls();
         assert_eq!(calls.len(), 1);
         let (cypher, params) = &calls[0];
-        assert_eq!(cypher, "MERGE (n:`Person` {`id`: $key}) SET n += $props");
+        assert_eq!(
+            cypher,
+            "UNWIND $rows AS row MERGE (n:`Person` {`id`: row.key}) SET n += row.props"
+        );
         // The injection-prone value travels as a param, never in the query text.
         assert!(!cypher.contains("O'Brien"));
-        assert_eq!(params["key"], JsonValue::from("p1"));
         // The primary key is stripped from the SET props.
-        assert_eq!(params["props"], serde_json::json!({ "name": "O'Brien" }));
+        assert_eq!(
+            rows(params),
+            [serde_json::json!({ "key": "p1", "props": { "name": "O'Brien" } })]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_batch_of_records_takes_one_statement_per_shape_per_thousand() {
+        // Python applies a batch in transactions of at most 1,000 actions;
+        // each transaction holds one `UNWIND` statement per statement shape.
+        let graph = RecordingGraph::new("neo4j");
+        let upsert = |i: i64| RecordAction {
+            record_id: KeyValue::Int(i),
+            state: Some(RecordState {
+                fields: Map::from_iter([("n".to_string(), JsonValue::from(i))]),
+                relation: None,
+            }),
+        };
+        let delete = |i: i64| RecordAction {
+            record_id: KeyValue::Int(i),
+            state: None,
+        };
+        // Deletes interleaved with upserts: the batch applies upserts first.
+        let actions = (0..1500)
+            .map(|i| if i % 5 == 0 { delete(i) } else { upsert(i) })
+            .collect::<Vec<_>>();
+
+        apply_records(&graph, &person_spec("INTEGER"), actions)
+            .await
+            .unwrap();
+
+        // 1,200 upserts, then 300 deletes: two transactions, the second holding
+        // both shapes.
+        assert_eq!(graph.batches(), vec![1, 2]);
+        let calls = graph.param_calls();
+        let shapes = calls
+            .iter()
+            .map(|(cypher, params)| (cypher.as_str(), rows(params).len()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shapes,
+            vec![
+                (
+                    "UNWIND $rows AS row MERGE (n:`Person` {`id`: row.key}) SET n += row.props",
+                    1000
+                ),
+                (
+                    "UNWIND $rows AS row MERGE (n:`Person` {`id`: row.key}) SET n += row.props",
+                    200
+                ),
+                (
+                    "UNWIND $rows AS row MATCH (n:`Person` {`id`: row.key}) DETACH DELETE n",
+                    300
+                ),
+            ]
+        );
+        assert_eq!(rows(&calls[0].1)[0]["key"], JsonValue::from(1));
+        assert_eq!(rows(&calls[2].1)[0]["key"], JsonValue::from(0));
+    }
+
+    #[derive(Clone)]
+    struct MemoryLimitedGraph {
+        inner: RecordingGraph,
+        max_rows: usize,
+    }
+
+    #[async_trait]
+    impl CypherExecutor for MemoryLimitedGraph {
+        fn dialect(&self) -> &'static str {
+            "neo4j"
+        }
+
+        fn table_provider() -> &'static StaticRootProvider {
+            static PROVIDER: StaticRootProvider =
+                table_root_provider::<MemoryLimitedGraph>("cocoindex/test_memory_limited/table");
+            &PROVIDER
+        }
+
+        async fn execute(&self, cypher: &str) -> Result<()> {
+            self.inner.execute(cypher).await
+        }
+
+        async fn execute_with_params(&self, cypher: &str, params: &CypherParams) -> Result<()> {
+            self.inner.execute_with_params(cypher, params).await
+        }
+
+        async fn execute_batch(&self, statements: &[CypherStatement]) -> Result<BatchOutcome> {
+            let total: usize = statements.iter().map(|s| rows(&s.params).len()).sum();
+            if total > self.max_rows {
+                return Ok(BatchOutcome::OverMemoryLimit(Error::engine("too large")));
+            }
+            self.inner.execute_batch(statements).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chunk_over_the_memory_limit_is_split_in_two() {
+        let graph = MemoryLimitedGraph {
+            inner: RecordingGraph::new("neo4j"),
+            max_rows: 3,
+        };
+        let actions = (0..10)
+            .map(|i| RecordAction {
+                record_id: KeyValue::Int(i),
+                state: Some(RecordState {
+                    fields: Map::new(),
+                    relation: None,
+                }),
+            })
+            .collect();
+
+        apply_records(&graph, &person_spec("INTEGER"), actions)
+            .await
+            .unwrap();
+
+        // 10 → 5 + 5 → (2 + 3) + (2 + 3): every row lands exactly once, in order.
+        assert_eq!(graph.inner.batches(), vec![1, 1, 1, 1]);
+        let keys = graph
+            .inner
+            .param_calls()
+            .iter()
+            .flat_map(|(_, params)| rows(params).iter().map(|row| row["key"].clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(keys, (0..10).map(JsonValue::from).collect::<Vec<_>>());
+
+        // A single record over the limit has nothing left to split: it fails.
+        let graph = MemoryLimitedGraph {
+            inner: RecordingGraph::new("neo4j"),
+            max_rows: 0,
+        };
+        let action = RecordAction {
+            record_id: KeyValue::Int(1),
+            state: None,
+        };
+        let err = apply_records(&graph, &person_spec("INTEGER"), vec![action])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    #[test]
+    fn column_type_override_replaces_one_derived_column() {
+        let schema = TableSchema::new(
+            [
+                ("id", ColumnDef::new("STRING")),
+                ("location", ColumnDef::new("STRING").nullable()),
+            ],
+            "id",
+        )
+        .unwrap()
+        .with_column_type("location", "POINT")
+        .unwrap();
+        assert_eq!(
+            schema,
+            TableSchema::new(
+                [
+                    ("id", ColumnDef::new("STRING")),
+                    ("location", ColumnDef::new("POINT").nullable()),
+                ],
+                "id",
+            )
+            .unwrap()
+        );
+
+        let err = TableSchema::new([("id", ColumnDef::new("STRING"))], "id")
+            .unwrap()
+            .with_column_type("missing", "POINT")
+            .unwrap_err();
+        assert!(err.to_string().contains("\"missing\""), "{err}");
+        assert!(
+            TableSchema::schemaless("id")
+                .unwrap()
+                .with_column_type("id", "INTEGER")
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn node_record_delete_binds_key_param() {
         let graph = RecordingGraph::new("neo4j");
         let action = RecordAction {
-            spec: TableSpec::table(
-                "Person".to_string(),
-                TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap(),
-                crate::statediff::ManagedBy::System,
-            ),
             record_id: KeyValue::Int(42),
             state: None,
         };
 
-        apply_record(&graph, &action).await.unwrap();
+        apply_records(&graph, &person_spec("INTEGER"), vec![action])
+            .await
+            .unwrap();
 
         let calls = graph.param_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0].0,
-            "MATCH (n:`Person` {`id`: $key}) DETACH DELETE n"
+            "UNWIND $rows AS row MATCH (n:`Person` {`id`: row.key}) DETACH DELETE n"
         );
-        assert_eq!(calls[0].1["key"], JsonValue::from(42));
+        assert_eq!(rows(&calls[0].1), [serde_json::json!({ "key": 42 })]);
     }
 
     #[tokio::test]
@@ -2435,14 +2725,14 @@ mod tests {
             table_name: name.to_string(),
             primary_key: "id".to_string(),
         };
+        let spec = TableSpec::relation(
+            "ATTENDED".to_string(),
+            endpoint("Person"),
+            endpoint("Event"),
+            TableSchema::schemaless("id").unwrap(),
+            crate::statediff::ManagedBy::System,
+        );
         let action = RecordAction {
-            spec: TableSpec::relation(
-                "ATTENDED".to_string(),
-                endpoint("Person"),
-                endpoint("Event"),
-                TableSchema::schemaless("id").unwrap(),
-                crate::statediff::ManagedBy::System,
-            ),
             record_id: KeyValue::Str("rel-1".to_string()),
             state: Some(RecordState {
                 fields: Map::new(),
@@ -2455,21 +2745,23 @@ mod tests {
             }),
         };
 
-        apply_record(&graph, &action).await.unwrap();
+        apply_records(&graph, &spec, vec![action]).await.unwrap();
 
         let calls = graph.param_calls();
         assert_eq!(calls.len(), 1);
         let (cypher, params) = &calls[0];
         assert_eq!(
             cypher,
-            "MERGE (s:`Person` {`id`: $from_id}) MERGE (t:`Event` {`id`: $to_id}) \
-             WITH s, t OPTIONAL MATCH (a)-[o:`ATTENDED` {`id`: $rel_id}]->(b) WHERE a <> s OR b <> t \
-             DELETE o WITH DISTINCT s, t \
-             MERGE (s)-[r:`ATTENDED` {`id`: $rel_id}]->(t)"
+            "UNWIND $rows AS row \
+             MERGE (s:`Person` {`id`: row.from_id}) MERGE (t:`Event` {`id`: row.to_id}) \
+             WITH s, t, row OPTIONAL MATCH (a)-[o:`ATTENDED` {`id`: row.rel_id}]->(b) WHERE a <> s OR b <> t \
+             DELETE o WITH DISTINCT s, t, row \
+             MERGE (s)-[r:`ATTENDED` {`id`: row.rel_id}]->(t) SET r += row.props"
         );
-        assert_eq!(params["from_id"], JsonValue::from("p1"));
-        assert_eq!(params["to_id"], JsonValue::from(9));
-        assert_eq!(params["rel_id"], JsonValue::from("rel-1"));
+        assert_eq!(
+            rows(params),
+            [serde_json::json!({ "from_id": "p1", "to_id": 9, "rel_id": "rel-1", "props": {} })]
+        );
     }
 
     #[test]
@@ -2983,10 +3275,10 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0].0,
-            "MERGE (n:`Person` {`email`: $key}) SET n += $props"
+            "UNWIND $rows AS row MERGE (n:`Person` {`email`: row.key}) SET n += row.props"
         );
         assert_eq!(
-            calls[0].1["props"],
+            rows(&calls[0].1)[0]["props"],
             serde_json::json!({ "name": "alice", "age": 30 })
         );
     }
@@ -3100,15 +3392,17 @@ mod tests {
         let (cypher, params) = &calls[0];
         assert_eq!(
             cypher,
-            "MERGE (s:`Person` {`id`: $from_id}) MERGE (t:`Person` {`id`: $to_id}) \
-             WITH s, t OPTIONAL MATCH (a)-[o:`KNOWS` {`edge_id`: $rel_id}]->(b) WHERE a <> s OR b <> t \
-             DELETE o WITH DISTINCT s, t \
-             MERGE (s)-[r:`KNOWS` {`edge_id`: $rel_id}]->(t) SET r += $props"
+            "UNWIND $rows AS row \
+             MERGE (s:`Person` {`id`: row.from_id}) MERGE (t:`Person` {`id`: row.to_id}) \
+             WITH s, t, row OPTIONAL MATCH (a)-[o:`KNOWS` {`edge_id`: row.rel_id}]->(b) WHERE a <> s OR b <> t \
+             DELETE o WITH DISTINCT s, t, row \
+             MERGE (s)-[r:`KNOWS` {`edge_id`: row.rel_id}]->(t) SET r += row.props"
         );
         // The record's key identifies the relationship and is not a property
         // to set.
-        assert_eq!(params["rel_id"], JsonValue::from("e1"));
-        assert_eq!(params["props"], serde_json::json!({ "since": 2020 }));
+        let row = &rows(params)[0];
+        assert_eq!(row["rel_id"], JsonValue::from("e1"));
+        assert_eq!(row["props"], serde_json::json!({ "since": 2020 }));
     }
 
     #[tokio::test]
@@ -3126,12 +3420,12 @@ mod tests {
         let calls = graph.param_calls();
         assert_eq!(calls.len(), 1);
         assert!(
-            calls[0].0.contains("{`edge_id`: $rel_id}"),
+            calls[0].0.contains("{`edge_id`: row.rel_id}"),
             "{}",
             calls[0].0
         );
         assert_eq!(
-            calls[0].1["rel_id"],
+            rows(&calls[0].1)[0]["rel_id"],
             JsonValue::from(relation_key("Person", "a", "Person", "b"))
         );
     }
@@ -3160,26 +3454,26 @@ mod tests {
             table_name: "Person".to_string(),
             primary_key: "id".to_string(),
         };
+        let spec = TableSpec::relation(
+            "KNOWS".to_string(),
+            endpoint.clone(),
+            endpoint,
+            TableSchema::schemaless("edge_id").unwrap(),
+            crate::statediff::ManagedBy::System,
+        );
         let action = RecordAction {
-            spec: TableSpec::relation(
-                "KNOWS".to_string(),
-                endpoint.clone(),
-                endpoint,
-                TableSchema::schemaless("edge_id").unwrap(),
-                crate::statediff::ManagedBy::System,
-            ),
             record_id: KeyValue::Int(7),
             state: None,
         };
 
-        apply_record(&graph, &action).await.unwrap();
+        apply_records(&graph, &spec, vec![action]).await.unwrap();
 
         let calls = graph.param_calls();
         assert_eq!(
             calls[0].0,
-            "MATCH ()-[r:`KNOWS` {`edge_id`: $rel_id}]->() DELETE r"
+            "UNWIND $rows AS row MATCH ()-[r:`KNOWS` {`edge_id`: row.rel_id}]->() DELETE r"
         );
-        assert_eq!(calls[0].1["rel_id"], JsonValue::from(7));
+        assert_eq!(rows(&calls[0].1), [serde_json::json!({ "rel_id": 7 })]);
     }
 
     /// Runs an app that mounts `Doc` and declares one vector index per entry
@@ -3343,16 +3637,18 @@ mod tests {
         // key alone, which would also remove the new edge.
         assert!(
             cypher.contains(
-                "OPTIONAL MATCH (a)-[o:`KNOWS` {`edge_id`: $rel_id}]->(b) WHERE a <> s OR b <> t DELETE o"
+                "OPTIONAL MATCH (a)-[o:`KNOWS` {`edge_id`: row.rel_id}]->(b) WHERE a <> s OR b <> t DELETE o"
             ),
             "{cypher}"
         );
         assert!(
-            cypher.ends_with("MERGE (s)-[r:`KNOWS` {`edge_id`: $rel_id}]->(t)"),
+            cypher
+                .ends_with("MERGE (s)-[r:`KNOWS` {`edge_id`: row.rel_id}]->(t) SET r += row.props"),
             "{cypher}"
         );
-        assert_eq!(params["rel_id"], JsonValue::from("e1"));
-        assert_eq!(params["to_id"], JsonValue::from("c"));
+        let row = &rows(params)[0];
+        assert_eq!(row["rel_id"], JsonValue::from("e1"));
+        assert_eq!(row["to_id"], JsonValue::from("c"));
     }
 
     #[tokio::test]

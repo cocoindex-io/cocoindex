@@ -86,9 +86,20 @@
     feature = "doris",
     feature = "lancedb",
     feature = "qdrant",
+    feature = "turbopuffer",
+    feature = "neo4j",
+    feature = "falkordb"
+))]
+use crate::error::Error;
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
+    feature = "qdrant",
     feature = "turbopuffer"
 ))]
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 #[cfg(any(
     feature = "postgres",
@@ -191,7 +202,9 @@ pub(crate) fn not_vector_field_error(connector: &str, field_name: &str) -> Error
     feature = "postgres",
     feature = "sqlite",
     feature = "doris",
-    feature = "lancedb"
+    feature = "lancedb",
+    feature = "neo4j",
+    feature = "falkordb"
 ))]
 pub(crate) fn unknown_column_error(connector: &str, field_name: &str) -> Error {
     Error::engine(format!(
