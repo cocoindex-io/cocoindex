@@ -94,7 +94,9 @@ repos:
         # SDK itself, to the `cocoindex` CLI for Rust projects (rust/cli) and
         # to the Rust examples and benchmarks that build on the SDK.
         # A change to the code the SDK builds on (rust/core, Cargo.lock, ...)
-        # skips them; the daily Rust SDK workflow runs them on all of main.
+        # skips them. CI runs them on no pull request and in no merge group,
+        # so a local run is the check before a change lands; the daily Rust SDK
+        # workflow runs them on all of main.
         - id: cargo-test-sdk
           name: cargo test (Rust SDK)
           entry: ./dev/run_cargo_test_sdk.sh
