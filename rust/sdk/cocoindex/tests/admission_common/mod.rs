@@ -14,9 +14,10 @@ struct Progress {
     taken: usize,
     /// Children whose body has started.
     started: usize,
-    /// Children in their body now.
-    running: usize,
-    /// The most children in their body at any one time.
+    /// Children whose body has passed the gate.
+    finished: usize,
+    /// The most children in their body at any one time
+    /// (`started - finished`).
     peak_running: usize,
 }
 
@@ -71,11 +72,10 @@ pub async fn assert_admits(app: &App, limit: usize, children: usize) {
                     async move {
                         progress.send_modify(|p| {
                             p.started += 1;
-                            p.running += 1;
-                            p.peak_running = p.peak_running.max(p.running);
+                            p.peak_running = p.peak_running.max(p.started - p.finished);
                         });
                         let _permit = gate.acquire().await.unwrap();
-                        progress.send_modify(|p| p.running -= 1);
+                        progress.send_modify(|p| p.finished += 1);
                         Ok(())
                     }
                 },
