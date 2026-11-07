@@ -499,14 +499,19 @@ impl ApiTranscriber {
     /// Transcribe raw audio bytes directly, without memoization, using
     /// `filename` for the upload's filename (the extension lets the server
     /// infer the audio format).
-    pub async fn transcribe_bytes(&self, bytes: Vec<u8>, filename: String) -> Result<String> {
-        self.request_transcription(None, bytes, filename).await
+    pub async fn transcribe_bytes(
+        &self,
+        bytes: impl Into<bytes::Bytes>,
+        filename: String,
+    ) -> Result<String> {
+        self.request_transcription(None, bytes.into(), filename)
+            .await
     }
 
     async fn request_transcription(
         &self,
         ctx: Option<&Ctx>,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
         filename: String,
     ) -> Result<String> {
         let url = self.endpoint.url("audio/transcriptions");
@@ -515,9 +520,10 @@ impl ApiTranscriber {
             .send_with_retry(
                 ctx,
                 || {
-                    // A fresh body per attempt: the upload is consumed by a send.
+                    // A fresh body per attempt: the upload is consumed by a
+                    // send. Cloning `Bytes` shares the buffer.
                     let part =
-                        reqwest::multipart::Part::bytes(bytes.clone()).file_name(filename.clone());
+                        reqwest::multipart::Part::stream(bytes.clone()).file_name(filename.clone());
                     let mut form = reqwest::multipart::Form::new()
                         .text("model", self.model.clone())
                         .part("file", part);

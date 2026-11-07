@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use cocoindex_utils::fingerprint::Fingerprint;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Serialize, Serializer, ser::SerializeTuple};
@@ -245,10 +246,14 @@ pub struct FileMetadata {
     pub content_fingerprint: Option<Fingerprint>,
 }
 
+/// Per-file cache of metadata, full content and content fingerprint.
+///
+/// The content is held as [`Bytes`], so every [`FileLike::read`] after the
+/// first is a reference-count bump, not a copy of the file.
 #[derive(Default)]
 pub struct FileContentCache {
     metadata: Mutex<Option<FileMetadata>>,
-    full_content: Mutex<Option<Vec<u8>>>,
+    full_content: Mutex<Option<Bytes>>,
     content_fingerprint: Mutex<Option<Fingerprint>>,
 }
 
@@ -288,26 +293,30 @@ pub trait FileLike: Send + Sync {
         Ok(metadata)
     }
 
-    async fn read(&self) -> Result<Vec<u8>> {
+    /// The whole file, from the cache after the first call. Cloning the
+    /// returned [`Bytes`] shares the buffer.
+    async fn read(&self) -> Result<Bytes> {
         {
             let guard = self.cache().full_content.lock().await;
             if let Some(content) = guard.as_ref() {
                 return Ok(content.clone());
             }
         }
-        let content = self.read_impl(None).await?;
+        let content = Bytes::from(self.read_impl(None).await?);
         *self.cache().full_content.lock().await = Some(content.clone());
         Ok(content)
     }
 
-    async fn read_size(&self, size: usize) -> Result<Vec<u8>> {
+    /// The first `size` bytes: a slice of the cached content when the file
+    /// was read before, a bounded read otherwise.
+    async fn read_size(&self, size: usize) -> Result<Bytes> {
         {
             let guard = self.cache().full_content.lock().await;
             if let Some(content) = guard.as_ref() {
-                return Ok(content.iter().take(size).copied().collect());
+                return Ok(content.slice(..size.min(content.len())));
             }
         }
-        self.read_impl(Some(size)).await
+        Ok(Bytes::from(self.read_impl(Some(size)).await?))
     }
 
     /// The content as text: BOM-detected encoding (UTF-8/16/32), else UTF-8,
@@ -334,8 +343,10 @@ pub trait FileLike: Send + Sync {
         let metadata = self.metadata().await?;
         let fp = match metadata.content_fingerprint {
             Some(fp) => fp,
-            None => Fingerprint::from(&self.read().await?)
-                .map_err(|e| Error::engine(format!("file fingerprint error: {e}")))?,
+            // One hasher update over the content, as the Python SDK's
+            // `fingerprint_bytes` does; `Fingerprint::from` would serialize
+            // the bytes one by one.
+            None => Fingerprint::from_bytes(&self.read().await?),
         };
         *self.cache().content_fingerprint.lock().await = Some(fp);
         Ok(fp)
@@ -758,14 +769,20 @@ mod tests {
         assert_eq!(file.metadata().await.unwrap().size, 11);
         assert_eq!(file.metadata_reads.load(Ordering::SeqCst), 1);
 
-        assert_eq!(file.read().await.unwrap(), b"hello world");
-        assert_eq!(file.read().await.unwrap(), b"hello world");
-        assert_eq!(file.read_size(5).await.unwrap(), b"hello");
+        let first_read = file.read().await.unwrap();
+        let second_read = file.read().await.unwrap();
+        assert_eq!(first_read, b"hello world"[..]);
+        assert_eq!(second_read, b"hello world"[..]);
+        assert_eq!(file.read_size(5).await.unwrap(), b"hello"[..]);
+        assert_eq!(file.read_size(100).await.unwrap(), b"hello world"[..]);
         assert_eq!(file.reads.load(Ordering::SeqCst), 1);
+        // A cached read shares the buffer instead of copying it.
+        assert_eq!(first_read.as_ptr(), second_read.as_ptr());
 
         let first = file.content_fingerprint().await.unwrap();
         let second = file.content_fingerprint().await.unwrap();
         assert_eq!(first, second);
+        assert_eq!(first, Fingerprint::from_bytes(b"hello world"));
         assert_eq!(file.reads.load(Ordering::SeqCst), 1);
     }
 

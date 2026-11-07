@@ -212,7 +212,7 @@ async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
 }
 ```
 
-`walk_dir(..).live()` needs the `fs_live` feature. It follows the directory with the platform's native file events, and polls at `poll_interval` where those are unavailable.
+`walk_dir(..).live()` needs the `fs_live` feature. It follows the directory with the platform's native file events (each event updates or removes one file's component), polls at `poll_interval` where those are unavailable, and walks the whole directory every `rescan_interval` (an hour by default) as a safety net.
 
 </Fragment>
 </LangTabs>

@@ -520,8 +520,10 @@ removed during reconciliation. A subdirectory is a target of its own
 `fs::declare_file` declares one file without a directory target; and a root
 under a `ContextKey<PathBuf>` (`FilePath::under_context_dir`) keeps its target
 keys when the tree moves between runs. `walk_dir(..).live()` follows the
-directory with the platform's native file events, polling where those are
-unavailable.
+directory with the platform's native file events (polling where those are
+unavailable): each event updates or removes that file's component alone, a
+directory that appears is walked, and a periodic `rescan_interval` (an hour by
+default) walks the whole tree as a safety net.
 
 ## Read message streams and sign in to Google Drive
 

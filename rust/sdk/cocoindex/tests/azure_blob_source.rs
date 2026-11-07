@@ -482,8 +482,8 @@ async fn check_lists_reads_and_filters(client: &ContainerClient) -> Result<()> {
         FileLike::content_fingerprint(&a).await?,
         FileLike::content_fingerprint(listed_a).await?
     );
-    assert_eq!(a.read().await?, b"# A\nalpha");
-    assert_eq!(a.read_size(3).await?, b"# A");
+    assert_eq!(&a.read().await?[..], b"# A\nalpha");
+    assert_eq!(&a.read_size(3).await?[..], b"# A");
 
     // --- read by name: whole, ranged, past the end, zero bytes, empty blob ---
     assert_eq!(
