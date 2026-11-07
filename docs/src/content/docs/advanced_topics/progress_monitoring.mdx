@@ -138,8 +138,9 @@ class UpdateSnapshot:
 pub struct UpdateStats {
     pub by_component: BTreeMap<String, ComponentStats>, // keyed by processor name
     pub status: UpdateStatus,                           // Running | Ready
+    pub in_groups: ComponentStats,                      // what stats groups under this scope count
 }
-// UpdateStats::total() sums every component; run_stats() derives the coarse RunStats.
+// UpdateStats::total() sums every component, not in_groups; run_stats() derives the coarse RunStats.
 
 pub struct ComponentStats {
     pub num_execution_starts: u64,

@@ -114,7 +114,7 @@ lifespan to one run per command; the CLI does the prompting.
 | `hello` | `protocol`, `sdk` | all verbs, first | handshake; the CLI exits 2 on an unknown `protocol` |
 | `apps` | `apps: [{name, persisted, registered}]`, `db_path` | `ls` | registered ∪ persisted apps |
 | `start` | `app`, `db_path` | `update`, `drop` | the verb begins |
-| `progress` | `version`, `ready`, `by_component: {name: counters}` | `update` | one per engine change; counters are `num_execution_starts`, `num_unchanged`, `num_adds`, `num_deletes`, `num_reprocesses`, `num_errors` |
+| `progress` | `version`, `ready`, `by_component: {name: counters}`, `in_groups: counters` | `update` | one per engine change; counters are `num_execution_starts`, `num_unchanged`, `num_adds`, `num_deletes`, `num_reprocesses`, `num_errors`; `in_groups` (absent means zero) is what stats groups count, for the final status |
 | `confirm` | `action: drop\|drop_db_only\|reset`, `app` | `drop`, `update --reset` with `--confirm` | asks for `yes`/`no` on stdin before the destructive step; `reset` only when there is state to drop |
 | `preview` | `kind: create\|update\|delete`, `value` (JSON) | `update --preview` | one planned target action |
 | `done` | `outcome: completed\|cancelled\|aborted\|nothing_to_drop`, `stats?` (`processed`, `skipped`, `written`, `deleted`, `elapsed: {secs, nanos}`) | terminal | `cancelled` after Ctrl-C; `aborted` after a `no` to `confirm`; `nothing_to_drop` when `drop` found no state; `stats` when an update completed |

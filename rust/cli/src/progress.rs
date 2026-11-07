@@ -100,7 +100,9 @@ impl Renderer {
     pub fn clear(&mut self) {
         if self.drawn_lines > 0 {
             let mut err = std::io::stderr().lock();
-            let _ = write!(err, "\x1b[{}A\x1b[J", self.drawn_lines);
+            // `\r` first: the terminal's `^C` echo can leave the cursor mid-line,
+            // and clearing from there would keep the start of the status line.
+            let _ = write!(err, "\r\x1b[{}A\x1b[J", self.drawn_lines);
             let _ = err.flush();
             self.drawn_lines = 0;
         }
