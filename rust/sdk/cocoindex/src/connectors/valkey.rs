@@ -1180,10 +1180,16 @@ mod tests {
             id("rediss://:pw@valkey.internal:6380"),
             "rediss://valkey.internal:6380"
         );
-        assert_eq!(
-            id("redis+unix:///run/valkey.sock?pass=pw&db=1"),
-            "redis+unix:///run/valkey.sock/1"
-        );
+        // Built by hand: `redis` refuses to parse a Unix-socket URI on Windows.
+        let unix = redis::ConnectionInfo {
+            addr: redis::ConnectionAddr::Unix("/run/valkey.sock".into()),
+            redis: redis::RedisConnectionInfo {
+                db: 1,
+                password: Some("pw".to_string()),
+                ..Default::default()
+            },
+        };
+        assert_eq!(state_id_of(&unix), "redis+unix:///run/valkey.sock/1");
     }
 
     fn command_words(pipe: &redis::Pipeline) -> Vec<String> {
