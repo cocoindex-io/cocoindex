@@ -1110,12 +1110,18 @@ enum PreCommitOutcome<Prof: EngineProfile> {
 /// A change to a container target state takes the target states of all its
 /// children with it, and the selector leaves some of them unrun: nothing would
 /// declare theirs again. Refused before anything is applied, so that a selective
-/// update can't delete the data of the components it leaves alone.
-fn bail_container_change_under_selector(stable_path: &StablePath, change: &str) -> Result<()> {
+/// update can't delete the data of the components it leaves alone. A preview
+/// with the same selector refuses it alike: it shows what the update would do.
+fn bail_container_change_under_selector(
+    container: &str,
+    stable_path: &StablePath,
+    change: &str,
+) -> Result<()> {
     client_bail!(
-        "the component at {stable_path} needs a {change} of a container target state, which \
-         also affects child components that component_selector leaves out. Run an update \
-         without component_selector"
+        "container target state {container}, declared by the component at \
+         {stable_path}, needs a {change}, which also affects child components that \
+         component_selector leaves out. A full update is needed: run it without \
+         component_selector"
     )
 }
 
@@ -1480,14 +1486,18 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     .and_then(|item| item.provider_generation.clone());
 
                 if limited_by_selector
-                    && child_provider.is_some()
+                    && let Some(container) = &child_provider
                     && prev_item.is_some()
                     && matches!(
                         recon_output.child_invalidation,
                         Some(ChildInvalidation::Destructive | ChildInvalidation::Lossy)
                     )
                 {
-                    bail_container_change_under_selector(stable_path, "rebuild")?;
+                    bail_container_change_under_selector(
+                        &container.display_name(),
+                        stable_path,
+                        "rebuild",
+                    )?;
                 }
 
                 if let Some(child_provider) = &child_provider {
@@ -1636,6 +1646,14 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 .filter_map(|(_, s)| s.as_ref())
                 .map(Prof::TargetStateTrackingRecord::from_bytes)
                 .collect::<Result<Vec<_>>>()?;
+            // Named before `reconcile` takes the key; only a container needs it.
+            let container_name =
+                (limited_by_selector && item.provider_generation.is_some()).then(|| {
+                    format!(
+                        "{}/{target_state_key}",
+                        target_states_provider.display_name()
+                    )
+                });
 
             let recon_output = target_states_provider
                 .handler()
@@ -1646,8 +1664,8 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 })?
                 .reconcile(target_state_key, None, &prev_states, prev_may_be_missing)?;
             if let Some(recon_output) = recon_output {
-                if limited_by_selector && item.provider_generation.is_some() {
-                    bail_container_change_under_selector(stable_path, "removal")?;
+                if let Some(container_name) = &container_name {
+                    bail_container_change_under_selector(container_name, stable_path, "removal")?;
                 }
                 actions_by_sinks
                     .entry(recon_output.sink)
@@ -1822,9 +1840,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     let comp_mode = comp_ctx.mode();
     let full_reprocess = comp_ctx.full_reprocess();
-    // A preview applies nothing, so it can show such a change.
-    let limited_by_selector = comp_ctx.update_leaves_out_components()
-        && comp_ctx.app_store().write_scope() == WriteScope::Persisted;
+    let limited_by_selector = comp_ctx.update_leaves_out_components();
     let process_token = comp_ctx.app_ctx().env().process_token();
 
     let mut pending_fulfillments: Vec<(TargetStateProvider<Prof>, Prof::TargetHdl)> = Vec::new();

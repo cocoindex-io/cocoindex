@@ -1175,7 +1175,7 @@ def run_steps(steps: list[Step], tag: str, raw_reader: RawReader | None) -> list
             # the unselected rows behind. Nothing of the change may apply.
             refused = (
                 err is not None
-                and step.mode == "selective"
+                and step.mode in ("selective", "preview")
                 and step.inject.startswith("schema")
                 and "without component_selector" in str(err)
             )
