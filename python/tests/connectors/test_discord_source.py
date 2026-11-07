@@ -1032,7 +1032,10 @@ class TestPacing:
         # The rest of the extension is waited out too, before the request is
         # sent, and with no token taken between the two waits.
         assert len(sleeps) == 2
-        assert 0.29 < sleeps[0] <= 0.3
+        # At most 0.3, up to float rounding: Windows' monotonic clock moves in
+        # ~15.6 ms steps, so it can read the same before and after, and
+        # `(t + 0.3) - t` comes out a hair above 0.3 for a large `t`.
+        assert 0.29 < sleeps[0] <= 0.3 + 1e-9
         assert 0.35 < sleeps[1] < 0.45
         assert fake.count(path) == 1
         assert limiter.acquired == 1
