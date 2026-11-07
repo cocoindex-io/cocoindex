@@ -98,7 +98,9 @@ def test_container_removal_under_a_selector_is_refused_alike_in_preview() -> Non
             return
         with coco.component_subpath("rows"):
             for key, value in sorted(_rows.items()):
-                await coco.mount(coco.component_subpath(key), _row, provider, key, value)
+                await coco.mount(
+                    coco.component_subpath(key), _row, provider, key, value
+                )
 
     DictsTarget.store.clear()
     _rows.clear()
