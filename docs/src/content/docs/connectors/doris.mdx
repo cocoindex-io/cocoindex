@@ -27,10 +27,10 @@ use cocoindex::connectors::doris::{
 };
 ```
 
-The module is compiled with the `doris` Cargo feature of the `cocoindex` crate.
-
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 :::note[Dependencies]
 This connector requires additional dependencies. Install with:
@@ -41,9 +41,29 @@ pip install cocoindex[doris]
 
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+:::note[Dependencies]
+Enable the `doris` Cargo feature of the `cocoindex` crate.
+:::
+
+</Lang>
+
 ## Connection setup
 
+<Lang only="python">
+
 ### DorisConnectionConfig
+
+</Lang>
+
+<Lang only="rust">
+
+### DorisConfig
+
+</Lang>
 
 Configure the connection to your Doris cluster:
 
@@ -86,6 +106,8 @@ if let Ok(pw) = std::env::var("DORIS_PASSWORD") {
 
 **Parameters:**
 
+<Lang only="python">
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `fe_host` | `str` | *(required)* | Frontend host address |
@@ -98,10 +120,35 @@ if let Ok(pw) = std::env::var("DORIS_PASSWORD") {
 | `be_load_host` | `str \| None` | `None` | Override backend host for stream load (defaults to `fe_host`) |
 | `batch_size` | `int` | `10000` | Max rows per stream load batch |
 | `stream_load_timeout` | `int` | `600` | Timeout (seconds) for stream load |
+| `max_retries` | `int` | `3` | Retries of a failed stream load |
+| `retry_base_delay` | `float` | `1.0` | First retry delay (seconds) |
+| `retry_max_delay` | `float` | `30.0` | Longest retry delay (seconds) |
 | `replication_num` | `int` | `1` | Replication factor for new tables |
 | `buckets` | `int \| str` | `"auto"` | Bucket count for new tables |
 
-The Rust `DorisConfig` has the same fields with the same defaults (`buckets` is a `String`), plus `max_retries` (`3`), `retry_base_delay` (`1.0`) and `retry_max_delay` (`30.0`) seconds for Stream Load retries.
+</Lang>
+
+<Lang only="rust">
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `fe_host` | `String` | *(required)* | Frontend host address |
+| `database` | `String` | *(required)* | Database name |
+| `fe_http_port` | `u16` | `8080` | Frontend HTTP port (for stream load) |
+| `query_port` | `u16` | `9030` | MySQL-compatible query port |
+| `username` | `String` | `"root"` | Username |
+| `password` | `String` | `""` | Password |
+| `enable_https` | `bool` | `false` | Use HTTPS for stream load |
+| `be_load_host` | `Option<String>` | `None` | Override backend host for stream load (defaults to `fe_host`) |
+| `batch_size` | `usize` | `10000` | Max rows per stream load batch |
+| `stream_load_timeout` | `u64` | `600` | Timeout (seconds) for stream load |
+| `max_retries` | `u32` | `3` | Retries of a failed stream load |
+| `retry_base_delay` | `f64` | `1.0` | First retry delay (seconds) |
+| `retry_max_delay` | `f64` | `30.0` | Longest retry delay (seconds) |
+| `replication_num` | `u32` | `1` | Replication factor for new tables |
+| `buckets` | `String` | `"auto"` | Bucket count for new tables |
+
+</Lang>
 
 ### connect
 
@@ -154,12 +201,22 @@ The `doris` connector provides target state APIs for writing rows to tables. Coc
 
 #### Setting up a connection
 
+<Lang only="python">
+
 Create a `ContextKey[doris.ManagedConnection]` to identify your connection, then provide it in your lifespan:
+
+</Lang>
+
+<Lang only="rust">
+
+Declare a context key for a `DorisConnection` with `cocoindex::context_key!`, then provide the connection when you build the environment:
+
+</Lang>
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 
-CocoIndex tracks each table by the `ContextKey` and the table name. The `database` in `DorisConnectionConfig` is not part of that identity. If you change `database` under the same key, CocoIndex treats it as if you moved the tables there. It assumes that they already exist in the new database, so it does not create them, and it leaves the old database as it is. To write to a new, empty database, use a new `ContextKey`.
+CocoIndex tracks each table by the context key and the table name. The `database` in <Lang only="python">`DorisConnectionConfig`</Lang><Lang only="rust">`DorisConfig`</Lang> is not part of that identity. If you change `database` under the same key, CocoIndex treats it as if you moved the tables there. It assumes that they already exist in the new database, so it does not create them, and it leaves the old database as it is. To write to a new, empty database, use a new context key.
 :::
 
 {/* Rust: rust/sdk/cocoindex/tests/doris_target.rs */}
@@ -201,14 +258,14 @@ let app = Environment::builder()
     .await?;
 ```
 
-`context_key!` declares the key. Its stable name is the identifier, or the `key = "…"` string when given. `provide_key(&DORIS_DB, conn)` provides the connection, in a `#[cocoindex::lifespan]` function or on `Environment::builder()` as here. The Rust connection's identity excludes the `database` in the same way.
+`context_key!` declares the key. Its stable name is the identifier, or the `key = "…"` string when given. `provide_key(&DORIS_DB, conn)` provides the connection, in a `#[cocoindex::lifespan]` function or on `Environment::builder()` as here.
 
 </Fragment>
 </LangTabs>
 
 #### Tables (parent state)
 
-Declares a table as a target state. Returns a `DorisTableTarget` for declaring rows.
+Declares a table as a target state. Returns a <Lang only="python">`DorisTableTarget`</Lang><Lang only="rust">`TableTarget`</Lang> for declaring rows.
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/doris.rs */}
 <LangTabs>
@@ -252,12 +309,14 @@ pub struct DorisTableOptions {
 }
 ```
 
-The handle type is `TableTarget`. `managed_by`, `vector_indexes` and `inverted_indexes` go in `DorisTableOptions`. `declare_table_target` and `declare_table_target_with_options` take the same arguments and return a handle whose rows resolve when the current component commits.
+`managed_by`, `vector_indexes` and `inverted_indexes` go in `DorisTableOptions`. `declare_table_target` and `declare_table_target_with_options` take the same arguments and return a handle whose rows resolve when the current component commits.
 
 </Fragment>
 </LangTabs>
 
 **Parameters:**
+
+<Lang only="python">
 
 - `db` — A `ContextKey[doris.ManagedConnection]` identifying the connection to use.
 - `table_name` — Name of the table.
@@ -268,9 +327,34 @@ The handle type is `TableTarget`. `managed_by`, `vector_indexes` and `inverted_i
 
 **Returns:** A pending `DorisTableTarget`. Use the convenience wrapper `await doris.mount_table_target(...)` to resolve.
 
+</Lang>
+
+<Lang only="rust">
+
+- `conn` — The context key of the `DorisConnection` to use.
+- `table_name` — Name of the table.
+- `table_schema` — Schema definition including columns and primary key (see [Table schema](#table-schema-from-a-rust-struct)).
+- `options.managed_by` — Whether CocoIndex manages the table lifecycle (`ManagedBy::System`, the default) or assumes it exists (`ManagedBy::User`).
+- `options.vector_indexes` — Vector index definitions (see [Vector indexes](#vector-indexes)).
+- `options.inverted_indexes` — Inverted index definitions (see [Inverted indexes](#inverted-indexes)).
+
+**Returns:** A `TableTarget`. It is `Clone` and serializes to its stable key, the table name, so it can be a `mount_each!` / `use_mount!` argument or a memoized function argument:
+
+{/* Rust: examples/rust/sec_edgar_analytics/src/main.rs */}
+```rust
+#[cocoindex::function]
+async fn process_facts(ctx: &Ctx, file: FileEntry, table: doris::TableTarget) -> Result<()> {
+    // ...
+}
+
+mount_each!("facts", facts, |file| process_facts(ctx, file, table)).await?;
+```
+
+</Lang>
+
 #### Rows (child states)
 
-Once a `DorisTableTarget` is resolved, declare rows to be upserted:
+Once a <Lang only="python">`DorisTableTarget`</Lang><Lang only="rust">`TableTarget`</Lang> is resolved, declare rows to be upserted:
 
 {/* Rust: rust/sdk/cocoindex/tests/doris_target.rs */}
 <LangTabs>
@@ -303,11 +387,23 @@ target.declare_row(
 
 **Parameters:**
 
-- `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns. In Rust, any `Serialize` value whose fields match the schema's columns, such as a row struct or a `serde_json::Value` object.
+- `row` — <Lang only="python">A row object (dict, dataclass, NamedTuple, or Pydantic model).</Lang><Lang only="rust">Any `Serialize` value whose fields match the schema's columns, such as a row struct or a `serde_json::Value` object.</Lang> Must include all primary key columns.
+
+<Lang only="python">
 
 ### Table schema: from Python class
 
 Define the table structure using a Python class:
+
+</Lang>
+
+<Lang only="rust">
+
+### Table schema: from a Rust struct
+
+Define the table structure with a struct that derives `SchemaFields`:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/doris.rs */}
 <LangTabs>
@@ -343,10 +439,12 @@ impl TableSchema {
 }
 ```
 
-The Rust row type is a struct that derives `SchemaFields` (and `Serialize`). Python's `column_overrides` become builder calls on the derived schema: `with_vector_schema` or `with_vector_dim` for a vector column, `with_column_type` for a type override.
+The row type is a struct that derives `SchemaFields` (and `Serialize`). Per-column overrides are builder calls on the derived schema: `with_vector_schema` (from an embedder or other `VectorSchemaProvider`) or `with_vector_dim` for a vector column, `with_column_type` for a type override, which keeps the column's nullability and makes it a non-vector column.
 
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 **Parameters:**
 
@@ -354,9 +452,11 @@ The Rust row type is a struct that derives `SchemaFields` (and `Serialize`). Pyt
 - `primary_key` — List of column names forming the primary key.
 - `column_overrides` — Optional per-column overrides for type mapping or vector configuration.
 
+</Lang>
+
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/schema_from_row.rs, rust/sdk/SHOWCASE.md (verified against doris.rs) */}
+{/* Rust: rust/sdk/cocoindex/tests/schema_from_row.rs, examples/rust/sec_edgar_analytics/src/main.rs (with_vector_schema) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -395,28 +495,61 @@ let schema = doris::TableSchema::from_row::<DocEmbedding>(["id"])?
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 Python types are automatically mapped to Doris types:
 
-| Python Type | Rust Type | Doris Type |
-|-------------|-----------|------------|
-| `bool` | `bool` | `BOOLEAN` |
-| `int` | `i16`, `i32`, `i64` | `BIGINT` |
-| `float` | `f32`, `f64` | `DOUBLE` |
-| `str` | `String` | `STRING` (Rust: `TEXT`) |
-| `bytes` | `Vec<u8>` | `STRING` (base64) |
-| `uuid.UUID` | `Uuid` | `VARCHAR(36)` |
-| `datetime.datetime` | `DateTime`, `NaiveDateTime` | `DATETIME` (Rust: `DATETIME(6)`) |
-| `datetime.date` | `NaiveDate` | `DATE` |
-| `list`, `dict`, nested structs | other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `JSON` |
-| `NDArray` (with vector schema) | `Vec<f32>` with `#[coco(vector)]` | `ARRAY<FLOAT>` |
+| Python Type | Doris Type |
+|-------------|------------|
+| `bool` | `BOOLEAN` |
+| `int` | `BIGINT` |
+| `float` | `DOUBLE` |
+| `decimal.Decimal` | `TEXT` |
+| `str` | `TEXT` |
+| `bytes` | `STRING` |
+| `uuid.UUID` | `VARCHAR(36)` |
+| `datetime.datetime` | `DATETIME(6)` |
+| `datetime.date` | `DATE` |
+| `datetime.time` | `VARCHAR(20)` |
+| `datetime.timedelta` | `BIGINT` (microseconds) |
+| `list`, `dict`, nested structs | `JSON` |
+| `NDArray` (with vector schema) | `ARRAY<FLOAT>` |
 
-The Rust mapping also covers `NaiveTime` (`VARCHAR(20)`), `Decimal` (`TEXT`) and `Duration` (`BIGINT`).
-
-`bytes` values are intentionally base64-encoded before writing to `STRING` so arbitrary binary data survives Doris's JSON Stream Load path.
+`bytes` values are decoded as UTF-8 before writing to `STRING`; invalid UTF-8 sequences are replaced.
 
 #### DorisType
 
 Use `DorisType` to specify a custom Doris type:
+
+</Lang>
+
+<Lang only="rust">
+
+Rust field types are automatically mapped to Doris types:
+
+| Rust Type | Doris Type |
+|-----------|------------|
+| `bool` | `BOOLEAN` |
+| `i16`, `i32`, `i64` | `BIGINT` |
+| `f32`, `f64` | `DOUBLE` |
+| `Decimal` | `TEXT` |
+| `String` | `TEXT` |
+| `Vec<u8>` | `STRING` (base64) |
+| `Uuid` | `VARCHAR(36)` |
+| `DateTime`, `NaiveDateTime` | `DATETIME(6)` |
+| `NaiveDate` | `DATE` |
+| `NaiveTime` | `VARCHAR(20)` |
+| `Duration` | `BIGINT` |
+| other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `JSON` |
+| `Vec<f32>` with `#[coco(vector)]` | `ARRAY<FLOAT>` (`NOT NULL`) |
+
+`Vec<u8>` values are base64-encoded before writing to `STRING` so arbitrary binary data survives Doris's JSON Stream Load path.
+
+#### Custom column types
+
+Use `#[coco(type = "…")]` on a field to specify a custom Doris type:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/row_schema.rs, rust/sdk/cocoindex/src/connectors/doris.rs (with_column_type) */}
 <LangTabs>
@@ -498,14 +631,14 @@ impl VectorIndexDef {
 
 **Parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `field_name` | `str` | *(required)* | Column to index |
-| `index_type` | `str` | `"HNSW"` | Index type: `"HNSW"` or `"IVF"` |
-| `metric_type` | `str` | `"l2_distance"` | Distance metric: `"l2_distance"` or `"cosine_distance"` |
-| `max_degree` | `int \| None` | `None` | HNSW max degree |
-| `ef_construction` | `int \| None` | `None` | HNSW construction parameter |
-| `nlist` | `int \| None` | `None` | IVF number of partitions |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `field_name` | *(required)* | Column to index |
+| `index_type` | `"HNSW"` | Index type: `"HNSW"` or `"IVF"` |
+| `metric_type` | `"l2_distance"` | Distance metric: `"l2_distance"`, `"inner_product"` or `"cosine_distance"` |
+| `max_degree` | `None` | HNSW max degree |
+| `ef_construction` | `None` | HNSW construction parameter |
+| `nlist` | `None` | IVF number of partitions |
 
 ### Inverted indexes
 
@@ -546,7 +679,7 @@ let target =
 **Parameters:**
 
 - `field_name` — Column to index.
-- `parser` — Optional tokenizer for full-text search (e.g., `"unicode"`, `"english"`, `"chinese"`). If `None`, the index supports exact matching only.
+- `parser` — Optional tokenizer for full-text search (e.g., `"unicode"`, `"english"`, `"chinese"`). Without one, the index supports exact matching only.
 
 ### Query helpers
 
@@ -618,6 +751,8 @@ let sql = doris::build_vector_search_query(
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 #### connect_async
 
 Create an async MySQL connection for running queries:
@@ -632,7 +767,19 @@ async def connect_async(
 ) -> Any  # aiomysql connection
 ```
 
-The Rust SDK has no `connect_async`: `DorisConnection::pool()` returns the `sqlx::MySqlPool` the connection already holds, and queries run on it.
+</Lang>
+
+<Lang only="rust">
+
+#### Running queries
+
+`DorisConnection::pool()` returns the `sqlx::MySqlPool` the connection holds; run queries on it.
+
+</Lang>
+
+<RustNote>
+There is no `connect_async`: queries run on the pool of the `DorisConnection` itself.
+</RustNote>
 
 ### Example
 
@@ -747,7 +894,7 @@ app.run(move |ctx| async move {
 .await?;
 ```
 
-There is no Rust example program for Doris yet; `rust/sdk/cocoindex/tests/doris_target.rs` is the end-to-end reference.
+`examples/rust/sec_edgar_analytics` is a runnable project: one Doris table with a vector index and an inverted index, fed per file through `mount_each!`. `rust/sdk/cocoindex/tests/doris_target.rs` is the end-to-end test.
 
 </Fragment>
 </LangTabs>

@@ -25,10 +25,10 @@ from cocoindex.connectors import google_drive
 use cocoindex::connectors::gdrive::{DriveFile, GoogleDriveClient, GoogleDriveSource};
 ```
 
-The Rust module is `gdrive`, and the Rust SDK needs the `google_drive` Cargo feature of the `cocoindex` crate.
-
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 :::note[Dependencies]
 This connector requires additional dependencies. Install with:
@@ -39,9 +39,26 @@ pip install cocoindex[google_drive]
 
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+:::note[Dependencies]
+The module is `cocoindex::connectors::gdrive`, behind the `google_drive` feature of the `cocoindex` crate:
+
+```toml
+cocoindex = { git = "https://github.com/cocoindex-io/cocoindex", features = ["google_drive"] }
+```
+
+:::
+
+</Lang>
+
 ## As source
 
 The connector provides two ways to read from Google Drive:
+
+<Lang only="python">
 
 - `GoogleDriveSource` — high-level source class with async iteration
 - `list_files()` — lower-level function returning a sync iterator
@@ -51,7 +68,21 @@ Both authenticate with one of:
 - a **service account** with access to the target Drive folders (`service_account_credential_path`), the fit for a shared or automated setup;
 - a **personal Google account** signed in once through OAuth (`user_account`, experimental), the fit for your own Drive: see [Signing in with a personal account](#signing-in-with-a-personal-account).
 
-In Rust the authentication lives in a `GoogleDriveClient`: `GoogleDriveClient::from_service_account_file(path)?` for a service account, `GoogleDriveClient::from_user_account(&account)?` for a personal account. The client is `Clone` and is provided under a `ContextKey` so that functions can read files through it.
+</Lang>
+
+<Lang only="rust">
+
+- `GoogleDriveSource` — the source, with `list_files()` and `items()`
+- `list_files()` — a function over a `GoogleDriveSourceSpec`
+
+Both read through a `GoogleDriveClient`, which authenticates with one of:
+
+- a **service account** with access to the target Drive folders (`GoogleDriveClient::from_service_account_file(path)?`), the fit for a shared or automated setup;
+- a **personal Google account** signed in once through OAuth (`GoogleDriveClient::from_user_account(&account)?`, experimental), the fit for your own Drive: see [Signing in with a personal account](#signing-in-with-a-personal-account).
+
+The client is `Clone`; provide it under a context key so that functions can read files through it.
+
+</Lang>
 
 ### Setting up a service account
 
@@ -68,7 +99,7 @@ gws auth login
 gws drive files list
 ```
 
-In headless or agent workflows, `gws` can also read credentials from `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE`. CocoIndex still expects the service account JSON path in `service_account_credential_path`; use the `gws` credentials setting for `gws` commands themselves.
+In headless or agent workflows, `gws` can also read credentials from `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE`. CocoIndex still expects the service account JSON path in <Lang only="python">`service_account_credential_path`</Lang><Lang only="rust">`GoogleDriveClient::from_service_account_file`</Lang>; use the `gws` credentials setting for `gws` commands themselves.
 :::
 
 ### GoogleDriveSource
@@ -110,14 +141,26 @@ let source = GoogleDriveSource::new(ctx.get_key(&GDRIVE)?.clone(), root_folder_i
 
 **Parameters:**
 
+<Lang only="python">
+
 - `root_folder_ids` — List of Google Drive folder IDs to scan. Subfolders are traversed recursively.
 - `service_account_credential_path` — Path to the service account JSON credential file.
 - `user_account` — A [`UserAccount`](#useraccount) signed in through OAuth (experimental). Exactly one of `service_account_credential_path` and `user_account` is given.
 - `mime_types` — Optional list of MIME types to include. If `None`, all file types are included.
 
+</Lang>
+
+<Lang only="rust">
+
+- `client` — The `GoogleDriveClient`, signed in with a service account or a [`UserAccount`](#useraccount).
+- `root_folder_ids` — Google Drive folder IDs to scan. Subfolders are traversed recursively.
+- `mime_types` — Optional MIME types to include, set with `.mime_types(...)`. Without it, all file types are included.
+
+</Lang>
+
 ### Iterating files
 
-`GoogleDriveSource` provides async iteration via `files()`, yielding `DriveFile` objects (implementing the [`FileLike`](../common_resources/data_types#filelike) base class):
+<Lang only="python">`GoogleDriveSource` provides async iteration via `files()`, yielding `DriveFile` objects</Lang><Lang only="rust">`GoogleDriveSource::list_files()` lists `DriveFile` objects</Lang> (implementing the [`FileLike`](../common_resources/data_types#filelike) base class):
 
 {/* Rust: examples/rust/gdrive_text_embedding/src/main.rs */}
 <LangTabs>
@@ -154,7 +197,7 @@ for file in source.list_files().await? {
 
 ### Keyed iteration with `items()`
 
-`items()` yields `(str, DriveFile)` pairs keyed by the file's Google Drive ID. IDs remain stable across renames and avoid collisions when files share a name, including within the same folder. This is useful with `mount_each()`:
+`items()` <Lang only="python">yields `(str, DriveFile)` pairs</Lang><Lang only="rust">returns `(String, DriveFile)` pairs</Lang> keyed by the file's Google Drive ID. IDs remain stable across renames and avoid collisions when files share a name, including within the same folder. This is useful with <Lang only="python">`mount_each()`</Lang><Lang only="rust">`mount_each!`</Lang>:
 
 {/* Rust: examples/rust/gdrive_text_embedding/src/main.rs */}
 <LangTabs>
@@ -169,14 +212,11 @@ async for key, file in source.items():
 <Fragment slot="rust">
 
 ```rust
-let files = source.list_files().await?;
-let rows_by_file = use_mount_each!(files.into_iter().map(|file| (file.key(), file)), |file| {
-    process_file(ctx, file)
-})
-.await?;
+let files = source.items().await?;
+mount_each!(files, |file| process_file(ctx, file, table)).await?;
 ```
 
-`file.key()` is the file's Google Drive ID; `source.items().await?` returns the same `(key, file)` pairs as a `Vec`.
+`file.key()` is the same Google Drive ID.
 
 </Fragment>
 </LangTabs>
@@ -246,21 +286,32 @@ pub async fn list_files(spec: GoogleDriveSourceSpec) -> Result<Vec<DriveFile>>
 
 **Parameters:**
 
-- `spec` — A `GoogleDriveSourceSpec` with the same fields as `GoogleDriveSource` constructor parameters. In Rust the spec holds the `GoogleDriveClient` instead of a credential path.
+- `spec` — A `GoogleDriveSourceSpec` with the same fields as <Lang only="python">`GoogleDriveSource` constructor parameters</Lang><Lang only="rust">`GoogleDriveSource`: the client, the root folder IDs and the optional MIME types</Lang>.
 
-**Returns:** A sync iterator of `DriveFile` objects. The Rust function is `async` and returns a `Vec<DriveFile>`.
+**Returns:** <Lang only="python">A sync iterator of `DriveFile` objects.</Lang><Lang only="rust">Every listed `DriveFile`, as a `Vec`.</Lang>
 
 ### DriveFile
 
 `DriveFile` implements [`FileLike`](../common_resources/data_types#filelike) with Google Drive-specific behavior:
 
-- `info` — The `DriveFileInfo` the listing returned: file ID, name, MIME type, size, modified time and MD5 checksum (binary files only).
+<Lang only="python">
+
 - `info` — The `DriveFileInfo` the listing returned: file ID, name, MIME type, size, modified time and MD5 checksum (binary files only).
 - `file_path` — A `DriveFilePath` containing the path relative to the configured root folder; `resolve()` returns the Google Drive file ID. If roots overlap or a file is reachable more than once, it is emitted once using the first path encountered in breadth-first traversal. Each folder's children are visited in order of name, then ID, so the same path is kept on every run.
-- `read()` / `read_text()` — Downloads file content via the Google Drive API. Partial reads (`size` parameter) are not supported. Requests Google refuses for rate limits (HTTP 429, or 403 with a rate-limit reason) are retried with backoff.
-- Change detection uses the Drive MD5 checksum of binary files, so an unchanged file is not downloaded again. Google Docs, Sheets and Slides have no checksum; their exported content is hashed instead.
+- `read()` / `read_text()` — Downloads file content via the Google Drive API. Partial reads (`size` parameter) are not supported.
 
-The Rust `DriveFile` has the public fields `file_id`, `name`, `path`, `mime_type`, `size`, `modified_time` and `md5_checksum`, plus `info()`, `key()`, `file_path()` (a `DriveFilePath` with `path()`, `file_id()` and `resolve()`), `read()` and `read_text()`. It implements `FileLike` and `MemoInput`, with the same change detection: a memoized function takes it as an argument and runs again only for a file whose content changed.
+</Lang>
+
+<Lang only="rust">
+
+- Public fields `file_id`, `name`, `path`, `mime_type`, `size`, `modified_time` (RFC 3339, as Drive returns it) and `md5_checksum` (binary files only); `info()` returns them as a `DriveFileInfo`, and `key()` returns the file ID.
+- `file_path()` — A `DriveFilePath` with `path()`, the path relative to the configured root folder, and `file_id()`; `resolve()` returns the Google Drive file ID. If roots overlap or a file is reachable more than once, it is emitted once using the first path encountered in breadth-first traversal. Each folder's children are visited in order of name, then ID, so the same path is kept on every run.
+- `read()` / `read_text()` — Downloads file content via the Google Drive API. A listed file carries the client; `client.read(&file)` and `client.read_text(&file)` read through a client you hold.
+
+</Lang>
+
+- Every Drive API request, listing and download alike, is retried with backoff (up to five more attempts) when Google answers with a server error, HTTP 429, or 403 with a rate-limit reason, or when the connection fails.
+- Change detection uses the Drive MD5 checksum of binary files, so an unchanged file is not downloaded again. Google Docs, Sheets and Slides have no checksum; their exported content is hashed instead.<Lang only="rust"> `DriveFile` implements `MemoInput`: a memoized function that takes it runs again only for a file whose content changed. Its memo key holds only the file's metadata, never the client.</Lang>
 
 ## Signing in with a personal account
 
@@ -271,6 +322,12 @@ The Rust `DriveFile` has the public fields `file_id`, `name`, `path`, `mime_type
 A service account only sees folders shared with it. To read your own Drive, sign in with your Google account instead. The sign-in is a one-time interactive step, run from the shell, outside any CocoIndex run; it uses the OAuth flow Google recommends for command-line applications (an authorization code with PKCE, redirected to a listener on this machine's loopback interface), from a Desktop app OAuth client. CocoIndex asks for read-only access to Drive (`drive.readonly`) and nothing else.
 
 CocoIndex's own OAuth client is not in a release yet: Google has to verify it first. Until a release includes it, sign in with an OAuth client you create in your own Google Cloud project, as below. A release that includes it needs nothing but your Google account: `cocoindex google-drive sign-in` without a client file.
+
+<Lang only="rust">
+
+The built-in client is compiled in only when `COCOINDEX_GOOGLE_OAUTH_CLIENT_ID` and `COCOINDEX_GOOGLE_OAUTH_CLIENT_SECRET` are set at build time, as a release build sets them. A `cocoindex` crate or `cocoindex` CLI built from the git repository has none, so its sign-in takes your own client file.
+
+</Lang>
 
 ### Setting up the OAuth client
 
@@ -304,9 +361,17 @@ The tokens are stored in a file readable by your user only (`0600`), at `~/.conf
 cocoindex google-drive sign-out      # revokes the sign-in at Google and deletes the token file
 ```
 
+<Lang only="python">
+
 The same two steps are available in Python as `UserAccount().sign_in(client_secrets_path)` (with no argument for CocoIndex's own client) and `UserAccount().sign_out()`.
 
-The `cocoindex` binary for Rust projects has the same two commands. The Rust `UserAccount` reads and writes the same token file as the Python SDK, at the same default location, so one sign-in serves both. From code, `UserAccount::new()?.sign_in(Some(client_secrets_path)).await?` signs in with your own client and `sign_in(None)` with the client built into the release, when it has one; `sign_out().await?` revokes the sign-in and deletes the file.
+</Lang>
+
+<Lang only="rust">
+
+These are commands of the [`cocoindex` CLI for Rust projects](/docs/rust/cli/#google-drive). The Python CLI has the same two commands over the same token file, at the same default location, so one sign-in serves both SDKs. From code, `UserAccount::new()?.sign_in(Some(client_secrets_path)).await?` signs in with your own client and `sign_in(None)` with the client built into the release, when it has one; `sign_out().await?` revokes the sign-in and deletes the file.
+
+</Lang>
 
 ### UserAccount
 
@@ -336,11 +401,25 @@ pub fn UserAccount::is_signed_in(&self) -> bool
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 The handle a run passes to `GoogleDriveSource`. It reads the token file at `token_path` (default: the path `sign-in` writes to) when the source is first used:
 
 - the access token is refreshed with the stored refresh token as it expires, and the refreshed token is written back to the file;
 - `email` is the signed-in account's address, and the memo key of a `UserAccount` is that address: a refreshed token does not invalidate memoized work, a different account does;
 - when no sign-in is stored, or Google refuses the stored one (the consent expired or was revoked, or the OAuth client was deleted, disabled or given a new secret), the run raises `SignInRequiredError` (a `SignInError`), whose message says which and to sign in again. The message never contains a token.
+
+</Lang>
+
+<Lang only="rust">
+
+The handle a `GoogleDriveClient` signs with. `GoogleDriveClient::from_user_account(&account)` reads the token file at `token_path` (default: the path `sign-in` writes to) when it builds the client:
+
+- the access token is refreshed with the stored refresh token as it expires, and the refreshed token is written back to the file;
+- `email()` is the signed-in account's address, and the client's identity is that address: a refreshed token does not invalidate memoized work, a different account does;
+- when no sign-in is stored, or Google refuses the stored one (the consent expired or was revoked, or the OAuth client was deleted, disabled or given a new secret), the call fails with `SignInError::SignInRequired`, whose message says which and to sign in again. Other sign-in failures are `SignInError::Failed`. `SignInError::of(&error)` recovers the `SignInError` from the SDK's `Error`. The message never contains a token.
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/tests/gdrive_user_account.rs */}
 <LangTabs>
@@ -373,8 +452,6 @@ mount_each!(files.into_iter().map(|file| (file.key(), file)), |file| {
 })
 .await?;
 ```
-
-`from_user_account` reads the token file now and fails with a message that says how to sign in when no usable sign-in is stored. The sign-in errors are typed: `SignInError::of(&error)` recovers a `SignInError` from the SDK error, `SignInRequired` when a run has no working sign-in (none stored, or Google refused the stored one) and `Failed` for the rest; the message never contains a token. The client's identity is the account's address, so a refreshed token keeps memoized work and a different account invalidates it.
 
 </Fragment>
 </LangTabs>
@@ -429,23 +506,19 @@ use cocoindex::prelude::*;
 
 cocoindex::context_key!(static GDRIVE: GoogleDriveClient);
 
-#[cocoindex::function]
-async fn process_file(ctx: &Ctx, file: DriveFile) -> Result<()> {
-    let client = ctx.get_key(&GDRIVE)?;
-    let text = client.read_text(&file).await?;
+#[cocoindex::function(memo)]
+async fn process_file(_ctx: &Ctx, file: DriveFile) -> Result<()> {
+    let text = file.read_text().await?;
     // ... process the file content ...
     Ok(())
 }
 
 async fn app_main(ctx: Ctx, root_folder_ids: Vec<String>) -> Result<()> {
     let source = GoogleDriveSource::new(ctx.get_key(&GDRIVE)?.clone(), root_folder_ids);
-    let files = source.list_files().await?;
+    let files = source.items().await?;
     println!("indexing {} Google Drive files", files.len());
 
-    mount_each!(files.into_iter().map(|file| (file.key(), file)), |file| {
-        process_file(ctx, file)
-    })
-    .await?;
+    mount_each!(files, |file| process_file(ctx, file)).await?;
     Ok(())
 }
 

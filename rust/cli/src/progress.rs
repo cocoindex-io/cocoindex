@@ -23,6 +23,7 @@ pub struct Renderer {
     started: Instant,
     ready_at: Option<Instant>,
     components: BTreeMap<String, ComponentStatsWire>,
+    in_groups: ComponentStatsWire,
     drawn_lines: usize,
     last_draw: Option<Instant>,
     spinner: usize,
@@ -48,6 +49,7 @@ impl Renderer {
             started: Instant::now(),
             ready_at: None,
             components: BTreeMap::new(),
+            in_groups: ComponentStatsWire::default(),
             drawn_lines: 0,
             last_draw: None,
             spinner: 0,
@@ -65,12 +67,28 @@ impl Renderer {
         self.draw();
     }
 
-    pub fn progress(&mut self, ready: bool, components: BTreeMap<String, ComponentStatsWire>) {
+    /// The same for a line of the child's stderr, the stream the block draws on.
+    pub fn error_text(&mut self, text: &str) {
+        self.clear();
+        let mut err = std::io::stderr().lock();
+        let _ = writeln!(err, "{text}");
+        let _ = err.flush();
+        drop(err);
+        self.draw();
+    }
+
+    pub fn progress(
+        &mut self,
+        ready: bool,
+        components: BTreeMap<String, ComponentStatsWire>,
+        in_groups: ComponentStatsWire,
+    ) {
         let became_ready = ready && self.ready_at.is_none();
         if became_ready {
             self.ready_at = Some(Instant::now());
         }
         self.components = components;
+        self.in_groups = in_groups;
         let due = self.last_draw.is_none_or(|t| t.elapsed() >= MIN_REDRAW);
         if due || became_ready {
             self.clear();
@@ -82,7 +100,9 @@ impl Renderer {
     pub fn clear(&mut self) {
         if self.drawn_lines > 0 {
             let mut err = std::io::stderr().lock();
-            let _ = write!(err, "\x1b[{}A\x1b[J", self.drawn_lines);
+            // `\r` first: the terminal's `^C` echo can leave the cursor mid-line,
+            // and clearing from there would keep the start of the status line.
+            let _ = write!(err, "\r\x1b[{}A\x1b[J", self.drawn_lines);
             let _ = err.flush();
             self.drawn_lines = 0;
         }
@@ -96,6 +116,7 @@ impl Renderer {
                 .map(|(name, stats)| (name.clone(), group(stats)))
                 .collect(),
             ready: self.ready_at.is_some(),
+            in_groups: group(&self.in_groups),
             ..Default::default()
         }
     }

@@ -1952,7 +1952,7 @@ fn logical_type_tokens(ty: &Type, attr: &SchemaFieldAttr) -> TokenStream2 {
 /// `Option<T>` fields become nullable columns; everything else is `NOT NULL`.
 /// Use `#[coco(vector)]` with `TableSchema::with_vector_dim(...)` when the
 /// dimension is available only at runtime, or `#[coco(vector = N)]` when it is
-/// a compile-time constant. See [`cocoindex::row_schema`] for the other field
+/// a compile-time constant. See `cocoindex::row_schema` for the other field
 /// attributes.
 ///
 /// Unsigned integers map to the next signed width, so `u64` and `usize` map to
@@ -2086,7 +2086,7 @@ fn type_ends_with(ty: &Type, name: &str) -> bool {
 }
 
 /// Register an app entry point with the binary, so `cocoindex update` / `drop`
-/// and [`Environment::from_registered`] can find it by name.
+/// and `Environment::from_registered` can find it by name.
 ///
 /// The function keeps its signature and stays callable (`app.run(app_main)`).
 /// It must be `async fn name(ctx: Ctx) -> Result<T>` — `Ctx` by value. The

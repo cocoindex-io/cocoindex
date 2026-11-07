@@ -96,7 +96,10 @@ exits 1) and build and run an `init` scaffold.
 **Framing.** One record per line on the child's stdout: ASCII record separator `U+001E`, then a
 JSON object with an `event` tag, then `\n`. The child flushes after every record. Any stdout
 text without the separator (or before it on the same line) is user output; the CLI forwards it
-verbatim. Stderr is inherited. Lines whose JSON does not parse are reported as malformed and
+verbatim. Stderr is read line by line and forwarded to the CLI's stderr, the stream the progress
+block draws on, so that the block can make room for it. The child's stderr is then a pipe, not a
+terminal: engine logs have no color under this CLI, libraries that check for a terminal behave as
+under a pipe, and output with no newline waits for one. Lines whose JSON does not parse are reported as malformed and
 otherwise ignored.
 
 **Invocation.** `<bin> __coco <ls|update|drop> --protocol 1 [--app NAME] [--live]
@@ -111,7 +114,7 @@ lifespan to one run per command; the CLI does the prompting.
 | `hello` | `protocol`, `sdk` | all verbs, first | handshake; the CLI exits 2 on an unknown `protocol` |
 | `apps` | `apps: [{name, persisted, registered}]`, `db_path` | `ls` | registered ∪ persisted apps |
 | `start` | `app`, `db_path` | `update`, `drop` | the verb begins |
-| `progress` | `version`, `ready`, `by_component: {name: counters}` | `update` | one per engine change; counters are `num_execution_starts`, `num_unchanged`, `num_adds`, `num_deletes`, `num_reprocesses`, `num_errors` |
+| `progress` | `version`, `ready`, `by_component: {name: counters}`, `in_groups: counters` | `update` | one per engine change; counters are `num_execution_starts`, `num_unchanged`, `num_adds`, `num_deletes`, `num_reprocesses`, `num_errors`; `in_groups` (absent means zero) is what stats groups count, for the final status |
 | `confirm` | `action: drop\|drop_db_only\|reset`, `app` | `drop`, `update --reset` with `--confirm` | asks for `yes`/`no` on stdin before the destructive step; `reset` only when there is state to drop |
 | `preview` | `kind: create\|update\|delete`, `value` (JSON) | `update --preview` | one planned target action |
 | `done` | `outcome: completed\|cancelled\|aborted\|nothing_to_drop`, `stats?` (`processed`, `skipped`, `written`, `deleted`, `elapsed: {secs, nanos}`) | terminal | `cancelled` after Ctrl-C; `aborted` after a `no` to `confirm`; `nothing_to_drop` when `drop` found no state; `stats` when an update completed |

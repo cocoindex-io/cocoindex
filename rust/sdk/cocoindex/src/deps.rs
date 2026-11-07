@@ -4,7 +4,7 @@
 //! `logic_tracking = "self"` layers). They mirror the Python SDK's
 //! `coco.LogicDep` / `use_logic_dep`, `coco.DataDep` / `use_data_dep` and
 //! `coco.logic_propagated_to_callers`; the recording methods live on
-//! [`Ctx`](crate::Ctx) because Rust has no ambient component context.
+//! [`Ctx`] because Rust has no ambient component context.
 //!
 //! For a value every call of a function depends on, use the `deps = ...`
 //! argument of `#[cocoindex::function]` instead.

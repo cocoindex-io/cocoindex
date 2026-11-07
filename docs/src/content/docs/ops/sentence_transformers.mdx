@@ -4,10 +4,23 @@ description: >
   Run sentence-transformers models locally for text embeddings with automatic
   model caching, thread-safe GPU access, and optional normalization — plus
   VectorSchemaProvider integration for connectors.
+rust_description: >
+  Run sentence-transformers ONNX models locally for text embeddings through
+  fastembed, memoized and batched by the engine, with GPU execution providers
+  and VectorSchemaProvider integration for connectors.
 ---
-import LangTabs from '../../../components/LangTabs.astro';
+
+<Lang only="python">
 
 The `cocoindex.ops.sentence_transformers` module provides integration with the [sentence-transformers](https://www.sbert.net/) library for text embeddings.
+
+</Lang>
+
+<Lang only="rust">
+
+The `cocoindex::ops::sentence_transformers` module runs [sentence-transformers](https://www.sbert.net/) models locally for text embeddings. It runs their ONNX exports through [`fastembed`](https://github.com/Anush008/fastembed-rs), with no Python runtime.
+
+</Lang>
 
 {/* Rust: examples/rust/text_embedding/src/main.rs */}
 <LangTabs>
@@ -23,11 +36,10 @@ from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 ```rust
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 ```
-
-The Rust module is `cocoindex::ops::sentence_transformers`, behind the `fastembed` feature of the `cocoindex` crate. It runs the same ONNX models locally through [`fastembed`](https://github.com/Anush008/fastembed-rs), with no Python runtime.
-
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 :::note[Dependencies]
 This module requires additional dependencies. Install with:
@@ -38,7 +50,24 @@ pip install cocoindex[sentence_transformers]
 
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+:::note[Cargo feature]
+The module is behind the `fastembed` feature of the `cocoindex` crate:
+
+```toml
+cocoindex = { version = "...", features = ["fastembed"] }
+```
+
+:::
+
+</Lang>
+
 ## Overview
+
+<Lang only="python">
 
 The `SentenceTransformerEmbedder` class is a wrapper around SentenceTransformer models that:
 
@@ -47,7 +76,24 @@ The `SentenceTransformerEmbedder` class is a wrapper around SentenceTransformer 
 - Provides an `embed()` method
 - Returns typed NumPy arrays
 
-The Rust `SentenceTransformerEmbedder` implements `VectorSchemaProvider` and `Embedder` too, and returns `Vec<f32>`. It runs the model on the ONNX Runtime execution providers compiled into the binary (CPU by default), on a blocking thread.
+</Lang>
+
+<Lang only="rust">
+
+The `SentenceTransformerEmbedder` struct wraps a locally loaded `fastembed` model. It:
+
+- Implements `VectorSchemaProvider` to supply vector schema information to CocoIndex connectors
+- Implements the [`Embedder`](../common_resources/data_types#embedder) trait, so it plugs into [entity resolution](./entity_resolution) directly
+- Provides an `embed(&ctx, text)` method, memoized and batched by the engine
+- Returns each embedding as a `Vec<f32>`
+
+It runs the model on the ONNX Runtime execution providers compiled into the binary (CPU by default), on a blocking thread.
+
+</Lang>
+
+<RustNote>
+The Rust embedder is built on `fastembed`, not on the `sentence-transformers` library, so its options differ. It has no `prompt_name` and no `normalize_embeddings`: `fastembed` has no prompt registry and always L2-normalizes its output. It has no `device` either: [`load_with`](#execution-providers) takes ONNX Runtime execution providers instead.
+</RustNote>
 
 ## Basic usage
 
@@ -81,7 +127,17 @@ let embedder = SentenceTransformerEmbedder::load("sentence-transformers/all-Mini
 
 ### Embedding text
 
-The `embed()` method converts text into a `numpy.ndarray` of `float32`. It supports both sync and async usage:
+<Lang only="python">
+
+The `embed()` method converts text into a `numpy.ndarray` of `float32`. It's an async method — use `await` when calling it:
+
+</Lang>
+
+<Lang only="rust">
+
+The `embed(&ctx, text)` method converts text into a `Vec<f32>`:
+
+</Lang>
 
 {/* Rust: examples/rust/text_embedding/src/main.rs (process_file, query_once) */}
 <LangTabs>
@@ -106,20 +162,42 @@ let embedding = embedder.embed(&ctx, "Hello, world!").await?;
 let query_vec = embedder.embed_batch(vec![query.to_string()]).await?.remove(0);
 ```
 
-`embed(&ctx, text)` returns `Vec<f32>`. Outside an update there is no `Ctx`: use `embed_batch(texts)`, which embeds one batch directly.
+Outside an update there is no `Ctx`: use `embed_batch(texts)`, which embeds one batch directly.
 
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 :::note[Built-in memoization]
 `embed()` is memoized (`memo=True`): inside a processing component, each distinct text's vector is cached across that component's runs, so a caller that re-executes doesn't recompute unchanged text — the tradeoff is model compute vs. cache storage (one full vector per distinct text). This composes well with the per-file component in the example below; mind the [memoization placement rule](../programming_guide/function#when-to-memoize) if your components are instead keyed by the embedded content. Callsite control over an op's memoization is tracked in [#2275](https://github.com/cocoindex-io/cocoindex/issues/2275).
 :::
 
-The Rust `embed(&ctx, text)` is memoized the same way, and it batches: concurrent cache misses in one update are coalesced into batches of up to 64 texts. The memo key holds the model name and dimension, so a different model invalidates the cached vectors.
+</Lang>
+
+<Lang only="rust">
+
+:::note[Built-in memoization]
+`embed(&ctx, text)` is memoized: inside a processing component, each distinct text's vector is cached across that component's runs, so a caller that re-executes doesn't recompute unchanged text. The tradeoff is model compute vs. cache storage (one full vector per distinct text). It also batches: concurrent cache misses in one update are coalesced into batches of up to 64 texts. The memo key holds the model name and dimension, so a different model invalidates the cached vectors. Mind the [memoization placement rule](../programming_guide/function#when-to-memoize) if your components are keyed by the embedded content.
+:::
+
+</Lang>
+
+<Lang only="python">
 
 ### Using as a type annotation
 
 The `SentenceTransformerEmbedder` implements [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), which means it can be used directly as metadata in `Annotated` type annotations. This is the recommended way to declare vector columns — CocoIndex connectors automatically extract the vector dimension and dtype from the annotation when creating tables.
+
+</Lang>
+
+<Lang only="rust">
+
+### Declaring the vector column
+
+The `SentenceTransformerEmbedder` implements [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), so a connector reads the vector dimension and element type from it when it creates a table. The row struct marks the column with `#[coco(vector)]`:
+
+</Lang>
 
 {/* Rust: examples/rust/text_embedding/src/main.rs (DocEmbedding, index) */}
 <LangTabs>
@@ -160,12 +238,22 @@ struct DocEmbedding {
 }
 ```
 
-A Rust row struct cannot name the embedder in a field attribute. `#[coco(vector)]` marks the column; the embedder supplies the dimension when the table is mounted, below.
+A row struct cannot name the embedder in a field attribute: the embedder supplies the dimension when the table is mounted, below.
 
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 When you pass this dataclass to a connector's `TableSchema.from_class()`, the connector automatically reads the embedder annotation to determine the vector column's dimension and dtype. For example, with Postgres:
+
+</Lang>
+
+<Lang only="rust">
+
+When you mount the table, pass the embedder to `with_vector_schema`, and the connector takes the vector column's dimension and element type from it. For example, with Postgres:
+
+</Lang>
 
 {/* Rust: examples/rust/text_embedding/src/main.rs (index) */}
 <LangTabs>
@@ -205,7 +293,7 @@ let table = postgres::mount_table_target(
 .await?;
 ```
 
-`TableSchema::from_row::<Row>(primary_key)` is the Rust `from_class`; `with_vector_schema(field, &embedder)` resolves the `#[coco(vector)]` column from any `VectorSchemaProvider`. See [Vector schema annotations](../common_resources/vector_schema).
+`TableSchema::from_row::<Row>(primary_key)` builds the schema from the row struct; `with_vector_schema(field, &embedder)` resolves the `#[coco(vector)]` column from any `VectorSchemaProvider`. See [Vector schema annotations](../common_resources/vector_schema).
 
 </Fragment>
 </LangTabs>
@@ -214,7 +302,7 @@ The connector automatically creates the appropriate `vector(384)` column. See th
 
 ## Example: text embedding pipeline
 
-Here's a complete example of a text embedding pipeline (based on the [text_embedding example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding)):
+Here's a complete example of a text embedding pipeline (based on the <Lang only="python">[text_embedding example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding)</Lang><Lang only="rust">[text_embedding example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/rust/text_embedding)</Lang>):
 
 {/* Rust: examples/rust/text_embedding/src/main.rs (trimmed: the query command and the main body are left out) */}
 <LangTabs>
@@ -439,7 +527,7 @@ async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
 }
 ```
 
-The full program, with the `database_url()` and `source_dir()` helpers, a `query` command and the `#[cocoindex::main]` entry point, is `examples/rust/text_embedding`. Run it with the [CLI for Rust projects](../cli_rust): `cocoindex update`, or `cocoindex update -L` to keep watching the directory.
+The full program, with the `database_url()` and `source_dir()` helpers, a `query` command and the `#[cocoindex::main]` entry point, is `examples/rust/text_embedding`. Run it with the [CLI](/docs/rust/cli/): `cocoindex update`, or `cocoindex update -L` to keep watching the directory.
 
 </Fragment>
 </LangTabs>
@@ -447,6 +535,8 @@ The full program, with the `database_url()` and `source_dir()` helpers, a `query
 ## Configuration options
 
 ### Model selection
+
+<Lang only="python">
 
 You can use any model from the [sentence-transformers library](https://www.sbert.net/docs/sentence_transformer/pretrained_models.html):
 
@@ -464,24 +554,59 @@ embedder = SentenceTransformerEmbedder("sentence-transformers/paraphrase-multili
 embedder = SentenceTransformerEmbedder("/path/to/local/model")
 ```
 
-The Rust `SentenceTransformerEmbedder::load(name_or_path)` accepts a name from the `fastembed` model registry (matched case-insensitively, and by the trailing model name, so `sentence-transformers/all-MiniLM-L6-v2` and `Xenova/all-MiniLM-L6-v2` resolve to the same model), a local directory holding a sentence-transformers ONNX export (`onnx/model.onnx` or `model.onnx` plus the tokenizer files), or the Hugging Face Hub repository of such an export. `HF_HOME` and `HF_ENDPOINT` apply to the download. A model with a pooling mode other than CLS or mean is rejected.
+</Lang>
+
+<Lang only="rust">
+
+`SentenceTransformerEmbedder::load(name_or_path)` accepts a name from the `fastembed` model registry (matched case-insensitively, and by the trailing model name, so `sentence-transformers/all-MiniLM-L6-v2` and `Xenova/all-MiniLM-L6-v2` resolve to the same model), a local directory holding a sentence-transformers ONNX export (`onnx/model.onnx` or `model.onnx` plus the tokenizer files), or the Hugging Face Hub repository of such an export. `HF_HOME` and `HF_ENDPOINT` apply to the download. A model with a pooling mode other than CLS or mean is rejected. Pooling follows the export's `1_Pooling/config.json` when it has one.
+
+{/* Rust: examples/rust/text_embedding/src/main.rs (load_embedder) */}
+```rust
+let embedder = SentenceTransformerEmbedder::load("sentence-transformers/all-MiniLM-L6-v2").await?;
+```
+
+</Lang>
+
+<Lang only="python">
 
 ### Normalization
 
-By default, embeddings are normalized to unit length (suitable for cosine similarity):
+By default, embeddings are normalized to unit length (suitable for cosine similarity). Pass `normalize_embeddings=False` to `embed()` to disable it:
 
 ```python
 # Default: normalized embeddings
-embedder = SentenceTransformerEmbedder(
-    "sentence-transformers/all-MiniLM-L6-v2",
-    normalize_embeddings=True  # Default
-)
+embedding = await embedder.embed("Hello, world!")
 
 # Disable normalization if needed
-embedder = SentenceTransformerEmbedder(
-    "sentence-transformers/all-MiniLM-L6-v2",
-    normalize_embeddings=False
-)
+embedding = await embedder.embed("Hello, world!", normalize_embeddings=False)
 ```
 
-The Rust embedder always normalizes: `fastembed` L2-normalizes its output, so `normalize_embeddings` has no Rust counterpart. Python's `prompt_name` has none either: `fastembed` has no prompt registry, so prepend the model's query or document prefix to the text yourself. Python's `device` is `SentenceTransformerEmbedder::load_with(name_or_path, execution_providers)`: the ONNX Runtime execution providers to try, such as `CUDAExecutionProvider::default().build()` from the `ort` crate, which the binary must enable through `ort`'s `cuda` feature; without any, the model runs on the CPU. As in Python (`runner=coco.GPU`), each batch runs under the GPU runner, so one inference runs at a time per GPU in the pool.
+Concurrent `embed()` calls are batched only with calls that pass the same `normalize_embeddings` (and `prompt_name`).
+
+</Lang>
+
+<Lang only="rust">
+
+### Normalization and prompts
+
+`fastembed` always L2-normalizes its output, so every embedding has unit length (suitable for cosine similarity). It has no prompt registry: for a model that expects a query or document prefix, prepend the prefix to the text yourself.
+
+### Execution providers
+
+`SentenceTransformerEmbedder::load_with(name_or_path, execution_providers)` runs the model on the first of `execution_providers` that ONNX Runtime can start. A provider is registered when its `ort` feature is compiled into the binary, such as `cuda` for `CUDAExecutionProvider`; otherwise ONNX Runtime falls back to the CPU. `load(name_or_path)` is `load_with` with no providers.
+
+{/* Rust: rust/sdk/cocoindex/src/ops/sentence_transformers.rs (load_with doc comment); needs the `ort` crate with its `cuda` feature */}
+```rust
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+use ort::execution_providers::CUDAExecutionProvider;
+
+let embedder = SentenceTransformerEmbedder::load_with(
+    "sentence-transformers/all-MiniLM-L6-v2",
+    vec![CUDAExecutionProvider::default().build()],
+)
+.await?;
+```
+
+Each batch runs under the GPU runner, so one inference runs at a time per GPU in the pool.
+
+</Lang>

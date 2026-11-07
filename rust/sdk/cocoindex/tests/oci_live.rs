@@ -31,21 +31,23 @@ use cocoindex::{
 use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 use serde_json::json;
+use tokio::sync::watch;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 /// A finite in-memory `LiveStream<Vec<u8>>` of event payloads. It records, per
-/// event, whether the view acknowledged it (awaited the handle `send`
-/// returned), then waits until cancelled, as a topic would.
+/// event, whether the view acknowledged it (the handle `send` returned became
+/// ready), then waits until cancelled, as a topic would. A test subscribes to
+/// `acked` to wait for the acknowledgements it expects.
 #[derive(Clone)]
 struct EventStream {
     events: Vec<Vec<u8>>,
-    acked: Arc<Mutex<Vec<bool>>>,
+    acked: watch::Sender<Vec<bool>>,
 }
 
 impl EventStream {
     fn new(events: Vec<Vec<u8>>) -> Self {
-        let acked = Arc::new(Mutex::new(vec![false; events.len()]));
+        let (acked, _) = watch::channel(vec![false; events.len()]);
         Self { events, acked }
     }
 }
@@ -56,7 +58,7 @@ impl LiveStream<Vec<u8>> for EventStream {
         for (i, event) in self.events.iter().enumerate() {
             let handle = subscriber.send(event.clone()).await?;
             handle.ready().await?;
-            self.acked.lock().unwrap()[i] = true;
+            self.acked.send_modify(|acked| acked[i] = true);
         }
         subscriber.mark_ready().await;
         std::future::pending::<()>().await;
@@ -175,7 +177,7 @@ async fn oci_live_view_scan_then_events() -> Result<()> {
     ];
 
     let events = EventStream::new(events);
-    let acked = events.acked.clone();
+    let mut acked = events.acked.subscribe();
     let processed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let app = App::builder("OciLive")
         .db_path(tmp.path().join("db"))
@@ -220,21 +222,26 @@ async fn oci_live_view_scan_then_events() -> Result<()> {
         )
         .unwrap();
 
-    // Wait until the scan item and the live create are both processed.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        {
-            let got = processed.lock().unwrap();
-            if got.iter().any(|k| k == "a.txt") && got.iter().any(|k| k == "new.txt") {
-                break;
-            }
-        }
-        if Instant::now() > deadline {
-            let got = processed.lock().unwrap().clone();
-            panic!("live view did not process scan + create event in time; got={got:?}");
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    // Wait until the stream has every event acknowledged, before stopping the
+    // run. The scan has synced before the watch starts, and an event is
+    // acknowledged once the update or delete it caused has synced, so this
+    // also covers both objects. Seeing `new.txt` processed is not enough: its
+    // sync and the later events can still be in flight, and stopping the run
+    // cancels them, which leaves them unacknowledged.
+    let all_acked = matches!(
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            acked.wait_for(|acked| acked.iter().all(|&a| a)),
+        )
+        .await,
+        Ok(Ok(_))
+    );
+    assert!(
+        all_acked,
+        "every event, handled or dropped, is acknowledged to the stream; acked={:?}, processed={:?}",
+        *acked.borrow(),
+        processed.lock().unwrap(),
+    );
 
     let _ = app.drop_state().await;
     let _ = tokio::time::timeout(Duration::from_secs(10), handle.result()).await;
@@ -247,11 +254,6 @@ async fn oci_live_view_scan_then_events() -> Result<()> {
         vec!["a.txt".to_string(), "new.txt".to_string()],
         "only the scanned object and the in-window create event should be processed \
          (old/cross-bucket/malformed dropped, delete is a no-op)"
-    );
-    assert_eq!(
-        acked.lock().unwrap().clone(),
-        vec![true; 5],
-        "every event, handled or dropped, is acknowledged to the stream"
     );
     Ok(())
 }

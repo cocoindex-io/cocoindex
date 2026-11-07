@@ -132,13 +132,26 @@ impl Style {
 }
 
 /// Colors are on unless `NO_COLOR` is set to a non-empty value (no-color.org).
-fn color_enabled() -> bool {
+pub(crate) fn color_enabled() -> bool {
     !matches!(std::env::var_os("NO_COLOR"), Some(v) if !v.is_empty())
 }
 
 /// Display cells of `s`.
 fn cells(s: &str) -> usize {
     unicode_width::UnicodeWidthStr::width(s)
+}
+
+/// `text` with control characters as spaces. A terminal acts on them: a tab or
+/// a carriage return moves its cursor past the cells counted here, which breaks
+/// the in-place redraw.
+fn printable(text: String) -> String {
+    if text.contains(char::is_control) {
+        text.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect()
+    } else {
+        text
+    }
 }
 
 /// One output line, built from segments that each carry their own color, so
@@ -148,12 +161,12 @@ struct Line(Vec<(String, Option<&'static str>)>);
 
 impl Line {
     fn text(mut self, text: impl Into<String>) -> Self {
-        self.0.push((text.into(), None));
+        self.0.push((printable(text.into()), None));
         self
     }
 
     fn styled(mut self, code: &'static str, text: impl Into<String>) -> Self {
-        self.0.push((text.into(), Some(code)));
+        self.0.push((printable(text.into()), Some(code)));
         self
     }
 
@@ -218,6 +231,25 @@ fn fit_end(text: &str, max: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// Fit `text` in `max` cells, cutting the start: `…guide/page_a.md`. The end
+/// of a path tells its items apart.
+fn fit_start(text: &str, max: usize) -> String {
+    if cells(text) <= max {
+        return text.to_string();
+    }
+    let mut kept = Vec::new();
+    let mut used = 0;
+    for ch in text.chars().rev() {
+        let w = cells(ch.encode_utf8(&mut [0; 4]));
+        if used + w + 1 > max {
+            break;
+        }
+        used += w;
+        kept.push(ch);
+    }
+    std::iter::once('…').chain(kept.into_iter().rev()).collect()
 }
 
 /// `<0.1s`, `12.3s`, `2m 05s`, `1h 02m`.
@@ -450,6 +482,11 @@ struct Totals {
     failed: u64,
     /// Runs still in flight. On the final block these were cut off.
     unfinished: u64,
+    /// What stats groups under this block count: they have their own rows, and
+    /// only the final status adds these. Final blocks have one section, so
+    /// nothing counts twice with a nested group's section.
+    failed_in_groups: u64,
+    unfinished_in_groups: u64,
 }
 
 impl Totals {
@@ -458,6 +495,11 @@ impl Totals {
         Totals {
             failed: groups().map(|g| g.num_errors).sum(),
             unfinished: groups().map(|g| g.num_in_progress()).sum(),
+            failed_in_groups: snapshots.iter().map(|s| s.in_groups.num_errors).sum(),
+            unfinished_in_groups: snapshots
+                .iter()
+                .map(|s| s.in_groups.num_in_progress())
+                .sum(),
         }
     }
 }
@@ -476,8 +518,11 @@ struct BlockSpec<'a> {
 /// The status line that heads a block: one mark (the block's only spinner
 /// while running), what is happening, and details in gray parentheses.
 ///
-/// A one-shot run that ends with runs in flight was stopped (Ctrl+C), not
-/// done.
+/// A run that ends with runs in flight was cut off (Ctrl+C), so it gets no
+/// success mark. A one-shot run then says `Stopped`, not `Done`.
+///
+/// Failures inside stats groups have their own rows, but they count here: the
+/// status of the block's run covers them.
 fn status_line(spec: &BlockSpec<'_>, ready: bool, totals: Totals, style: &Style) -> Line {
     let elapsed = format_duration(spec.start_time.elapsed());
     let ready_in = spec
@@ -501,10 +546,12 @@ fn status_line(spec: &BlockSpec<'_>, ready: bool, totals: Totals, style: &Style)
     };
 
     if spec.finished {
-        let interrupted = !spec.live && totals.unfinished > 0;
+        let failed = totals.failed + totals.failed_in_groups;
+        let unfinished = totals.unfinished + totals.unfinished_in_groups;
+        let interrupted = unfinished > 0;
         let mark = if interrupted {
             Line::default().styled(YELLOW, "!")
-        } else if totals.failed > 0 {
+        } else if failed > 0 {
             Line::default().styled(RED, "✗")
         } else {
             Line::default().styled(GREEN, "✓")
@@ -515,18 +562,17 @@ fn status_line(spec: &BlockSpec<'_>, ready: bool, totals: Totals, style: &Style)
             "Done in"
         };
         let mut line = say(mark, &format!("{verb} {elapsed}"));
-        if totals.failed > 0 {
+        if failed > 0 {
             line = line
                 .styled(GRAY, " · ")
-                .styled(RED, format!("{} failed", totals.failed));
+                .styled(RED, format!("{failed} failed"));
         }
-        if totals.unfinished > 0 {
+        if unfinished > 0 {
             line = line.styled(GRAY, " · ").styled(
                 YELLOW,
                 format!(
-                    "{} {} unfinished",
-                    totals.unfinished,
-                    plural(totals.unfinished, "run", "runs")
+                    "{unfinished} {} unfinished",
+                    plural(unfinished, "run", "runs")
                 ),
             );
         }
@@ -602,7 +648,11 @@ fn block_lines(
             .map(|f| cells(&readable_path(&f.component)))
             .max()
             .unwrap_or(0)
-            .min(MAX_NAME_CELLS);
+            .min(if style.width.is_some() {
+                MAX_NAME_CELLS
+            } else {
+                usize::MAX
+            });
         for (name, group) in &section.snapshot.stats {
             lines.push(component_line(
                 indent,
@@ -618,7 +668,7 @@ fn block_lines(
                     break;
                 }
                 listed += 1;
-                let path = fit_end(&readable_path(&failure.component), path_cells);
+                let path = fit_start(&readable_path(&failure.component), path_cells);
                 let pad = " ".repeat(path_cells.saturating_sub(cells(&path)) + 2);
                 lines.push(
                     Line::default()
@@ -879,7 +929,8 @@ fn write_to_fd(fd: i32, buf: &[u8]) {
 }
 
 /// Internal RAII guard for PTY fd cleanup.
-/// Restores original fds and clears the global flag on drop.
+/// Restores original fds, ends the stats groups' sections and clears the global
+/// flag on drop, so a cancelled display leaves no region behind for later groups.
 #[cfg(unix)]
 struct PtyGuard {
     saved_stdout: i32,
@@ -894,6 +945,9 @@ impl Drop for PtyGuard {
             nix::libc::dup2(self.saved_stderr, nix::libc::STDERR_FILENO);
             nix::libc::close(self.saved_stdout);
             nix::libc::close(self.saved_stderr);
+        }
+        if let Ok(mut groups) = GROUP_SECTIONS.lock() {
+            *groups = None;
         }
         PROGRESS_ACTIVE.store(false, Ordering::SeqCst);
     }
@@ -1218,6 +1272,8 @@ async fn render_plain(
 /// terminal, the group becomes a section of its in-place region, and prints
 /// its final block once when it terminates. Otherwise a standalone plain
 /// reporter prints scrolling blocks, and ends when the group terminates.
+/// `refresh_interval_secs` sets that reporter's interval; a section redraws
+/// with its region.
 pub(crate) fn report_group_stats(
     stats: ProcessingStats,
     title: String,
@@ -1296,7 +1352,7 @@ mod tests {
     fn status(spec: &BlockSpec<'_>, ready: bool, failed: u64) -> String {
         let totals = Totals {
             failed,
-            unfinished: 0,
+            ..Totals::default()
         };
         status_line(spec, ready, totals, &Style::PLAIN).render(&Style::PLAIN)
     }
@@ -1477,10 +1533,84 @@ mod tests {
     }
 
     #[test]
+    fn test_interrupted_live_run_gets_no_success_mark() {
+        let mut snapshot = VersionedProcessingStats::default();
+        snapshot.stats.insert("main".to_string(), group(1, 0, 0, 0));
+        let lines = stats_block_lines(&spec(true, true, 2.4, None), &snapshot, &Style::PLAIN);
+        assert_eq!(lines[0], "! Stopped after 2.4s · 1 run unfinished");
+    }
+
+    #[test]
+    fn test_final_status_counts_failures_in_groups() {
+        let mut snapshot = VersionedProcessingStats::default();
+        snapshot.stats.insert("main".to_string(), group(1, 1, 0, 0));
+        snapshot.in_groups.num_execution_starts = 3;
+        snapshot.in_groups.num_errors = 3;
+        let lines = stats_block_lines(&spec(false, true, 2.0, None), &snapshot, &Style::PLAIN);
+        assert_eq!(
+            lines,
+            vec!["✗ Done in 2.0s · 3 failed", "  ✓ main  1 added"]
+        );
+    }
+
+    #[test]
+    fn test_final_status_counts_runs_cut_off_in_groups() {
+        let mut snapshot = VersionedProcessingStats::default();
+        snapshot.stats.insert("main".to_string(), group(1, 1, 0, 0));
+        snapshot.in_groups.num_execution_starts = 2;
+        let lines = stats_block_lines(&spec(true, true, 2.0, None), &snapshot, &Style::PLAIN);
+        assert_eq!(lines[0], "! Stopped after 2.0s · 2 runs unfinished");
+    }
+
+    #[test]
+    fn test_control_characters_never_reach_the_terminal() {
+        let mut snapshot = VersionedProcessingStats::default();
+        snapshot
+            .stats
+            .insert("name\twith\rcontrols".to_string(), group(1, 0, 0, 1));
+        snapshot.failures.push(failure(
+            "name\twith\rcontrols",
+            item("3"),
+            "col1\tcol2\r\x1b[31mred",
+        ));
+        let spec = BlockSpec {
+            title: Some("Title\there"),
+            ..spec(false, true, 2.0, None)
+        };
+        for line in stats_block_lines(&spec, &snapshot, &narrow(60)) {
+            assert!(!line.contains(char::is_control), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn test_failure_paths_keep_the_end_that_tells_them_apart() {
+        let mut snapshot = VersionedProcessingStats::default();
+        snapshot
+            .stats
+            .insert("process_item".to_string(), group(2, 0, 0, 2));
+        for name in ["page_a.md", "page_b.md"] {
+            let key = format!("docs/src/content/docs/programming_guide/{name}");
+            snapshot
+                .failures
+                .push(failure("process_item", path(&[s(&key)]), "boom"));
+        }
+        let spec = spec(false, true, 2.0, None);
+        let terminal = stats_block_lines(&spec, &snapshot, &narrow(100));
+        assert_eq!(terminal[2], "      …ocs/programming_guide/page_a.md  boom");
+        assert_eq!(terminal[3], "      …ocs/programming_guide/page_b.md  boom");
+        // Scrolling output keeps lines whole.
+        let plain = stats_block_lines(&spec, &snapshot, &Style::PLAIN);
+        assert_eq!(
+            plain[2],
+            "      docs/src/content/docs/programming_guide/page_a.md  boom"
+        );
+    }
+
+    #[test]
     fn test_one_unfinished_run_is_singular() {
         let totals = Totals {
-            failed: 0,
             unfinished: 1,
+            ..Totals::default()
         };
         let line = status_line(&spec(false, true, 1.0, None), true, totals, &Style::PLAIN)
             .render(&Style::PLAIN);

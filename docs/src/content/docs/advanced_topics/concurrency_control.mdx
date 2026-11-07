@@ -12,7 +12,7 @@ CocoIndex executes each [processing component](../programming_guide/processing_c
 
 ## Setting the limit
 
-Set `max_inflight_components` in `AppConfig`:
+Set <Lang only="python">`max_inflight_components` in `AppConfig`</Lang><Lang only="rust">`max_inflight_components` on the `App` builder</Lang>:
 
 {/* Rust: rust/sdk/cocoindex/src/app.rs (AppBuilder::max_inflight_components, EnvironmentBuilder::max_inflight_components) */}
 <LangTabs>
@@ -42,9 +42,15 @@ let app = App::builder("MyPipeline")
 </Fragment>
 </LangTabs>
 
-With `max_inflight_components=4`, at most 4 processing components execute at the same time. When a component finishes, the next pending one starts. A `mount()`, `use_mount()` or `mount_each()` call waits while no slot is free, so a parent cannot run ahead of its children without bound: a loop that mounts a child per source item advances only as fast as children finish.
+With a limit of 4, at most 4 processing components execute at the same time. When a component finishes, the next pending one starts. A <Lang only="python">`mount()`, `use_mount()` or `mount_each()`</Lang><Lang only="rust">`ctx.mount`, `ctx.scope` / `use_mount!` or `ctx.mount_each`</Lang> call waits while no slot is free, so a parent cannot run ahead of its children without bound: a loop that mounts a child per source item advances only as fast as children finish.
 
-Setting `max_inflight_components=1` serializes all components — only one runs at a time.
+<Lang only="rust">
+
+`ctx.mount_each` and `ctx.mount_each_stream` mount each item as a background child and admit the items at the pace slots free up; `ctx.use_mount_each` runs the items in the foreground and returns their values in input order. Both draw on the same limit.
+
+</Lang>
+
+A limit of 1 serializes all components — only one runs at a time.
 
 You can also set the limit via the `COCOINDEX_MAX_INFLIGHT_COMPONENTS` environment variable:
 
@@ -52,47 +58,59 @@ You can also set the limit via the `COCOINDEX_MAX_INFLIGHT_COMPONENTS` environme
 export COCOINDEX_MAX_INFLIGHT_COMPONENTS=4
 ```
 
-**Precedence:** `AppConfig` value (in Rust, the builder's `max_inflight_components`) > environment variable > default (1024). Rust reads the variable when an app is created.
+**Precedence:** <Lang only="python">`AppConfig` value</Lang><Lang only="rust">the builder's `max_inflight_components`</Lang> > environment variable > default (1024).<Lang only="rust"> The variable is read when an app is created.</Lang>
 
 ## Nested mounts: a parent lends its slot
 
-A parent component usually waits for its children: `use_mount()` returns the child's result, and a component's own target states are committed only once all its children are done. If a waiting parent simply kept its slot, a small limit could fill up with waiting parents and leave no slot for the children they wait for.
+A parent component usually waits for its children: <Lang only="python">`use_mount()`</Lang><Lang only="rust">`use_mount!` / `ctx.scope`</Lang> returns the child's result, and a component's own target states are committed only once all its children are done. If a waiting parent simply kept its slot, a small limit could fill up with waiting parents and leave no slot for the children they wait for.
 
 Instead, a parent keeps its slot while it waits and **lends it to one child at a time**:
 
 * The first child a parent mounts runs on the parent's slot; it needs no free slot of its own.
-* Further children take free slots from the pool, and their `mount()` / `use_mount()` calls wait while the pool is empty.
+* Further children take free slots from the pool, and their mount calls wait while the pool is empty.
 * When the child running on the lent slot finishes, the slot passes to the parent's next waiting child.
 
-So a parent that is blocked — on its children, or on anything else after mounting one, such as an application-level `asyncio.Semaphore` — always has one child that can run, and a hierarchy of any depth completes even with `max_inflight_components=1`. The limit bounds the components that execute at the same time; counting the parents waiting on them, the components in flight are bounded by the limit times the depth of the component hierarchy.
+So a parent that is blocked — on its children, or on anything else after mounting one, such as an application-level <Lang only="python">`asyncio.Semaphore`</Lang><Lang only="rust">`tokio::sync::Semaphore`</Lang> — always has one child that can run, and a hierarchy of any depth completes even with a limit of 1. The limit bounds the components that execute at the same time; counting the parents waiting on them, the components in flight are bounded by the limit times the depth of the component hierarchy.
 
 A few related rules:
 
-* A component that awaits a function call — including a batched one (`@coco.fn.as_async(batching=True)`) — keeps its slot; only mounting a child lends it.
-* When several parents mount the same component at once (two `App.update()` calls overlapping, or several owners of a shared component), only the run that executes takes a slot. The others wait for it without a slot and reuse its result.
-* Live components (`coco.auto_refresh`, `mount_each()` over a live map) borrow the slot of the component that mounted them for their cycles and item updates, like its other children, for as long as it runs; afterwards they take slots from the pool like any other component.
-* Deleting components (cleaning up a removed subtree, `App.drop()`) is bounded by the same limit.
+* A component that awaits a function call — including a batched one (<Lang only="python">`@coco.fn.as_async(batching=True)`</Lang><Lang only="rust">`#[cocoindex::function(batching)]`</Lang>) — keeps its slot; only mounting a child lends it.
+* When several parents mount the same component at once (two app updates overlapping, or several owners of a shared component), only the run that executes takes a slot. The others wait for it without a slot and reuse its result.
+* Live components (<Lang only="python">`coco.auto_refresh`, `mount_each()` over a live map</Lang><Lang only="rust">`ctx.auto_refresh`, `ctx.mount_live`, `ctx.mount_each_live`</Lang>) borrow the slot of the component that mounted them for their cycles and item updates, like its other children, for as long as it runs; afterwards they take slots from the pool like any other component.
+* Deleting components (cleaning up a removed subtree, dropping an app) is bounded by the same limit.
 
 ## Live components share the limit fairly
 
 [Live components](./live_component) update on their own schedules, and one of them can have far more work queued than another: a full re-index next to a refresh of a few changed items. The limit is shared fairly between **independent updates**, so a small update never waits for a large one's whole backlog:
 
-* An independent update is an `App.update()`, one cycle of a live component (each refresh of `coco.auto_refresh`), or one item update of `mount_each()` over a live map. Every component an update mounts belongs to that update.
+* An independent update is an app update, one cycle of a live component (each refresh of <Lang only="python">`coco.auto_refresh`</Lang><Lang only="rust">`ctx.auto_refresh`</Lang>), or one item update of <Lang only="python">`mount_each()` over a live map</Lang><Lang only="rust">`ctx.mount_each_live`</Lang>. Every component an update mounts belongs to that update.
 * A component that finds a free slot takes it at once, and no slot is reserved, so an update that runs alone can use the whole limit.
 * When no slot is free, a slot that frees up goes to whichever waiting side holds the fewest slots: first among the app's updates and its live components, then, inside the live component that wins, among its own updates and the live components they mounted. Among equals it goes to the one that started waiting first, and within one update components start in the order they asked.
 * A live component mounted by another live component's update counts as part of that live component.
 
 Fairness only decides which waiting component gets a slot that frees up. It never takes a slot from a running component, and the lending above works the same way.
 
-## Other concurrency controls in the Rust SDK
+## Other concurrency controls
 
-The component limit bounds how many components run at once. The Rust SDK has three more controls, each on a smaller unit of work.
+The component limit bounds how many components run at once. Four more controls each act on a smaller unit of work.
+
+<Lang only="python">
+
+### Concurrent items with `coco.map`
+
+`coco.map(fn, items)` runs `fn` for every item at once, inside the current component, and collects the results in input order. No processing components are created. Every started item runs to completion; then the first error in input order is raised. Use `coco.mount_each` instead when each item should be its own component.
+
+</Lang>
+
+<Lang only="rust">
 
 ### Concurrent items with `ctx.map`
 
 `ctx.map(items, f)` runs `f` for every item at once, inside the current component, and collects the results in input order. Every started item runs to completion; then the first error in input order is returned. Use `ctx.mount_each` instead when each item should be its own component.
 
-{/* Rust: rust/sdk/cocoindex/src/ctx.rs (Ctx::map doc comment) */}
+</Lang>
+
+{/* Python: python/cocoindex/_internal/api.py (map). Rust: rust/sdk/cocoindex/src/ctx.rs (Ctx::map doc comment) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -114,7 +132,7 @@ let results = ctx.map(tasks, |task| async move {
 
 ### Batch size of a batched function
 
-A `#[cocoindex::function(batching, max_batch_size = N)]` body receives up to `N` items at once; concurrent single-item calls are grouped into physical batches of at most that size. See [Batching](../programming_guide/function#batching) for the attribute, and `Error::retry_with_smaller_batch` for a batch the backend rejects.
+A batched function with <Lang only="python">`max_batch_size=N`</Lang><Lang only="rust">`max_batch_size = N`</Lang> receives up to `N` items at once; concurrent single-item calls are grouped into physical batches of at most that size. See [Batching](../programming_guide/function#batching) for the <Lang only="python">decorator options</Lang><Lang only="rust">attribute, and `Error::retry_with_smaller_batch` for a batch the backend rejects</Lang>.
 
 {/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (function macro docs), rust/sdk/cocoindex/tests/batching_runner.rs */}
 <LangTabs>
@@ -142,7 +160,9 @@ let embedding: Vec<f32> = embed(ctx, text).await?;
 
 ### GPU runners
 
-`runner = cocoindex::GPU` makes each call hold one whole GPU from the process-wide pool while its body runs, so bodies on one GPU run one at a time. `runner = cocoindex::GPURunner::fraction(0.5)` holds half a GPU, so two calls share one. With `batching`, each physical batch holds the share instead. Inside the body, `cocoindex::current_gpu()`, `current_gpus()` and `current_gpu_fraction()` report the assignment.
+<Lang only="python">`runner=coco.GPU`</Lang><Lang only="rust">`runner = cocoindex::GPU`</Lang> makes each call hold one whole GPU from the process-wide pool while its body runs, so bodies on one GPU run one at a time. <Lang only="python">`runner=coco.GPU(fraction=0.5)`</Lang><Lang only="rust">`runner = cocoindex::GPURunner::fraction(0.5)`</Lang> holds half a GPU, so two calls share one. With batching, each physical batch holds the share instead. Inside the body, <Lang only="python">`coco.current_gpu()`, `coco.current_gpus()` and `coco.current_gpu_fraction()`</Lang><Lang only="rust">`cocoindex::current_gpu()`, `current_gpus()` and `current_gpu_fraction()`</Lang> report the assignment.
+
+The pool size is detected from `COCOINDEX_NUM_GPUS`, then `CUDA_VISIBLE_DEVICES`, then `nvidia-smi`, and falls back to one. <Lang only="python">`coco.configure_gpu_pool(n)`</Lang><Lang only="rust">`configure_gpu_pool(n)`</Lang> overrides it; call it before any GPU function runs.
 
 {/* Rust: rust/sdk/cocoindex/tests/batching_runner.rs (whole_gpu, half_gpu, gpu_batch), rust/sdk/cocoindex/src/runner.rs */}
 <LangTabs>
@@ -183,18 +203,24 @@ async fn gpu_batch(_ctx: &Ctx, items: Vec<i64>) -> Result<Vec<i64>> {
 configure_gpu_pool(NonZeroUsize::new(2).unwrap());
 ```
 
-The pool size is detected from `COCOINDEX_NUM_GPUS`, then `CUDA_VISIBLE_DEVICES`, then `nvidia-smi`, and falls back to one. `configure_gpu_pool(n)` overrides it; call it before any function with a runner runs.
-
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
+Set `COCOINDEX_RUN_GPU_IN_SUBPROCESS=1` to run GPU functions in a subprocess for isolation.
+
+</Lang>
+
+<RustNote>
 Python's GPU subprocess mode (`COCOINDEX_RUN_GPU_IN_SUBPROCESS`) and its dedicated GPU thread exist for the GIL and CUDA's fork rules. A Rust body runs on the Tokio runtime and has neither problem, so the Rust SDK has no equivalent.
+</RustNote>
 
 ### Rate limiting outbound calls
 
-`RateLimiter` is a token bucket for calls to an external service, for example a source or target connector that must stay under an API's rate limit. `acquire(n).await` waits until `n` tokens are available; concurrent callers are served in FIFO order. Clones share one bucket.
+`RateLimiter` is a token bucket for calls to an external service, for example a source or target connector that must stay under an API's rate limit. `acquire(n)` waits until `n` tokens are available; concurrent callers are served in FIFO order. Clones share one bucket.
 
-{/* Rust: rust/sdk/cocoindex/src/resources/rate_limit.rs */}
+{/* Python: python/cocoindex/_internal/core.pyi (RateLimiter). Rust: rust/sdk/cocoindex/src/resources/rate_limit.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -212,7 +238,7 @@ await limiter.acquire(1)
 use std::time::Duration;
 use cocoindex::RateLimiter;
 
-// 10 calls per second; a `burst_window` of one second matches the Python default.
+// 10 calls per second, with up to one second of tokens saved up while idle.
 let limiter = RateLimiter::new(10.0, Duration::from_secs(1))?;
 limiter.acquire(1).await?;
 ```

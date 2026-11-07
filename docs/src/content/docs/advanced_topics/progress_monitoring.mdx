@@ -3,24 +3,54 @@ title: "*Progress* monitoring"
 description: >
   Beyond report_to_stdout — read structured update stats with UpdateHandle.stats()
   and watch(), and split a run into separately-reported scopes with stats_group().
+rust_description: >
+  Beyond report_to_stdout — read structured update stats from an UpdateHandle
+  with detailed_stats_snapshot() and changed(), and split a run into
+  separately-reported scopes with Ctx::stats_group().
 ---
 import LangTabs from '../../../components/LangTabs.astro';
 
+<Lang only="python">
+
 Most runs only need the basics covered in [App](../programming_guide/app#updating-an-app): awaiting `app.update()` for the result, or the built-in stdout progress display — `report_to_stdout=True` on `app.update_blocking()` (or the CLI), or `await coco.show_progress(handle)` with the async API. `report_to_stdout` accepts a `timedelta` to set the refresh interval (`True` uses the default); `show_progress` takes a `refresh_interval` keyword.
 
-In the Rust SDK the stdout display is `UpdateOptions { report_to_stdout: true, .. }` on `app.update_with_options(..)`; `progress_refresh_interval: Some(duration)` sets the refresh interval. The Rust `cocoindex update` command renders the same per-component lines on stderr when stderr is a terminal, and prints the final `[Stats]` line on stdout; `-q` / `--quiet` turns the stdout output off.
+</Lang>
+
+<Lang only="rust">
+
+Most runs only need the basics covered in [App](../programming_guide/app#updating-an-app): awaiting `app.update(..)` for the result, or the built-in stdout progress display — `UpdateOptions { report_to_stdout: true, .. }` on `app.update_with_options(..)`. `progress_refresh_interval: Some(duration)` sets the refresh interval (`None` uses the default). The `cocoindex update` command renders the same per-component lines on stderr when stderr is a terminal, and prints the final `[Stats]` line on stdout; `-q` / `--quiet` turns the stdout output off.
+
+</Lang>
 
 Use the structured progress APIs to stream progress from a daemon to a client, build a custom dashboard, or report pipeline phases separately.
 
 ## Structured update stats
 
+<Lang only="python">
+
 `app.update()` returns an `UpdateHandle`. Besides being awaitable, it exposes the same stats that drive the terminal display — as Python objects you can read while the update runs.
 
-In Rust, `app.start_update(f)` returns an `UpdateHandle<T>`. It starts the update at once; `handle.result().await` waits for the value. The handle has `detailed_stats_snapshot()` (per-component `UpdateStats`), `stats_snapshot()` (the coarse `RunStats`), and `changed().await` to wait for the next change.
+</Lang>
+
+<Lang only="rust">
+
+`app.start_update(f)` returns an `UpdateHandle<T>`. It starts the update at once; `handle.result().await` waits for the value. The handle exposes the same stats that drive the terminal display: `detailed_stats_snapshot()` (per-component `UpdateStats`), `stats_snapshot()` (the coarse `RunStats`), and `changed().await` to wait for the next change.
+
+</Lang>
 
 ### Polling
 
+<Lang only="python">
+
 `handle.stats()` returns a snapshot of the current counters as an `UpdateStats` — or `None` before the handle has started running. It keeps working after completion, returning the final stats:
+
+</Lang>
+
+<Lang only="rust">
+
+`handle.detailed_stats_snapshot()` returns a snapshot of the current counters as an `UpdateStats`. It keeps working after completion, returning the final stats:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/tests/detailed_stats.rs, rust/sdk/cocoindex/src/app.rs (UpdateHandle) */}
 <LangTabs>
@@ -55,11 +85,31 @@ let result = handle.result().await?;                // consumes the handle
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 `app.update()` starts lazily — the handle begins running on the first `await` (or `watch()`), so `stats()` returns `None` until then. To read stats *while* an update is in flight, poll `handle.stats()` from a separate task, or use `watch()` (below) to receive each change as it happens.
+
+</Lang>
+
+<Lang only="rust">
+
+To read stats *while* an update is in flight, loop on `changed()` (below) and read a snapshot after each change.
+
+</Lang>
 
 ### Streaming
 
+<Lang only="python">
+
 `handle.watch()` is an async iterator that yields an `UpdateSnapshot` whenever the stats change — `RUNNING` while processing, then a final `READY` snapshot carrying the result:
+
+</Lang>
+
+<Lang only="rust">
+
+`handle.changed().await` waits until the stats change. It returns `Progress::Changed(version)` while the update runs, then `Progress::Done` once it terminates; `result()` then returns the value:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/tests/detailed_stats.rs, rust/sdk/cocoindex/src/app.rs (Progress, UpdateHandle::changed) */}
 <LangTabs>
@@ -98,9 +148,21 @@ There is no snapshot object in Rust: `changed()` wakes you, and `detailed_stats_
 </Fragment>
 </LangTabs>
 
-On a processing error, `watch()` raises the exception directly — handle it with a normal `try`/`except` around the loop. In Rust, `changed()` and `result()` return the error.
+<Lang only="python">
+
+On a processing error, `watch()` raises the exception directly — handle it with a normal `try`/`except` around the loop.
 
 In [live mode](../programming_guide/live_mode), `watch()` does not stop at the first `READY`: it keeps yielding `RUNNING` snapshots as live components deliver incremental updates, ending only when the app stops.
+
+</Lang>
+
+<Lang only="rust">
+
+On a processing error, `changed()` and `result()` return the error.
+
+In [live mode](../programming_guide/live_mode), the update does not terminate at the first ready state: `changed()` keeps returning `Progress::Changed` as live components deliver incremental updates, and returns `Progress::Done` only when the app stops.
+
+</Lang>
 
 ### Stats types
 
@@ -138,8 +200,9 @@ class UpdateSnapshot:
 pub struct UpdateStats {
     pub by_component: BTreeMap<String, ComponentStats>, // keyed by processor name
     pub status: UpdateStatus,                           // Running | Ready
+    pub in_groups: ComponentStats,                      // what stats groups under this scope count
 }
-// UpdateStats::total() sums every component; run_stats() derives the coarse RunStats.
+// UpdateStats::total() sums every component, not in_groups; run_stats() derives the coarse RunStats.
 
 pub struct ComponentStats {
     pub num_execution_starts: u64,
@@ -164,11 +227,25 @@ pub enum Progress {
 
 ## Scoped reports with `stats_group`
 
-By default every component's stats roll up into one report for the whole `app.update()`. For a large pipeline you often want to watch a *part* of it on its own — "indexing the docs tree" separately from "indexing the code tree", or one expensive phase by itself.
+By default every component's stats roll up into one report for the whole update. For a large pipeline you often want to watch a *part* of it on its own — "indexing the docs tree" separately from "indexing the code tree", or one expensive phase by itself.
+
+<Lang only="python">
 
 `coco.stats_group(title)` opens a scope: everything mounted inside the block aggregates into a **separate** report under `title`, **split out** of the parent (the parent report no longer counts that work — there's no double counting). It's a plain `with` block, used inside a processing component like [`coco.component_subpath`](../programming_guide/processing_component#using-component_subpath-as-a-context-manager):
 
-{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (ctx_stats_group_reports_scoped_child_stats), rust/sdk/cocoindex/src/ctx.rs (stats_group, stats_group_with_options) */}
+</Lang>
+
+<Lang only="rust">
+
+`ctx.stats_group(title, f)` opens a scope: `f` runs with a scoped `Ctx`, and everything mounted from that `Ctx` aggregates into a **separate** report under `title`, **split out** of the parent (the parent report no longer counts that work — there's no double counting). It returns the closure's value and a `StatsGroupHandle`:
+
+</Lang>
+
+<RustNote>
+A group is a closure, not a `with` block. `stats_group` prints nothing; `stats_group_with_options` takes `StatsGroupOptions` to print the group's progress.
+</RustNote>
+
+{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (ctx_stats_group_reports_scoped_child_stats, ctx_stats_group_with_options_reports_scoped_child_stats), rust/sdk/cocoindex/src/ctx.rs (stats_group, stats_group_with_options) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -191,7 +268,7 @@ async def app_main(docs_dir, code_dir, target):
 let (sum, handle) = ctx
     .stats_group("Indexing docs", |group_ctx, _handle| async move {
         let values = group_ctx
-            .mount_each(
+            .use_mount_each(
                 vec![1, 2],
                 |item| *item,
                 |child, item| async move {
@@ -204,16 +281,42 @@ let (sum, handle) = ctx
         Ok::<_, cocoindex::Error>(values.into_iter().sum::<i32>())
     })
     .await?;
-```
 
-In Rust a group is a closure, not a block. `stats_group(title, f)` runs `f` with a scoped `Ctx` and returns `(T, StatsGroupHandle)`: everything mounted from `group_ctx` reports under `title`. `stats_group_with_options(title, StatsGroupOptions { report_to_stdout: true, refresh_interval: None }, f)` also prints the group's progress.
+// The same group, with its progress printed to stdout:
+let options = cocoindex::StatsGroupOptions {
+    report_to_stdout: true,
+    refresh_interval: Some(Duration::from_millis(50)),
+};
+let ((), reported_handle) = ctx
+    .stats_group_with_options("Indexing docs (reported)", options, |group_ctx, _handle| async move {
+        // mount from `group_ctx` ...
+        Ok::<_, cocoindex::Error>(())
+    })
+    .await?;
+```
 
 </Fragment>
 </LangTabs>
 
-With `report_to_stdout=True`, the group's progress is also printed to stdout, labeled by its title, alongside the main `report_to_stdout` display without disrupting it. Pass a `timedelta` instead of `True` to set the group's refresh interval.
+<Lang only="python">
+
+With `report_to_stdout=True`, the group's progress is also printed to stdout, labeled by its title, alongside the main `report_to_stdout` display without disrupting it. Pass a `timedelta` instead of `True` to set the group's refresh interval; while a terminal display runs, the group is a section of that display and redraws with it.
+
+A failure in a group, reported or not, still counts in the final status line of the main display: the run ends in `✗ Done in 2.0s · 3 failed`, even though the group's rows stay out of the main report.
 
 The block yields a `StatsGroupHandle` with the same `stats()` and `watch()` as `UpdateHandle` (a group has no return value, so there's no `result()`):
+
+</Lang>
+
+<Lang only="rust">
+
+With `report_to_stdout: true`, the group's progress is also printed to stdout, labeled by its title, alongside the main `report_to_stdout` display without disrupting it. `refresh_interval: Some(duration)` sets the group's refresh interval; while a terminal display runs, the group is a section of that display and redraws with it.
+
+A failure in a group, reported or not, still counts in the final status line of the main display: the run ends in `✗ Done in 2.0s · 3 failed`, even though the group's rows stay out of the main report.
+
+The `StatsGroupHandle` has the same `stats_snapshot()`, `detailed_stats_snapshot()` and `changed()` as `UpdateHandle` (the closure's value is returned beside it, so there's no `result()`):
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (ctx_stats_group_reports_scoped_child_stats) */}
 <LangTabs>
@@ -251,7 +354,18 @@ The closure also receives the handle as its second argument, so the body can rea
 
 ### Semantics
 
+<Lang only="python">
+
 - **Synchronous and non-blocking.** It's a regular `with` (not `async with`), even though the body `await`s mounts. Leaving the block does **not** wait for the work to finish — it only marks where member registration stops. The group becomes `READY` asynchronously once the block has exited *and* every component mounted inside it is ready; observe that via `sg.watch()` / `sg.stats()`.
+
+</Lang>
+
+<Lang only="rust">
+
+- **Non-blocking.** Returning from the closure does **not** wait for background work mounted inside it (`mount`, `mount_each`) to finish — it only marks where member registration stops. The group becomes ready asynchronously once the closure has returned *and* every component mounted inside it is ready; observe that via `handle.changed()` / `handle.detailed_stats_snapshot()`.
+
+</Lang>
+
 - **Identity is unchanged.** Grouping only redirects where stats are *reported*. Component paths, change detection, target-state ownership, and the run's overall completion are unaffected — the grouped components are still ordinary children of the surrounding component.
 - **Nesting.** Groups may nest. The **innermost** group owns a mount's stats; an outer group's readiness still waits for the inner group's work to finish.
-- **Live members.** A group containing [live components](./live_component) becomes `READY` after their initial catch-up and reports their ongoing incremental stats, just like the root.
+- **Live members.** A group containing [live components](./live_component) becomes ready after their initial catch-up and reports their ongoing incremental stats, just like the root.

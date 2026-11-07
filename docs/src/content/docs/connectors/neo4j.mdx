@@ -26,24 +26,38 @@ from cocoindex.connectors import neo4j
 use cocoindex::connectors::neo4j::{self, TableSchema};
 ```
 
-The Rust SDK needs the `neo4j` Cargo feature of the `cocoindex` crate.
+The module is compiled with the `neo4j` Cargo feature of the `cocoindex` crate.
 
 </Fragment>
 </LangTabs>
 
 :::note[Dependencies]
+<Lang only="python">
+
 This connector requires additional dependencies. Install with:
 
 ```bash
 pip install cocoindex[neo4j]
 ```
 
+</Lang>
+
 Targets Neo4j 5.18+. Vector-index DDL (`CREATE VECTOR INDEX … OPTIONS { indexConfig: { … } }`) shipped in 5.18 — older 5.x servers will reject the DDL the connector emits.
 :::
 
 ## Connection setup
 
+<Lang only="python">
+
 Create a `ConnectionFactory` and provide it via a `ContextKey`. The factory holds the Bolt URI, optional auth, and the target database name; it opens one connection-pooled Neo4j async driver per event loop, on first use on that loop, shared by all tables and batches. Call `await factory.close()` at shutdown (in the lifespan, after `yield`) to close it.
+
+</Lang>
+
+<Lang only="rust">
+
+Connect a `neo4j::Graph` and provide it under a context key. A `Graph` holds a connection pool and the name of the database its statements run on; all tables and batches share it.
+
+</Lang>
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
@@ -97,16 +111,20 @@ async fn main() -> Result<()> {
 }
 ```
 
-`neo4j::Graph::connect(uri, user, password, database)` opens a connection pool with basic authentication. For TLS or other driver settings, build a `neo4rs::Graph` yourself and wrap it with `neo4j::Graph::from_client(client, database)`. The example provides the graph in `main`; a `#[cocoindex::lifespan]` function can do the same with `builder.provide_key(&GRAPH, graph)`, and `builder.on_shutdown(..)` is the place for teardown. A `Graph` has no `close()` method.
+`neo4j::Graph::connect(uri, user, password, database)` opens a connection pool with basic authentication; the user, password and database are required arguments. For TLS, a custom pool size or other driver settings, build a `neo4rs::Graph` with `neo4rs::ConfigBuilder` and wrap it with `neo4j::Graph::from_client(client, database)`. The example provides the graph in `main`; a `#[cocoindex::lifespan]` function can do the same with `builder.provide_key(&GRAPH, graph)`, and `builder.on_shutdown(..)` is the place for teardown. A `Graph` has no `close()` method.
 
 </Fragment>
 </LangTabs>
 
-`auth` is optional — omit it for unauthenticated dev instances. `database` defaults to `"neo4j"` (the default db that ships with every Neo4j 5 installation). The Rust `connect` takes the user, password and database as required arguments.
+<Lang only="python">
+
+`auth` is optional — omit it for unauthenticated dev instances. `database` defaults to `"neo4j"` (the default db that ships with every Neo4j 5 installation).
+
+</Lang>
 
 ### Multitenancy
 
-A single Neo4j cluster can host many isolated databases. Pair each database with its own `ContextKey` and `ConnectionFactory(database=...)`:
+A single Neo4j cluster can host many isolated databases. Pair each database with its own context key and <Lang only="python">`ConnectionFactory(database=...)`</Lang><Lang only="rust">`neo4j::Graph`</Lang>:
 
 {/* Rust: examples/rust/meeting_notes_graph_neo4j/src/main.rs (two keys instead of one) */}
 <LangTabs>
@@ -152,25 +170,37 @@ let app = Environment::builder()
 </Fragment>
 </LangTabs>
 
-Different `ContextKey`s with different database names produce fully separate target-state trees — changes to one never spill into the other.
+Different context keys with different database names produce fully separate target-state trees — changes to one never spill into the other.
 
 ## As target
 
 The `neo4j` connector provides target state APIs for writing nodes to node tables and edges to relationship tables. CocoIndex tracks what records should exist and automatically handles upserts and deletions.
 
-Each apply batch is wrapped in a single Neo4j transaction (`tx.commit()` on success, rollback on exception), so partial writes never leak into the database. Within a batch, writes are ordered as **node upserts → relation upserts → relation deletes → node deletes** so dependent edges always see their endpoints. A batch that fails with a transient error (typically a deadlock between concurrent batches merging edges onto the same nodes) is rolled back and retried with backoff before the failure is reported.
+The record writes of all tables of one database are applied together, in batches. Within a batch, writes are ordered as **node upserts → relation upserts → relation deletes → node deletes** so dependent edges always see their endpoints. A batch is applied in Neo4j transactions of at most 1,000 record writes each, one after the other. A transaction that fails rolls back, and the components of the batch are retried; earlier transactions of the batch stay committed, which is safe because the writes are idempotent (`MERGE`). A transaction that fails with a transient error (typically a deadlock between concurrent writers merging edges onto the same nodes) is retried with backoff, up to 8 attempts, before the failure is reported. A transaction that goes over the server's transaction memory limit is split in two instead.
+
+<Lang only="rust">
+
+Within a transaction, the records of one statement shape (the node upserts of one label, the edge upserts of one relationship type and endpoint labels, and so on) are written by one `UNWIND $rows AS row …` statement.
+
+</Lang>
+
+<Lang only="python">
 
 :::note
 The node and relationship APIs below replace the table and relation APIs (`mount_table_target`, `mount_relation_target`, …), which are deprecated. To move an existing table over, see [Deprecated: table and relation APIs](#deprecated-table-and-relation-apis).
 :::
 
-The Rust SDK names its functions `mount_table_target` / `TableTarget` and `mount_relation_target` / `RelationTarget`. They are the Rust node and relationship APIs, not the deprecated Python ones: a node table and a relationship table live in separate key spaces, so a label and a relationship type may share a name, and a derived edge id has the length-prefixed form described under [Relationships](#relationships-child-states). The Rust SDK has no deprecated API.
+</Lang>
+
+<RustNote>
+The Rust functions keep the names `mount_table_target` / `TableTarget` and `mount_relation_target` / `RelationTarget`. They have the semantics of Python's node and relationship APIs (`mount_node_target`, `mount_relationship_target`), not of Python's deprecated table and relation APIs: a node table and a relationship table live in separate key spaces, so a label and a relationship type may share a name, and a derived edge id has the length-prefixed form described under [Relationships](#relationships-child-states). The Rust SDK has no deprecated API.
+</RustNote>
 
 ### Declaring target states
 
 #### Node tables (parent state)
 
-Declares a node label as a target state. Returns a `NodeTarget` for declaring nodes.
+Declares a node label as a target state. Returns a <Lang only="python">`NodeTarget`</Lang><Lang only="rust">`TableTarget`</Lang> for declaring nodes.
 
 {/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro) */}
 <LangTabs>
@@ -207,12 +237,14 @@ pub fn declare_table_target_with_options(
 ) -> Result<TableTarget>
 ```
 
-The schema is required. It carries the primary key: `TableSchema::from_row::<Row>("id")?` derives the columns from a row struct, and `TableSchema::schemaless("id")?` declares no columns (Python's `table_schema=None`). `ManagedTargetOptions::user_managed()` is Python's `managed_by="user"`; the default is system-managed.
+`declare_table_target` declares the table in the current component; its records resolve when the component commits. `mount_table_target` and `mount_table_target_with_options` take the same arguments, are `async`, and return a target whose records can be declared at once.
 
 </Fragment>
 </LangTabs>
 
 **Parameters:**
+
+<Lang only="python">
 
 - `db` — A `ContextKey[neo4j.ConnectionFactory]` for the Neo4j connection.
 - `table_name` — The Cypher node label (e.g. `"Document"`). It must not contain `__` or end with `_`: constraint and index names join the label to a property name with `__`, so such a label could share a name with another table's.
@@ -222,9 +254,32 @@ The schema is required. It carries the primary key: `TableSchema::from_row::<Row
 
 **Returns:** A pending `NodeTarget`. Use `await neo4j.mount_node_target(KG_DB, ...)` to get a resolved target.
 
+</Lang>
+
+<Lang only="rust">
+
+- `graph` — The context key of the `neo4j::Graph`.
+- `table_name` — The Cypher node label (e.g. `"Meeting"`). It must not contain `__` or end with `_`: constraint and index names join the label to a property name with `__`, so such a label could share a name with another table's.
+- `schema` — The table schema (see [Table schema: from a row struct](#table-schema-from-a-row-struct)). It names the single primary-key property; compound primary keys are not supported. `TableSchema::from_row::<Row>("id")?` derives the columns from a row struct, and `TableSchema::schemaless("id")?` declares no columns. The schema participates in CocoIndex's fingerprint (so two flows declaring the same label must agree); no per-property type DDL is emitted.
+- `options` — `ManagedTargetOptions::user_managed()` assumes the table exists; the default (`ManagedTargetOptions::default()`) lets CocoIndex manage its lifecycle.
+
+**Returns:** A `TableTarget`. A `TableTarget` serializes to its stable key (the graph's context key and the label), so it can be an argument of `mount!`, `use_mount!`, `mount_each!` and memoized functions.
+
+</Lang>
+
 #### Nodes (child states)
 
+<Lang only="python">
+
 Once a `NodeTarget` is resolved, declare nodes to be upserted (translated to `MERGE (n:Label {pk: $key_0}) SET n += $props`):
+
+</Lang>
+
+<Lang only="rust">
+
+Once a `TableTarget` is resolved, declare nodes to be upserted (translated to `UNWIND $rows AS row MERGE (n:Label {pk: row.key}) SET n += row.props`):
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro) */}
 <LangTabs>
@@ -255,15 +310,19 @@ The node's primary-key value is passed as `id` (a `&str`, `String`, `i64` or `u6
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 **Parameters:**
 
 - `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include the `primary_key` field declared above.
 
-`declare_row` is an alias for `declare_record`, for compatibility with Postgres and other RDBMS targets. The Rust `TableTarget` has `declare_record` only.
+`declare_row` is an alias for `declare_record`, for compatibility with Postgres and other RDBMS targets.
+
+</Lang>
 
 #### Relationship tables (parent state)
 
-Declares a relationship type as a target state. Returns a `RelationshipTarget` for declaring edges.
+Declares a relationship type as a target state. Returns a <Lang only="python">`RelationshipTarget`</Lang><Lang only="rust">`RelationTarget`</Lang> for declaring edges.
 
 {/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro) */}
 <LangTabs>
@@ -314,12 +373,14 @@ pub fn declare_relation_target_with_options(
 ) -> Result<RelationTarget>
 ```
 
-Without a schema the relationship is schemaless and keyed by its `id` property. A schema names the primary key: `TableSchema::from_row::<Edge>("edge_id")?` or `TableSchema::schemaless("edge_id")?`.
+Without a schema the relationship is schemaless and keyed by its `id` property. A schema names the primary key: `TableSchema::from_row::<Edge>("edge_id")?` or `TableSchema::schemaless("edge_id")?`. Each function has an `async` `mount_relation_target*` twin with the same arguments, whose edges can be declared at once.
 
 </Fragment>
 </LangTabs>
 
 **Parameters:**
+
+<Lang only="python">
 
 - `db` — A `ContextKey[neo4j.ConnectionFactory]` for the Neo4j connection.
 - `table_name` — The Cypher relationship type (e.g. `"MENTION"`). Same naming rule as a node label: no `__`, no trailing `_`. A node label and a relationship type may share a name.
@@ -331,9 +392,24 @@ Without a schema the relationship is schemaless and keyed by its `id` property. 
 
 **Returns:** A pending `RelationshipTarget`. Use `await neo4j.mount_relationship_target(KG_DB, ...)` to get a resolved target.
 
+</Lang>
+
+<Lang only="rust">
+
+- `graph` — The context key of the `neo4j::Graph`.
+- `relation_name` — The Cypher relationship type (e.g. `"ATTENDED"`). Same naming rule as a node label: no `__`, no trailing `_`. A node label and a relationship type may share a name.
+- `from_table` — The node table whose nodes are the *source* endpoints of edges in this relationship.
+- `to_table` — The node table whose nodes are the *target* endpoints of edges in this relationship.
+- `schema` — The schema for the relationship's own properties; its primary key uniquely identifies each edge. Without it, the edges are keyed by the `id` property.
+- `options` — `ManagedTargetOptions::user_managed()` assumes the relationship type exists; the default lets CocoIndex manage its lifecycle.
+
+**Returns:** A `RelationTarget`, which serializes to its stable key like a `TableTarget`.
+
+</Lang>
+
 #### Relationships (child states)
 
-Once a `RelationshipTarget` is resolved, declare edges. Each declaration MERGEs the source endpoint, the target endpoint, then the relationship.
+Once a <Lang only="python">`RelationshipTarget`</Lang><Lang only="rust">`RelationTarget`</Lang> is resolved, declare edges. Each declaration MERGEs the source endpoint, the target endpoint, then the relationship.
 
 {/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro) */}
 <LangTabs>
@@ -378,15 +454,15 @@ pub fn RelationTarget::declare_relation_record<R: serde::Serialize>(
 
 - `from_id` — The source node's primary-key value. The connector MERGEs `(s:FromLabel {pk: $from_id})` so endpoints are auto-created if absent.
 - `to_id` — The target node's primary-key value. Same MERGE behavior.
-- `record` — Optional row object whose fields populate the relationship's properties. Its `primary_key` field, if present, is the edge's id.
+- `record` — <Lang only="python">Optional row object whose fields populate the relationship's properties.</Lang><Lang only="rust">The row whose fields populate the relationship's properties (`declare_relation_record` only).</Lang> Its primary key field, if present, is the edge's id.
 
-If `record` is omitted or has no primary key value, the connector derives the edge id from its endpoints: the source label, source id, target label and target id, each written as `<UTF-8 byte length>:<value>;`. For example, an edge from `Person` `"alice"` to `Task` `42` gets the id `6:Person;5:alice;4:Task;2:42;`. A string id that reads as an integer, or that starts with `s:`, is written with an `s:` prefix, so the ids `1` and `"1"` never share an edge. Endpoint ids must then be `int` or `str`; for other types, pass a `record` that carries the primary key.
+If <Lang only="python">`record` is omitted</Lang><Lang only="rust">the edge is declared with `declare_relation`</Lang> or the record has no primary key value, the connector derives the edge id from its endpoints: the source label, source id, target label and target id, each written as `<UTF-8 byte length>:<value>;`. For example, an edge from `Person` `"alice"` to `Task` `42` gets the id `6:Person;5:alice;4:Task;2:42;`. A string id that reads as an integer, or that starts with `s:`, is written with an `s:` prefix, so the ids `1` and `"1"` never share an edge. <Lang only="python">Endpoint ids must then be `int` or `str`; for other types, pass a `record` that carries the primary key.</Lang>
 
-An edge id names one edge. When the endpoints of an edge with an explicit id change, the edge moves: the upsert deletes the relationship of this type with the same id between the old endpoints. To find it, every upsert looks the edge up by its primary key property. A system-managed relationship table has an index on it; for a `managed_by="user"` table, create one yourself.
+An edge id names one edge. When the endpoints of an edge with an explicit id change, the edge moves: the upsert deletes the relationship of this type with the same id between the old endpoints. To find it, every upsert looks the edge up by its primary key property. A system-managed relationship table has an index on it; for a user-managed table, create one yourself.
 
 #### Vector indexes (attachment)
 
-Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `NodeTarget`:
+Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a <Lang only="python">`NodeTarget`</Lang><Lang only="rust">`TableTarget`</Lang>:
 
 {/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro); usage in rust/sdk/cocoindex/tests/graph_target.rs */}
 <LangTabs>
@@ -438,9 +514,9 @@ people.declare_vector_index_named(ctx, "person_embedding", "embedding", 3, Vecto
 
 **Parameters:**
 
-- `name` — Optional logical name for the index. Defaults to `f"vec_{table_name}__{field}"`.
+- `name` — <Lang only="python">Optional logical name for the index. Defaults to `f"vec_{table_name}__{field}"`.</Lang><Lang only="rust">Logical name for the index (`declare_vector_index_named` only). Defaults to `vec_{table_name}__{field}`.</Lang>
 - `field` — The node property holding the vector.
-- `metric` — Similarity metric: `"cosine"` or `"euclidean"`. Translated to Neo4j's `vector.similarity_function` option.
+- `metric` — Similarity metric: <Lang only="python">`"cosine"` or `"euclidean"`</Lang><Lang only="rust">`VectorMetric::Cosine` or `VectorMetric::Euclidean`</Lang>. Translated to Neo4j's `vector.similarity_function` option.
 - `dimension` — The vector's dimension. Required.
 
 The connector emits:
@@ -458,9 +534,21 @@ The Neo4j index is named after the label and field, not after `name`, so a field
 
 Vectors are float32 only.
 
+<Lang only="python">
+
 ### Table schema: from Python class
 
 Build a `TableSchema` by introspecting a record type:
+
+</Lang>
+
+<Lang only="rust">
+
+### Table schema: from a row struct
+
+Build a `TableSchema` from a row struct:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (TableSchema::from_row doc example); usage in rust/sdk/cocoindex/tests/graph_target.rs */}
 <LangTabs>
@@ -497,38 +585,94 @@ struct Person {
 let schema = cocoindex::connectors::neo4j::TableSchema::from_row::<Person>("id")?;
 ```
 
-`primary_key` has no default in Rust and must name a field of the struct. An `Option<T>` field is a nullable column.
+`primary_key` has no default and must name a field of the struct. An `Option<T>` field is a nullable column.
 
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 **Parameters:**
 
 - `record_type` — A dataclass, NamedTuple, or Pydantic model.
 - `primary_key` — Field name to use as the table's primary key. Defaults to `"id"`.
-- `column_overrides` — Optional dict mapping field names to `Neo4jType` or `VectorSchemaProvider` to override the default Python-to-Neo4j type mapping. In Rust, a `#[coco(..)]` attribute on the field does this (see below).
+- `column_overrides` — Optional dict mapping field names to `Neo4jType` or `VectorSchemaProvider` to override the default Python-to-Neo4j type mapping.
 
 **Returns:** A `TableSchema[RowT]` populated from the class's fields.
 
+</Lang>
+
+<Lang only="rust">
+
+To override the type of one column, put a `#[coco(..)]` attribute on the field (see [Column type overrides](#column-type-overrides)), or call `with_column_type` on the derived schema:
+
+{/* Rust: rust/sdk/cocoindex/tests/graph_target.rs (from_row_takes_column_type_overrides) */}
+```rust
+let schema = TableSchema::from_row::<Row>("id")?.with_column_type("location", "POINT")?;
+```
+
+`with_column_type(field, cypher_type)` replaces the recorded Cypher type of one column and keeps its nullability. It fails if the schema has no column named `field`.
+
+</Lang>
+
+<Lang only="python">
+
 #### Default Python → Neo4j type mapping
+
+</Lang>
+
+<Lang only="rust">
+
+{/* Keeps the old anchor: falkordb.mdx links /docs/rust/connectors/neo4j/#default-python--neo4j-type-mapping. */}
+<span id="default-python--neo4j-type-mapping"></span>
+
+#### Default Rust → Neo4j type mapping
+
+</Lang>
 
 Most types pass through native Bolt encoding — no per-value transform applied:
 
-| Python type | Rust type | Neo4j type | Notes |
-|---|---|---|---|
-| `bool` | `bool` | `BOOLEAN` | |
-| `int`, NumPy integer scalars | `i16`, `i32`, `i64` (and the unsigned widths) | `INTEGER` | |
-| `float`, NumPy float scalars | `f32`, `f64` | `FLOAT` | |
-| `decimal.Decimal` | `rust_decimal::Decimal` | `STRING` | Encoded via `str()` — Neo4j has no decimal type. |
-| `str` | `String` | `STRING` | |
-| `bytes` | `Vec<u8>` | `BYTES` | Native Bolt type — no encoder. |
-| `uuid.UUID` | `uuid::Uuid` | `STRING` | Encoded via `str()`. |
-| `datetime.date` | `chrono::NaiveDate` | `DATE` | Native Bolt type. |
-| `datetime.datetime` | `chrono::DateTime`, `chrono::NaiveDateTime` | `ZONED_DATETIME` | Native Bolt type. |
-| `datetime.time` | `chrono::NaiveTime` | `LOCAL_TIME` | Native Bolt type. |
-| `datetime.timedelta` | `std::time::Duration` | `DURATION` | Native Bolt type. |
-| `numpy.ndarray` (with `VectorSchema` annotation) | `#[coco(vector)] Vec<f32>` | `LIST<FLOAT>` | Encoded via `tolist()`; paired with vector-index DDL. |
-| `dict`, list, nested record, `Any` | other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `MAP` / `LIST<ANY>` | Passed through native parameter binding. In Rust the recorded type is `MAP`. |
+<Lang only="python">
+
+| Python type | Neo4j type | Notes |
+|---|---|---|
+| `bool` | `BOOLEAN` |  |
+| `int`, NumPy integer scalars | `INTEGER` |  |
+| `float`, NumPy float scalars | `FLOAT` |  |
+| `decimal.Decimal` | `STRING` | Encoded via `str()` — Neo4j has no decimal type. |
+| `str` | `STRING` |  |
+| `bytes` | `BYTES` | Native Bolt type — no encoder. |
+| `uuid.UUID` | `STRING` | Encoded via `str()`. |
+| `datetime.date` | `DATE` | Native Bolt type. |
+| `datetime.datetime` | `ZONED_DATETIME` | Native Bolt type. |
+| `datetime.time` | `LOCAL_TIME` | Native Bolt type. |
+| `datetime.timedelta` | `DURATION` | Native Bolt type. |
+| `numpy.ndarray` (with `VectorSchema` annotation) | `LIST<FLOAT>` | Encoded via `tolist()`; paired with vector-index DDL. |
+| `dict`, list, nested record, `Any` | `MAP` / `LIST<ANY>` | Passed through native parameter binding. |
+
+</Lang>
+
+<Lang only="rust">
+
+| Rust type | Neo4j type | Notes |
+|---|---|---|
+| `bool` | `BOOLEAN` |  |
+| `i16`, `i32`, `i64` (and the unsigned widths) | `INTEGER` |  |
+| `f32`, `f64` | `FLOAT` |  |
+| `rust_decimal::Decimal` | `STRING` | Written as a string — Neo4j has no decimal type. |
+| `String` | `STRING` |  |
+| `Vec<u8>` | `BYTES` | Native Bolt type — no encoder. |
+| `uuid::Uuid` | `STRING` | Written as a string. |
+| `chrono::NaiveDate` | `DATE` | Native Bolt type. |
+| `chrono::DateTime`, `chrono::NaiveDateTime` | `ZONED_DATETIME` | Native Bolt type. |
+| `chrono::NaiveTime` | `LOCAL_TIME` | Native Bolt type. |
+| `std::time::Duration` | `DURATION` | Native Bolt type. |
+| `#[coco(vector)] Vec<f32>` | `LIST<FLOAT>` | Paired with vector-index DDL. |
+| other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `MAP` | Passed through native parameter binding. |
+
+</Lang>
+
+<Lang only="python">
 
 #### Neo4jType
 
@@ -541,6 +685,16 @@ class Neo4jType(NamedTuple):
 ```
 
 Use with `typing.Annotated`:
+
+</Lang>
+
+<Lang only="rust">
+
+#### Column type overrides
+
+Override the default mapping for a single column with a `#[coco(..)]` field attribute:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/tests/graph_target.rs (from_row_matches_explicit_schema) */}
 <LangTabs>
@@ -573,20 +727,36 @@ struct Row {
 }
 ```
 
-`#[coco(type = "…")]` records the type string verbatim, `#[coco(json)]` records `MAP` for a field that would map to another type, and `#[coco(rename = "…")]` names the property. The Rust SDK has no per-column `encoder`: a value is written as it serializes with serde.
+`#[coco(type = "…")]` records the type string verbatim, `#[coco(json)]` records `MAP` for a field that would map to another type, and `#[coco(rename = "…")]` names the property. A value is written as it serializes with serde.
+
+<RustNote>
+There is no per-column `encoder`: to change how a value is written, change how its field serializes (for example with `#[serde(serialize_with = "…")]`).
+</RustNote>
 
 </Fragment>
 </LangTabs>
 
-The `neo4j_type` string is metadata-only — it participates in the schema fingerprint (so two flows declaring the same table must agree) but no per-property type DDL is emitted from it.
+The <Lang only="python">`neo4j_type`</Lang><Lang only="rust">type</Lang> string is metadata-only — it participates in the schema fingerprint (so two flows declaring the same table must agree) but no per-property type DDL is emitted from it.
+
+<Lang only="python">
 
 #### VectorSchemaProvider
 
-For NumPy `ndarray` columns, attach a `VectorSchema` annotation to specify dtype + dimension. See [VectorSchema](../common_resources/vector_schema) for details. In Rust, mark the field `#[coco(vector)]` (or `#[coco(vector = N)]`); the property is recorded as `LIST<FLOAT>`, and the dimension belongs to the vector index declaration, not the property.
+For NumPy `ndarray` columns, attach a `VectorSchema` annotation to specify dtype + dimension. See [VectorSchema](../common_resources/vector_schema) for details.
+
+</Lang>
+
+<Lang only="rust">
+
+#### Vector fields
+
+Mark a vector field `#[coco(vector)]` (or `#[coco(vector = N)]`). The property is recorded as `LIST<FLOAT>`; the dimension belongs to the vector index declaration, not the property.
+
+</Lang>
 
 ### Table schema: explicit column definitions
 
-Build a `TableSchema` directly from a dict of column definitions when the row type is dynamic:
+Build a `TableSchema` directly from <Lang only="python">a dict of</Lang> column definitions when the row type is dynamic:
 
 {/* Rust: rust/sdk/cocoindex/tests/graph_target.rs (from_row_matches_explicit_schema) */}
 <LangTabs>
@@ -621,16 +791,20 @@ let schema = TableSchema::new(
 )?;
 ```
 
-A Rust `ColumnDef` is `NOT NULL` unless `.nullable()` is called.
+`ColumnDef::new(cypher_type)` takes the Neo4j type string (metadata only; see the table above). A column is `NOT NULL` unless `.nullable()` is called.
 
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 `ColumnDef` fields:
 
-- `type` — The Neo4j type string (metadata only; see table above). `cypher_type` in Rust.
-- `nullable` — Whether the column may be `None`. Defaults to `True` in Python and to `false` in Rust.
-- `encoder` — Optional `Callable[[Any], Any]` applied to non-`None` values before they're sent to Neo4j. Not available in Rust.
+- `type` — The Neo4j type string (metadata only; see table above).
+- `nullable` — Whether the column may be `None`. Defaults to `True`.
+- `encoder` — Optional `Callable[[Any], Any]` applied to non-`None` values before they're sent to Neo4j.
+
+</Lang>
 
 ### DDL: indexes and constraints
 
@@ -648,11 +822,11 @@ For each managed table, the connector creates supporting Cypher artifacts on fir
   FOR ()-[r:`<RelType>`]-() ON (r.`<pk>`)
   ```
 
-A system-managed table owns its label or relationship type, the way a Postgres table owns its rows. When the table is no longer declared, or on `cocoindex drop`, the connector destroys it: every node carrying the label is deleted (`DETACH DELETE`, so the relationships attached to those nodes go with them) or every relationship of the type is deleted, and then the constraint or index is dropped. A node table's vector indexes (the `coco_vec_<Label>__<field>` indexes on its label) are dropped with it. This includes nodes and relationships written under that label or type by anything other than CocoIndex — to share a label with data CocoIndex doesn't own, declare the table with `managed_by="user"`.
+A system-managed table owns its label or relationship type, the way a Postgres table owns its rows. When the table is no longer declared, or on `cocoindex drop`, the connector destroys it: every node carrying the label is deleted (`DETACH DELETE`, so the relationships attached to those nodes go with them) or every relationship of the type is deleted, and then the constraint or index is dropped. A node table's vector indexes (the `coco_vec_<Label>__<field>` indexes on its label) are dropped with it. This includes nodes and relationships written under that label or type by anything other than CocoIndex — to share a label with data CocoIndex doesn't own, declare the table <Lang only="python">with `managed_by="user"`</Lang><Lang only="rust">with `ManagedTargetOptions::user_managed()`</Lang>.
 
 The same teardown happens when a table's identity changes — its primary key field, or a relationship table's endpoint tables or their primary keys: the table is destroyed and recreated, and the components that declared its records are reprocessed. Its vector indexes are dropped and created again. Attaching a schema or changing a property type does not rebuild the table; at most the records are re-upserted.
 
-When `managed_by="user"` is set, the connector skips DDL entirely (you're responsible for creating and dropping the schema) and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared. In Rust, pass `ManagedTargetOptions::user_managed()` to `mount_table_target_with_options` or `mount_relation_target_with_options`.
+When <Lang only="python">`managed_by="user"` is set</Lang><Lang only="rust">a table is user-managed</Lang>, the connector skips DDL entirely (you're responsible for creating and dropping the schema) and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.<Lang only="rust"> Pass `ManagedTargetOptions::user_managed()` to `mount_table_target_with_options` or `mount_relation_target_with_options`.</Lang>
 
 ### Example: Node tables
 
@@ -896,11 +1070,11 @@ An edge with properties of its own is declared with `declare_relation_record`; o
 </Fragment>
 </LangTabs>
 
-The `Entity` table is declared up-front (via `mount_node_target`) so its uniqueness constraint is reconciled before any `RELATIONSHIP` edge MERGEs entity endpoints. The relationship's three-MERGE pattern (source endpoint → target endpoint → edge) means missing endpoints are auto-created — but it's good practice to declare them explicitly so deletion-cascade behavior stays predictable.
+<Lang only="python">The `Entity` table is declared up-front (via `mount_node_target`) so its uniqueness constraint is reconciled before any `RELATIONSHIP` edge MERGEs entity endpoints.</Lang><Lang only="rust">The `Person` and `Task` tables are declared up-front (via `mount_table_target`) so their uniqueness constraints are reconciled before any edge MERGEs their endpoints.</Lang> The relationship's three-MERGE pattern (source endpoint → target endpoint → edge) means missing endpoints are auto-created — but it's good practice to declare them explicitly so deletion-cascade behavior stays predictable.
+
+<Lang only="python">
 
 ## Deprecated: table and relation APIs
-
-This section applies to the Python SDK only. The Rust SDK's `mount_table_target` and `mount_relation_target` are its current API, with the node and relationship semantics described above.
 
 The table and relation APIs are deprecated. They emit a `DeprecationWarning` and otherwise work as before. Each has a replacement with the same parameters:
 
@@ -930,3 +1104,5 @@ Switching a table from the deprecated API to its replacement keeps its nodes, ed
 Run the two steps as separate updates, in this order. Without step 1, removing a deprecated declaration destroys its table: every node of the label or edge of the type is deleted, possibly after the new table has written it.
 
 You can switch tables one at a time: a new relationship table accepts node targets of both APIs.
+
+</Lang>

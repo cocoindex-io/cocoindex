@@ -7,24 +7,39 @@ description: >
 ---
 import LangTabs from '../../../components/LangTabs.astro';
 
-The ID module (`cocoindex.resources.id`) provides utilities for generating stable unique IDs and UUIDs that persist across incremental updates. The Rust SDK has the same four APIs in `cocoindex::resources::id`, re-exported from `cocoindex::prelude`.
+The ID module (<Lang only="python">`cocoindex.resources.id`</Lang><Lang only="rust">`cocoindex::resources::id`, re-exported from `cocoindex::prelude`</Lang>) provides utilities for generating stable unique IDs and UUIDs that persist across incremental updates.
 
-In an incremental pipeline, using random IDs (like `uuid.uuid4()`) means every reprocessing run generates different IDs for the same data — causing unnecessary churn in your targets (deleting old rows, inserting identical ones with new IDs). CocoIndex's ID utilities produce **stable** IDs: the same inputs produce the same IDs across runs, so unchanged data keeps its identity and targets only see real changes.
+In an incremental pipeline, using random IDs (like <Lang only="python">`uuid.uuid4()`</Lang><Lang only="rust">`Uuid::new_v4()`</Lang>) means every reprocessing run generates different IDs for the same data — causing unnecessary churn in your targets (deleting old rows, inserting identical ones with new IDs). CocoIndex's ID utilities produce **stable** IDs: the same inputs produce the same IDs across runs, so unchanged data keeps its identity and targets only see real changes.
 
 ## Choosing the right API
+
+<Lang only="python">
 
 | API | Same `dep` produces... | Use when... |
 |-----|------------------------|-------------|
 | `generate_id(dep)` | **Same** ID every time | Each unique input maps to exactly one ID |
 | `IdGenerator.next_id(dep)` | **Distinct** ID each call | You need multiple IDs for potentially non-distinct inputs |
 
+</Lang>
+
+<Lang only="rust">
+
+| API | Same `dep` produces... | Use when... |
+|-----|------------------------|-------------|
+| `generate_id(&ctx, &dep)` | **Same** ID every time | Each unique input maps to exactly one ID |
+| `id_gen.next_id(&ctx, &dep)` | **Distinct** ID each call | You need multiple IDs for potentially non-distinct inputs |
+
+</Lang>
+
 The same distinction applies to `generate_uuid` vs `UuidGenerator`.
 
-The Rust names are `generate_id(&ctx, &dep)` and `id_gen.next_id(&ctx, &dep)`. Every Rust ID function takes the component's `Ctx` first: the memo that keeps an ID stable belongs to the processing component, and in Rust the context is explicit.
+<RustNote>
+Every ID function takes the component's `Ctx` first: the memo that keeps an ID stable belongs to the processing component, and in Rust the context is explicit.
+</RustNote>
 
 ## generate_id / generate_uuid
 
-Async functions that return the **same** ID/UUID for the **same** `dep` value. These are idempotent: calling multiple times with identical `dep` yields identical results.
+<Lang only="python">`generate_id` is an async function and `generate_uuid` a sync one;</Lang><Lang only="rust">Async functions that</Lang> <Lang only="python">both</Lang> return the **same** ID/UUID for the **same** `dep` value. These are idempotent: calling multiple times with identical `dep` yields identical results.
 
 {/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (generate_id_returns_same_id_for_same_dep_across_runs, generate_uuid_...) */}
 <LangTabs>
@@ -38,9 +53,9 @@ async def process_item(item: Item) -> Row:
     item_id = await generate_id(item.key)
     return Row(id=item_id, data=item.data)
 
-async def process_document(doc: Document) -> Row:
+def process_document(doc: Document) -> Row:
     # Same doc.path always gets the same UUID
-    doc_uuid = await generate_uuid(doc.path)
+    doc_uuid = generate_uuid(doc.path)
     return Row(id=doc_uuid, content=doc.content)
 ```
 
@@ -65,25 +80,43 @@ let uuids = vec![
 ];
 ```
 
-`dep` is any `Serialize` value, passed by reference. `generate_id_default(&ctx)` and `generate_uuid_default(&ctx)` are the forms with no dependency value (Python's `dep=None`).
-
 </Fragment>
 </LangTabs>
 
 **Parameters:**
 
+<Lang only="python">
+
 - `dep` — Dependency value that determines the ID/UUID. The same `dep` always produces the same result within a component. Defaults to `None`.
 
+</Lang>
+
+<Lang only="rust">
+
+- `ctx` — The component's `Ctx`.
+- `dep` — Dependency value that determines the ID/UUID: any `Serialize` value, passed by reference. The same `dep` always produces the same result within a component. `generate_id_default(&ctx)` and `generate_uuid_default(&ctx)` are the forms with no dependency value.
+
+</Lang>
+
 **Returns:**
+
+<Lang only="python">
 
 - `generate_id` returns an `int` (IDs start from 1; 0 is reserved)
 - `generate_uuid` returns a `uuid.UUID`
 
-In Rust, `generate_id` returns a `u64` and `generate_uuid` a `uuid::Uuid`, each inside a `Result`.
+</Lang>
+
+<Lang only="rust">
+
+- `generate_id` returns a `Result<u64>` (IDs start from 1; 0 is reserved)
+- `generate_uuid` returns a `Result<uuid::Uuid>`
+
+</Lang>
 
 ## IdGenerator / UuidGenerator
 
-Classes that return a **distinct** ID/UUID on each call, even when called with the same `dep` value. The sequence is stable across runs.
+<Lang only="python">Classes</Lang><Lang only="rust">Generators</Lang> that return a **distinct** ID/UUID on each call, even when called with the same `dep` value. The sequence is stable across runs.
 
 Use these when you need multiple IDs for potentially non-distinct inputs, such as splitting text into chunks where chunks may have identical content but still need unique IDs.
 
@@ -104,13 +137,13 @@ async def process_document(doc: Document) -> list[Row]:
         rows.append(Row(id=chunk_id, content=chunk.content))
     return rows
 
-async def process_with_uuids(doc: Document) -> list[Row]:
+def process_with_uuids(doc: Document) -> list[Row]:
     # Use doc.path to distinguish generators within the same processing component
     uuid_gen = UuidGenerator(deps=doc.path)
     rows = []
     for chunk in split_into_chunks(doc.content):
         # Each call returns a distinct UUID, even if chunks are identical
-        chunk_uuid = await uuid_gen.next_uuid(chunk.content)
+        chunk_uuid = uuid_gen.next_uuid(chunk.content)
         rows.append(Row(id=chunk_uuid, content=chunk.content))
     return rows
 ```
@@ -163,20 +196,43 @@ let uuid_gen = UuidGenerator::new();
 let uuid = uuid_gen.next_uuid(&ctx, &"same").await?;
 ```
 
-`next_id` and `next_uuid` take `&self`: the generator counts how often it has seen each `dep` behind a mutex, and that ordinal is part of the memo key. One generator can therefore be shared by the concurrent closures of `ctx.map`, as in `examples/rust/text_embedding`. Concurrent calls take their ordinals in the order they reach the generator, so give each call a `dep` that identifies its item, as the chunk text does above. A generator is not `Clone`: a copy would replay the same ordinals and hand out the same IDs again.
-
 </Fragment>
 </LangTabs>
 
+<Lang only="rust">
+
+`next_id` and `next_uuid` take `&self`: the generator counts how often it has seen each `dep` behind a mutex, and that ordinal is part of the memo key. One generator can therefore be shared by the concurrent closures of `ctx.map`, as in `examples/rust/text_embedding`. Concurrent calls take their ordinals in the order they reach the generator, so give each call a `dep` that identifies its item, as the chunk text does above. A generator is not `Clone`: a copy would replay the same ordinals and hand out the same IDs again.
+
+</Lang>
+
 **Constructor:**
+
+<Lang only="python">
 
 - `IdGenerator(deps=None)` / `UuidGenerator(deps=None)` — Create a generator. The `deps` parameter distinguishes generators within the same [processing component](../programming_guide/processing_component). Use distinct `deps` values for different generator instances.
 
-In Rust: `IdGenerator::new()` / `UuidGenerator::new()` have no dependency; `IdGenerator::with_deps(&deps)?` / `UuidGenerator::with_deps(&deps)?` take any `Serialize` value.
+</Lang>
+
+<Lang only="rust">
+
+- `IdGenerator::new()` / `UuidGenerator::new()` — Create a generator with no dependency.
+- `IdGenerator::with_deps(&deps)?` / `UuidGenerator::with_deps(&deps)?` — Create a generator whose `deps` (any `Serialize` value) distinguishes it from other generators within the same [processing component](../programming_guide/processing_component). Use distinct `deps` values for different generator instances.
+
+</Lang>
 
 **Methods:**
 
-- `async IdGenerator.next_id(dep=None)` — Generate the next unique integer ID (distinct on each call)
-- `async UuidGenerator.next_uuid(dep=None)` — Generate the next unique UUID (distinct on each call)
+<Lang only="python">
 
-In Rust: `next_id(&ctx, &dep)` / `next_uuid(&ctx, &dep)`, and `next_id_default(&ctx)` / `next_uuid_default(&ctx)` with no per-call dependency.
+- `async IdGenerator.next_id(dep=None)` — Generate the next unique integer ID (distinct on each call)
+- `UuidGenerator.next_uuid(dep=None)` — Generate the next unique UUID (distinct on each call)
+
+</Lang>
+
+<Lang only="rust">
+
+- `async fn next_id(&self, ctx: &Ctx, dep: &D) -> Result<u64>` — Generate the next unique integer ID (distinct on each call)
+- `async fn next_uuid(&self, ctx: &Ctx, dep: &D) -> Result<Uuid>` — Generate the next unique UUID (distinct on each call)
+- `next_id_default(&ctx)` / `next_uuid_default(&ctx)` — The same with no per-call dependency.
+
+</Lang>
