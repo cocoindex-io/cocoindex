@@ -1,16 +1,67 @@
 //! Progress display for `update`: per-component lines and a status line,
-//! redrawn on stderr when it is a terminal, using the engine's own line
-//! formats (`cocoindex_core::engine::progress_display`).
+//! redrawn on stderr when it is a terminal. The line formats are the ones the
+//! engine's display used before it moved to its in-place region; the region is
+//! private to the engine, so this binary keeps its own copy of the two lines.
 
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
 
 use cocoindex::cli::protocol::ComponentStatsWire;
-use cocoindex_core::engine::progress_display::{format_component_line, format_status_line};
 use cocoindex_core::engine::stats::ProcessingStatsGroup;
 
 const MIN_REDRAW: Duration = Duration::from_millis(100);
+const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// One component's line: `✅ name: 3 total | 2 added, 1 unchanged`, with a
+/// spinner and the in-flight count while runs are in progress.
+fn format_component_line(name: &str, group: &ProcessingStatsGroup, spinner_idx: usize) -> String {
+    let total = group.num_execution_starts;
+    let in_flight = group.num_in_progress();
+    let icon = if in_flight > 0 {
+        format!("{} ", SPINNER_CHARS[spinner_idx % SPINNER_CHARS.len()])
+    } else {
+        "✅".to_string()
+    };
+    let mut line = format!("{icon} {name}: {total} total");
+    if in_flight > 0 {
+        line.push_str(&format!(", {in_flight} in-flight"));
+    }
+    let parts: Vec<String> = [
+        (group.num_adds, "added"),
+        (group.num_reprocesses, "reprocessed"),
+        (group.num_deletes, "deleted"),
+        (group.num_unchanged, "unchanged"),
+        (group.num_errors, "⚠️ errors"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, what)| format!("{count} {what}"))
+    .collect();
+    if !parts.is_empty() {
+        line.push_str(&format!(" | {}", parts.join(", ")));
+    }
+    line
+}
+
+/// The status line under the components: elapsed time, then readiness in
+/// live mode.
+fn format_status_line(
+    live: bool,
+    ready: bool,
+    elapsed: Duration,
+    ready_elapsed: Option<Duration>,
+) -> String {
+    let elapsed_secs = elapsed.as_secs_f64();
+    if !live {
+        format!("⏳ Elapsed: {elapsed_secs:.1}s")
+    } else if ready {
+        let ready_secs = ready_elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0);
+        format!("⏳ Ready (took {ready_secs:.1}s) | Watching for changes...")
+    } else {
+        format!("⏳ Elapsed: {elapsed_secs:.1}s | Catching up...")
+    }
+}
 
 pub struct Renderer {
     enabled: bool,
