@@ -2788,6 +2788,7 @@ version = "0.1.0"
 dependencies = [
  "cocoindex",
  "dotenvy",
+ "futures",
  "serde",
  "sqlx",
  "tokio",

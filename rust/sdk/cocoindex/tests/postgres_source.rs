@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::connectors::postgres;
 use cocoindex::{Ctx, Environment, Result};
+use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
 cocoindex::context_key!(
@@ -104,7 +105,10 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
 
     // --- T1: typed read returns correct values + types ---
     {
-        let mut rows: Vec<SourceRow> = postgres::read_table(&db, &src_table).await?;
+        let mut rows: Vec<SourceRow> = postgres::read_table(&db, &src_table)
+            .await?
+            .try_collect()
+            .await?;
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].name, "Headphones");
@@ -117,6 +121,8 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
             &src_table,
             postgres::ReadTableOptions::new().columns(["name"]),
         )
+        .await?
+        .try_collect()
         .await?;
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(
@@ -158,6 +164,8 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
             "source_names",
             postgres::ReadTableOptions::new().pg_schema_name(src_schema.clone()),
         )
+        .await?
+        .try_collect()
         .await?;
         assert_eq!(
             rows,
@@ -188,7 +196,11 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
         .execute(db.pool())
         .await
         .map_err(pe)?;
+        // The read starts (the table exists); the unsupported column fails
+        // the stream at its first row.
         let err = postgres::read_table::<serde_json::Value>(&db, &unsupported_table)
+            .await?
+            .try_collect::<Vec<_>>()
             .await
             .unwrap_err();
         assert!(
@@ -238,7 +250,10 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
                             Some(&out_schema_name),
                         )
                         .await?;
-                        let rows: Vec<SourceRow> = postgres::read_table(db, &src_table).await?;
+                        let rows: Vec<SourceRow> = postgres::read_table(db, &src_table)
+                            .await?
+                            .try_collect()
+                            .await?;
                         let outs = ctx
                             .mount_each(
                                 rows,
