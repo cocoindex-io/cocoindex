@@ -1,0 +1,338 @@
+---
+title: "*Model APIs*: embeddings, speech-to-text and chat"
+description: >
+  Embed text, transcribe audio and run JSON-mode chat completions over any
+  OpenAI-compatible HTTP API with ApiEmbedder, ApiTranscriber and
+  ApiChatClient, memoized and batched by the engine, plus the LlmPairResolver
+  for entity resolution.
+languages: [rust]
+python_counterpart: ops/litellm
+---
+
+The `cocoindex::ops::api` module calls hosted models over an OpenAI-compatible HTTP API:
+
+- `ApiEmbedder` embeds text (`POST {base_url}/embeddings`).
+- `ApiTranscriber` turns audio into text (`POST {base_url}/audio/transcriptions`).
+- `ApiChatClient` runs chat completions in JSON mode (`POST {base_url}/chat/completions`) and extracts typed values with `extract`.
+- `LlmPairResolver` asks an LLM whether two entity names are the same thing, for [entity resolution](./entity_resolution).
+
+Each client defaults to the OpenAI base URL (`https://api.openai.com/v1`) and reads the API key from the `OPENAI_API_KEY` environment variable. Point a client at any compatible endpoint (OpenAI, Together, vLLM, Ollama, ...) with `with_base_url`, and give the model name that endpoint expects, with no provider prefix.
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs */}
+```rust
+use cocoindex::ops::api::{ApiChatClient, ApiEmbedder, ApiTranscriber, ChatMessage, LlmPairResolver};
+```
+
+<RustNote>
+The Rust SDK does not use LiteLLM. It has no provider router: it sends requests to one OpenAI-compatible endpoint with `reqwest`, and there is no pass-through of arbitrary provider arguments. A provider without an OpenAI-compatible endpoint is out of reach of this module.
+</RustNote>
+
+:::note[Cargo feature]
+The module is behind the `embed_api` feature of the `cocoindex` crate:
+
+```toml
+cocoindex = { version = "...", features = ["embed_api"] }
+```
+
+:::
+
+## Embeddings
+
+`ApiEmbedder` implements [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider) and the [`Embedder`](../common_resources/data_types#embedder) trait, and returns each embedding as a `Vec<f32>`. The request carries the model, the input, and the optional `dimensions` and `input_type`.
+
+### Creating an embedder
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (ApiEmbedder builders) */}
+```rust
+use std::time::Duration;
+
+use cocoindex::ops::api::ApiEmbedder;
+
+// Defaults to the OpenAI base URL and the OPENAI_API_KEY environment variable.
+let embedder = ApiEmbedder::new("text-embedding-3-small");
+
+// With explicit API key and base URL
+let embedder = ApiEmbedder::new("text-embedding-3-small")
+    .with_base_url("https://my-proxy.example.com")
+    .with_api_key("sk-...");
+
+// With custom dimensions (OpenAI text-embedding-3 models)
+let embedder = ApiEmbedder::new("text-embedding-3-small").with_dimensions(512);
+
+// With a cap on concurrent requests to the backend
+let embedder = ApiEmbedder::new("text-embedding-3-small").with_max_inflight_requests(8);
+
+// With a longer timeout, for a slow self-hosted endpoint
+let embedder = ApiEmbedder::new("bge-m3")
+    .with_base_url("http://localhost:7997")
+    .with_timeout(Duration::from_secs(30 * 60));
+```
+
+The embedder is cheap to clone. Clones share the in-flight cap and the probed dimension.
+
+### Embedding text
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (embed, embed_with_input_type, embed_batch) */}
+```rust
+// In a CocoIndex function: memoized per text, batched across concurrent calls.
+let embedding = embedder.embed(&ctx, "Hello, world!").await?;
+
+// For asymmetric models, send an input type; each input type is memoized and batched apart.
+let query_vec = embedder.embed_with_input_type(&ctx, "q", "search_query").await?;
+let doc_vec = embedder.embed_with_input_type(&ctx, "doc", "search_document").await?;
+
+// Outside an update there is no Ctx: one raw request, no memoization.
+let vectors = embedder.embed_batch(vec!["Hello, world!".to_string()]).await?;
+```
+
+`embed` memoizes each text and coalesces the concurrent cache misses of an update into requests of up to 64 texts. Fan the calls out with `ctx.map` to let them batch:
+
+{/* Rust: rust/sdk/SHOWCASE.md (Embed, transcribe and resolve entities with the built-in ops) */}
+```rust
+cocoindex::context_key!(static EMBEDDER: ApiEmbedder, detect_change);
+
+#[cocoindex::function]
+async fn embed_chunks(ctx: &Ctx, chunks: Vec<String>) -> Result<Vec<Vec<f32>>> {
+    let embedder = ctx.get_key(&EMBEDDER)?;
+    ctx.map(chunks, {
+        let ctx = ctx.clone();
+        let embedder = embedder.clone();
+        move |chunk| {
+            let ctx = ctx.clone();
+            let embedder = embedder.clone();
+            async move { embedder.embed(&ctx, chunk).await }
+        }
+    })
+    .await
+}
+```
+
+`embed_batch` is for code outside a CocoIndex update, such as embedding a search query: it sends one request and memoizes nothing.
+
+### Limiting concurrent requests
+
+Concurrent `embed` calls are batched into requests of up to 64 texts, and the embedder sends as many such requests in parallel as there is work queued. `with_max_inflight_requests` caps how many requests the embedder keeps open against the backend at once. Use it for a self-hosted endpoint (Infinity, TEI, Ollama, vLLM, ...) that rejects bursts with 429s:
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (with_max_inflight_requests) */}
+```rust
+let embedder = ApiEmbedder::new("bge-m3")
+    .with_base_url("http://localhost:7997")
+    .with_max_inflight_requests(8);
+```
+
+The default is no cap. The cap belongs to one embedder and all its clones: two embedders built separately against the same endpoint have independent limits, so share one embedder (or its clones) when you want one limit.
+
+### Vector columns
+
+A row struct marks its vector column with `#[coco(vector)]`. It cannot name the embedder in a field attribute: the embedder supplies the dimension when the table is mounted.
+
+{/* Rust: row struct from examples/rust/text_embedding/src/main.rs */}
+```rust
+use cocoindex::prelude::*;
+
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct DocEmbedding {
+    id: i64,
+    filename: String,
+    text: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+```
+
+{/* Rust: examples/rust/text_embedding/src/main.rs (index), with an ApiEmbedder in the context key */}
+```rust
+use cocoindex::connectors::postgres;
+
+cocoindex::context_key!(static EMBEDDER: ApiEmbedder, detect_change);
+
+// The embedder probes its dimension once and reports it for the `embedding` column.
+let table = postgres::mount_table_target(
+    &ctx,
+    &DB,
+    "doc_embeddings",
+    postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+        .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+        .await?,
+    Some("my_schema"),
+)
+.await?;
+```
+
+The embedder finds its dimension by embedding a probe text (`"hello"`) once, and caches it; `dimension()` returns it. The connector then creates the `vector(N)` column. See [Vector schema](../common_resources/vector_schema) for `with_vector_schema` and `with_vector_dim`, and the [Connectors](../connectors/postgres) docs for other backends.
+
+## Speech-to-text
+
+`ApiTranscriber` sends the audio as a multipart upload, read from any `FileLike`, and returns the transcript as a `String`.
+
+### Creating a transcriber
+
+{/* Rust: examples/rust/audio_to_text/src/main.rs, rust/sdk/cocoindex/tests/ops_api.rs (ApiTranscriber builders) */}
+```rust
+use std::time::Duration;
+
+use cocoindex::ops::api::ApiTranscriber;
+
+// Defaults to the OpenAI base URL and the OPENAI_API_KEY environment variable.
+let transcriber = ApiTranscriber::new("whisper-1");
+
+// With an explicit API key and a language hint applied to every call
+let transcriber = ApiTranscriber::new("whisper-1")
+    .with_api_key("sk-...")
+    .with_language("en");
+
+// With a longer timeout, for long audio or a slow endpoint
+let transcriber = ApiTranscriber::new("whisper-1").with_timeout(Duration::from_secs(30 * 60));
+
+// An OpenAI-compatible endpoint
+let transcriber = ApiTranscriber::new("whisper-1").with_base_url(base_url);
+```
+
+The language hint is an ISO-639-1 code. Another provider is reachable through `with_base_url` when it offers an OpenAI-compatible transcription endpoint.
+
+### Transcribing audio
+
+{/* Rust: examples/rust/audio_to_text/src/main.rs (process_audio); transcribe_bytes from rust/sdk/cocoindex/src/ops/api.rs */}
+```rust
+// In a CocoIndex function, `file` is a FileLike (here a FileEntry); memoized by the file's content.
+let text = ctx.get_key(&TRANSCRIBER)?.transcribe(ctx, &file).await?;
+
+// Raw bytes, outside an update: no memoization. The filename's extension tells the server the format.
+let text = transcriber.transcribe_bytes(bytes, "clip.mp3".to_string()).await?;
+```
+
+`transcribe` has no per-call options: set the language hint once with `with_language`.
+
+A complete pipeline that walks local audio files, transcribes each one, and stores the transcripts in Postgres is in [`examples/rust/audio_to_text`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/rust/audio_to_text).
+
+## Chat and structured extraction
+
+`ApiChatClient` runs a chat completion with the JSON-object response format. Build the conversation from `ChatMessage::system`, `ChatMessage::user` and `ChatMessage::assistant`.
+
+{/* Rust: examples/rust/product_recommendation/src/main.rs (chat_client) */}
+```rust
+use cocoindex::ops::api::{ApiChatClient, ChatMessage};
+
+/// The chat client for the configured model: an OpenAI-compatible endpoint
+/// (`OPENAI_API_KEY`; `LLM_BASE_URL` for another provider, e.g. Ollama).
+fn chat_client(ctx: &Ctx) -> Result<ApiChatClient> {
+    let client = ApiChatClient::new(ctx.get_key(&LLM_MODEL)?);
+    Ok(match std::env::var("LLM_BASE_URL") {
+        Ok(url) => client.with_base_url(url),
+        Err(_) => client,
+    })
+}
+```
+
+The client has `new(model)`, `with_base_url` and `with_api_key`. Two methods send a request:
+
+- `extract::<T>(&ctx, &messages)` deserializes the answer into `T` and memoizes it through the engine, keyed by the model, the endpoint and the messages. This is the way to extract structured data with an LLM inside an update.
+- `chat_json(&messages)` returns the raw JSON string of the answer, with no memoization.
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (chat_client_extract_deserializes_and_memoizes) */}
+```rust
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Person {
+    name: String,
+    age: u32,
+}
+
+let messages = [
+    ChatMessage::system("Reply with JSON {name, age}."),
+    ChatMessage::user(text),
+];
+let person = client.extract::<Person>(&ctx, &messages).await?;
+```
+
+The endpoint's JSON mode guarantees JSON, not a shape: the prompt has to describe the JSON shape that `T` deserializes from. An answer that does not deserialize into `T` is an error.
+
+The client's memo key is the model and the endpoint (the base URL). So a `detect_change` context key that holds a client invalidates memoized work when the model or the endpoint changes:
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs */}
+```rust
+cocoindex::context_key!(static CHAT: ApiChatClient, detect_change);
+```
+
+Complete pipelines that extract with `ApiChatClient` are in [`examples/rust/product_recommendation`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/rust/product_recommendation) and [`examples/rust/docs_to_knowledge_graph`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/rust/docs_to_knowledge_graph).
+
+## Entity-pair resolution with an LLM
+
+`LlmPairResolver` implements the `PairResolver` trait of [entity resolution](./entity_resolution). Given a new entity name and a list of canonical candidates, it asks the LLM whether the new name refers to one of them, and which name stays canonical.
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (LlmPairResolver builders); with_client from examples/rust/conversation_to_knowledge/src/pipeline.rs */}
+```rust
+use cocoindex::ops::api::LlmPairResolver;
+
+// Builds its own ApiChatClient for the model.
+let resolver = LlmPairResolver::new("gpt-4o-mini")
+    .with_base_url(base_url)
+    .with_api_key("sk-...")
+    .with_entity_type("organization")
+    .with_retries(3);
+
+// Or reuse a configured chat client.
+let resolver = LlmPairResolver::with_client(ctx.get_key(&RESOLVER_LLM)?.clone())
+    .with_entity_type(kind.as_str());
+```
+
+| Builder | Effect |
+|---|---|
+| `with_entity_type(t)` | Weaves an entity-type hint into the prompt, for example `"person"`. |
+| `with_extra_guidance(text)` | Appends domain guidance to the prompt. Do not put output-format instructions in it. |
+| `with_retries(n)` | The number of retries when the LLM answers with a name that is not in the candidate list. Default 2. When the retries run out, the decision is "no match". |
+
+Each `(entity, candidates)` decision is memoized through the engine and persists across runs. The memo key is the model, the endpoint, the entity type and the extra guidance; the retry count is absent, because it cannot change a valid decision.
+
+Pass the resolver to `resolve_entities`; see [Entity resolution](./entity_resolution).
+
+## Shared behavior
+
+All four clients reach their endpoint the same way.
+
+### Timeout
+
+A request is bounded end to end, retries included. The default bound is 10 minutes. `ApiEmbedder` and `ApiTranscriber` take `with_timeout(Duration)`; `ApiChatClient` and `LlmPairResolver` use the default.
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (with_timeout) */}
+```rust
+let embedder = ApiEmbedder::new("text-embedding-3-small").with_timeout(Duration::from_secs(30 * 60));
+let transcriber = ApiTranscriber::new("whisper-1").with_timeout(Duration::from_secs(30 * 60));
+```
+
+Size the bound against one request:
+
+- **Embedding**: one request carries up to 64 texts, so raise it for an endpoint that needs longer than the default to embed a full batch.
+- **Transcription**: one request carries one whole audio file, so size it against the longest file you expect.
+
+An active [`Ctx` deadline](../advanced_topics/timeouts) can only shorten the bound, never extend it.
+
+### Retries
+
+Within the bound, a failed request is retried with exponential backoff: 1s, doubling, capped at 30s. A `Retry-After` header in seconds replaces the backoff delay, under the same 30s cap. There is no attempt cap; time is the only brake.
+
+| Failure | Retried? |
+| --- | --- |
+| HTTP 408, 409, 425, 429, or any 5xx | Yes |
+| A refused or reset connection | Yes |
+| A request that times out | No: terminal |
+| Any other HTTP error (bad credentials, unknown model, permission denied) | No: terminal |
+
+A request that times out is not retried, because it has already spent its duration. Against an overloaded backend, another try only adds load. The remedy for a genuine timeout is a longer timeout. When the bound expires, the call fails with an error.
+
+### Memoization
+
+`ApiEmbedder::embed`, `ApiTranscriber::transcribe`, `ApiChatClient::extract` and the `LlmPairResolver` decisions are memoized: inside a processing component, the result for each distinct input is cached across runs, so a component that re-runs does not pay the API call again for unchanged input. The memo keys:
+
+| Client | Memo key |
+|---|---|
+| `ApiEmbedder` | model, base URL, `dimensions`, and the text (and input type) |
+| `ApiTranscriber` | model, base URL, language, and the file's identity and content |
+| `ApiChatClient::extract` | model, base URL, and the messages |
+| `LlmPairResolver` | model, base URL, entity type, extra guidance, and the entity and candidates |
+
+The API key, the timeout and the in-flight cap are absent from every key: they authenticate, bound and pace requests but cannot change a result, so changing them invalidates nothing. `embed_batch`, `transcribe_bytes` and `chat_json` memoize nothing.
+
+Mind the [memoization placement rule](../programming_guide/function#when-to-memoize); it lands differently on embedding and transcription:
+
+- **Embedding**: the memo holds one full vector per distinct text. That makes the common per-file-component pattern incremental, but it is redundant when your components are already keyed by the embedded content.
+- **Transcription**: the memo holds one transcript per file: small entries standing in for an expensive call. It hits whenever the enclosing component re-runs for a reason other than the audio changing (its code edited, its version bumped, another of its inputs changed), so it is usually worth keeping.

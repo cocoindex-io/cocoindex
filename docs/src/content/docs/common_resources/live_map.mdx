@@ -4,16 +4,18 @@ description: >
   LiveMap is an in-memory keyed collection that bridges live producing and consuming
   logic — declare (key, value) entries as target states on one side, consume it as a
   LiveMapView with mount_each on the other.
+rust_description: >
+  LiveMap is an in-memory keyed collection that bridges live producing and consuming
+  logic — declare (key, value) entries as target states on one side, consume it as a
+  LiveMapView with ctx.mount_each_live on the other.
 ---
 import LangTabs from '../../../components/LangTabs.astro';
 
-`LiveMap[K, V]` (`cocoindex.resources.live_map`) is an in-memory, keyed collection that sits **between** a producing part of your pipeline and a consuming part. The producing side **declares** `(key, value)` entries; the consuming side reads the map as a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview) via `coco.mount_each`, getting one [processing component](../programming_guide/processing_component) per entry that stays in sync as entries appear, change, and disappear.
+<Lang only="python">`LiveMap[K, V]` (`cocoindex.resources.live_map`)</Lang><Lang only="rust">`LiveMap<K, V>` (`cocoindex::resources::live_map`, also `cocoindex::LiveMap`)</Lang> is an in-memory, keyed collection that sits **between** a producing part of your pipeline and a consuming part. The producing side **declares** `(key, value)` entries; the consuming side reads the map as a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview) via <Lang only="python">`coco.mount_each`</Lang><Lang only="rust">`ctx.mount_each_live`</Lang>, getting one [processing component](../programming_guide/processing_component) per entry that stays in sync as entries appear, change, and disappear.
 
-Think of it as a connector whose "external system" is an in-process `dict`: entries are declared as [target states](../programming_guide/target_state) (so they participate in CocoIndex's declarative change detection and ownership) and that same `dict` is simultaneously exposed as a live source for downstream components. It lets you split a pipeline into a producer half and a consumer half that are decoupled through one shared, incrementally-maintained collection.
+Think of it as a connector whose "external system" is an in-process <Lang only="python">`dict`</Lang><Lang only="rust">map</Lang>: entries are declared as [target states](../programming_guide/target_state) (so they participate in CocoIndex's declarative change detection and ownership) and that same map is simultaneously exposed as a live source for downstream components. It lets you split a pipeline into a producer half and a consumer half that are decoupled through one shared, incrementally-maintained collection.
 
 It is designed for [live mode](../programming_guide/live_mode): the producer and consumer run concurrently, and the consumer reacts as the producer updates the map.
-
-The Rust SDK has `LiveMap<K, V>` in `cocoindex::resources::live_map` (also `cocoindex::LiveMap`). `K` is any `LiveMapKey`: `String`, `i64`, `u64` or a `StableKey`, so a composite key works too.
 
 ## Example
 
@@ -50,7 +52,10 @@ async def app_main() -> None:
 <Fragment slot="rust">
 
 ```rust
+use std::sync::{Arc, Mutex};
+
 use cocoindex::{Ctx, LiveComponent, LiveComponentOperator, LiveMap, Result, async_trait};
+use tokio::sync::Notify;
 
 /// Declares every entry of `source`; re-runs its full pass on `trigger`.
 struct Producer {
@@ -138,9 +143,19 @@ let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
 </Fragment>
 </LangTabs>
 
-`create()` is an async factory and must be called from **inside the app's component tree** (it mounts a backing target). `K` must be a [stable key](../programming_guide/processing_component#component-path); `V` is any value comparable with `==` — no hashability, serialization, or fingerprinting is required, so arbitrary objects (lists, dataclasses, …) work.
+`create` is an async factory and must be called from **inside the app's component tree** (it mounts a backing target).
 
-In Rust, the key is a `String`, and `V` must be `Serialize + DeserializeOwned + Clone + PartialEq + Send + Sync + 'static` (the `LiveMapValue` bound, implemented automatically for every such type). Values are compared with `==` as in Python; the serialization bound is what makes an entry a target state. A `LiveMap` is cheap to clone, and all clones share one map.
+<Lang only="python">
+
+`K` must be a [stable key](../programming_guide/processing_component#component-path); `V` is any value comparable with `==` — no hashability, serialization, or fingerprinting is required, so arbitrary objects (lists, dataclasses, …) work.
+
+</Lang>
+
+<Lang only="rust">
+
+`K` is any `LiveMapKey`: `String`, `i64`, `u64` or a [`StableKey`](../programming_guide/processing_component#component-path), so a composite key works too. `V` must be `Serialize + DeserializeOwned + Clone + PartialEq + Send + Sync + 'static` (the `LiveMapValue` bound, implemented automatically for every such type). Values are compared with `==`; the serialization bound is what makes an entry a target state. A `LiveMap` is cheap to clone, and all clones share one map.
+
+</Lang>
 
 ## Producing entries
 
@@ -156,7 +171,7 @@ lm.declare_entry(key, value)
 <Fragment slot="rust">
 
 ```rust
-lm.declare_entry(&ctx, "a", "alpha".to_string())?;
+lm.declare_entry(&ctx, "a".to_string(), "alpha".to_string())?;
 ```
 
 </Fragment>
@@ -172,7 +187,7 @@ Multiple components may declare into the same map, as long as each key has a sin
 
 ## Consuming entries
 
-A `LiveMap` is a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview), so pass it straight to `coco.mount_each` — it behaves just like a live source:
+A `LiveMap` is a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview), so pass it straight to <Lang only="python">`coco.mount_each`</Lang><Lang only="rust">`ctx.mount_each_live`</Lang> — it behaves just like a live source:
 
 {/* Rust: rust/sdk/cocoindex/tests/live_map.rs (Consumer::process) */}
 <LangTabs>
@@ -196,20 +211,20 @@ ctx.mount_each_live(&"each", self.lm.clone(), move |_ctx, value: String| {
 .await
 ```
 
-In Rust the consumer is `ctx.mount_each_live(&key, feed, process_fn)`: the Rust `LiveMap` implements `LiveMapView<String, V>` and `LiveMapFeed<String, V>`, so it is a live feed like a watched directory. `lm.scan().await?` returns the current entries as `Vec<(String, V)>`.
+`ctx.mount_each_live(&key, feed, process_fn)` takes the map as its feed: `LiveMap<K, V>` implements `LiveMapView<K, V>` and `LiveMapFeed<K, V>`, so it is a live feed like a watched directory. `lm.scan().await?` (from the `LiveMapView` trait) returns the current entries as `Vec<(K, V)>`.
 
 </Fragment>
 </LangTabs>
 
-`mount_each` mounts one processing component per entry (keyed by the entry key), scans the current entries first, then reacts to incremental changes — re-mounting a component when its value changes and removing it when its entry is deleted. The processor receives the entry **value**.
+<Lang only="python">`mount_each`</Lang><Lang only="rust">`mount_each_live`</Lang> mounts one processing component per entry (keyed by the entry key), scans the current entries first, then reacts to incremental changes — re-mounting a component when its value changes and removing it when its entry is deleted. The processor receives the entry **value**.
 
-A LiveMap supports **one active consumer** (`mount_each`) at a time; a second concurrent consumer raises `RuntimeError`. In Rust, the second concurrent `watch()` fails with an `Error` instead, and a consumer that finished (or was mounted again) can watch the map again.
+A LiveMap supports **one active consumer** at a time; <Lang only="python">a second concurrent consumer (`mount_each`) raises `RuntimeError`.</Lang><Lang only="rust">a second concurrent `watch` fails with an `Error`. A consumer that finished, failed or was cancelled releases the map, so it can be watched again.</Lang>
 
 ## Semantics
 
-- **Live-mode first.** LiveMap is built for [`app.update(live=True)`](../programming_guide/live_mode): the consumer subscribes and reacts as producers update the map. In catch-up mode (plain `app.update()`), the consumer scans whatever entries happen to exist when it runs, which can race producers running concurrently in the same session — so for predictable one-shot results, order the producer ahead of the consumer (await the producer's `handle.ready()` before consuming).
+- **Live-mode first.** LiveMap is built for [live mode](../programming_guide/live_mode)<Lang only="python"> (`app.update(live=True)`)</Lang>: the consumer subscribes and reacts as producers update the map. In catch-up mode (a plain update<Lang only="python">, `app.update()`</Lang>), the consumer scans whatever entries happen to exist when it runs, which can race producers running concurrently in the same session — so for predictable one-shot results, order the producer ahead of the consumer (<Lang only="python">await the producer's `handle.ready()`</Lang><Lang only="rust">wait for the producer's mount handle to be ready</Lang> before consuming).
 - **In-memory and per-session.** The map lives in process memory and is rebuilt from its producers each time the app starts; its contents do not persist across restarts.
-- **Empty in a preview.** A preview (`app.update(preview=True)`, `cocoindex update --preview`) applies no target actions, so it does not fill the map either: its consumers see an empty map, and the preview lists no downstream actions for them. Preview the producers' own targets instead. The Rust `app.preview(..)` behaves the same way.
+- **Empty in a preview.** A preview (<Lang only="python">`app.update(preview=True)`</Lang><Lang only="rust">`app.preview(..)`</Lang>, `cocoindex update --preview`) applies no target actions, so it does not fill the map either: its consumers see an empty map, and the preview lists no downstream actions for them. Preview the producers' own targets instead.
 
 ## When to use it
 

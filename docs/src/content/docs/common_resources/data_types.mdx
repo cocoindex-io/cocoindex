@@ -4,20 +4,32 @@ description: >
   Data types shared across connectors and built-in operations — FileLike,
   FilePath, FilePathMatcher, Chunk with text positions, and the Embedder
   protocol for single-text async embedding.
+rust_description: >
+  Data types shared across connectors and built-in operations — FileLike,
+  FilePath, FilePathMatcher, Chunk with text positions, and the Embedder
+  trait for single-text async embedding.
 ---
 import LangTabs from '../../../components/LangTabs.astro';
 
+<Lang only="python">
+
 The `cocoindex.resources` package provides common data models and abstractions shared across connectors and built-in operations. Connectors provide concrete implementations — for example, `localfs.File` implements `FileLike`, and `localfs.FilePath` extends `FilePath`. See individual [connector docs](../connectors/localfs) for connector-specific details.
 
-The Rust SDK has the same modules under `cocoindex::resources` (`file`, `fs`, `chunk`, `embedder`, `id`, `live_map`, `rate_limit`, `schema`). The types this page names are re-exported from `cocoindex::prelude`. The local file system lives in `cocoindex::resources::fs`: its `FileEntry` implements `FileLike`, and `walk_dir` builds a `FilePath` for each file.
+</Lang>
+
+<Lang only="rust">
+
+The `cocoindex::resources` modules (`file`, `fs`, `chunk`, `embedder`, `id`, `live_map`, `rate_limit`, `schema`) provide common data models and abstractions shared across connectors and built-in operations. The types this page names are re-exported from `cocoindex::prelude`. Connectors provide concrete implementations — for example, the local file system (`cocoindex::resources::fs`) has `FileEntry`, which implements `FileLike`, and its `walk_dir` builds a `FilePath` for each file. See individual [connector docs](../connectors/localfs) for connector-specific details.
+
+</Lang>
 
 ## File
 
-The file module (`cocoindex.resources.file`) defines base classes and utilities for working with file-like objects.
+The file module (<Lang only="python">`cocoindex.resources.file`</Lang><Lang only="rust">`cocoindex::resources::file`</Lang>) defines <Lang only="python">base classes</Lang><Lang only="rust">types and traits</Lang> and utilities for working with file-like objects.
 
 ### FileLike
 
-`FileLike` is a base class for file objects with async read methods. Each connector provides its own subclass (e.g., `localfs.File`, `amazon_s3.S3Object`).
+<Lang only="python">`FileLike` is a base class for file objects with async read methods. Each connector provides its own subclass (e.g., `localfs.File`, `amazon_s3.S3Object`).</Lang><Lang only="rust">`FileLike` is a trait for file objects with async read methods. Each connector has a type that implements it: `FileEntry` for the local file system, `AzureBlobFile` for Azure Blob Storage, and so on. A function takes the concrete type, as below, or a `&dyn FileLike`.</Lang>
 
 {/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (read_file), examples/rust/azure_blob_embedding/src/main.rs */}
 <LangTabs>
@@ -44,10 +56,10 @@ async fn read_file(ctx: &Ctx, file: &FileEntry) -> Result<String> {
 }
 ```
 
-In Rust, `FileLike` is a trait (`cocoindex::resources::file::FileLike`). Each connector has a type that implements it: `FileEntry` for the local file system, `AzureBlobFile` for Azure Blob Storage, and so on. A function takes the concrete type, as above, or a `&dyn FileLike`.
-
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 **Properties:**
 
@@ -59,29 +71,37 @@ In Rust, `FileLike` is a trait (`cocoindex::resources::file::FileLike`). Each co
 - `async read(size=-1)` — Read file content as bytes. Pass `size` to limit bytes read.
 - `async read_text(encoding=None, errors="replace")` — Read as text. Auto-detects encoding via BOM if not specified.
 
-The Rust trait has the same surface with Rust names:
+</Lang>
 
-| Python | Rust (`FileLike`) |
-|---|---|
-| `file.file_path` | `file.file_path()` returns a `FilePath` |
-| `await file.size()` | `file.metadata().await?.size`; `FileMetadata` also holds `modified` and an optional `content_fingerprint` |
-| `await file.read()` | `file.read().await?` returns `bytes::Bytes` (the cached content, shared, not copied) |
-| `await file.read(size)` | `file.read_size(size).await?` |
-| `await file.read_text()` | `file.read_text().await?` detects a BOM and decodes with replacement characters |
-| `await file.read_text(encoding="latin1", errors="strict")` | `file.read_text_with(Some("latin1"), DecodeErrors::Strict).await?` |
-| — | `file.content_fingerprint().await?` returns the `Fingerprint` the memo validation uses |
+<Lang only="rust">
 
-`read_text_with(encoding, errors)` is Python's `read_text(encoding=, errors=)`: `encoding` is a WHATWG label such as `"latin1"` or `"utf-16le"` (or `"utf-32le"` / `"utf-32be"`), `None` detects by BOM and falls back to UTF-8; `DecodeErrors::Replace` (the default), `Ignore` and `Strict` are Python's `"replace"`, `"ignore"` and `"strict"`. `decode_bytes_with` does the same on bytes you already hold. `FileEntry` adds the sync helpers `content()` and `content_str()`, plus `key()`, `stem()` and `relative_path()`.
+**Methods:**
+
+- `file_path()` — A `FilePath` representing the file's path. Access the relative path via `file_path().path()` (`&Path`).
+- `metadata().await?` — A `FileMetadata`: `size` in bytes, `modified`, and an optional `content_fingerprint`.
+- `read().await?` — The file content as `bytes::Bytes` (the cached content, shared, not copied).
+- `read_size(size).await?` — At most `size` bytes of the content.
+- `read_text().await?` — The content as text. Detects the encoding by BOM, falls back to UTF-8, and decodes with replacement characters.
+- `read_text_with(encoding, errors).await?` — The content as text with an explicit decoding: `encoding` is a WHATWG label such as `Some("latin1")` or `Some("utf-16le")` (or `"utf-32le"` / `"utf-32be"`), `None` detects by BOM; `errors` is `DecodeErrors::Replace` (the default of `read_text`), `Ignore` or `Strict`.
+- `content_fingerprint().await?` — The `Fingerprint` the memo validation uses.
+
+`decode_bytes_with` decodes bytes you already hold the same way. `FileEntry` adds the sync helpers `content()` and `content_str()`, plus `key()`, `stem()` and `relative_path()`.
+
+</Lang>
 
 **Memoization:**
 
 `FileLike` objects provide a memoization key based on `file_path` (file identity). When used as arguments to a [memoized function](../programming_guide/function#memoization), CocoIndex uses a two-level validation: it checks the modification time first (cheap), then computes a content fingerprint only if the modification time has changed. This means touching a file or moving it won't cause unnecessary recomputation if the content is unchanged. When the backend reports a fingerprint at no cost (for example an S3 ETag), CocoIndex compares it even when the modification time is unchanged. This catches an overwrite within the resolution of the modification time (S3 reports whole seconds). Filesystems have a resolution too (FAT keeps two seconds, HFS+ and ext3 one), so a file whose modification time was less than three seconds old, or in the future, when its content was read is compared by content fingerprint on the next run as well.
 
-The Rust types do the same: a `FileLike` is a `MemoInput` whose key is `file_path().memo_key()`, and whose state is the modification time, validated by the content fingerprint when the time changed. A `FileEntry` can therefore be an argument of a `#[cocoindex::function(memo)]` directly, or inside a `Vec`.
+<Lang only="rust">
+
+A `FileLike` is a `MemoInput` whose key is `file_path().memo_key()`, and whose state is the modification time, validated by the content fingerprint when the time changed. A `FileEntry` can therefore be an argument of a `#[cocoindex::function(memo)]` directly, or inside a `Vec`.
+
+</Lang>
 
 ### FilePath
 
-`FilePath` is a base class that combines a **base directory** (with a stable key) and a **relative path**. This enables stable memoization even when the entire directory tree is moved to a different location.
+`FilePath` <Lang only="python">is a base class that combines</Lang><Lang only="rust">combines</Lang> a **base directory** (with a stable key) and a **relative path**. This enables stable memoization even when the entire directory tree is moved to a different location.
 
 {/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (with_base_dir), rust/sdk/cocoindex/tests/fs_target.rs (under_context_dir) */}
 <LangTabs>
@@ -109,10 +129,10 @@ let files = walk_dir(FilePath::with_base_dir("docs", root.to_path_buf(), PathBuf
 let root = FilePath::under_context_dir(&ctx, &OUT_DIR, "out")?;
 ```
 
-In Rust there is one `FilePath` struct for every connector. `with_base_dir(base_key, base_dir, path)` is Python's `FilePath(path, base_dir=...)`; `under_context_dir(&ctx, &KEY, path)` reads the base directory from the context and uses the key's name as the base key.
-
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 Each connector provides its own `FilePath` subclass (e.g., `localfs.FilePath`). The base class defines the common interface.
 
@@ -125,9 +145,29 @@ Each connector provides its own `FilePath` subclass (e.g., `localfs.FilePath`). 
 
 - `resolve()` — Resolve to the full path (type depends on the connector, e.g., `pathlib.Path` for local filesystem).
 
-In Rust, `path()` returns the relative `&Path`, `base_key()` the optional base key, and `resolve()` a `PathBuf` (the base directory joined with the path).
+</Lang>
+
+<Lang only="rust">
+
+One `FilePath` struct serves every connector.
+
+**Constructors:**
+
+- `FilePath::new(path)` — A path with no base key.
+- `FilePath::with_base_dir(base_key, base_dir, path)` — A path under a base directory with a stable key.
+- `FilePath::under_context_dir(&ctx, &KEY, path)?` — Reads the base directory from a `ContextKey<PathBuf>` in the context and uses the key's name as the base key.
+
+**Methods:**
+
+- `path()` — The path relative to the base directory (`&Path`).
+- `base_key()` — The optional base key, used for stable memoization.
+- `resolve()` — The full path, a `PathBuf` (the base directory joined with the path).
+
+</Lang>
 
 **Path Operations:**
+
+<Lang only="python">
 
 `FilePath` supports most `pathlib.PurePath` operations:
 
@@ -154,22 +194,30 @@ config_path.match("*.json")  # True
 config_path.as_posix()  # "config/settings.json"
 ```
 
-The Rust `FilePath` has the same operations as methods: `join(child)`, `name()`, `stem()`, `suffix()`, `suffixes()`, `parts()`, `parent()`, `with_name(..)`, `with_stem(..)`, `with_suffix(..)`, `parents()`, `relative_to(base)`, `is_relative_to(base)`, `matches(pattern)` and `as_posix()`. `matches` follows `PurePath.match`: a relative pattern is matched from the right, one component at a time, and an absolute pattern must match the whole path.
+</Lang>
+
+<Lang only="rust">
+
+`FilePath` has the `pathlib.PurePath`-style operations as methods: `join(child)`, `name()`, `stem()`, `suffix()`, `suffixes()`, `parts()`, `parent()`, `with_name(..)`, `with_stem(..)`, `with_suffix(..)`, `parents()`, `relative_to(base)`, `is_relative_to(base)`, `matches(pattern)` and `as_posix()`. `matches` follows `PurePath.match`: a relative pattern is matched from the right, one component at a time, and an absolute pattern must match the whole path. Each method that returns a path keeps the base key.
+
+</Lang>
 
 **Memoization:**
 
-`FilePath` provides a memoization key based on `(base_dir.key, path)`. This means:
+`FilePath` provides a memoization key based on <Lang only="python">`(base_dir.key, path)`</Lang><Lang only="rust">`(base_key, path)`, returned by `memo_key()`; it falls back to the path alone when the `FilePath` has no base key</Lang>. This means:
 
 - Two `FilePath` objects with the same base directory key and relative path have the same memo key
 - Moving the entire project directory doesn't invalidate memoization, as long as the same base directory key is used
 
-For connector-specific usage (e.g., `register_base_dir`), see the individual connector documentation like [Local File System](../connectors/localfs).
-
-In Rust, `memo_key()` returns that same `(base_key, path)` pair, and it falls back to the path alone when the `FilePath` has no base key.
+For connector-specific usage<Lang only="python"> (e.g., `register_base_dir`)</Lang>, see the individual connector documentation like [Local File System](../connectors/localfs).
 
 ### FilePathMatcher
 
-`FilePathMatcher` is a protocol for filtering files and directories during traversal.
+`FilePathMatcher` is a <Lang only="python">protocol</Lang><Lang only="rust">trait</Lang> for filtering files and directories during traversal.
+
+{/* Rust: rust/sdk/cocoindex/src/resources/file.rs (trait definition) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.resources.file import FilePathMatcher
@@ -184,7 +232,27 @@ class MyMatcher(FilePathMatcher):
         return path.suffix in (".py", ".md")
 ```
 
-In Rust, `FilePathMatcher` is a trait with the same two methods, `is_dir_included(&self, path: &Path) -> bool` (default: `true`) and `is_file_included(&self, path: &Path) -> bool`. Pass an implementation to `walk_dir(..).path_matcher(..)`. `MatchAllFilePathMatcher` includes everything.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub trait FilePathMatcher: Send + Sync {
+    fn is_dir_included(&self, _path: &Path) -> bool {
+        true
+    }
+
+    fn is_file_included(&self, path: &Path) -> bool;
+}
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="rust">
+
+`is_dir_included` returns `true` to traverse a directory (the default); `is_file_included` returns `true` to include a file. Pass an implementation to `walk_dir(..).path_matcher(..)`. `MatchAllFilePathMatcher` includes everything.
+
+</Lang>
 
 #### PatternFilePathMatcher
 
@@ -219,14 +287,18 @@ let files = walk_dir(sourcedir)
     )?);
 ```
 
-`PatternFilePathMatcher::new(included, excluded)` takes two iterables of patterns and returns a `Result`: an invalid glob is an error at construction. `PatternFilePathMatcher::include(patterns)` is the form with no exclusions.
-
 </Fragment>
 </LangTabs>
 
+<Lang only="rust">
+
+`PatternFilePathMatcher::new(included, excluded)` takes two iterables of patterns and returns a `Result`: an invalid glob is an error at construction. `PatternFilePathMatcher::include(patterns)` is the form with no exclusions.
+
+</Lang>
+
 **Parameters:**
 
-- `included_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files to include. Use `**/*.ext` to match at any depth. If `None`, all files are included.
+- `included_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files to include. Use `**/*.ext` to match at any depth. <Lang only="python">If `None`, all files are included.</Lang><Lang only="rust">An empty list includes all files.</Lang>
 - `excluded_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files/directories to exclude. Excluded directories are not traversed. A pattern prefixed with `!` negates the exclusion for matching paths (see below).
 
 :::note
@@ -234,6 +306,8 @@ Patterns use [globset](https://docs.rs/globset) semantics: `*.py` matches only i
 :::
 
 **Gitignore-style negation.** Within `excluded_patterns`, a pattern beginning with `!` *un-excludes* paths that would otherwise be excluded by a preceding pattern. This lets you exclude broadly and then carve out exceptions, instead of enumerating every directory to exclude:
+
+<Lang only="python">
 
 ```python
 # Exclude all dot-entries, but keep .github through
@@ -245,15 +319,33 @@ matcher = PatternFilePathMatcher(
 )
 ```
 
-Directory traversal honors negations correctly: a directory excluded by a normal pattern is still traversed when a `!` pattern could match its contents, so the kept paths inside it are reachable.
+</Lang>
 
-The Rust matcher reads the same `!` negations from its `excluded` patterns, and traverses directories the same way.
+<Lang only="rust">
+
+```rust
+// Exclude all dot-entries, but keep .github through
+let matcher = PatternFilePathMatcher::new(
+    std::iter::empty::<&str>(),
+    [
+        "**/.*",          // exclude all dot-files and dot-directories
+        "!**/.github/**", // …except anything under .github
+    ],
+)?;
+```
+
+</Lang>
+
+Directory traversal honors negations correctly: a directory excluded by a normal pattern is still traversed when a `!` pattern could match its contents, so the kept paths inside it are reachable.
 
 ## Chunk
 
-The chunk module (`cocoindex.resources.chunk`) defines types for representing text chunks produced by [text splitters](../ops/text).
+The chunk module (<Lang only="python">`cocoindex.resources.chunk`</Lang><Lang only="rust">`cocoindex::resources::chunk`</Lang>) defines types for representing text chunks produced by [text splitters](../ops/text).
 
 ### Chunk
+
+<Lang only="python">
+
 A `Chunk` is a frozen dataclass representing a piece of text with its position information in the original document.
 
 ```python
@@ -266,20 +358,52 @@ from cocoindex.resources.chunk import Chunk
 - `start` (`TextPosition`) — Start position in the original text.
 - `end` (`TextPosition`) — End position in the original text.
 
-The Rust `Chunk` (`cocoindex::resources::chunk::Chunk`, in the prelude) has the public fields `start` and `end`, but it does not own its text. It keeps the byte range: `chunk.range()` returns it, and `chunk.text(&source)` returns the slice of the original string. Chunking a large document therefore does not copy its contents.
+</Lang>
+
+<Lang only="rust">
+
+A `Chunk` (in the prelude) represents a piece of text with its position information in the original document.
+
+```rust
+use cocoindex::resources::chunk::Chunk;
+```
+
+**Fields and methods:**
+
+- `start` (`TextPosition`) — Start position in the original text.
+- `end` (`TextPosition`) — End position in the original text.
+- `range()` — The byte range of the chunk in the original text.
+- `text(&source)` — The text content of the chunk: the slice of the original string.
+
+</Lang>
+
+<RustNote>
+A `Chunk` does not own its text. It keeps the byte range, and `chunk.text(&source)` slices the original string, so chunking a large document does not copy its contents.
+</RustNote>
 
 ### TextPosition
 
-A frozen dataclass representing a position in text.
+<Lang only="python">A frozen dataclass representing a position in text.</Lang><Lang only="rust">A struct representing a position in text.</Lang>
 
 **Fields:**
+
+<Lang only="python">
 
 - `byte_offset` (`int`) — Byte offset from the start of the text.
 - `char_offset` (`int`) — Character offset from the start of the text.
 - `line` (`int`) — 1-based line number.
 - `column` (`int`) — 1-based column number.
 
-In Rust, `TextPosition` has the same four fields: `byte_offset` and `char_offset` are `usize`, `line` and `column` are `u32`.
+</Lang>
+
+<Lang only="rust">
+
+- `byte_offset` (`usize`) — Byte offset from the start of the text.
+- `char_offset` (`usize`) — Character offset from the start of the text.
+- `line` (`u32`) — 1-based line number.
+- `column` (`u32`) — 1-based column number.
+
+</Lang>
 
 **Example:**
 
@@ -324,9 +448,19 @@ for chunk in &chunks {
 
 ## Embedder
 
-The embedder module (`cocoindex.resources.embedder`) defines a protocol for single-text async embedding.
+The embedder module (<Lang only="python">`cocoindex.resources.embedder`</Lang><Lang only="rust">`cocoindex::resources::embedder`</Lang>) defines a <Lang only="python">protocol</Lang><Lang only="rust">trait</Lang> for single-text async embedding.
+
+<Lang only="python">
 
 ### Embedder Protocol
+
+</Lang>
+
+<Lang only="rust">
+
+### Embedder trait
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/resources/embedder.rs (trait definition) */}
 <LangTabs>
@@ -351,14 +485,24 @@ pub trait Embedder: Send + Sync {
 }
 ```
 
-The Rust trait takes the `Ctx` explicitly, so an implementation can memoize each text and batch concurrent calls through the engine. The two built-in embedders, [`SentenceTransformerEmbedder`](../ops/sentence_transformers) and [`ApiEmbedder`](../ops/litellm), do both.
-
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 This is the call-site contract that consumers like [`resolve_entities`](../ops/entity_resolution) rely on. Both [`LiteLLMEmbedder`](../ops/litellm) and [`SentenceTransformerEmbedder`](../ops/sentence_transformers) satisfy this protocol — `await embedder.embed("some text")` returns a single `NDArray[np.float32]`.
 
 The protocol is deliberately narrow: it does not include `dimension()` or `__coco_vector_schema__()`, which are concerns of connectors and table-schema creation, not of embedding consumers.
+
+</Lang>
+
+<Lang only="rust">
+
+This is the call-site contract that consumers like [`resolve_entities`](../ops/entity_resolution) rely on. Both [`SentenceTransformerEmbedder`](../ops/sentence_transformers) and [`ApiEmbedder`](/docs/rust/ops/model_apis/) implement this trait — `embedder.embed(ctx, "some text").await?` returns a single `Vec<f32>`.
+
+The trait takes the `Ctx` explicitly, so an implementation can memoize each text and batch concurrent calls through the engine; the two built-in embedders do both. The trait is deliberately narrow: it does not include the vector dimension or vector schema, which are concerns of connectors and table-schema creation, not of embedding consumers.
+
+</Lang>
 
 {/* Rust: examples/rust/conversation_to_knowledge/src/pipeline.rs (resolve_entities) */}
 <LangTabs>
@@ -394,7 +538,11 @@ let resolved = entity_resolution::resolve_entities(
 .await?;
 ```
 
-`resolve_entities` takes an `EntityEmbedder`. Every `Embedder` is one through a blanket implementation, so a `SentenceTransformerEmbedder`, an `ApiEmbedder` or your own type works as is.
-
 </Fragment>
 </LangTabs>
+
+<Lang only="rust">
+
+`resolve_entities` takes an `EntityEmbedder`. Every `Embedder` is one through a blanket implementation, so a `SentenceTransformerEmbedder`, an `ApiEmbedder` or your own type works as is.
+
+</Lang>

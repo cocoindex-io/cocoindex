@@ -11,12 +11,11 @@ fn init_runtime() -> Runtime {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::registry()
         // Logs go to stderr, so they never mix into piped stdout, and are
-        // colored only when stderr is a terminal.
-        .with(
-            fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr())),
-        )
+        // colored only when stderr is a terminal and `NO_COLOR` is off.
+        .with(fmt::layer().with_writer(std::io::stderr).with_ansi(
+            std::io::IsTerminal::is_terminal(&std::io::stderr())
+                && crate::engine::progress_display::color_enabled(),
+        ))
         .with(env_filter)
         .try_init();
 

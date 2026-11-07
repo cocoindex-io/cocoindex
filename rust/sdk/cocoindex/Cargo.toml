@@ -4,6 +4,52 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Declarative, incremental data pipelines: declare target states as a function of sources and CocoIndex keeps them in sync with minimal recomputation"
+readme = "README.md"
+repository = "https://github.com/cocoindex-io/cocoindex"
+homepage = "https://cocoindex.io"
+documentation = "https://docs.rs/cocoindex"
+keywords = ["incremental", "etl", "indexing", "pipeline", "embeddings"]
+categories = ["database", "asynchronous", "data-structures"]
+# The crate's own sources and docs. `tests/`, `benches/` and the showcase are
+# left out of the package: the tests need the workspace's fixtures and
+# services, and the benches need `bench-support`.
+include = ["/src", "/README.md", "/Cargo.toml"]
+
+[package.metadata.docs.rs]
+# Every feature whose build needs no network access (docs.rs blocks it). Left
+# out: `fastembed` (the ONNX Runtime binary is downloaded by `ort-sys`' build
+# script), `zvec` (`zvec-rust-sys` downloads the prebuilt `libzvec_c_api`) and
+# `bench-support` (internal hooks). `qdrant` needs `protoc`, which the docs.rs
+# build image ships.
+features = [
+    "fs_live",
+    "text",
+    "code_match",
+    "chrono",
+    "rust_decimal",
+    "embed_api",
+    "postgres",
+    "sqlite",
+    "doris",
+    "surrealdb",
+    "kafka",
+    "iggy",
+    "amazon_s3",
+    "google_drive",
+    "oci_object_storage",
+    "azure_blob",
+    "lancedb",
+    "qdrant",
+    "turbopuffer",
+    "bigquery",
+    "snowflake",
+    "neo4j",
+    "falkordb",
+    "valkey",
+    "testing",
+]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Live LocalFS directory watching (`fs::DirWalker::live`), via the `notify`
@@ -149,12 +195,17 @@ valkey = ["dep:redis", "redis/tokio-native-tls-comp"]
 # Zvec embedded vector-database target, through the `zvec-rust` bindings to the
 # zvec C API. Its build script downloads the prebuilt `libzvec_c_api`.
 zvec = ["dep:zvec-rust", "dep:base64", "chrono", "rust_decimal"]
+# Test helpers (`cocoindex::testing`): an `Environment` on a temporary
+# database path that is removed on drop. Pulls in `tempfile`.
+testing = ["dep:tempfile"]
 # Extra core store hooks for the `state_store_read` bench (its
 # `required-features`). Never enabled by production dependents.
 bench-support = ["cocoindex_core/bench-support"]
 
 [dependencies]
-cocoindex_macros = { path = "../cocoindex_macros" }
+cocoindex_macros = { path = "../cocoindex_macros", version = "0.1.0" }
+# Temporary database directories for `cocoindex::testing` (feature `testing`).
+tempfile = { version = "3", optional = true }
 cocoindex_core = { path = "../../core", package = "cocoindex_core" }
 cocoindex_utils = { path = "../../utils", package = "cocoindex_utils" }
 # Language registry + shared `CodeSource` handle (`ops::text`, `ops::code`).
@@ -297,3 +348,25 @@ required-features = ["bench-support"]
 [[bench]]
 name = "entity_resolution"
 harness = false
+
+# These tests build their environment with `cocoindex::testing`, so they need
+# the `testing` feature; without it Cargo skips them instead of failing to
+# compile (`cargo check --all-targets` with no features). A self
+# dev-dependency would enable the feature too, but it links the crate twice
+# into its own unit tests and breaks the `linkme` registry (duplicate
+# `COCO_FN_LOGIC`).
+[[test]]
+name = "batching_runner"
+required-features = ["testing"]
+
+[[test]]
+name = "deadline"
+required-features = ["testing"]
+
+[[test]]
+name = "detailed_stats"
+required-features = ["testing"]
+
+[[test]]
+name = "mount"
+required-features = ["testing"]

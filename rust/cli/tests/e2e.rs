@@ -528,6 +528,28 @@ fn interrupt_slow_lifespan(verb: &[&str]) {
     );
 }
 
+/// A failure inside a stats group reaches the final status, though the group's
+/// rows stay out of the report, and its engine log comes through on stderr.
+#[test]
+fn a_failure_in_a_stats_group_fails_the_final_status() {
+    let sb = Sandbox::new(&[("a.txt", "alpha")]);
+    let output = Command::new(env!("CARGO_BIN_EXE_cocoindex"))
+        .args(["update", &exe_target("FixtureApp")])
+        .current_dir(sb.dir.path())
+        .env("COCOINDEX_DB", sb.path("db"))
+        .env("FIXTURE_SRC", sb.path("src"))
+        .env("FIXTURE_OUT", sb.path("out"))
+        .env("FIXTURE_FAIL_IN_GROUP", "1")
+        .env_remove("RUST_LOG")
+        .output()
+        .unwrap();
+    assert_ok(&output);
+    let text = stdout(&output);
+    assert!(text.contains("✗ Done in"), "{text}");
+    assert!(text.contains("1 failed"), "{text}");
+    assert!(stderr(&output).contains("fixture: boom"));
+}
+
 /// The binary's own `main` still runs, and its error (a `Debug`-only type, as
 /// a plain `main` allows) becomes exit status 1.
 #[test]

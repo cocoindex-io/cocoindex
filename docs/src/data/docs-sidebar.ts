@@ -1,7 +1,11 @@
 // V1 docs sidebar — mirrors ../docs/sidebars.ts from the Docusaurus source
 // on the v1 branch. Hand-maintained; update alongside `npm run port` when
 // the upstream tree changes. `slug` values must match Astro's URL shape
-// for each file under src/content/docs/ (no extension; `/index` stripped).
+// for each file under src/content/docs/ (no extension; `/index` stripped), or
+// its frontmatter `route`. The tree is shared by both languages; each
+// language's sidebar keeps only the pages in its tree (src/lib/lang.ts
+// sidebarFor), so a slot such as getting_started/quickstart shows the Python
+// page in /docs/ and the Rust page in /docs/rust/.
 
 export interface SidebarDoc {
   type: 'doc';
@@ -27,7 +31,6 @@ export const sidebar: SidebarItem[] = [
       { type: 'doc', slug: 'getting_started/overview', label: 'Overview' },
       { type: 'doc', slug: 'getting_started/installation', label: 'Installation' },
       { type: 'doc', slug: 'getting_started/quickstart', label: 'Quickstart' },
-      { type: 'doc', slug: 'getting_started/rust_quickstart', label: 'Rust SDK quickstart' },
       { type: 'doc', slug: 'getting_started/ai_coding_agents', label: 'Use with AI coding agents' },
     ],
   },
@@ -94,6 +97,7 @@ export const sidebar: SidebarItem[] = [
       { type: 'doc', slug: 'ops', label: 'Overview' },
       { type: 'doc', slug: 'ops/entity_resolution', label: 'Entity resolution' },
       { type: 'doc', slug: 'ops/litellm', label: 'LiteLLM' },
+      { type: 'doc', slug: 'ops/model_apis', label: 'Model APIs' },
       { type: 'doc', slug: 'ops/sentence_transformers', label: 'Sentence transformers' },
       { type: 'doc', slug: 'ops/text', label: 'Text ops' },
     ],
@@ -115,7 +119,6 @@ export const sidebar: SidebarItem[] = [
     ],
   },
   { type: 'doc', slug: 'cli', label: 'CLI Reference' },
-  { type: 'doc', slug: 'cli_rust', label: 'CLI for Rust projects' },
   { type: 'doc', slug: 'faq', label: 'FAQ' },
   {
     type: 'category',

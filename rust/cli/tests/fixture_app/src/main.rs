@@ -39,6 +39,17 @@ async fn fixture_app(ctx: Ctx) -> Result<()> {
         target.declare_file(&ctx, name, text.as_bytes())?;
     }
     println!("fixture: processed {count}");
+    // `FIXTURE_FAIL_IN_GROUP` fails a background component inside a stats group:
+    // the run itself still succeeds.
+    if std::env::var_os("FIXTURE_FAIL_IN_GROUP").is_some() {
+        ctx.stats_group("Failing", |group_ctx, _handle| async move {
+            group_ctx
+                .mount("boom", |_ctx| async { Err(Error::engine("fixture: boom")) })
+                .await?;
+            Ok::<_, Error>(())
+        })
+        .await?;
+    }
     Ok(())
 }
 

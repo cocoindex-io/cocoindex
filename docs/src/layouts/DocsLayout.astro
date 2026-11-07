@@ -9,7 +9,7 @@ import MermaidRenderer from '../components/MermaidRenderer.astro';
 import Analytics from '../components/Analytics.astro';
 import ScarfPixel from '../components/ScarfPixel.astro';
 import Foot from '../components/Foot.astro';
-import { THEME_COLOR, SITE_URL, titleMarkup, pageUrl, pageMarkdownUrl, SKILL_MD_URL, DOCS_EDIT_BASE, SCARF_PIXEL_ID, OG_IMAGE_DOCS, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_DOCS_ALT } from '../consts';
+import { THEME_COLOR, SITE_URL, titleMarkup, SKILL_MD_URL, DOCS_EDIT_BASE, SCARF_PIXEL_ID, OG_IMAGE_DOCS, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_DOCS_ALT } from '../consts';
 import { skillReferenceNames } from '../lib/skill-files';
 import ICON_COPY from '../icons/copy.svg?raw';
 import ICON_EXT from '../icons/external.svg?raw';
@@ -17,6 +17,7 @@ import ICON_CHATGPT from '../icons/chatgpt.svg?raw';
 import ICON_CLAUDE from '../icons/claude.svg?raw';
 import { flatten, sidebar, type SidebarItem } from '../data/docs-sidebar';
 import { docsVersion, reviewedDate } from '../data/review-meta';
+import { DEFAULT_LANG, LANG_LABEL, langHref, langMarkdownHref, langPageUrl, pageRegistry, sidebarFor, type Lang } from '../lib/lang';
 
 export interface IntroMeta {
   time?: string;
@@ -36,6 +37,11 @@ export interface Props {
   sourcePath?: string;
   /** Per-page intro-meta strip (Time / Language / Requires) from frontmatter. */
   introMeta?: IntroMeta;
+  /** SDK language of the page: Python at /docs/<slug>/, Rust at /docs/rust/<slug>/. */
+  lang?: Lang;
+  /** The page reads the same in both languages: the Rust copy's canonical is
+   *  the Python URL (frontmatter `neutral: true`). */
+  neutral?: boolean;
 }
 
 const {
@@ -46,7 +52,11 @@ const {
   headings,
   sourcePath,
   introMeta,
+  lang = DEFAULT_LANG,
+  neutral = false,
 } = Astro.props;
+const reg = await pageRegistry();
+const langSidebar = sidebarFor(sidebar, lang, reg);
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 const renderedTitle = titleMarkup(titleMarkupRaw ?? title);
@@ -66,16 +76,19 @@ const introItems = [
   { k: 'Version',       v: version,             reviewed: false },
   { k: 'Last reviewed', v: lastReviewed,        reviewed: true  },
 ].filter((m) => m.v);
-const canonical = pageUrl(slug);
-const docsHome = new URL(`${base}/`, SITE_URL).toString();
+// This page's own URL; a language-neutral Rust copy points search engines at
+// the Python URL instead.
+const ownUrl = langPageUrl(lang, slug);
+const canonical = lang !== DEFAULT_LANG && neutral ? langPageUrl(DEFAULT_LANG, slug) : ownUrl;
+const docsHome = langPageUrl(lang, '');
 const ogImage = OG_IMAGE_DOCS;
 
 // Contextual menu ("use this page with AI"): the raw-Markdown twin plus
 // one-click deep links that open ChatGPT/Claude with this page preloaded as
 // context. We pass the .md URL (not the inlined body) so it stays token-light
 // and always current. Mirrors Mintlify's contextual menu.
-const mdHref = `${base}/${slug}.md`;
-const mdAbs = pageMarkdownUrl(slug);
+const mdHref = langMarkdownHref(lang, slug);
+const mdAbs = new URL(mdHref, SITE_URL).toString();
 const aiPrompt =
   `Read ${mdAbs} — it is the raw Markdown for the CocoIndex (v1) docs page ` +
   `"${title}". Use it as context for my questions. Note: CocoIndex v1 is a ` +
@@ -98,7 +111,7 @@ function findPath(items: SidebarItem[], acc: Array<{ label: string; href?: strin
       return [...acc, { label: item.label ?? slug }];
     }
     if (item.type === 'category') {
-      const next = [...acc, { label: item.label, href: item.slug ? `${base}/${item.slug}/` : undefined }];
+      const next = [...acc, { label: item.label, href: item.slug ? langHref(lang, item.slug) : undefined }];
       if (item.slug === slug) return next;
       const down = findPath(item.items, next);
       if (down) return down;
@@ -106,10 +119,10 @@ function findPath(items: SidebarItem[], acc: Array<{ label: string; href?: strin
   }
   return null;
 }
-const crumbs = findPath(sidebar) ?? [{ label: title }];
+const crumbs = findPath(langSidebar) ?? [{ label: title }];
 
 // Prev/next pager — drawn from the flat sidebar order.
-const flat = flatten();
+const flat = flatten(langSidebar);
 const i = flat.findIndex((e) => e.slug === slug);
 const prev = i > 0 ? flat[i - 1] : null;
 const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
@@ -136,14 +149,14 @@ const breadcrumbLd = {
       '@type': 'ListItem',
       position: idx + 2,
       name: c.label,
-      item: c.href ? new URL(c.href, SITE_URL).toString() : canonical,
+      item: c.href ? new URL(c.href, SITE_URL).toString() : ownUrl,
     })),
   ],
 };
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="en" data-docs-lang={lang}>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -163,7 +176,7 @@ const breadcrumbLd = {
     <meta property="og:site_name" content="CocoIndex Docs" />
     <meta property="og:title" content={fullTitle} />
     {description && <meta property="og:description" content={description} />}
-    <meta property="og:url" content={canonical} />
+    <meta property="og:url" content={ownUrl} />
     <meta property="og:image" content={ogImage} />
     <meta property="og:image:width" content={OG_IMAGE_WIDTH} />
     <meta property="og:image:height" content={OG_IMAGE_HEIGHT} />
@@ -184,16 +197,16 @@ const breadcrumbLd = {
   <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
     <Topbar mobileSheetId="mobileSheet" />
-    <MobileSheet currentSlug={slug} headings={headings} />
+    <MobileSheet currentSlug={slug} headings={headings} lang={lang} sidebarItems={langSidebar} />
     <MermaidRenderer />
 
     <div class="layout">
-      <Sidebar currentSlug={slug} />
+      <Sidebar currentSlug={slug} lang={lang} />
 
       <main class="content" id="main-content" tabindex="-1">
         <div class="page-head">
         <nav class="breadcrumb" aria-label="Breadcrumb">
-          <a href={`${base}/`}>Docs</a>
+          <a href={langHref(lang, '')}>Docs</a>
           {crumbs.map((c, idx) => (
             <>
               <span class="sep" aria-hidden="true">/</span>
@@ -206,6 +219,7 @@ const breadcrumbLd = {
               )}
             </>
           ))}
+          <span class={`sdk-badge ${lang}`}>{LANG_LABEL[lang]} SDK</span>
         </nav>
 
         <div class="ai-actions">
@@ -312,13 +326,13 @@ const breadcrumbLd = {
         {(prev || next) && (
           <div class="pager">
             {prev ? (
-              <a href={`${base}/${prev.slug}/`}>
+              <a href={langHref(lang, prev.slug)}>
                 <span class="dir">Previous</span>
                 <span class="ttl">{prev.label ?? prev.slug}</span>
               </a>
             ) : <span />}
             {next ? (
-              <a class="next" href={`${base}/${next.slug}/`}>
+              <a class="next" href={langHref(lang, next.slug)}>
                 <span class="dir">Next</span>
                 <span class="ttl">{next.label ?? next.slug}</span>
               </a>

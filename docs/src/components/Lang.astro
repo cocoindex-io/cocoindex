@@ -1,0 +1,17 @@
+---
+// Content for one SDK language: renders its children only on that language's
+// page (/docs/<slug>/ is Python, /docs/rust/<slug>/ is Rust). Works inline
+// ("decorate it with <Lang only="python">`@coco.fn`</Lang><Lang
+// only="rust">`#[cocoindex::function]`</Lang>") and around blocks (put blank
+// lines inside the tags). Headings inside stay out of the other language's
+// table of contents and its raw-Markdown twin. Do not nest Lang in Lang.
+// Authoring contract: docs/CONTENT_LANGUAGES.md.
+import { currentLang, type Lang } from '../lib/lang';
+
+interface Props {
+  only: Lang;
+}
+const { only } = Astro.props;
+const show = currentLang(Astro) === only;
+---
+{show && <slot />}

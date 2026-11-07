@@ -129,6 +129,16 @@ const available = !!APP_ID && !!API_KEY;
           indexName: cfg.INDEX,
           container: host,
           hitComponent: accessibleSearchHit,
+          // One SDK language per tree: a page in /docs/rust/ searches the
+          // Rust pages, any other page the Python ones. The language comes
+          // from <html data-docs-lang> (DocsLayout). Until the crawler has
+          // indexed /docs/rust/, a Rust search falls back to all hits.
+          transformItems: (items) => {
+            const rust = document.documentElement.dataset.docsLang === 'rust';
+            const inRust = (url: string) => /\/docs\/rust\//.test(url);
+            const mine = items.filter((it) => inRust(it.url) === rust);
+            return rust && mine.length === 0 ? items : mine;
+          },
         });
         installSearchAccessibility(host, () => {
           const target = returnTo;

@@ -31,6 +31,8 @@ The module is compiled with the `sqlite` Cargo feature of the `cocoindex` crate.
 </LangTabs>
 
 :::note[Vector Support]
+<Lang only="python">
+
 For vector operations, install the sqlite-vec extension:
 
 ```bash
@@ -38,13 +40,31 @@ pip install cocoindex[sqlite]
 ```
 
 Note: The default SQLite library bundled with macOS does not support extensions. Use Homebrew Python (`brew install python`) or build SQLite with extension support.
+
+</Lang>
+<Lang only="rust">
+
+For vector operations, have the sqlite-vec loadable library (`vec0`) on disk and name it when you connect, with `Database::connect_with_vec`.
+
+</Lang>
 :::
 
 ## Connection setup
 
+<Lang only="python">
+
 ### connect
 
 `connect()` creates a managed SQLite connection with sensible defaults, including automatic sqlite-vec loading and thread-safe access.
+
+</Lang>
+<Lang only="rust">
+
+### Database::connect
+
+`Database::connect()` opens a SQLite connection pool with sensible defaults. `connect_with_vec()` also loads sqlite-vec.
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/sqlite.rs */}
 <LangTabs>
@@ -67,15 +87,21 @@ def connect(
 impl Database {
     pub async fn connect(path: &str) -> Result<Self>
     pub async fn connect_with_vec(path: &str, vec_extension: &str) -> Result<Self>
+    pub async fn connect_with_options(path: &str, options: ConnectOptions) -> Result<Self>
     pub fn from_pool(state_id: impl Into<String>, pool: SqlitePool) -> Self
     pub fn pool(&self) -> &SqlitePool
 }
-```
 
-`Database::connect(path)` opens the file, creating it when missing, through an [`sqlx`](https://docs.rs/sqlx) pool of one connection. `connect_with_vec(path, vec_extension)` also loads the `sqlite-vec` extension and fails when it cannot be loaded; `vec_extension` names the loadable library, as a path or a bare name such as `"vec0"`. The Rust SDK has no `load_vec="auto"`: a Rust build has no `sqlite-vec` package to find the library in, so the caller names it. `timeout` and `**kwargs` have no counterpart; build a `SqlitePool` yourself and wrap it with `from_pool` for other options.
+pub struct ConnectOptions {
+    pub busy_timeout: Duration,          // default DEFAULT_BUSY_TIMEOUT (5 seconds)
+    pub vec_extension: Option<String>,   // default None
+}
+```
 
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 **Parameters:**
 
@@ -89,9 +115,26 @@ impl Database {
 
 **Returns:** A `ManagedConnection` with thread-safe access and extension tracking.
 
+</Lang>
+<Lang only="rust">
+
+**Parameters:**
+
+- `path` — Path to the SQLite database file. The file is created when it is missing.
+- `vec_extension` (`connect_with_vec`, `ConnectOptions`) — The sqlite-vec loadable library, as a path with or without the platform suffix, or a bare name such as `"vec0"` to search the system library path. Connecting fails when the library cannot be loaded.
+- `busy_timeout` (`ConnectOptions`) — How long to wait for a lock held by another connection or process. The default is five seconds.
+
+**Returns:** A `Database`, an [`sqlx`](https://docs.rs/sqlx) pool of one connection. It is cheap to clone.
+
+</Lang>
+
+<RustNote>
+There is no `load_vec="auto"`: a Rust build has no `sqlite-vec` package to find the library in, so you name the library. To set other connection options, build a `SqlitePool` yourself and wrap it with `Database::from_pool(state_id, pool)`.
+</RustNote>
+
 **Example:**
 
-{/* Rust: examples/rust/files_to_sqlite/src/main.rs, rust/sdk/SHOWCASE.md (verified against sqlite.rs) */}
+{/* Rust: examples/rust/files_to_sqlite/src/main.rs, rust/sdk/SHOWCASE.md, rust/sdk/cocoindex/tests/sqlite_target.rs (verified against sqlite.rs) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -112,16 +155,25 @@ managed_conn = sqlite.connect("mydb.sqlite", load_vec=False)
 let db = sqlite::Database::connect(&db_path).await?;
 // With vector support, naming the sqlite-vec library:
 let db = sqlite::Database::connect_with_vec("app.db", "/usr/local/lib/vec0").await?;
+// With a lock wait other than five seconds:
+let db = sqlite::Database::connect_with_options(
+    "app.db",
+    sqlite::ConnectOptions {
+        busy_timeout: std::time::Duration::from_millis(1234),
+        vec_extension: None,
+    },
+)
+.await?;
 ```
 
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 ### ManagedConnection
 
 A wrapper around `sqlite3.Connection` that provides thread-safe access and tracks loaded extensions. The connection uses autocommit mode internally.
-
-The Rust counterpart is `sqlite::Database`. It has no `transaction()`, `readonly()` or `loaded_extensions`: use `db.pool()` (an `sqlx::SqlitePool`) to run your own queries, and drop the `Database` to close it.
 
 **Methods:**
 
@@ -133,6 +185,20 @@ The Rust counterpart is `sqlite::Database`. It has no `transaction()`, `readonly
 
 - `loaded_extensions` — A read-only `Set[str]` of loaded extension names (e.g., `"sqlite-vec"`).
 
+</Lang>
+<Lang only="rust">
+
+### Database
+
+`sqlite::Database` is a pool that holds one connection, because SQLite is a single-writer engine. The pool serializes the statements that run on it. To run your own SQL on the same database, use `db.pool()`, an `sqlx::SqlitePool`:
+
+- `db.pool().begin()` starts a transaction for writes that must be atomic.
+- `db.pool()` runs a read directly.
+
+Drop the last clone of the `Database` to close it.
+
+</Lang>
+
 ## As target
 
 The `sqlite` connector provides target state APIs for writing rows to tables. With it, CocoIndex tracks what rows should exist and automatically handles upserts and deletions.
@@ -141,7 +207,16 @@ The `sqlite` connector provides target state APIs for writing rows to tables. Wi
 
 #### Setting up a connection
 
+<Lang only="python">
+
 Create a `ContextKey[sqlite.ManagedConnection]` to identify your SQLite connection, then provide it in your lifespan using `sqlite.managed_connection()`:
+
+</Lang>
+<Lang only="rust">
+
+Declare a context key for a `sqlite::Database` to identify your SQLite connection, then provide the connection on the environment builder:
+
+</Lang>
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
@@ -209,6 +284,21 @@ def declare_table_target(
 <Fragment slot="rust">
 
 ```rust
+pub fn declare_table_target(
+    ctx: &Ctx,
+    db: &ContextKey<Database>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+) -> Result<TableTarget>
+
+pub fn declare_table_target_with_options(
+    ctx: &Ctx,
+    db: &ContextKey<Database>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    options: SqliteTableOptions,
+) -> Result<TableTarget>
+
 pub async fn mount_table_target(
     ctx: &Ctx,
     db: &ContextKey<Database>,
@@ -230,20 +320,29 @@ pub struct SqliteTableOptions {
 }
 ```
 
-`declare_table_target` and `declare_table_target_with_options` have the same arguments and return a handle whose rows resolve when the current component commits. `managed_by` and `virtual_table_def` go in `SqliteTableOptions`.
+`declare_table_target*` returns a handle whose rows resolve when the current component commits. `mount_table_target*` mounts the table first, so you can declare rows at once. `table_target` and `table_target_with_options` build the table target state without declaring it, to compose with other target states. `managed_by` and `virtual_table_def` go in `SqliteTableOptions`.
 
 </Fragment>
 </LangTabs>
 
 **Parameters:**
 
-- `db` — A `ContextKey[ManagedConnection]` identifying the connection to use.
+- `db` — <Lang only="python">A `ContextKey[ManagedConnection]`</Lang><Lang only="rust">A `&ContextKey<Database>`</Lang> identifying the connection to use.
 - `table_name` — Name of the table.
-- `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-python-class)).
-- `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
+- `table_schema` — Schema definition including columns and primary key (see <Lang only="python">[Table Schema](#table-schema-from-python-class)</Lang><Lang only="rust">[Table Schema](#table-schema-from-a-rust-struct)</Lang>).
+- `managed_by` — Whether CocoIndex manages the table lifecycle (<Lang only="python">`"system"`</Lang><Lang only="rust">`ManagedBy::System`, the default</Lang>) or assumes it exists (<Lang only="python">`"user"`</Lang><Lang only="rust">`ManagedBy::User`</Lang>).
 - `virtual_table_def` — Optional `Vec0TableDef` to create a vec0 virtual table instead of a regular table.
 
+<Lang only="python">
+
 **Returns:** A pending `TableTarget`. Use the convenience wrapper `await sqlite.mount_table_target(SQLITE_DB, table_name, table_schema)` to resolve.
+
+</Lang>
+<Lang only="rust">
+
+**Returns:** A `TableTarget`. As an argument of `mount_each!` or `use_mount!`, it fingerprints by its table name; the schema is not part of the component memo.
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/tests/sqlite_target.rs */}
 <LangTabs>
@@ -309,11 +408,37 @@ table.declare_row(ctx, &row)?;
 
 **Parameters:**
 
-- `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns with non-`None` values. Dict rows may omit nullable non-primary-key columns; omitted values are written as SQL `NULL`. In Rust, any `Serialize` value whose fields match the schema's columns.
+<Lang only="python">
+
+- `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns with non-`None` values. Dict rows may omit nullable non-primary-key columns; omitted values are written as SQL `NULL`.
+
+</Lang>
+<Lang only="rust">
+
+- `row` — Any `Serialize` value that serializes to an object whose entries are the table's columns. Extra entries are ignored, and missing ones are written as SQL `NULL`. Each value is bound by its column's declared type.
+
+</Lang>
+
+<Lang only="rust">
+
+A batch of row changes is written in one transaction, in a few statements: a regular table takes multi-row `VALUES` upserts and `IN` deletes with bound parameters, as many rows per statement as SQLite's bind limit allows. A `vec0` table takes one row per statement.
+
+</Lang>
+
+<Lang only="python">
 
 ### Table schema: from Python class
 
 Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
+
+</Lang>
+<Lang only="rust">
+
+### Table schema: from a Rust struct
+
+Define the table structure using a Rust struct that derives `SchemaFields`:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/sqlite.rs */}
 <LangTabs>
@@ -349,16 +474,31 @@ impl TableSchema {
 }
 ```
 
-The Rust row type is a struct that derives `SchemaFields` (and `Serialize`). Python's `column_overrides` become builder calls on the derived schema.
+The row type also derives `Serialize`, so that its values can be declared as rows.
 
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 **Parameters:**
 
 - `record_type` — A record type whose fields define table columns.
 - `primary_key` — List of column names forming the primary key.
 - `column_overrides` — Optional per-column overrides for type mapping or vector configuration.
+
+</Lang>
+<Lang only="rust">
+
+**Parameters and builder methods:**
+
+- `T` — A struct that derives `SchemaFields`; its fields define table columns.
+- `primary_key` — The column names that form the primary key.
+- `with_vector_dim(field, dim)` — Sets the dimension `N` of a `float[N]` vector column.
+- `with_vector_schema(field, provider)` — Takes the dimension of a vector column from a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), typically the embedder that fills it. For an embedder held in the context, pass `ctx.get_key(&EMBEDDER)?`.
+- `with_column_type(field, sqlite_type)` — Replaces the SQLite type of one column and keeps its nullability.
+
+</Lang>
 
 **Example:**
 
@@ -407,34 +547,73 @@ let schema = sqlite::TableSchema::from_row::<DocRow>(["id"])?
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 Python types are automatically mapped to SQLite type affinities:
 
-| Python Type | Rust Type | SQLite Type |
-|-------------|-----------|-------------|
-| `bool` | `bool` | `INTEGER` (0/1) |
-| `int` | `i16`, `i32`, `i64` | `INTEGER` |
-| `float` | `f32`, `f64` | `REAL` |
-| `decimal.Decimal` | `Decimal` | `TEXT` |
-| `str` | `String` | `TEXT` |
-| `bytes` | `Vec<u8>` | `BLOB` |
-| `uuid.UUID` | `Uuid` | `TEXT` |
-| `datetime.date` | `NaiveDate` | `TEXT` (ISO format) |
-| `datetime.time` | `NaiveTime` | `TEXT` (ISO format) |
-| `datetime.datetime` | `DateTime`, `NaiveDateTime` | `TEXT` (ISO format) |
-| `datetime.timedelta` | `Duration` | `REAL` (total seconds) |
-| `list`, `dict`, nested structs | other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `TEXT` (JSON) |
-| `NDArray` (with vector schema) | `Vec<f32>` with `#[coco(vector)]` | `float[N]` (sqlite-vec type, e.g., `float[384]`) |
+| Python Type | SQLite Type |
+|-------------|-------------|
+| `bool` | `INTEGER` (0/1) |
+| `int` | `INTEGER` |
+| `float` | `REAL` |
+| `decimal.Decimal` | `TEXT` |
+| `str` | `TEXT` |
+| `bytes` | `BLOB` |
+| `uuid.UUID` | `TEXT` |
+| `datetime.date` | `TEXT` (ISO format) |
+| `datetime.time` | `TEXT` (ISO format) |
+| `datetime.datetime` | `TEXT` (ISO format) |
+| `datetime.timedelta` | `REAL` (total seconds) |
+| `list`, `dict`, nested structs | `TEXT` (JSON) |
+| `NDArray` (with vector schema) | `float[N]` (sqlite-vec type, e.g., `float[384]`) |
 
 To override the default mapping, provide a `SqliteType` or `VectorSchemaProvider` via:
 
 - **Type annotation** — using `typing.Annotated` on the field
 - **`column_overrides`** — passing overrides when constructing `TableSchema`
 
-In Rust, the field attribute `#[coco(type = "…")]` plays the role of the annotation, and `with_column_type` / `with_vector_schema` play the role of `column_overrides`.
+</Lang>
+<Lang only="rust">
+
+Rust types are automatically mapped to SQLite type affinities:
+
+| Rust Type | SQLite Type |
+|-----------|-------------|
+| `bool` | `INTEGER` (0/1) |
+| `i16`, `i32`, `i64` | `INTEGER` |
+| `f32`, `f64` | `REAL` |
+| `Decimal` | `TEXT` |
+| `String` | `TEXT` |
+| `Vec<u8>` | `BLOB` |
+| `Uuid` | `TEXT` |
+| `NaiveDate` | `TEXT` (ISO format) |
+| `NaiveTime` | `TEXT` (ISO format) |
+| `DateTime`, `NaiveDateTime` | `TEXT` (ISO format) |
+| `Duration` | `REAL` (total seconds) |
+| other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `TEXT` (JSON) |
+| `Vec<f32>` with `#[coco(vector)]` | `float[N]` (sqlite-vec type, e.g., `float[384]`) |
+
+To override the default mapping, use:
+
+- **A field attribute** — `#[coco(type = "…")]` on the field
+- **A builder method** — `with_column_type` or `with_vector_schema` on the derived schema
+
+</Lang>
+
+<Lang only="python">
 
 #### SqliteType
 
 Use `SqliteType` to specify a custom SQLite type and optional encoder:
+
+</Lang>
+<Lang only="rust">
+
+#### Custom column types
+
+Use `#[coco(type = "…")]` to specify a custom SQLite type:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/row_schema.rs, rust/sdk/SHOWCASE.md (verified against sqlite.rs) */}
 <LangTabs>
@@ -454,7 +633,7 @@ class MyRow:
 Or via `column_overrides`:
 
 ```python
-schema = sqlite.TableSchema(
+schema = await sqlite.TableSchema.from_class(
     MyRow,
     primary_key=["id"],
     column_overrides={
@@ -485,14 +664,23 @@ let schema = sqlite::TableSchema::from_row::<DocEmbedding>(["id"])?
     .with_column_type("text", "VARCHAR(2000)")?;
 ```
 
-Python's encoder has no counterpart: a Rust row is encoded by its `Serialize` impl, so put `#[serde(serialize_with = "…")]` on the field.
+A row is encoded by its `Serialize` impl. The defaults of `uuid`, `chrono` and `rust_decimal` serialize to the text these columns take, and a collection serializes to JSON text. For another form, put `#[serde(serialize_with = "…")]` on the field.
 
 </Fragment>
 </LangTabs>
 
 #### VectorSchemaProvider
 
+<Lang only="python">
+
 For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider) annotation specifies the vector dimension and dtype. Vectors are stored as BLOBs in sqlite-vec compatible float32 format. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
+
+</Lang>
+<Lang only="rust">
+
+For a `Vec<f32>` field marked `#[coco(vector)]`, pass a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider) to `with_vector_schema` to set the vector dimension. sqlite-vec columns are `float[N]` whatever the element type. Vectors are stored as BLOBs in sqlite-vec compatible float32 format.
+
+</Lang>
 
 ### Table schema: explicit column definitions
 
@@ -574,7 +762,7 @@ The `vec0` module from sqlite-vec provides optimized vector storage for similari
 
 - Exactly one `INTEGER` primary key column
 - At least one `float[N]` vector column
-- The sqlite-vec extension must be loaded (`load_vec=True`)
+- The sqlite-vec extension must be loaded (<Lang only="python">`load_vec=True`</Lang><Lang only="rust">`Database::connect_with_vec`</Lang>)
 
 #### Vec0TableDef
 
@@ -615,7 +803,16 @@ pub struct Vec0TableDef {
 
 #### Creating vec0 virtual tables
 
+<Lang only="python">
+
 Pass `virtual_table_def` to `declare_table_target()`:
+
+</Lang>
+<Lang only="rust">
+
+Set `virtual_table_def` in the `SqliteTableOptions` of `declare_table_target_with_options()` or `mount_table_target_with_options()`:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/tests/sqlite_target.rs */}
 <LangTabs>
@@ -813,7 +1010,12 @@ See `examples/rust/files_to_sqlite` for the full program.
 
 ### Example: Vec0 Virtual Table
 
-For Rust, see the `vec0` snippet under [Creating vec0 virtual tables](#creating-vec0-virtual-tables): `connect_with_vec`, then `mount_table_target_with_options` with a `Vec0TableDef`.
+<Lang only="rust">
+
+See the `vec0` snippet under [Creating vec0 virtual tables](#creating-vec0-virtual-tables): `connect_with_vec`, then `mount_table_target_with_options` with a `Vec0TableDef`. `rust/sdk/cocoindex/tests/sqlite_target.rs` has the full program, which also searches the table.
+
+</Lang>
+<Lang only="python">
 
 ```python
 import cocoindex as coco
@@ -875,3 +1077,5 @@ async def app_main() -> None:
     for doc in docs:
         table.declare_row(row=doc)
 ```
+
+</Lang>

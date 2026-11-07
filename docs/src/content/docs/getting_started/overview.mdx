@@ -1,5 +1,9 @@
 ---
 title: CocoIndex *overview*
+rust_description: >
+  CocoIndex is a real-time data transformation framework for AI with incremental processing,
+  with a Rust SDK that builds pipelines into your own binary: only the data that actually
+  changed is reprocessed, and lineage is observable end to end.
 description: >
   CocoIndex is a real-time data transformation framework for AI with incremental processing:
   only the data that actually changed is reprocessed, lineage is observable end to end,
@@ -19,11 +23,24 @@ If you've used React, spreadsheets, or materialized views, this will feel famili
 ## CocoIndex features
 
 ### Rust engine
-CocoIndex executes pipelines with a Rust engine and a Python API.
+<Lang only="python">CocoIndex executes pipelines with a Rust engine and a Python API.</Lang><Lang only="rust">CocoIndex executes pipelines with a Rust engine. The Rust SDK calls that engine directly, in your own binary, with no Python runtime.</Lang>
+
+<Lang only="python">
 
 ### Python transformations
 Write transformations in Python with your existing libraries.
 Write batch-style code; CocoIndex tracks dependencies and applies incremental updates in batch and live mode.
+
+</Lang>
+
+<Lang only="rust">
+
+### Rust transformations
+Write transformations as ordinary async Rust functions with your existing crates.
+Write batch-style code; CocoIndex tracks dependencies and applies incremental updates in batch and live mode.
+Attribute macros add logic tracking, memoization and batching to a function; row types derive their schema.
+
+</Lang>
 
 ### Incremental processing
 CocoIndex tracks fine-grained dependencies and recomputes work affected by changes to source data or processing code.
@@ -33,7 +50,7 @@ Inspect processing steps, intermediate results, and execution paths to trace how
 
 ### Open integration model
 Sources and targets use a standard, open interface.
-Use Python models, functions, and libraries in your transformations.
+<Lang only="python">Use Python models, functions, and libraries in your transformations.</Lang><Lang only="rust">Use Rust crates, models, and functions in your transformations.</Lang>
 
 ### Controlled concurrency
 Pipelines run work concurrently with configurable limits and batch requests to external services and models.
@@ -56,6 +73,23 @@ What incremental processing means:
 - Support multiple mechanisms to capture source changes (CDC, poll-based) out of the box
 
 Use the updated output for serving, training, or feature computation.
+
+<Lang only="rust">
+
+## The Rust SDK
+
+The Rust SDK is the `cocoindex` crate. It has the same programming model as the Python SDK and runs on the same engine, with the same state database format:
+
+- An **app** is an async function that receives a `&Ctx` and declares target states through it. `App::open` opens the app, and `app.run(...)` runs one update.
+- **Functions** are `async fn`s marked with `#[cocoindex::function]`. `#[cocoindex::function(memo)]` memoizes one, and `#[cocoindex::function(batching)]` batches calls to it.
+- **Processing components** are mounted with `mount!`, `use_mount!` and `mount_each!`, at stable component paths.
+- **Resources**, such as a database connection or a model, are shared through typed context keys (`cocoindex::context_key!`) and read with `ctx.get_key(&KEY)`.
+- **Connectors and operations** are Cargo features, so a crate builds only what it uses.
+- The `cocoindex` **CLI** for Rust projects builds your crate and runs its apps.
+
+The crate is not on crates.io yet; [Installation](./installation) shows how to depend on it from the repository.
+
+</Lang>
 
 ## Next steps
 

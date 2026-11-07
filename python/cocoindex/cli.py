@@ -76,8 +76,9 @@ def _setup_logging() -> None:
     )
     # On a terminal, show records like the progress display shows its lines:
     # a colored mark and the message. Logs that go to a file or a CI log keep
-    # the timestamped format.
-    if sys.stderr.isatty() and os.environ.get("TERM") != "dumb":
+    # the timestamped format, and so does DEBUG, which is for diagnosing: there
+    # the time and the logger's name matter.
+    if level != "DEBUG" and sys.stderr.isatty() and os.environ.get("TERM") != "dumb":
         color = not os.environ.get("NO_COLOR")
         for handler in logging.getLogger().handlers:
             handler.setFormatter(_TerminalLogFormatter(color=color))

@@ -12,6 +12,8 @@ import type { MarkdownHeading } from 'astro';
 import { sidebar, type SidebarItem } from '../data/docs-sidebar';
 import { SITE_MAIN, SITE_BLOG, SITE_EXAMPLES } from '../consts';
 import Search from './Search.astro';
+import LangSwitch from './LangSwitch.astro';
+import { DEFAULT_LANG, langHref, pageRegistry, sidebarFor, type Lang } from '../lib/lang';
 import MobileSheet from '@cocoindex/brand/MobileSheet.astro';
 
 export interface Props {
@@ -23,15 +25,25 @@ export interface Props {
    *  `null` to render no docs sidebar (e.g. on examples listing or 404).
    *  Defaults to the docs-sidebar tree (regular doc pages). */
   sidebarItems?: SidebarItem[] | null;
+  /** SDK language of a docs page: shows the Python | Rust switch and links
+   *  into that language's tree. Absent on non-docs pages. */
+  lang?: Lang;
 }
 
 const {
   currentSlug = '',
   headings = [],
   sidebarItems: sidebarItemsRaw,
+  lang,
 } = Astro.props;
+// Default: the docs sidebar of the page's language (the Python tree on pages
+// that are not docs pages, such as the home page and 404), so no link points
+// at a page that exists only in the other tree.
 const sidebarItems: SidebarItem[] | null =
-  sidebarItemsRaw === undefined ? sidebar : sidebarItemsRaw;
+  sidebarItemsRaw === undefined
+    ? sidebarFor(sidebar, lang ?? DEFAULT_LANG, await pageRegistry())
+    : sidebarItemsRaw;
+const isDocsTree = sidebarItemsRaw === undefined || lang !== undefined;
 // Put the current section first without changing the shared desktop order.
 function containsCurrent(item: SidebarItem): boolean {
   return item.slug === currentSlug ||
@@ -61,11 +73,13 @@ const tocRows = headings.filter((h) => h.depth >= 2 && h.depth <= 4);
 function href(slug: string): string {
   // Trailing slash matches the canonical URL Astro emits under
   // `build.format: 'directory'` — saves a 301 round-trip per click.
-  return `${base}/${slug}/`;
+  if (lang) return langHref(lang, slug);
+  return slug ? `${base}/${slug}/` : `${base}/`;
 }
 ---
 
 <MobileSheet id="mobileSheet" title="Menu" closeAbove={1120}>
+  {lang && <LangSwitch lang={lang} route={currentSlug} />}
   <div class="mobile-search">
     <Search />
   </div>
@@ -98,10 +112,10 @@ function href(slug: string): string {
   )}
 
   <div class="mobile-pane" id="panePages" role={tocRows.length > 0 ? 'tabpanel' : undefined} aria-labelledby={tocRows.length > 0 ? 'tabPages' : undefined}>
-    {sidebarItems === sidebar && (
+    {isDocsTree && (
       <div class="mobile-group">
         <nav class="mobile-list" aria-label="Documentation home">
-          <a href={`${base}/`} aria-current={currentSlug === '' ? 'page' : undefined}>
+          <a href={href('')} aria-current={currentSlug === '' ? 'page' : undefined}>
             <span class="lbl">About CocoIndex</span>
           </a>
         </nav>

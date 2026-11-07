@@ -1,8 +1,8 @@
 ---
-// A Python / Rust tab pair whose selection is shared by every LangTabs on the
-// page and remembered across pages (localStorage), so a reader picks a
-// language once. Markup and styling come from Tabs.astro; this adds the
-// slot names and the sync script.
+// A Python / Rust pair of code samples (or any content). Each page shows one
+// language, so this renders only the slot of the page's language, with no tab
+// UI: Python pages show `python`, Rust pages show `rust`. Kept as a pair so the
+// two samples stay side by side in the source.
 //
 //   <LangTabs>
 //     <Fragment slot="python">
@@ -12,50 +12,14 @@
 //       ```rust ... ```
 //     </Fragment>
 //   </LangTabs>
-import Tabs from './Tabs.astro';
+//
+// Authoring contract: docs/CONTENT_LANGUAGES.md.
+import { currentLang } from '../lib/lang';
+
 interface Props {
-  /** Index of the tab selected on load: 0 for Python, 1 for Rust. */
+  /** Ignored: kept so pages written for the tabbed form still build. */
   initial?: number;
 }
-const { initial = 0 } = Astro.props;
+const lang = currentLang(Astro);
 ---
-<div class="coco-lang-tabs" data-lang-tabs>
-  <Tabs labels={['Python', 'Rust']} initial={initial} label="Language">
-    <Fragment slot="tab-0"><slot name="python" /></Fragment>
-    <Fragment slot="tab-1"><slot name="rust" /></Fragment>
-  </Tabs>
-</div>
-
-<script>
-  // Astro bundles this once per page. All groups follow one selection, stored
-  // under `coco-docs-lang`; the clicked label keeps its place on screen so a
-  // switch that resizes groups above it does not jump the page.
-  const STORAGE_KEY = 'coco-docs-lang';
-  const groups = Array.from(document.querySelectorAll<HTMLElement>('[data-lang-tabs]'));
-  const radiosOf = (group: HTMLElement) =>
-    Array.from(group.querySelectorAll<HTMLInputElement>(':scope > .coco-tabs > .coco-tabs-radio'));
-  const select = (index: number) => {
-    for (const group of groups) {
-      const radio = radiosOf(group)[index];
-      if (radio && !radio.checked) radio.checked = true;
-    }
-  };
-  const stored = Number(localStorage.getItem(STORAGE_KEY));
-  if (Number.isInteger(stored) && stored >= 0) select(stored);
-  for (const group of groups) {
-    group.addEventListener('change', (event) => {
-      const radio = event.target;
-      if (!(radio instanceof HTMLInputElement)) return;
-      const index = radiosOf(group).indexOf(radio);
-      if (index < 0) return;
-      const before = group.getBoundingClientRect().top;
-      select(index);
-      window.scrollBy(0, group.getBoundingClientRect().top - before);
-      try {
-        localStorage.setItem(STORAGE_KEY, String(index));
-      } catch {
-        // Private mode or a full store: the page-level sync still applies.
-      }
-    });
-  }
-</script>
+{lang === 'rust' ? <slot name="rust" /> : <slot name="python" />}

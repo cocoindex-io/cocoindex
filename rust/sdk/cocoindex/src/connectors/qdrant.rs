@@ -894,8 +894,8 @@ pub async fn mount_collection_target_with_options(
 
 /// Build a composable [`TargetState`] for a Qdrant collection (the spec
 /// constructor). Pass it to the generic
-/// [`mount_target`](crate::target_state::mount_target) /
-/// [`declare_target_state_with_child`](crate::target_state::declare_target_state_with_child),
+/// [`mount_target`] /
+/// [`declare_target_state_with_child`],
 /// or use [`declare_collection_target`]/[`mount_collection_target`].
 pub fn collection_target(
     ctx: &Ctx,

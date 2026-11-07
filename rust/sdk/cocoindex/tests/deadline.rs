@@ -4,6 +4,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use cocoindex::testing::TestEnv;
 use cocoindex::{
     App, Error, StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
     UpdateOptions, declare_target_state, register_root_target_states_provider,
@@ -44,14 +45,10 @@ impl Drop for TestClockGuard {
     }
 }
 
-async fn temp_app(name: &str) -> (App, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let app = App::builder(name)
-        .db_path(dir.path().join("lmdb"))
-        .build()
-        .await
-        .unwrap();
-    (app, dir)
+async fn temp_app(name: &str) -> (App, TestEnv) {
+    let env = TestEnv::new().await.unwrap();
+    let app = env.app(name).await.unwrap();
+    (app, env)
 }
 
 fn assert_deadline(err: Error) {
@@ -140,7 +137,7 @@ async fn rust_sdk_deadline_conformance_subset() {
 
     // Nested deadlines are min-composed on the immutable Ctx carrier, and the
     // SDK exposes the same typed error that the Rust core produces.
-    let (app, _dir) = temp_app("sdk_deadline_nested").await;
+    let (app, _env) = temp_app("sdk_deadline_nested").await;
     app.update(|ctx| async move {
         assert!(!ctx.has_deadline());
         let outer = ctx.with_timeout(Duration::from_secs(10));
@@ -164,7 +161,7 @@ async fn rust_sdk_deadline_conformance_subset() {
     // narrowed deadline. The core pre-memo/entry checkpoint catches an already
     // expired child before its body can run.
     clock.reset();
-    let (app, _dir) = temp_app("sdk_deadline_use_mount_inherit").await;
+    let (app, _env) = temp_app("sdk_deadline_use_mount_inherit").await;
     let child_body_started = Arc::new(AtomicBool::new(false));
     let err = app
         .update({
@@ -194,7 +191,7 @@ async fn rust_sdk_deadline_conformance_subset() {
     // Background/live-style components are isolated. The child processor Ctx
     // sees no deadline even though the parent has one.
     clock.reset();
-    let (app, _dir) = temp_app("sdk_deadline_mount_isolate").await;
+    let (app, _env) = temp_app("sdk_deadline_mount_isolate").await;
     let child_saw_no_deadline = Arc::new(AtomicBool::new(false));
     app.update_with_options(
         UpdateOptions {
@@ -224,7 +221,7 @@ async fn rust_sdk_deadline_conformance_subset() {
     // reports the first error in input order. Replacing join_all with
     // try_join_all makes this assertion fail because the slow future is dropped.
     clock.reset();
-    let (app, _dir) = temp_app("sdk_deadline_map_drains").await;
+    let (app, _env) = temp_app("sdk_deadline_map_drains").await;
     let slow_started = Arc::new(AtomicBool::new(false));
     let slow_released = Arc::new(Notify::new());
     let slow_completed = Arc::new(AtomicBool::new(false));
@@ -285,7 +282,7 @@ async fn rust_sdk_deadline_conformance_subset() {
     // If a processor expires after declaring target states, the core
     // post-body/pre-submit checkpoint stops submit; the sink is never called.
     clock.reset();
-    let (app, _dir) = temp_app("sdk_deadline_before_submit").await;
+    let (app, _env) = temp_app("sdk_deadline_before_submit").await;
     let applied = Arc::new(Mutex::new(Vec::<WriteAction>::new()));
     let err = app
         .update_with_options(
@@ -317,7 +314,7 @@ async fn rust_sdk_deadline_conformance_subset() {
     // advances the clock past the caller's deadline, the write still lands and
     // the update result reports the caller's expired deadline afterward.
     clock.reset();
-    let (app, _dir) = temp_app("sdk_deadline_sink_isolate").await;
+    let (app, _env) = temp_app("sdk_deadline_sink_isolate").await;
     let applied = Arc::new(Mutex::new(Vec::<WriteAction>::new()));
     let err = app
         .update_with_options(
@@ -355,7 +352,7 @@ async fn rust_sdk_deadline_conformance_subset() {
     // before the memoized child body can execute again.
     clock.reset();
     MEMO_CHILD_CALLS.store(0, Ordering::SeqCst);
-    let (app, _dir) = temp_app("sdk_deadline_memo_hit").await;
+    let (app, _env) = temp_app("sdk_deadline_memo_hit").await;
     app.update(|ctx| async move {
         let out = cocoindex::use_mount!(memo_deadline_child(ctx)).await?;
         assert_eq!(out, 7);
@@ -392,7 +389,7 @@ async fn use_mount_each_drains_started_siblings_on_deadline_error() {
     // work after A has already failed, so B's committed row below is only
     // possible if use_mount_each drained instead of cancelling.
     let _clock = TestClockGuard::new();
-    let (app, _dir) = temp_app("mount_each_drain").await;
+    let (app, _env) = temp_app("mount_each_drain").await;
     let applied: Arc<Mutex<Vec<WriteAction>>> = Arc::new(Mutex::new(Vec::new()));
     let gate = Arc::new(Notify::new());
 

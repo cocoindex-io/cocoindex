@@ -494,9 +494,9 @@ pub(crate) struct StatsGroup<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> StatsGroup<Prof> {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(parent: &ProcessingStats) -> Self {
         Self {
-            stats: ProcessingStats::new(),
+            stats: ProcessingStats::new_in(parent),
             readiness: ComponentBgChildReadiness::default(),
             active_members: parking_lot::Mutex::new(Vec::new()),
         }
@@ -558,7 +558,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         report_to_stdout: bool,
         refresh_interval_secs: Option<f64>,
     ) -> (ComponentProcessorContext<Prof>, ProcessingStats) {
-        let group = Arc::new(StatsGroup::new());
+        let group = Arc::new(StatsGroup::new(self.processing_stats()));
         let group_stats = group.stats().clone();
 
         // The group counts as one pending child of the enclosing readiness, so
@@ -1639,12 +1639,10 @@ impl<Prof: EngineProfile> Component<Prof> {
             }
             Err(err) => {
                 if !err.is_cancelled() {
-                    let message = err.to_string();
-                    let message = message.lines().find(|l| !l.trim().is_empty());
                     processing_stats.record_failure(crate::engine::stats::FailureRecord {
                         processor: final_processor_name.to_string(),
                         component: self.stable_path().clone(),
-                        message: message.unwrap_or_default().trim().to_string(),
+                        message: crate::engine::stats::failure_message(&err),
                     });
                 }
                 processing_stats.update(final_processor_name, |stats| {
@@ -1875,7 +1873,7 @@ mod tests {
         let (app, _dir) = test_app("stats_group_members").await;
         let root = Component::new(app.app_ctx().clone(), StablePath::root(), None);
         let member = root.get_child(key_path(&root, "member"));
-        let group = StatsGroup::<TestProfile>::new();
+        let group = StatsGroup::<TestProfile>::new(&ProcessingStats::new());
 
         let activity = ActivityGuard::new(member.clone());
         group.push_member(&member);

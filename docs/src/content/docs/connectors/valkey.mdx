@@ -32,18 +32,31 @@ The module is compiled with the `valkey` Cargo feature of the `cocoindex` crate.
 </LangTabs>
 
 :::note[Dependencies]
+<Lang only="python">
+
 This connector requires additional dependencies. Install with:
 
 ```bash
 pip install cocoindex[valkey]
 ```
 
+</Lang>
+
 Requires a Valkey server with the [valkey-search](https://github.com/valkey-io/valkey-search) module loaded.
 :::
 
 ## Connection setup
 
+<Lang only="python">
+
 `create_client_config()` creates a configuration for connecting to Valkey.
+
+</Lang>
+<Lang only="rust">
+
+`Valkey::connect()` and `Valkey::connect_with_config()` open a connection to Valkey.
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/valkey.rs */}
 <LangTabs>
@@ -80,10 +93,12 @@ impl Valkey {
 }
 ```
 
-`Valkey::connect_with_config(ClientConfig { .. })` is the counterpart of `create_client_config` plus `GlideClient.create`. `Valkey::connect("redis://localhost:6379")` takes a URI. For anything `ClientConfig` does not cover (`**kwargs` in Python: client certificates, a username, a database number), build a `redis::Client` yourself and pass it to `from_client`.
+`Valkey::connect("redis://localhost:6379")` takes a URI. `Valkey::connect_with_config(ClientConfig { .. })` takes the fields below. For anything `ClientConfig` does not cover (client certificates, a username, a database number), build a `redis::Client` yourself and pass it to `from_client`.
 
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 **Parameters:**
 
@@ -97,6 +112,23 @@ impl Valkey {
 For advanced configurations not covered by these parameters, construct `GlideClientConfiguration` directly.
 
 **Returns:** A `GlideClientConfiguration` instance.
+
+</Lang>
+<Lang only="rust">
+
+**`ClientConfig` fields:**
+
+- `host` — Valkey server host (default: `"localhost"`).
+- `port` — Valkey server port (default: `6379`).
+- `password` — Optional authentication password. The `Debug` output of `ClientConfig` shows it as redacted.
+- `use_tls` — Whether to use TLS for the connection (default: `false`).
+- `client_name` — Client name for the connection, set with `CLIENT SETNAME` and visible in `CLIENT LIST` and monitoring dashboards (default: `Some("cocoindex_vector_store")`). Pass `None` to set no name.
+
+**Returns:** A `Valkey` handle. It is cheap to clone: the multiplexed connection is shared, and every command or pipeline runs on a clone of it.
+
+The handle's `state_id()` is the server's address and database number as a URI, for example `redis://localhost:6379`. It never holds the username or password, so a credential does not leak into memo dependencies or the target-state store, and rotating a credential does not invalidate them. With `from_client(state_id, client)`, you choose the `state_id`: name the server, not a secret.
+
+</Lang>
 
 **Example:**
 
@@ -138,7 +170,16 @@ The `valkey` connector provides target state APIs for writing documents to searc
 
 #### Setting up a connection
 
+<Lang only="python">
+
 Create a `ContextKey[GlideClient]` to identify your Valkey client, then provide it in your lifespan:
+
+</Lang>
+<Lang only="rust">
+
+Declare a context key for a `valkey::Valkey` to identify your Valkey connection, then provide the connection on the environment builder:
+
+</Lang>
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed indexes. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
@@ -213,6 +254,14 @@ pub fn declare_index_target(
     schema: IndexSchema,
 ) -> Result<IndexTarget>
 
+pub fn declare_index_target_with_options(
+    ctx: &Ctx,
+    db: &ContextKey<Valkey>,
+    index_name: impl Into<String>,
+    schema: IndexSchema,
+    options: ManagedTargetOptions,
+) -> Result<IndexTarget>
+
 pub async fn mount_index_target(
     ctx: &Ctx,
     db: &ContextKey<Valkey>,
@@ -220,28 +269,49 @@ pub async fn mount_index_target(
     schema: IndexSchema,
 ) -> Result<IndexTarget>
 
-pub fn index_target_with_options(
+pub async fn mount_index_target_with_options(
     ctx: &Ctx,
     db: &ContextKey<Valkey>,
     index_name: impl Into<String>,
     schema: IndexSchema,
     options: ManagedTargetOptions,
-) -> Result<TargetState<IndexSpec>>
+) -> Result<IndexTarget>
 ```
 
-`managed_by` is set with `ManagedTargetOptions::user_managed()` on `index_target_with_options`, which returns the raw `TargetState` for `mount_target` / `declare_target_state_with_child`. `declare_index_target` returns a handle whose documents resolve when the current component commits; `mount_index_target(...).await?` returns a handle that accepts documents at once.
+`declare_index_target*` returns a handle whose documents resolve when the current component commits; `mount_index_target*(...).await?` returns a handle that accepts documents at once. `managed_by` is set with `ManagedTargetOptions::user_managed()` on the `*_with_options` forms. `index_target` and `index_target_with_options` return the raw `TargetState`, to compose with `mount_target` or `declare_target_state_with_child`.
 
 </Fragment>
 </LangTabs>
 
+<Lang only="rust">
+
+{/* Rust: rust/sdk/cocoindex/tests/valkey_target.rs */}
+
+```rust
+let index = valkey::mount_index_target_with_options(
+    &ctx,
+    &VK,
+    index_name,
+    schema().await,
+    ManagedTargetOptions::user_managed(),
+)
+.await?;
+```
+
+</Lang>
+
 **Parameters:**
 
-- `db` — A `ContextKey[GlideClient]` identifying the Valkey client to use.
+- `db` — <Lang only="python">A `ContextKey[GlideClient]`</Lang><Lang only="rust">A `&ContextKey<Valkey>`</Lang> identifying the Valkey client to use.
 - `index_name` — Name of the search index.
 - `schema` — Schema definition specifying vector configuration (see [Index Schema](#index-schema)).
-- `managed_by` — `ManagedBy.SYSTEM` (default): CocoIndex creates and drops the index automatically. `ManagedBy.USER`: assumes the index already exists and never drops it.
+- `managed_by` — <Lang only="python">`ManagedBy.SYSTEM`</Lang><Lang only="rust">`ManagedBy::System`</Lang> (default): CocoIndex creates and drops the index automatically. <Lang only="python">`ManagedBy.USER`</Lang><Lang only="rust">`ManagedBy::User`</Lang>: assumes the index already exists and never drops it.
+
+<Lang only="python">
 
 **Returns:** A pending `IndexTarget`. Use the convenience wrapper `await valkey.mount_index_target(VALKEY_DB, index_name, schema)` to resolve.
+
+</Lang>
 
 #### Documents (child states)
 
@@ -269,25 +339,52 @@ impl IndexTarget {
 pub struct Document {
     pub id: String,
     pub vector: Vec<f32>,
-    pub payload: Option<BTreeMap<String, String>>,
+    pub payload: Option<BTreeMap<String, PayloadValue>>,
+}
+
+pub enum PayloadValue {
+    Str(String),
+    Int(i64),
+    Float(f64),
 }
 
 let mut payload = BTreeMap::new();
 payload.insert("text".to_string(), text.to_string());
 index.declare_document(&ctx, Document::new(id, vector).with_payload(payload))?;
+
+// A numeric payload value for a NUMERIC field:
+index.declare_document(
+    &ctx,
+    Document::new("d3", vec![0.7, 0.8, 0.9]).with_payload([
+        ("text", PayloadValue::from("priced")),
+        ("price", PayloadValue::from(42i64)),
+    ]),
+)?;
 ```
 
-The Rust payload holds string values only.
+`with_payload` takes any iterator of `(key, value)` pairs whose values convert into `PayloadValue` (`String`, `&str`, `i64` or `f64`).
 
 </Fragment>
 </LangTabs>
 
 **Parameters:**
 
+<Lang only="python">
+
 - `document` — A `valkey.Document` containing:
   - `id` — Document ID (string)
   - `vector` — Vector data (list of floats or numpy array)
   - `payload` — Optional metadata dict (values must be str, int, or float). The key `vector` is reserved for the vector field (see [Data storage](#data-storage)), so a payload with that key raises a `ValueError`.
+
+</Lang>
+<Lang only="rust">
+
+- `document` — A `valkey::Document` containing:
+  - `id` — Document ID (string)
+  - `vector` — Vector data (`Vec<f32>`)
+  - `payload` — Optional metadata map (values are text, `i64` or `f64`). The key `vector` is reserved for the vector field (see [Data storage](#data-storage)), so `declare_document` returns an error for a payload with that key.
+
+</Lang>
 
 ### Index schema
 
@@ -326,7 +423,7 @@ IndexSchema::create(
 .await?
 ```
 
-`fields` is required in Rust; pass `vec![]` for none. `FieldDef::new(name, FieldType::Text | Tag | Numeric)` and `.sortable()` describe an indexed payload field.
+Pass `vec![]` for no indexed payload fields. `FieldDef::new(name, FieldType::Text | Tag | Numeric)` and `.sortable()` describe an indexed payload field.
 
 </Fragment>
 </LangTabs>
@@ -334,7 +431,7 @@ IndexSchema::create(
 **Parameters:**
 
 - `vectors` — A `VectorDef` specifying the vector field configuration.
-- `fields` — Optional list of `FieldDef` for indexed payload fields (enables search/filtering). A `FieldDef` named `vector` raises a `ValueError`: that name is reserved for the vector field.
+- `fields` — <Lang only="python">Optional list</Lang><Lang only="rust">List</Lang> of `FieldDef` for indexed payload fields (enables search/filtering). A `FieldDef` named `vector` <Lang only="python">raises a `ValueError`</Lang><Lang only="rust">is an error</Lang>: that name is reserved for the vector field.
 
 #### VectorDef
 
@@ -373,32 +470,58 @@ impl<'a> VectorDef<'a> {
 
 **Parameters:**
 
-- `schema` — A `VectorSchemaProvider` or `ContextKey` that defines vector dimensions.
-- `distance` — Distance metric for similarity search (default: `"cosine"`).
-- `algorithm` — Vector index algorithm (default: `"hnsw"`).
+- `schema` — A `VectorSchemaProvider`<Lang only="python"> or `ContextKey`</Lang> that defines vector dimensions.
+- `distance` — Distance metric for similarity search (default: <Lang only="python">`"cosine"`</Lang><Lang only="rust">`Distance::Cosine`</Lang>).
+- `algorithm` — Vector index algorithm (default: <Lang only="python">`"hnsw"`</Lang><Lang only="rust">`VectorAlgorithm::Hnsw`</Lang>).
 
 #### VectorSchemaProvider
 
-The `schema` field of `VectorDef` accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema` to specify the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details. In Rust, pass `&VectorSchema::f32(n)` or a reference to an embedder; for one held in the context, `ctx.get_key(&EMBEDDER)?`.
+<Lang only="python">
+
+The `schema` field of `VectorDef` accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema` to specify the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
+
+</Lang>
+<Lang only="rust">
+
+The `schema` field of `VectorDef` borrows a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider) to specify the vector dimension and dtype: an explicit `&VectorSchema::f32(n)` or a reference to an embedder. For an embedder held in the context, pass `ctx.get_key(&EMBEDDER)?`. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
+
+</Lang>
 
 ### Distance metrics
 
 The `distance` parameter in `VectorDef` specifies the similarity metric:
 
+<Lang only="python">
+
 - `"cosine"` — Cosine similarity (default)
 - `"l2"` — Euclidean distance (L2)
 - `"ip"` — Inner product (dot product)
 
-In Rust: `Distance::Cosine`, `Distance::L2`, `Distance::Ip`.
+</Lang>
+<Lang only="rust">
+
+- `Distance::Cosine` — Cosine similarity (default)
+- `Distance::L2` — Euclidean distance (L2)
+- `Distance::Ip` — Inner product (dot product)
+
+</Lang>
 
 ### Index algorithms
 
 The `algorithm` parameter specifies the vector indexing strategy:
 
+<Lang only="python">
+
 - `"hnsw"` — Hierarchical Navigable Small World graph (default, best for most use cases)
 - `"flat"` — Brute-force flat index (exact results, slower for large datasets)
 
-In Rust: `VectorAlgorithm::Hnsw`, `VectorAlgorithm::Flat`.
+</Lang>
+<Lang only="rust">
+
+- `VectorAlgorithm::Hnsw` — Hierarchical Navigable Small World graph (default, best for most use cases)
+- `VectorAlgorithm::Flat` — Brute-force flat index (exact results, slower for large datasets)
+
+</Lang>
 
 ### Data storage
 
@@ -409,6 +532,12 @@ Documents are stored as Valkey HASH keys with a prefix pattern:
 - Payload fields: stored as individual hash fields (string values)
 
 The search index is created with `FT.CREATE ON HASH PREFIX 1 {index_name}:` to automatically index all documents with the matching prefix.
+
+<Lang only="rust">
+
+A batch of document changes is sent in pipelines: one `DEL` for every deleted key, then the upserts in pipelines of up to 1,000 documents. Each document is written as its own `MULTI` `DEL` `HSET` `EXEC` transaction, so no stale payload field survives an update and a document is never half written. A batch of `n` documents costs `1 + ceil(n / 1000)` round trips, not `n`.
+
+</Lang>
 
 ### Example
 
@@ -510,14 +639,16 @@ index.declare_document(&ctx, doc("d1", vec![0.1, 0.2, 0.3], "hello"))?;
 index.declare_document(&ctx, doc("d2", vec![0.4, 0.5, 0.6], "world"))?;
 ```
 
-There is no Rust example program for Valkey yet; `rust/sdk/cocoindex/tests/valkey_target.rs` is the end-to-end reference.
+There is no example program for Valkey yet; `rust/sdk/cocoindex/tests/valkey_target.rs` is the end-to-end reference.
 
 </Fragment>
 </LangTabs>
 
 ## Vector search
 
-The connector focuses on writing documents to Valkey. For vector search queries, use the Valkey GLIDE client directly. The Rust SDK has no search helper for Valkey: run `FT.SEARCH` through the `redis` crate.
+<Lang only="python">
+
+The connector focuses on writing documents to Valkey. For vector search queries, use the Valkey GLIDE client directly.
 
 ```python
 from glide import GlideClient
@@ -536,3 +667,10 @@ results = await ft.search(
     options=FtSearchOptions(params={"query_vec": query_vec}),
 )
 ```
+
+</Lang>
+<Lang only="rust">
+
+The connector focuses on writing documents to Valkey and has no search helper. For vector search queries, run `FT.SEARCH` through the `redis` crate directly.
+
+</Lang>

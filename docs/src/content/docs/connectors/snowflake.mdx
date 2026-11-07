@@ -4,6 +4,9 @@ toc_max_heading_level: 4
 description: >
   Write CocoIndex target rows into Snowflake tables with managed DDL, MERGE
   upserts, deletes, and automatic mapping from Python row types.
+rust_description: >
+  Write CocoIndex target rows into Snowflake tables with managed DDL, MERGE
+  upserts, deletes, and automatic mapping from Rust row types.
 ---
 import LangTabs from '../../../components/LangTabs.astro';
 
@@ -26,10 +29,12 @@ use cocoindex::connectors::snowflake::{
 };
 ```
 
-The Rust SDK needs the `snowflake` Cargo feature of the `cocoindex` crate. The Rust connector speaks the Snowflake SQL REST API directly.
+The module is compiled with the `snowflake` Cargo feature of the `cocoindex` crate. Snowflake has no official Rust client, so the connector speaks the HTTP protocol of the official connectors directly: a password login that yields a session token, then statements with server-side `?` bindings.
 
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 :::note[Install]
 Install the optional Snowflake dependency before using this connector:
@@ -39,9 +44,20 @@ pip install cocoindex[snowflake]
 ```
 :::
 
+</Lang>
+
 ## Connection setup
 
+<Lang only="python">
+
 Create a `ContextKey[snowflake.ConnectionConfig]` to identify the Snowflake connection, then provide it in your lifespan:
+
+</Lang>
+<Lang only="rust">
+
+Declare a context key for a `SnowflakeConnection` to identify the Snowflake connection, then provide the connection on the environment builder:
+
+</Lang>
 
 :::note
 The key name is load-bearing across runs - it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
@@ -105,12 +121,21 @@ let app = cocoindex::Environment::builder()
     .await?;
 ```
 
-`SnowflakeConnection::new(config)` makes no request until the first statement. The connection is `Clone`; `conn.query(sql).await?` runs a statement and returns its rows as JSON objects.
+`SnowflakeConnection::new(config)` makes no request until the first statement. Each batch of statements logs in, runs and closes its own session. The connection is cheap to clone; `conn.query(sql).await?` runs a statement in a fresh session and returns its rows as JSON objects keyed by column name.
 
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 ### ConnectionConfig
+
+</Lang>
+<Lang only="rust">
+
+### SnowflakeConfig
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/snowflake.rs */}
 <LangTabs>
@@ -186,6 +211,21 @@ def declare_table_target(
 <Fragment slot="rust">
 
 ```rust
+pub fn declare_table_target(
+    ctx: &Ctx,
+    conn: &ContextKey<SnowflakeConnection>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+) -> Result<TableTarget>
+
+pub fn declare_table_target_with_options(
+    ctx: &Ctx,
+    conn: &ContextKey<SnowflakeConnection>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    options: SnowflakeTableOptions,
+) -> Result<TableTarget>
+
 pub async fn mount_table_target(
     ctx: &Ctx,
     conn: &ContextKey<SnowflakeConnection>,
@@ -210,21 +250,27 @@ pub struct SnowflakeTableOptions {
 }
 ```
 
-`declare_table_target` and `declare_table_target_with_options` take the same arguments and declare the table in the current component. `ManagedBy::User` is Python's `managed_by="user"`.
+`declare_table_target*` declares the table in the current component; its rows resolve when the component commits. `mount_table_target*` mounts the table first, so you can declare rows at once. `table_target` and `table_target_with_options` build the table target state without declaring it.
 
 </Fragment>
 </LangTabs>
 
 **Parameters:**
 
-- `db` - A `ContextKey[ConnectionConfig]` identifying the connection to use.
+- <Lang only="python">`db` - A `ContextKey[ConnectionConfig]`</Lang><Lang only="rust">`conn` - A `&ContextKey<SnowflakeConnection>`</Lang> identifying the connection to use.
 - `table_name` - Name of the table.
 - `table_schema` - Schema definition including columns and primary key.
 - `database` - Optional Snowflake database name.
 - `schema` - Optional Snowflake schema name.
-- `managed_by` - Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
+- `managed_by` - Whether CocoIndex manages the table lifecycle (<Lang only="python">`"system"`</Lang><Lang only="rust">`ManagedBy::System`, the default</Lang>) or assumes it exists (<Lang only="python">`"user"`</Lang><Lang only="rust">`ManagedBy::User`</Lang>).
 
-When `managed_by="system"`, CocoIndex creates the database, schema, and table if needed. Table changes use Snowflake DDL, and row changes use `MERGE` for upserts.
+When <Lang only="python">`managed_by="system"`</Lang><Lang only="rust">`managed_by` is `ManagedBy::System`</Lang>, CocoIndex creates the database, schema, and table if needed. Table changes use Snowflake DDL, and row changes use `MERGE` for upserts.
+
+<Lang only="rust">
+
+A batch of row changes runs in one session: rows are `MERGE`d and deleted by primary key in statements of up to 4,000 bindings each, so a batch takes a few statements, not one per row.
+
+</Lang>
 
 ### Rows
 
@@ -256,11 +302,22 @@ The row serializes to an object whose keys are column names; keys outside the sc
 
 **Parameters:**
 
-- `row` - A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
+- `row` - <Lang only="python">A row object (dict, dataclass, NamedTuple, or Pydantic model).</Lang><Lang only="rust">Any `Serialize` value whose entries are the table's columns.</Lang> Must include all primary key columns.
+
+<Lang only="python">
 
 ## Table schema: from Python class
 
 Define the table structure using a Python class:
+
+</Lang>
+<Lang only="rust">
+
+## Table schema: from a Rust struct
+
+Define the table structure using a Rust struct that derives `SchemaFields`:
+
+</Lang>
 
 {/* Rust: examples/rust/snowflake_target/src/main.rs */}
 <LangTabs>
@@ -308,29 +365,66 @@ let schema = TableSchema::from_row::<SnowflakeOrder>(["order_id"])?;
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 Python types are automatically mapped to Snowflake column types:
 
-| Python Type | Rust Type | Snowflake Type |
-|-------------|-----------|----------------|
-| `bool` | `bool` | `BOOLEAN` |
-| `int` | `i16`, `i32`, `i64` (and the unsigned widths) | `NUMBER` |
-| `float` | `f32`, `f64` | `FLOAT` |
-| `decimal.Decimal` | `rust_decimal::Decimal` | `NUMBER` |
-| `str` | `String` | `VARCHAR` |
-| `bytes` | `Vec<u8>` | `BINARY` |
-| `uuid.UUID` | `uuid::Uuid` | `VARCHAR` |
-| `datetime.date` | `chrono::NaiveDate` | `DATE` |
-| `datetime.time` | `chrono::NaiveTime` | `TIME` |
-| `datetime.datetime` | `chrono::DateTime`, `chrono::NaiveDateTime` | `TIMESTAMP_TZ` |
-| `datetime.timedelta` | `std::time::Duration` | `NUMBER` |
-| `list`, `dict`, nested structs | other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `VARIANT` |
-| | `#[coco(vector)] Vec<f32>` | `ARRAY` |
+| Python Type | Snowflake Type |
+|-------------|----------------|
+| `bool` | `BOOLEAN` |
+| `int` | `NUMBER` |
+| `float` | `FLOAT` |
+| `decimal.Decimal` | `NUMBER` |
+| `str` | `VARCHAR` |
+| `bytes` | `BINARY` |
+| `uuid.UUID` | `VARCHAR` |
+| `datetime.date` | `DATE` |
+| `datetime.time` | `TIME` |
+| `datetime.datetime` | `TIMESTAMP_TZ` |
+| `datetime.timedelta` | `NUMBER` |
+| `list`, `dict`, nested structs | `VARIANT` |
 
-`VARIANT` values are JSON-serialized and written with `PARSE_JSON`. An `Option<T>` field is a nullable column; every other Rust field is `NOT NULL`.
+`VARIANT` values are JSON-serialized and written with `PARSE_JSON`.
+
+</Lang>
+<Lang only="rust">
+
+Rust types are automatically mapped to Snowflake column types:
+
+| Rust Type | Snowflake Type |
+|-----------|----------------|
+| `bool` | `BOOLEAN` |
+| `i16`, `i32`, `i64` (and the unsigned widths) | `NUMBER` |
+| `f32`, `f64` | `FLOAT` |
+| `rust_decimal::Decimal` | `NUMBER` |
+| `String` | `VARCHAR` |
+| `Vec<u8>` | `BINARY` |
+| `uuid::Uuid` | `VARCHAR` |
+| `chrono::NaiveDate` | `DATE` |
+| `chrono::NaiveTime` | `TIME` |
+| `chrono::DateTime`, `chrono::NaiveDateTime` | `TIMESTAMP_TZ` |
+| `std::time::Duration` | `NUMBER` |
+| other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `VARIANT` |
+| `#[coco(vector)] Vec<f32>` | `ARRAY` |
+
+`VARIANT` and `ARRAY` values are JSON-serialized and written with `PARSE_JSON`. An `Option<T>` field is a nullable column; every other field is `NOT NULL`.
+
+</Lang>
+
+<Lang only="python">
 
 ### SnowflakeType
 
 Use `SnowflakeType` to specify a custom Snowflake type and optional encoder:
+
+</Lang>
+<Lang only="rust">
+
+### Custom column types
+
+Use `#[coco(type = "…")]` to specify a custom Snowflake type:
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/tests/snowflake_target.rs; #[coco(type)] from rust/sdk/cocoindex_macros/src/lib.rs */}
 <LangTabs>
@@ -361,12 +455,25 @@ struct ProductRow {
 }
 ```
 
-`#[coco(type = "…")]` sets the column type verbatim. The Rust SDK has no per-column `encoder`: a value is written as it serializes with serde. Explicit columns are also possible with `TableSchema::new(columns, primary_key)?` and `ColumnDef::new("VARIANT").parse_json()`; a Rust `ColumnDef` is nullable unless `.not_null()` is called.
+`#[coco(type = "…")]` sets the column type verbatim. A value is written as it serializes with serde; for another form, put `#[serde(serialize_with = "…")]` on the field. Explicit columns are also possible with `TableSchema::new(columns, primary_key)?` and `ColumnDef::new("VARIANT").parse_json()`; a `ColumnDef` is nullable unless `.not_null()` is called.
 
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 You can also pass `column_overrides` when constructing the schema:
+
+</Lang>
+<Lang only="rust">
+
+You can also replace the type of one column on the derived schema, for this schema only. `with_column_type` keeps the column's derived nullability and takes the `parse_json` flag of the `ColumnDef` you pass:
+
+</Lang>
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/snowflake.rs (TableSchema::with_column_type) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 schema = await snowflake.TableSchema.from_class(
@@ -377,6 +484,19 @@ schema = await snowflake.TableSchema.from_class(
     },
 )
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::snowflake::{ColumnDef, TableSchema};
+
+let schema = TableSchema::from_row::<ProductRow>(["id"])?
+    .with_column_type("id", ColumnDef::new("NUMBER(38, 0)"))?;
+```
+
+</Fragment>
+</LangTabs>
 
 ## Example
 
@@ -436,7 +556,7 @@ for row in &rows {
 </Fragment>
 </LangTabs>
 
-See `examples/snowflake_target` for a runnable project, and `examples/rust/snowflake_target` for the Rust one.
+See <Lang only="python">`examples/snowflake_target`</Lang><Lang only="rust">`examples/rust/snowflake_target`</Lang> for a runnable project.
 
 ## Identifier handling
 

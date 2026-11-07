@@ -41,6 +41,9 @@ pub enum Event {
         version: u64,
         ready: bool,
         by_component: BTreeMap<String, ComponentStatsWire>,
+        /// What the stats groups under the app count, for the final status.
+        #[serde(default)]
+        in_groups: ComponentStatsWire,
     },
     /// The child needs a yes/no answer before a destructive step (`drop`, or
     /// `update --reset` with state to drop); sent only when the CLI passed
@@ -202,6 +205,7 @@ impl Event {
                 .iter()
                 .map(|(k, v)| (k.clone(), ComponentStatsWire::from(v)))
                 .collect(),
+            in_groups: ComponentStatsWire::from(&stats.in_groups),
         }
     }
 }
