@@ -1938,6 +1938,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "cocoindex",
  "cocoindex_code_ast",
  "cocoindex_code_match",
  "cocoindex_core",

@@ -310,6 +310,9 @@ redis = { version = "0.32.7", default-features = false, optional = true, feature
 ] }
 
 [dev-dependencies]
+# The crate's own tests use `cocoindex::testing`; a self dev-dependency is how
+# a crate enables one of its features for its tests.
+cocoindex = { path = ".", features = ["testing"] }
 tempfile = "3"
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
