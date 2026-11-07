@@ -138,8 +138,9 @@ class UpdateSnapshot:
 pub struct UpdateStats {
     pub by_component: BTreeMap<String, ComponentStats>, // keyed by processor name
     pub status: UpdateStatus,                           // Running | Ready
+    pub in_groups: ComponentStats,                      // what stats groups under this scope count
 }
-// UpdateStats::total() sums every component; run_stats() derives the coarse RunStats.
+// UpdateStats::total() sums every component, not in_groups; run_stats() derives the coarse RunStats.
 
 pub struct ComponentStats {
     pub num_execution_starts: u64,
@@ -211,7 +212,9 @@ In Rust a group is a closure, not a block. `stats_group(title, f)` runs `f` with
 </Fragment>
 </LangTabs>
 
-With `report_to_stdout=True`, the group's progress is also printed to stdout, labeled by its title, alongside the main `report_to_stdout` display without disrupting it. Pass a `timedelta` instead of `True` to set the group's refresh interval.
+With `report_to_stdout=True`, the group's progress is also printed to stdout, labeled by its title, alongside the main `report_to_stdout` display without disrupting it. Pass a `timedelta` instead of `True` to set the group's refresh interval; while a terminal display runs, the group is a section of that display and redraws with it.
+
+A failure in a group, reported or not, still counts in the final status line of the main display: the run ends in `✗ Done in 2.0s · 3 failed`, even though the group's rows stay out of the main report.
 
 The block yields a `StatsGroupHandle` with the same `stats()` and `watch()` as `UpdateHandle` (a group has no return value, so there's no `result()`):
 

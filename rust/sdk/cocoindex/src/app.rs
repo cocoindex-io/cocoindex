@@ -12,7 +12,7 @@ use cocoindex_core::engine::app::{App as CoreApp, AppOpHandle, AppUpdateOptions}
 use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::environment::{Environment as CoreEnvironment, EnvironmentSettings};
 use cocoindex_core::engine::progress_display::{ProgressDisplayOptions, show_progress};
-use cocoindex_core::engine::stats::{ProcessingStats, TERMINATED_VERSION};
+use cocoindex_core::engine::stats::{ProcessingStats, ProcessingStatsGroup, TERMINATED_VERSION};
 use cocoindex_core::engine::target_state::{
     TargetStateProvider as CoreTargetStateProvider, TargetStateProviderRegistry,
 };
@@ -796,22 +796,18 @@ impl App {
     /// [`RunStats`] flattens away).
     pub(crate) fn update_stats_from_processing(processing_stats: &ProcessingStats) -> UpdateStats {
         let snapshot = processing_stats.snapshot();
+        let component_stats = |group: &ProcessingStatsGroup| ComponentStats {
+            num_execution_starts: group.num_execution_starts,
+            num_unchanged: group.num_unchanged,
+            num_adds: group.num_adds,
+            num_deletes: group.num_deletes,
+            num_reprocesses: group.num_reprocesses,
+            num_errors: group.num_errors,
+        };
         let by_component = snapshot
             .stats
             .iter()
-            .map(|(name, group)| {
-                (
-                    name.clone(),
-                    ComponentStats {
-                        num_execution_starts: group.num_execution_starts,
-                        num_unchanged: group.num_unchanged,
-                        num_adds: group.num_adds,
-                        num_deletes: group.num_deletes,
-                        num_reprocesses: group.num_reprocesses,
-                        num_errors: group.num_errors,
-                    },
-                )
-            })
+            .map(|(name, group)| (name.clone(), component_stats(group)))
             .collect();
         let status = if snapshot.ready {
             UpdateStatus::Ready
@@ -821,6 +817,7 @@ impl App {
         UpdateStats {
             by_component,
             status,
+            in_groups: component_stats(&snapshot.in_groups),
         }
     }
 
