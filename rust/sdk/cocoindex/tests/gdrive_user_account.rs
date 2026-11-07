@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use cocoindex::connectors::gdrive::{
-    GoogleDriveClient, GoogleDriveSource, GoogleEndpoints, SignInOptions, UserAccount,
+    GoogleDriveClient, GoogleDriveSource, GoogleEndpoints, SignInError, SignInOptions, UserAccount,
 };
 use sha2::Digest;
 use wiremock::matchers::{body_string_contains, header, method, path, query_param};
@@ -260,7 +260,7 @@ async fn sign_in_round_trip_stores_the_python_token_file() {
     assert!(!account.is_signed_in());
 
     let email = account
-        .sign_in_with(&flow.client_secrets, flow.options())
+        .sign_in_with(Some(&flow.client_secrets), flow.options())
         .await
         .unwrap();
     assert_eq!(email, EMAIL);
@@ -340,7 +340,7 @@ async fn without_a_browser_the_link_is_printed_and_the_redirect_pasted_back() {
         ..flow.options()
     };
     let email = account
-        .sign_in_with(&flow.client_secrets, options)
+        .sign_in_with(Some(&flow.client_secrets), options)
         .await
         .unwrap();
     assert_eq!(email, EMAIL);
@@ -364,7 +364,7 @@ async fn a_redirect_with_another_state_is_refused_and_nothing_is_stored() {
         ..flow.options()
     };
     let err = account
-        .sign_in_with(&flow.client_secrets, options)
+        .sign_in_with(Some(&flow.client_secrets), options)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("state does not match"), "{err}");
@@ -383,7 +383,7 @@ async fn a_cancelled_consent_is_reported() {
     };
     let err = flow
         .account()
-        .sign_in_with(&flow.client_secrets, options)
+        .sign_in_with(Some(&flow.client_secrets), options)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("cancelled"), "{err}");
@@ -400,13 +400,13 @@ async fn a_web_client_or_a_missing_client_file_is_refused() {
     .unwrap();
     let err = flow
         .account()
-        .sign_in_with(&web, flow.options())
+        .sign_in_with(Some(&web), flow.options())
         .await
         .unwrap_err();
     assert!(err.to_string().contains("Web application client"), "{err}");
     let err = flow
         .account()
-        .sign_in_with(flow.dir.path().join("missing.json"), flow.options())
+        .sign_in_with(Some(&flow.dir.path().join("missing.json")), flow.options())
         .await
         .unwrap_err();
     assert!(err.to_string().contains("No OAuth client file"), "{err}");
@@ -418,7 +418,7 @@ async fn an_expired_access_token_is_refreshed_and_the_file_updated() {
     let flow = Flow::start().await;
     let account = flow.account();
     account
-        .sign_in_with(&flow.client_secrets, flow.options())
+        .sign_in_with(Some(&flow.client_secrets), flow.options())
         .await
         .unwrap();
     // Expire the stored access token, as a run the next day would find it.
@@ -465,7 +465,7 @@ async fn a_revoked_sign_in_asks_to_sign_in_again_without_leaking_tokens() {
     let flow = Flow::start().await;
     let account = flow.account();
     account
-        .sign_in_with(&flow.client_secrets, flow.options())
+        .sign_in_with(Some(&flow.client_secrets), flow.options())
         .await
         .unwrap();
     let mut file = token_file(&flow.token_path());
@@ -493,7 +493,7 @@ async fn sign_out_revokes_and_deletes() {
     let flow = Flow::start().await;
     let account = flow.account();
     account
-        .sign_in_with(&flow.client_secrets, flow.options())
+        .sign_in_with(Some(&flow.client_secrets), flow.options())
         .await
         .unwrap();
     assert!(account.sign_out().await.unwrap());
@@ -516,7 +516,7 @@ async fn sign_out_revokes_and_deletes() {
 async fn sign_out_deletes_the_file_even_when_google_is_unreachable() {
     let flow = Flow::start().await;
     flow.account()
-        .sign_in_with(&flow.client_secrets, flow.options())
+        .sign_in_with(Some(&flow.client_secrets), flow.options())
         .await
         .unwrap();
     let unreachable =
@@ -535,7 +535,7 @@ async fn a_token_file_readable_by_others_is_refused() {
     let flow = Flow::start().await;
     let account = flow.account();
     account
-        .sign_in_with(&flow.client_secrets, flow.options())
+        .sign_in_with(Some(&flow.client_secrets), flow.options())
         .await
         .unwrap();
     std::fs::set_permissions(flow.token_path(), std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -549,7 +549,7 @@ async fn a_token_file_of_another_version_means_signing_in_again() {
     let flow = Flow::start().await;
     let account = flow.account();
     account
-        .sign_in_with(&flow.client_secrets, flow.options())
+        .sign_in_with(Some(&flow.client_secrets), flow.options())
         .await
         .unwrap();
     let mut file = token_file(&flow.token_path());
@@ -574,4 +574,58 @@ async fn a_run_without_a_sign_in_says_how_to_sign_in() {
             .contains("No usable Google sign-in is stored"),
         "{err}"
     );
+}
+
+/// Without a client file, the sign-in takes the client built into the crate;
+/// this build has none, and says how to sign in instead, as a `SignInError`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_build_without_a_builtin_client_asks_for_a_client_file() {
+    let flow = Flow::start().await;
+    let err = flow
+        .account()
+        .sign_in_with(None, flow.options())
+        .await
+        .unwrap_err();
+    let sign_in = SignInError::of(&err).expect("a typed sign-in error");
+    assert!(
+        matches!(sign_in, SignInError::Failed(message) if message.contains("no built-in OAuth client")),
+        "{err}"
+    );
+    assert!(
+        flow.opened.lock().unwrap().is_empty(),
+        "no consent page was opened"
+    );
+    assert!(!flow.token_path().exists());
+}
+
+/// The errors a run meets are typed: no stored sign-in is `SignInRequired`,
+/// an unusable client file is `Failed`, and a plain engine error is neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sign_in_errors_are_typed() {
+    let dir = tempfile::tempdir().unwrap();
+    let account = UserAccount::with_token_path(dir.path().join("none.json"));
+    let err = GoogleDriveClient::from_user_account(&account)
+        .err()
+        .unwrap();
+    assert!(
+        matches!(SignInError::of(&err), Some(SignInError::SignInRequired(_))),
+        "{err}"
+    );
+    assert_eq!(
+        SignInError::of(&err).unwrap().message(),
+        err.to_string(),
+        "the error displays as its message"
+    );
+
+    let flow = Flow::start().await;
+    let err = flow
+        .account()
+        .sign_in_with(Some(&flow.dir.path().join("missing.json")), flow.options())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(SignInError::of(&err), Some(SignInError::Failed(_))),
+        "{err}"
+    );
+    assert!(SignInError::of(&cocoindex::Error::engine("other")).is_none());
 }

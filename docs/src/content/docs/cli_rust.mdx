@@ -211,6 +211,21 @@ The scaffold is a crate with `Cargo.toml`, `src/main.rs` (a `lifespan`, an `app`
 * `--dir <DIR>`: Directory to create the project in.
 * `--sdk-path <PATH>`: Depend on a local checkout of the cocoindex Rust SDK (`rust/sdk/cocoindex`) instead of the git repository.
 
+### `google-drive`
+
+Sign a personal Google account in to the Google Drive connector (experimental). The same two commands as the Python CLI, over the same token file, so one sign-in serves both SDKs; see [Google Drive](../connectors/google_drive#signing-in-with-a-personal-account).
+
+```sh
+cocoindex google-drive sign-in [CLIENT_SECRETS]
+cocoindex google-drive sign-out
+```
+
+`sign-in` opens the consent page in the browser, or prints the link when this host has none, and keeps the tokens in a file readable by this user only. It uses CocoIndex's own OAuth client when this release includes one; to use a Desktop-app OAuth client of your own, pass `CLIENT_SECRETS`, the JSON file you downloaded for it. `sign-out` revokes the stored sign-in at Google and deletes its token file.
+
+**Options:**
+
+* `--token-path <FILE>`: Where to keep the sign-in (`sign-in`), or the sign-in to end (`sign-out`); default: `cocoindex/google_drive_token.json` under the user's config directory.
+
 ## Exit codes
 
 `0` on success (also after a clean Ctrl-C), `1` on an error (including a failed build), `2` on a usage error or a protocol mismatch between the CLI and the SDK the binary was built with.
