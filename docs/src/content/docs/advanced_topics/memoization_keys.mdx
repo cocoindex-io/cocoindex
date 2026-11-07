@@ -273,8 +273,14 @@ Add a `__coco_memo_state__` method alongside `__coco_memo_key__`. In Rust, imple
 ```python
 import os
 import hashlib
+import time
 from pathlib import Path
 import cocoindex as coco
+
+def settled_mtime(st: os.stat_result) -> int | None:
+    # Only an mtime older than any filesystem's timestamp tick (FAT: 2 s) at the read
+    # can vouch for the content later (see the note below).
+    return st.st_mtime_ns if time.time_ns() - st.st_mtime_ns >= 3_000_000_000 else None
 
 class LocalFile:
     def __init__(self, path: Path) -> None:
@@ -284,23 +290,26 @@ class LocalFile:
         # Identity only — which file is it?
         return str(self.path.resolve())
 
-    def __coco_memo_state__(self, prev_state: tuple[int, str] | coco.NonExistenceType) -> coco.MemoStateOutcome:
+    def __coco_memo_state__(self, prev_state: tuple[int | None, str] | coco.NonExistenceType) -> coco.MemoStateOutcome:
         st = os.stat(self.path)
-        new_mtime = st.st_mtime_ns
         if coco.is_non_existence(prev_state):
             # First run — compute initial state (memo_valid defaults to False,
             # which is fine since there's no previous cache to reuse)
             content_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()
-            return coco.MemoStateOutcome(state=(new_mtime, content_hash))
+            return coco.MemoStateOutcome(state=(settled_mtime(st), content_hash))
 
         prev_mtime, prev_hash = prev_state
-        if new_mtime == prev_mtime:
-            # mtime unchanged — definitely reusable, no content read needed
+        if st.st_mtime_ns == prev_mtime:
+            # mtime unchanged, and it was settled when recorded — reusable without reading
             return coco.MemoStateOutcome(state=prev_state, memo_valid=True)
-        # mtime changed — read content and check hash
-        content_hash = coco.connectorkits.fingerprint_bytes(self.path.read_bytes())
-        return coco.MemoStateOutcome(state=(new_mtime, content_hash), memo_valid=content_hash == prev_hash)
+        # mtime changed, or was not settled — read content and check hash
+        content_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        return coco.MemoStateOutcome(state=(settled_mtime(st), content_hash), memo_valid=content_hash == prev_hash)
 ```
+
+:::note[An equal mtime and the timestamp tick]
+Filesystems stamp modification times in ticks (NTFS follows the system timer, HFS+ and ext3 keep whole seconds, FAT two), and a rewrite in the same tick as the read keeps the old mtime. An equal mtime therefore only shows the content is unchanged if the mtime was already older than any tick when the content was read, which is why the example records `None` in place of a recent mtime. Built-in `FileLike` objects do the same.
+:::
 
 </Fragment>
 <Fragment slot="rust">
@@ -347,7 +356,7 @@ def __coco_memo_key__(self):
     st = os.stat(self.path)
     return (str(self.path.resolve()), st.st_mtime_ns, st.st_size)
 ```
-This works for simple cases. State validation becomes useful when you need multi-level checks (e.g. check mtime first, then content hash only if it differs), async operations, or stored metadata like ETags. With the `MemoStateOutcome` return, you can update the state (e.g. new mtime) without invalidating the cache when the content hasn't actually changed.
+This works for simple cases, though like the mtime shortcut above it misses a same-size rewrite within one timestamp tick. State validation becomes useful when you need multi-level checks (e.g. check mtime first, then content hash only if it differs), async operations, or stored metadata like ETags. With the `MemoStateOutcome` return, you can update the state (e.g. new mtime) without invalidating the cache when the content hasn't actually changed.
 :::
 
 ### Register a state function (when you don't control the type)
@@ -487,7 +496,15 @@ Logic, arguments and context values are known before a body runs. Some bodies re
 ```rust
 use cocoindex::Fingerprint;
 
-type FileState = (u64, Fingerprint);
+// The mtime is `None` until it settles: a rewrite in the same timestamp tick keeps the
+// mtime, so only an mtime older than any filesystem's tick (FAT: 2 s) at the read can
+// vouch for the content later.
+type FileState = (Option<u64>, Fingerprint);
+
+fn settled(mtime: u64) -> Option<u64> {
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    (now.saturating_sub(mtime) >= 3_000_000_000).then_some(mtime)
+}
 
 fn file_kind() -> DataDep<String, FileState> {
     DataDep::new("test-file", move |key: String, prev: FileState| async move {
@@ -496,11 +513,11 @@ fn file_kind() -> DataDep<String, FileState> {
             return MemoStateDecision::new(&prev, false);
         }
         let mtime = modified_nanos(&path);
-        if mtime == prev.0 {
+        if Some(mtime) == prev.0 {
             return MemoStateDecision::new(&prev, true);
         }
         let digest = Fingerprint::from_bytes(&std::fs::read(&path)?);
-        MemoStateDecision::new(&(mtime, digest), digest == prev.1)
+        MemoStateDecision::new(&(settled(mtime), digest), digest == prev.1)
     })
     .unwrap()
 }
@@ -513,7 +530,7 @@ fn read(ctx: &Ctx, kind: &DataDep<String, FileState>, path: &Path) -> Result<Vec
     ctx.use_data_dep(
         kind,
         &path.to_string_lossy().into_owned(),
-        &(mtime, Fingerprint::from_bytes(&data)),
+        &(settled(mtime), Fingerprint::from_bytes(&data)),
     )?;
     Ok(data)
 }

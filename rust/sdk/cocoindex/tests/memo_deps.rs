@@ -445,14 +445,24 @@ fn write(path: &Path, content: &str) {
     touch(path);
 }
 
+/// The last mtime `touch` set, by path. A rewrite in the same timestamp tick as an
+/// earlier write keeps that write's mtime, so a bump must also pass the last mtime it set.
+static LAST_MTIME: LazyLock<Mutex<HashMap<PathBuf, SystemTime>>> = LazyLock::new(Default::default);
+
 fn touch(path: &Path) {
-    let later = std::fs::metadata(path).unwrap().modified().unwrap() + Duration::from_millis(1);
+    let current = std::fs::metadata(path).unwrap().modified().unwrap();
+    let mut last_mtime = LAST_MTIME.lock().unwrap();
+    let later = last_mtime
+        .get(path)
+        .map_or(current, |&last| last.max(current))
+        + Duration::from_millis(1);
     std::fs::File::options()
         .write(true)
         .open(path)
         .unwrap()
         .set_modified(later)
         .unwrap();
+    last_mtime.insert(path.to_path_buf(), later);
 }
 
 /// The files a session reads are decided at run time, not by its arguments.

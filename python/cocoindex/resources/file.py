@@ -12,8 +12,9 @@ __all__ = [
 ]
 
 import codecs as _codecs
+import time as _time
 from abc import ABC as _ABC, abstractmethod as _abstractmethod
-from datetime import datetime as _datetime
+from datetime import datetime as _datetime, timedelta as _timedelta
 from pathlib import PurePath as _PurePath
 from typing import (
     Generic as _Generic,
@@ -53,6 +54,30 @@ class FileMetadata(_NamedTuple):
     content_fingerprint: bytes | None = None
 
 
+# How old a file's mtime must be, when its content is read for the memo state, to vouch
+# for that content later. A rewrite in the same timestamp tick as the read keeps the old
+# mtime: NTFS follows the system timer, HFS+ and ext3 keep whole seconds, FAT two. An
+# equal mtime therefore only shows the content is unchanged if that mtime was already
+# older than the coarsest tick, plus a margin for the filesystem's clock lagging the
+# reader's, when the content was read. Like git's "racily clean" check, this assumes the
+# file's timestamps and the reader's clock agree.
+_SETTLED_MTIME_AGE = _timedelta(seconds=3)
+
+
+def _settled_mtime(mtime: _datetime, read_at: float) -> _datetime | None:
+    """`mtime` if it was already settled when the content was read at `read_at`.
+
+    A future `mtime` is not settled.
+    """
+    try:
+        age = _timedelta(seconds=read_at - mtime.timestamp())
+    except (OverflowError, OSError, ValueError):
+        # The platform cannot convert this naive mtime (Windows rejects times before
+        # 1970), so it is far from any recent write.
+        return mtime
+    return mtime if age >= _SETTLED_MTIME_AGE else None
+
+
 class FileLike(_ABC, _Generic[ResolvedPathT]):
     """Base class for file-like objects with lazy metadata, content caching, and memoization.
 
@@ -71,6 +96,8 @@ class FileLike(_ABC, _Generic[ResolvedPathT]):
     _file_path: "FilePath[ResolvedPathT]"
     _metadata: FileMetadata | None
     _cached_content: bytes | None
+    # When the read that produced `_cached_content` started (wall clock).
+    _cached_content_read_at: float | None
     _cached_content_fingerprint: bytes | None
 
     def __init__(
@@ -82,6 +109,7 @@ class FileLike(_ABC, _Generic[ResolvedPathT]):
         self._file_path = file_path
         self._metadata = _metadata
         self._cached_content = None
+        self._cached_content_read_at = None
         self._cached_content_fingerprint = None
 
     @property
@@ -134,7 +162,9 @@ class FileLike(_ABC, _Generic[ResolvedPathT]):
         """
         if size < 0:
             if self._cached_content is None:
-                self._cached_content = await self._read_impl()
+                read_at = _time.time()
+                content = await self._read_impl()
+                self._cached_content, self._cached_content_read_at = content, read_at
             return self._cached_content
         if self._cached_content is not None:
             return self._cached_content[:size]
@@ -181,27 +211,39 @@ class FileLike(_ABC, _Generic[ResolvedPathT]):
         return self._file_path.__coco_memo_key__()
 
     async def __coco_memo_state__(
-        self, prev_state: tuple[_datetime, bytes] | _NonExistenceType
+        self, prev_state: tuple[_datetime | None, bytes] | _NonExistenceType
     ) -> _MemoStateOutcome:
+        started_at = _time.time()
         metadata = await self._ensure_metadata()
         current_mtime = metadata.modified_time
 
         if _is_non_existence(prev_state):
             fp = await self.content_fingerprint()
-            return _MemoStateOutcome(state=(current_mtime, fp))
+            return _MemoStateOutcome(
+                state=(self._recorded_mtime(current_mtime, started_at), fp)
+            )
 
         assert isinstance(prev_state, tuple)
         prev_mtime, prev_fp = prev_state
         # An equal mtime skips the fingerprint, unless the backend gives one for free:
-        # mtimes can be coarse (S3 has whole seconds) and miss a quick overwrite.
+        # mtimes can be coarse (S3 has whole seconds) and miss a quick overwrite. A
+        # recorded `None` (unsettled when read) never equals an mtime.
         if current_mtime == prev_mtime and metadata.content_fingerprint is None:
             return _MemoStateOutcome(state=prev_state, memo_valid=True)
 
         fp = await self.content_fingerprint()
         return _MemoStateOutcome(
-            state=(current_mtime, fp),
+            state=(self._recorded_mtime(current_mtime, started_at), fp),
             memo_valid=(fp == prev_fp),
         )
+
+    def _recorded_mtime(self, mtime: _datetime, started_at: float) -> _datetime | None:
+        # The fingerprint may come from content read before this check started (both
+        # are cached), so the mtime's age is taken at the earlier of the two.
+        read_at = started_at
+        if self._cached_content_read_at is not None:
+            read_at = min(read_at, self._cached_content_read_at)
+        return _settled_mtime(mtime, read_at)
 
 
 class FilePathMatcher(_Protocol):
