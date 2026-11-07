@@ -73,7 +73,9 @@ def _rust_binary() -> Path:
         cwd=BENCH_ROOT,
         check=True,
     )
-    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", RUST_MANIFEST.parent / "target"))
+    target_dir = Path(
+        os.environ.get("CARGO_TARGET_DIR", RUST_MANIFEST.parent / "target")
+    )
     return target_dir / "release" / "state_store"
 
 
@@ -101,7 +103,9 @@ def _cell(language: str, rust_bin: Path | None, n: int, m: int) -> CellResult:
         cold = _run(update_cmd, env, PY_DIR)
         warm = _run(update_cmd, env, PY_DIR)
         drop = _run(drop_cmd, env, PY_DIR)
-    return CellResult(language=language, n=n, m=m, cold_s=cold, warm_s=warm, drop_s=drop)
+    return CellResult(
+        language=language, n=n, m=m, cold_s=cold, warm_s=warm, drop_s=drop
+    )
 
 
 def _print_table(results: list[CellResult]) -> None:
