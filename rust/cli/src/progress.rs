@@ -65,6 +65,16 @@ impl Renderer {
         self.draw();
     }
 
+    /// The same for a line of the child's stderr, the stream the block draws on.
+    pub fn error_text(&mut self, text: &str) {
+        self.clear();
+        let mut err = std::io::stderr().lock();
+        let _ = writeln!(err, "{text}");
+        let _ = err.flush();
+        drop(err);
+        self.draw();
+    }
+
     pub fn progress(&mut self, ready: bool, components: BTreeMap<String, ComponentStatsWire>) {
         let became_ready = ready && self.ready_at.is_none();
         if became_ready {

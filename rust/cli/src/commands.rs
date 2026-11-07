@@ -26,6 +26,7 @@ async fn query_apps(exe: &Path) -> CliResult<(Vec<AppInfo>, String)> {
     let mut found = None;
     let outcome = child::run(exe, "ls", &[], Interrupt::Default, |output| match output {
         Output::Text(text) => println!("{text}"),
+        Output::ErrorText(text) => eprintln!("{text}"),
         Output::Event(Event::Apps { apps, db_path }) => found = Some((apps, db_path)),
         Output::Event(_) => {}
     })
@@ -308,6 +309,7 @@ pub async fn update(args: UpdateArgs) -> CliResult<()> {
         Interrupt::Cancel { quiet },
         |output| match output {
             Output::Text(text) => renderer.text(text),
+            Output::ErrorText(text) => renderer.error_text(text),
             Output::Event(Event::Start { app, db_path }) => {
                 if !quiet {
                     renderer.text(&format!(
@@ -402,6 +404,7 @@ pub async fn drop_app(args: DropArgs) -> CliResult<()> {
         Interrupt::Cancel { quiet },
         |output| match output {
             Output::Text(text) => println!("{text}"),
+            Output::ErrorText(text) => eprintln!("{text}"),
             Output::Event(Event::Start { app, db_path }) => {
                 if !quiet {
                     println!(

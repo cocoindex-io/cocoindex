@@ -3,16 +3,25 @@
 use std::io::Write as _;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
+use std::time::Duration;
 
 use cocoindex::cli::protocol::{ConfirmAction, Event, Line, MARKER, PROTOCOL_VERSION, decode_line};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::error::{CliError, CliResult, fail};
 
-/// What the child wrote on stdout, in order.
+/// How long to wait for the rest of the child's stderr after it exited. A
+/// process it left behind can hold the pipe open, so end of file may never come.
+const STDERR_DRAIN: Duration = Duration::from_millis(200);
+
+/// What the child wrote, in order for each stream.
 pub enum Output<'a> {
-    /// The user's own output, to forward.
+    /// The user's own stdout output, to forward.
     Text(&'a str),
+    /// A line of the child's stderr (engine logs, the user's `eprintln!`), to
+    /// forward. It comes through here so that the progress block, drawn on the
+    /// same stream, can make room for it.
+    ErrorText(&'a str),
     /// A protocol record after the handshake (including the terminal one).
     Event(Event),
 }
@@ -92,6 +101,23 @@ async fn pending_answer(answer: &mut Option<tokio::sync::oneshot::Receiver<bool>
     }
 }
 
+/// Forward the line in `buf`, unless the read found the end of the stream (or
+/// failed, which ends the forwarding, not the run). Returns whether the stream
+/// is still open.
+fn forward_stderr(
+    read: std::io::Result<usize>,
+    buf: &mut Vec<u8>,
+    on_output: &mut impl FnMut(Output<'_>),
+) -> bool {
+    if !matches!(read, Ok(n) if n > 0) {
+        return false;
+    }
+    let text = String::from_utf8_lossy(buf).into_owned();
+    buf.clear();
+    on_output(Output::ErrorText(text.trim_end_matches(['\n', '\r'])));
+    true
+}
+
 /// Run `<exe> __coco <verb> --protocol N <flags>` and feed its output to
 /// `on_output`. The first record must be a matching `hello`. A `confirm`
 /// record (sent when `flags` has `--confirm`) is answered here: the user is
@@ -127,7 +153,7 @@ pub async fn run(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(fail(&format!("could not run {}", exe.display())))?;
@@ -140,6 +166,14 @@ pub async fn run(
         ));
     };
     let mut reader = BufReader::new(stdout);
+    let Some(stderr) = child.stderr.take() else {
+        return Err(CliError::failure(
+            "could not read the target binary's error output",
+        ));
+    };
+    let mut err_reader = BufReader::new(stderr);
+    let mut err_buf = Vec::new();
+    let mut err_open = true;
 
     let mut buf = Vec::new();
     let mut greeted = false;
@@ -148,6 +182,9 @@ pub async fn run(
     let mut ctrl_c_count = 0u32;
     loop {
         tokio::select! {
+            read = err_reader.read_until(b'\n', &mut err_buf), if err_open => {
+                err_open = forward_stderr(read, &mut err_buf, &mut on_output);
+            }
             read = reader.read_until(b'\n', &mut buf) => {
                 let n = read.map_err(fail("reading the target binary's output"))?;
                 if n == 0 {
@@ -230,10 +267,24 @@ pub async fn run(
             }
         }
     }
-    let status = child
-        .wait()
-        .await
-        .map_err(fail("waiting for the target binary"))?;
+    // The child can write to stderr while it shuts down, with stdout closed.
+    let status = loop {
+        tokio::select! {
+            status = child.wait() => {
+                break status.map_err(fail("waiting for the target binary"))?;
+            }
+            read = err_reader.read_until(b'\n', &mut err_buf), if err_open => {
+                err_open = forward_stderr(read, &mut err_buf, &mut on_output);
+            }
+        }
+    };
+    let _ = tokio::time::timeout(STDERR_DRAIN, async {
+        while err_open {
+            let read = err_reader.read_until(b'\n', &mut err_buf).await;
+            err_open = forward_stderr(read, &mut err_buf, &mut on_output);
+        }
+    })
+    .await;
     if let Some(err) = mismatch {
         return Err(err);
     }

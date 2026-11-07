@@ -312,6 +312,31 @@ async def test_stats_group_report_to_stdout_plain(
     assert "✓ Indexing · Done in" in out
 
 
+@coco.fn()
+async def _fail_in_group() -> None:
+    raise ValueError("boom")
+
+
+@coco.fn
+async def _main_group_failure() -> None:
+    with coco.stats_group("Indexing"):
+        await coco.mount(coco.component_subpath("m"), _fail_in_group)
+
+
+@pytest.mark.asyncio
+async def test_failure_in_a_group_fails_the_final_status(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    app = coco.App(
+        coco.AppConfig(name="test_sg_final_status", environment=coco_env),
+        _main_group_failure,
+    )
+    await coco.show_progress(app.update())
+    out = capfd.readouterr().out
+    assert "✗ Done in" in out
+    assert "1 failed" in out
+
+
 # --- 11. live member: group readies + splits out, no hang ---
 
 

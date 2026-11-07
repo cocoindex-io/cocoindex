@@ -96,7 +96,8 @@ exits 1) and build and run an `init` scaffold.
 **Framing.** One record per line on the child's stdout: ASCII record separator `U+001E`, then a
 JSON object with an `event` tag, then `\n`. The child flushes after every record. Any stdout
 text without the separator (or before it on the same line) is user output; the CLI forwards it
-verbatim. Stderr is inherited. Lines whose JSON does not parse are reported as malformed and
+verbatim. Stderr is read line by line and forwarded to the CLI's stderr, the stream the progress
+block draws on, so that the block can make room for it. Lines whose JSON does not parse are reported as malformed and
 otherwise ignored.
 
 **Invocation.** `<bin> __coco <ls|update|drop> --protocol 1 [--app NAME] [--live]

@@ -193,19 +193,18 @@ class ComponentContext:
                 # the ExceptionContext metadata at all. Don't propagate.
                 mode = display_mode()
                 if mode is not None:
-                    # A progress display lists the failures. On a terminal it
-                    # shows each one, so the log keeps it at DEBUG; in
-                    # scrolling output one line each says when it happened.
-                    # The traceback is at DEBUG either way.
+                    # A progress display lists only the first few failures of
+                    # the stats it draws, so this log is the complete record.
+                    # On a terminal a traceback per failure would push the
+                    # display off screen; in scrolling output it costs nothing.
+                    path = readable_path(str(stable_path))
                     message = "%s failed: %s: %s"
-                    args = (readable_path(str(stable_path)), type(exc).__name__, exc)
+                    args = (path, type(exc).__name__, exc)
                     if mode is DisplayMode.TERMINAL:
-                        _failure_logger.debug(message, *args)
-                    else:
                         _failure_logger.error(message, *args)
-                    _failure_logger.debug(
-                        "traceback of the failure above", exc_info=exc
-                    )
+                        _failure_logger.debug("traceback of %s", path, exc_info=exc)
+                    else:
+                        _failure_logger.error(message, *args, exc_info=exc)
                 else:
                     _logger.error("component build failed: %s", exc, exc_info=exc)
                 return
@@ -485,9 +484,11 @@ def stats_group(
     Entering and exiting the block only bound *member registration* — exit is
     non-blocking; the group becomes ready asynchronously once the body has
     exited and all members are ready. With ``report_to_stdout`` truthy the group
-    is also rendered as plain, title-prefixed log lines (interleaved above the
-    progress region when a TTY display is active); pass a ``timedelta`` to set
-    the refresh interval.
+    is also reported: as a section of the progress region while a terminal
+    display runs, otherwise as plain, title-prefixed blocks. Pass a ``timedelta``
+    to set the refresh interval of those blocks; a section redraws with its
+    region. Either way a failure in the group counts in the enclosing report's
+    final status.
 
     This is a plain (synchronous) ``with`` block — like ``component_subpath`` —
     even though the body typically ``await``s ``mount``/``use_mount``.

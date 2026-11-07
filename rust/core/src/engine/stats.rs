@@ -51,6 +51,23 @@ pub struct FailureRecord {
     pub message: String,
 }
 
+/// The message a failure row shows: the first line of the underlying error.
+/// Context layers stay out, as an error's `Display` puts them first, under a
+/// bare `Context:` line. Control characters become spaces: the display draws
+/// this text in place and counts its cells, and a tab or a carriage return
+/// would move the terminal's cursor past that count.
+pub fn failure_message(err: &Error) -> String {
+    let text = err.without_contexts().to_string();
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default();
+    line.trim()
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 /// A versioned snapshot of processing stats, combining the stats map with a version counter.
 #[derive(Default, Clone)]
 pub struct VersionedProcessingStats {
@@ -61,6 +78,9 @@ pub struct VersionedProcessingStats {
     pub ready: bool,
     /// The first `MAX_RECORDED_FAILURES` failures, in the order they happened.
     pub failures: Vec<FailureRecord>,
+    /// Failures inside stats groups opened under this scope, which their own
+    /// stats count. Only the final status line reads this.
+    pub failed_in_groups: u64,
 }
 
 /// Thread-safe container for processing stats with version tracking and change notification.
@@ -73,6 +93,8 @@ pub struct ProcessingStats {
     /// terminated-only waiters aren't woken on every stats update.
     terminated_tx: watch::Sender<bool>,
     terminated_rx: watch::Receiver<bool>,
+    /// The enclosing stats, for a stats group.
+    parent: Option<Box<ProcessingStats>>,
 }
 
 impl Default for ProcessingStats {
@@ -91,6 +113,15 @@ impl ProcessingStats {
             version_rx,
             terminated_tx,
             terminated_rx,
+            parent: None,
+        }
+    }
+
+    /// The stats of a group opened under `parent`.
+    pub fn new_in(parent: &ProcessingStats) -> Self {
+        Self {
+            parent: Some(Box::new(parent.clone())),
+            ..Self::new()
         }
     }
 
@@ -109,12 +140,19 @@ impl ProcessingStats {
         let _ = self.version_tx.send(version);
     }
 
-    /// Keep a failure for the summary, up to `MAX_RECORDED_FAILURES`. Does not
-    /// bump the version: the `update` that counts the failure does.
+    /// Keep a failure for the summary, up to `MAX_RECORDED_FAILURES`, and count
+    /// it in every enclosing stats. Does not bump the version: the `update` that
+    /// counts the failure does.
     pub fn record_failure(&self, failure: FailureRecord) {
         let mut guard = self.inner.lock().unwrap();
         if guard.failures.len() < MAX_RECORDED_FAILURES {
             guard.failures.push(failure);
+        }
+        drop(guard);
+        let mut parent = self.parent.as_deref();
+        while let Some(stats) = parent {
+            stats.inner.lock().unwrap().failed_in_groups += 1;
+            parent = stats.parent.as_deref();
         }
     }
 
@@ -166,6 +204,32 @@ impl ProcessingStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_failure_message_is_the_first_line_of_the_underlying_error() {
+        let err = Error::internal_msg("  boom\tnow\rhere\nsecond line").context("while doing x");
+        assert_eq!(failure_message(&err), "boom now here");
+    }
+
+    #[test]
+    fn test_group_failures_reach_every_enclosing_stats_past_the_recorded_limit() {
+        let root = ProcessingStats::new();
+        let group = ProcessingStats::new_in(&root);
+        let nested = ProcessingStats::new_in(&group);
+        for _ in 0..MAX_RECORDED_FAILURES + 1 {
+            nested.record_failure(FailureRecord {
+                processor: "p".to_string(),
+                component: crate::state::stable_path::StablePath::root(),
+                message: "boom".to_string(),
+            });
+        }
+        let count = MAX_RECORDED_FAILURES as u64 + 1;
+        assert_eq!(nested.snapshot().failures.len(), MAX_RECORDED_FAILURES);
+        assert_eq!(nested.snapshot().failed_in_groups, 0);
+        assert_eq!(group.snapshot().failed_in_groups, count);
+        assert_eq!(root.snapshot().failed_in_groups, count);
+        assert!(root.snapshot().failures.is_empty());
+    }
 
     #[test]
     fn test_version_increments_on_update() {
