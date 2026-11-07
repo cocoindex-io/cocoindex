@@ -32,12 +32,16 @@ fn neo4j_error(e: neo4rs::Error) -> Error {
 /// A transaction over the server's memory limit. Neo4j reports it as a
 /// transient error, but retrying the same transaction fails the same way.
 fn is_memory_limit(e: &neo4rs::Error) -> bool {
-    matches!(e, neo4rs::Error::Neo4j(err) if err.kind() == neo4rs::Neo4jErrorKind::Transient && err.code().contains("Memory"))
+    is_transient(e) && matches!(e, neo4rs::Error::Neo4j(err) if err.code().contains("Memory"))
 }
 
+/// A transient error Neo4j expects the client to retry (a deadlock).
 fn is_retryable(e: &neo4rs::Error) -> bool {
+    is_transient(e) && !is_memory_limit(e)
+}
+
+fn is_transient(e: &neo4rs::Error) -> bool {
     matches!(e, neo4rs::Error::Neo4j(err) if err.kind() == neo4rs::Neo4jErrorKind::Transient)
-        && !is_memory_limit(e)
 }
 
 /// The marker [`cypher_graph::CypherExecutor::is_transaction_too_large`]
@@ -124,7 +128,8 @@ impl cypher_graph::CypherExecutor for Graph {
             .map(|statement| bolt_query(&statement.cypher, &statement.params))
             .collect::<Result<Vec<_>>>()?;
         let mut backoff = TXN_RETRY_INITIAL_BACKOFF;
-        for attempt in 1.. {
+        let mut attempt = 1;
+        loop {
             match self.run_in_txn(&queries).await {
                 Ok(()) => return Ok(()),
                 Err(e) if is_memory_limit(&e) => {
@@ -133,11 +138,11 @@ impl cypher_graph::CypherExecutor for Graph {
                 Err(e) if is_retryable(&e) && attempt < TXN_MAX_ATTEMPTS => {
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(TXN_RETRY_MAX_BACKOFF);
+                    attempt += 1;
                 }
                 Err(e) => return Err(neo4j_error(e)),
             }
         }
-        unreachable!("the retry loop returns")
     }
 
     fn is_transaction_too_large(&self, error: &Error) -> bool {
