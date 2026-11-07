@@ -757,6 +757,10 @@ let schema = sqlite::TableSchema::from_row::<DocEmbedding>(["id"])?
     .with_column_type("text", "VARCHAR(2000)")?;
 ```
 
+BigQuery and Snowflake take a `ColumnDef`, so an override can also write the
+value through `PARSE_JSON`:
+`.with_column_type("payload", bigquery::ColumnDef::new("JSON").parse_json())?`.
+
 To encode a value differently on the way to the store, put
 `#[serde(serialize_with = "…")]` on the field.
 
@@ -766,6 +770,16 @@ SQLite `vec0` tables need the `sqlite-vec` extension in the connection.
 ```rust
 let db = sqlite::Database::connect_with_vec("app.db", "/usr/local/lib/vec0").await?;
 ```
+
+`connect_with_options` sets the lock wait (`busy_timeout`, five seconds by
+default) and the extension together.
+
+Postgres and SQLite targets write a batch of rows in a few statements, not one
+per row: Postgres sends parameterized `unnest` statements of 2,000 rows each,
+run concurrently, and SQLite sends multi-row `VALUES` statements as large as
+its bind limit allows. `postgres::read_table` streams a table's rows from one
+snapshot instead of loading them all; collect them for `mount_each!` with
+`try_collect()`.
 
 Doris has a query builder for vector search over a table CocoIndex maintains:
 

@@ -16,6 +16,8 @@ cocoindex::context_key!(
     static DB: sqlite::Database, key = "sqlite_target_test_db"
 );
 
+mod common;
+
 #[derive(Clone, Serialize)]
 struct Item {
     id: i64,
@@ -49,7 +51,10 @@ async fn temp_db() -> (sqlite::Database, tempfile::TempDir) {
     (db, dir)
 }
 
+/// Build an app over a fresh state directory. Installs the SQL statement log
+/// first: it has to be in place before the engine initializes its own tracing.
 async fn build_app(db: &sqlite::Database) -> (App, tempfile::TempDir) {
+    common::record_sql_statements();
     let dir = tempfile::tempdir().unwrap();
     let app = Environment::builder()
         .db_path(dir.path().join(".cocoindex_db"))
@@ -582,6 +587,7 @@ struct DocRow {
 }
 
 async fn build_app_with_embedder(db: &sqlite::Database, name: &str) -> (App, tempfile::TempDir) {
+    common::record_sql_statements();
     let dir = tempfile::tempdir().unwrap();
     let app = Environment::builder()
         .db_path(dir.path().join(".cocoindex_db"))
@@ -708,4 +714,114 @@ async fn sqlite_connect_with_vec_creates_and_searches_a_vec0_table() {
     .await
     .unwrap();
     assert_eq!(nearest, vec![2]);
+}
+
+async fn declare_batch(ctx: Ctx, items: Vec<Item>) -> Result<()> {
+    let table = sqlite::mount_table_target(&ctx, &DB, "batch_items", item_schema()).await?;
+    for it in &items {
+        table.declare_row(&ctx, it)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn sqlite_applies_a_batch_in_chunked_statements() {
+    let (db, _dbdir) = temp_db().await;
+    let (app, _appdir) = build_app(&db).await;
+
+    // 20,000 rows of 2 columns: two upsert statements (16,383 rows fit the
+    // 32,766-parameter bind limit), not one statement per row.
+    let items: Vec<Item> = (1..=20_000).map(|id| item(id, &format!("l{id}"))).collect();
+    app.run(|ctx| declare_batch(ctx, items)).await.unwrap();
+    let inserts = common::sql_statements_containing("INSERT INTO \"batch_items\"");
+    assert_eq!(inserts.len(), 2, "{}", inserts.len());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM batch_items")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 20_000);
+
+    // Keep 10 rows: 19,990 deletes in one `IN` list, 10 upserts in one statement.
+    let kept: Vec<Item> = (1..=10).map(|id| item(id, &format!("k{id}"))).collect();
+    app.run(|ctx| declare_batch(ctx, kept)).await.unwrap();
+    let deletes = common::sql_statements_containing("DELETE FROM \"batch_items\"");
+    assert_eq!(deletes.len(), 1, "{}", deletes.len());
+    let inserts = common::sql_statements_containing("INSERT INTO \"batch_items\"");
+    assert_eq!(inserts.len(), 3, "{}", inserts.len());
+    assert_eq!(
+        fetch(&db, "batch_items").await,
+        (1..=10)
+            .map(|id| (id, format!("k{id}")))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[derive(Clone, Serialize)]
+struct Pair {
+    left: String,
+    right: i64,
+    label: String,
+}
+
+async fn declare_pairs(ctx: Ctx, pairs: Vec<Pair>) -> Result<()> {
+    let schema = sqlite::TableSchema::new(
+        [
+            ("left", sqlite::ColumnDef::new("TEXT")),
+            ("right", sqlite::ColumnDef::new("INTEGER")),
+            ("label", sqlite::ColumnDef::new("TEXT")),
+        ],
+        ["left", "right"],
+    )?;
+    let table = sqlite::mount_table_target(&ctx, &DB, "pairs", schema).await?;
+    for pair in &pairs {
+        table.declare_row(&ctx, pair)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn sqlite_composite_key_rows_are_deleted_by_row_value() {
+    let (db, _dbdir) = temp_db().await;
+    let (app, _appdir) = build_app(&db).await;
+    fn pair(left: &str, right: i64) -> Pair {
+        Pair {
+            left: left.to_string(),
+            right,
+            label: format!("{left}{right}"),
+        }
+    }
+    app.run(|ctx| declare_pairs(ctx, vec![pair("a", 1), pair("a", 2), pair("b", 1)]))
+        .await
+        .unwrap();
+    // Dropping (a, 2) and (b, 1) must leave (a, 1): the keys are matched as
+    // rows, not column by column.
+    app.run(|ctx| declare_pairs(ctx, vec![pair("a", 1)]))
+        .await
+        .unwrap();
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT left, right FROM pairs ORDER BY left, right")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(rows, vec![("a".to_string(), 1)]);
+}
+
+#[tokio::test]
+async fn sqlite_connect_with_options_sets_the_busy_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("options.db");
+    let db = sqlite::Database::connect_with_options(
+        path.to_str().unwrap(),
+        sqlite::ConnectOptions {
+            busy_timeout: std::time::Duration::from_millis(1234),
+            vec_extension: None,
+        },
+    )
+    .await
+    .unwrap();
+    let timeout_ms: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(timeout_ms, 1234);
 }

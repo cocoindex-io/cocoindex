@@ -20,6 +20,7 @@
 use cocoindex::connectors::postgres;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::prelude::*;
+use futures::TryStreamExt as _;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -122,7 +123,10 @@ async fn app_main(ctx: Ctx) -> Result<()> {
     )?;
 
     let source_db = ctx.get_key(&SOURCE_DB)?;
-    let products: Vec<SourceProduct> = postgres::read_table(source_db, "source_products").await?;
+    let products: Vec<SourceProduct> = postgres::read_table(source_db, "source_products")
+        .await?
+        .try_collect()
+        .await?;
     println!("read {} source product(s)", products.len());
 
     // One processing component per source row: each row's output syncs and
