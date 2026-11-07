@@ -1408,3 +1408,67 @@ async fn lancedb_from_row_resolves_vector_from_context_provider() -> Result<()> 
     assert_eq!(table.count_rows(None).await.unwrap(), 1);
     Ok(())
 }
+
+static TARGET_ARG_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A LanceDB handle as a mount argument: the component is keyed by the id and
+/// the table's stable key.
+#[cocoindex::function]
+async fn declare_row_in_component(
+    ctx: &Ctx,
+    id: i64,
+    table: lancedb::LanceTableTarget,
+) -> Result<()> {
+    TARGET_ARG_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    table.declare_row(
+        ctx,
+        &Row {
+            id,
+            text: format!("doc{id}"),
+            embedding: vec![1.0, 0.0, 0.0],
+        },
+    )
+}
+
+#[tokio::test]
+async fn lancedb_table_target_is_a_mount_argument_keyed_by_its_table() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let db = LanceDatabase::connect(tempdir.path().join("data").to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceTargetArgTest")
+        .await?;
+    let calls = || TARGET_ARG_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+    let run = |table_name: &'static str| {
+        let app = app.clone();
+        async move {
+            app.run(move |ctx| async move {
+                let table = lancedb::mount_table_target(&ctx, &DB, table_name, schema()).await?;
+                cocoindex::use_mount_each!(vec![("1".to_string(), 1_i64)], |id| {
+                    declare_row_in_component(ctx, id, table.clone())
+                })
+                .await?;
+                Ok(())
+            })
+            .await
+        }
+    };
+
+    run(TABLE).await?;
+    assert_eq!(calls(), 1);
+    assert_eq!(row_count(&db).await, 1);
+
+    // The same table: the unchanged child is skipped, and its row stays.
+    run(TABLE).await?;
+    assert_eq!(calls(), 1, "same table: the child is skipped");
+    assert_eq!(row_count(&db).await, 1);
+
+    // Another table is another key: the child runs again and writes there.
+    run(HALF_TABLE).await?;
+    assert_eq!(calls(), 2, "another table: the child runs");
+    assert!(table_exists(&db, HALF_TABLE).await);
+    Ok(())
+}

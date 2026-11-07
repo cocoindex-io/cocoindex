@@ -301,21 +301,19 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         files.len(),
         sourcedir.display()
     );
-    let docs: Vec<DocTriples> = ctx
-        .use_mount_each(
-            files,
-            |(key, _)| format!("file/{key}"),
-            move |ctx, (_, file)| {
-                let document_table = document_table.clone();
-                async move { process_file(&ctx, file, document_table).await }
-            },
-        )
-        .await?;
+    let docs: Vec<DocTriples> = use_mount_each!(files, |file| {
+        process_file(ctx, file, document_table.clone())
+    })
+    .await?;
 
     // --- Phase 2: build the concept graph ---
-    ctx.mount(&"build_graph", move |ctx| async move {
-        build_graph(&ctx, docs, entity_table, relationship_rel, mention_rel).await
-    })
+    mount!(build_graph(
+        ctx,
+        docs,
+        entity_table,
+        relationship_rel,
+        mention_rel
+    ))
     .await?
     .ready()
     .await

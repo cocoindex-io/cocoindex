@@ -296,28 +296,19 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         files.len(),
         sourcedir.display()
     );
-    let products: Vec<ProductTaxonomies> = ctx
-        .use_mount_each(
-            files,
-            |(key, _)| format!("file/{key}"),
-            move |ctx, (_, file)| {
-                let product_table = product_table.clone();
-                async move { process_file(&ctx, file, product_table).await }
-            },
-        )
-        .await?;
+    let products: Vec<ProductTaxonomies> = use_mount_each!(files, |file| {
+        process_file(ctx, file, product_table.clone())
+    })
+    .await?;
 
     // --- Phase 2: build the graph ---
-    ctx.mount(&"build_graph", move |ctx| async move {
-        build_graph(
-            &ctx,
-            products,
-            taxonomy_table,
-            product_taxonomy_rel,
-            complementary_rel,
-        )
-        .await
-    })
+    mount!(build_graph(
+        ctx,
+        products,
+        taxonomy_table,
+        product_taxonomy_rel,
+        complementary_rel
+    ))
     .await?
     .ready()
     .await

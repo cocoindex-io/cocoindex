@@ -391,11 +391,19 @@ fn lancedb_column_def(field: &crate::row_schema::SchemaField) -> Result<ColumnDe
 
 /// A declarative LanceDB table target — a handle to declare rows on. See the
 /// [module docs](self).
-#[derive(Clone)]
+///
+/// As a `mount_each!` / `use_mount!` or memoized function argument it
+/// fingerprints by its stable key, the database key and table name; the schema,
+/// managed-by flag, and runtime provider are not part of the identity.
+#[derive(Clone, Serialize)]
 pub struct LanceTableTarget {
+    db_key: Arc<str>,
     table_name: Arc<str>,
+    #[serde(skip)]
     table_schema: TableSchema,
+    #[serde(skip)]
     managed_by: ManagedBy,
+    #[serde(skip)]
     rows: TargetStateProvider<RowState>,
 }
 
@@ -494,6 +502,7 @@ pub fn declare_table_target_with_options(
         RowHandler::new(db.name().to_string(), spec.clone(), BTreeSet::new()),
     )?;
     Ok(LanceTableTarget {
+        db_key: Arc::from(db.name()),
         table_name: Arc::from(table_name),
         table_schema: spec.table_schema,
         managed_by: spec.managed_by,
@@ -535,6 +544,7 @@ pub async fn mount_table_target_with_options(
     let spec = target_state.value().clone();
     let rows = mount_target::<TableSpec, RowState>(ctx, target_state).await?;
     Ok(LanceTableTarget {
+        db_key: Arc::from(db.name()),
         table_name: Arc::from(table_name),
         table_schema: spec.table_schema,
         managed_by: spec.managed_by,
