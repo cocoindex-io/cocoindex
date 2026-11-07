@@ -3675,11 +3675,11 @@ mod tests {
         );
     }
 
-    /// A memo says the subtree is up to date, which a run under a selector
+    /// A memo says the subtree is up to date, which a run that left out a child
     /// cannot say. It stores none, and retires the one it ran over: a later
-    /// update must run the component to reach the children this run left out.
+    /// update must run the component to reach that child.
     #[tokio::test]
-    async fn a_run_under_a_selector_stores_no_memo_and_drops_the_stored_one() {
+    async fn a_run_that_left_out_a_child_stores_no_memo_and_drops_the_stored_one() {
         let (app, _dir) = test_app("selector_memo").await;
         let ran = Arc::new(Mutex::new(Vec::new()));
         let app_store = app.app_ctx().persisting_app_store().clone();
@@ -3695,12 +3695,43 @@ mod tests {
 
         run_update(
             &app,
-            mounting_root("same key", &["a"], &ran),
+            mounting_root("same key", &["a", "b"], &ran),
             AppUpdateOptions::default(),
         )
         .await;
         assert!(root_memo().await.is_some());
 
+        run_update(
+            &app,
+            mounting_root("same key", &["a", "b"], &ran),
+            AppUpdateOptions {
+                full_reprocess: true,
+                component_selector: select("a"),
+                ..AppUpdateOptions::default()
+            },
+        )
+        .await;
+        assert!(root_memo().await.is_none());
+
+        // Nothing left out, though under a selector: the run is complete.
+        let key_path_of =
+            |key: &str| StablePath::root().concat_part(StableKey::Str(Arc::from(key)));
+        run_update(
+            &app,
+            mounting_root("same key", &["a", "b"], &ran),
+            AppUpdateOptions {
+                full_reprocess: true,
+                component_selector: Some(ComponentSelector::new([
+                    key_path_of("a"),
+                    key_path_of("b"),
+                ])),
+                ..AppUpdateOptions::default()
+            },
+        )
+        .await;
+        assert!(root_memo().await.is_some());
+
+        // "b" is on disk, no longer mounted, and not selected: it is left out.
         run_update(
             &app,
             mounting_root("same key", &["a"], &ran),
@@ -3716,7 +3747,7 @@ mod tests {
         // Selecting the root is no limit: the run is an ordinary one.
         run_update(
             &app,
-            mounting_root("same key", &["a"], &ran),
+            mounting_root("same key", &["a", "b"], &ran),
             AppUpdateOptions {
                 component_selector: Some(ComponentSelector::new([StablePath::root()])),
                 ..AppUpdateOptions::default()
