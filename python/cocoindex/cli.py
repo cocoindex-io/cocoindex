@@ -42,6 +42,20 @@ from cocoindex._internal.stable_path import StablePath
 # ---------------------------------------------------------------------------
 
 
+def _use_utf8_output() -> None:
+    """Write the CLI's output as UTF-8 when stdout or stderr is not already.
+
+    The output uses marks such as `✓` and `·`. On Windows a pipe or a file
+    takes the locale's code page (cp1252, for example), which cannot encode
+    `✓`, so printing one fails the command. A Windows console already writes
+    UTF-8, so this changes only redirected output there.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", None) or "").lower()
+        if encoding.replace("-", "") != "utf8" and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
+
 def _setup_logging() -> None:
     """Configure Python's root logger for CLI use.
 
@@ -614,6 +628,7 @@ async def _print_tree_streaming(
 )
 def cli(env_file: str | None = None, app_dir: str | None = "") -> None:
     """CLI for CocoIndex."""
+    _use_utf8_output()
     _setup_logging()
 
     dotenv_path = env_file or find_dotenv(usecwd=True)

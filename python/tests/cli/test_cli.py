@@ -46,12 +46,14 @@ def run_cli(
     check: bool = True,
     input: str | None = None,
     cwd: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a cocoindex CLI command and return the result."""
     cmd = ["cocoindex", *args]
     result = subprocess.run(
         cmd,
         cwd=cwd if cwd is not None else TEST_DIR,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -154,6 +156,15 @@ class TestSingleApp:
         # After drop, ls should show [+] again
         result = run_cli("ls", "./single_app.py")
         assert "[+]" in result.stdout
+
+    def test_output_is_utf8_on_a_non_utf8_pipe(self) -> None:
+        """On Windows a pipe takes the locale's code page, which has no `✓`.
+        The CLI writes UTF-8 anyway, so the marks print and decode."""
+        env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+        run_cli("update", "./single_app.py", env=env)
+
+        result = run_cli("drop", "./single_app.py", "-f", env=env)
+        assert "✓ Dropped SingleApp" in result.stdout
 
 
 # =============================================================================
