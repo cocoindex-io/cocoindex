@@ -6,7 +6,7 @@
 
 mod admission_common;
 
-use admission_common::count_admitted;
+use admission_common::assert_admits;
 use cocoindex::Environment;
 
 #[tokio::test]
@@ -31,7 +31,7 @@ async fn environment_variable_sets_the_limit() {
 
     unsafe { std::env::set_var("COCOINDEX_MAX_INFLIGHT_COMPONENTS", "5") };
     let app = env.app("admission_env").await.unwrap();
-    assert_eq!(count_admitted(&app, 12).await, 5);
+    assert_admits(&app, 5, 12).await;
 
     // The builder's value wins over the variable.
     let dir = tempfile::tempdir().unwrap();
@@ -44,5 +44,5 @@ async fn environment_variable_sets_the_limit() {
         .app("admission_env_builder")
         .await
         .unwrap();
-    assert_eq!(count_admitted(&app, 12).await, 2);
+    assert_admits(&app, 2, 12).await;
 }

@@ -1,60 +1,103 @@
 //! Shared by `admission.rs` and `admission_env.rs`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use cocoindex::App;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
 
-/// Mount `children` background components that block until released and
-/// return how many of them were running once the count stopped growing:
-/// the app's limit, when `children` exceeds it.
-pub async fn count_admitted(app: &App, children: usize) -> usize {
-    let started = Arc::new(AtomicUsize::new(0));
+/// How far the children of [`assert_admits`] have got.
+#[derive(Clone, Copy, Debug, Default)]
+struct Progress {
+    /// Children the parent has taken from its source. `mount_each` takes the
+    /// next one only once the previous one is admitted.
+    taken: usize,
+    /// Children whose body has started.
+    started: usize,
+    /// Children in their body now.
+    running: usize,
+    /// The most children in their body at any one time.
+    peak_running: usize,
+}
+
+/// A bound on the wait for `limit` children to run at once: it only turns a
+/// limit that is too small from a hang into a failure, so it is generous.
+const LIMIT_WAIT: Duration = Duration::from_secs(120);
+
+/// Mount `children` background components, more than `limit`, that block
+/// until released, and assert that exactly `limit` of them run at once.
+///
+/// The children are released once `limit` of them run and the parent has
+/// taken one more, whose mount then waits for a token. Both are events, so a
+/// stalled machine delays them but cannot make the test see a lower limit.
+/// While no child is released, a correct pool admits none past the limit:
+/// one more shows as a child taken or started too many at that point, and
+/// later as a peak above `limit`.
+pub async fn assert_admits(app: &App, limit: usize, children: usize) {
+    assert!(children > limit, "the children must outnumber the limit");
+    let (progress, mut observed) = watch::channel(Progress::default());
     let gate = Arc::new(Semaphore::new(0));
-    let admitted = Arc::new(AtomicUsize::new(0));
 
     let observer = tokio::spawn({
-        let (started, gate, admitted) = (started.clone(), gate.clone(), admitted.clone());
+        let gate = gate.clone();
         async move {
-            let mut last = usize::MAX;
-            let mut stable_since = Instant::now();
-            loop {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                let now = started.load(Ordering::SeqCst);
-                if now != last {
-                    last = now;
-                    stable_since = Instant::now();
-                } else if now > 0 && stable_since.elapsed() > Duration::from_millis(500) {
-                    break;
-                }
-            }
-            admitted.store(started.load(Ordering::SeqCst), Ordering::SeqCst);
+            let at_limit = tokio::time::timeout(LIMIT_WAIT, async {
+                observed
+                    .wait_for(|p| p.started >= limit && p.taken > limit)
+                    .await
+                    .map(|p| *p)
+            })
+            .await;
+            let at_limit = match at_limit {
+                Ok(at_limit) => Ok(at_limit.unwrap()),
+                Err(_) => Err(*observed.borrow()),
+            };
             gate.add_permits(children);
+            at_limit
         }
     });
 
-    let (started_outer, gate_outer) = (started.clone(), gate.clone());
+    let (take, run) = (progress.clone(), progress.clone());
     app.update(move |ctx| async move {
         let handle = ctx
-            .mount_each(0..children, |i| *i as i64, {
+            .mount_each(
+                0..children,
+                move |i| {
+                    take.send_modify(|p| p.taken += 1);
+                    *i as i64
+                },
                 move |_child, _i| {
-                    let (started, gate) = (started_outer.clone(), gate_outer.clone());
+                    let (progress, gate) = (run.clone(), gate.clone());
                     async move {
-                        started.fetch_add(1, Ordering::SeqCst);
+                        progress.send_modify(|p| {
+                            p.started += 1;
+                            p.running += 1;
+                            p.peak_running = p.peak_running.max(p.running);
+                        });
                         let _permit = gate.acquire().await.unwrap();
+                        progress.send_modify(|p| p.running -= 1);
                         Ok(())
                     }
-                }
-            })
+                },
+            )
             .await?;
         handle.ready().await?;
         Ok(())
     })
     .await
     .unwrap();
-    observer.await.unwrap();
-    assert_eq!(started.load(Ordering::SeqCst), children);
-    admitted.load(Ordering::SeqCst)
+
+    let at_limit = match observer.await.unwrap() {
+        Ok(at_limit) => at_limit,
+        Err(stuck) => panic!("{limit} children never ran at once: {stuck:?}"),
+    };
+    assert_eq!(
+        (at_limit.started, at_limit.taken),
+        (limit, limit + 1),
+        "with {limit} children running and none released, the next one waits \
+         for a token: {at_limit:?}"
+    );
+    let end = *progress.borrow();
+    assert_eq!(end.started, children, "{end:?}");
+    assert_eq!(end.peak_running, limit, "{end:?}");
 }
