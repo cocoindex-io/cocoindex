@@ -40,7 +40,7 @@ export async function llmsTxt(lang: Lang): Promise<string> {
       'only what changed.',
     '',
     lang === 'rust'
-      ? `> This index lists the Rust SDK pages (/docs/rust/). The Python SDK pages are indexed at ${new URL(`${DOCS_BASE}/llms.txt`, SITE_URL)}.`
+      ? `> This index lists the Rust SDK pages (/docs/rust/). The Rust SDK is experimental: any release may change or remove its API, and it is not yet published on crates.io. The Python SDK pages are indexed at ${new URL(`${DOCS_BASE}/llms.txt`, SITE_URL)}.`
       : `> This index lists the Python SDK pages. The Rust SDK pages are indexed at ${new URL(`${DOCS_BASE}/rust/llms.txt`, SITE_URL)}.`,
     '',
     '> Full docs text in one file: ' + LLMS_FULL_TXT_URL +
