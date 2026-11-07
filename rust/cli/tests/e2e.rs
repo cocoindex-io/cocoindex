@@ -593,3 +593,62 @@ fn init_scaffold_builds_and_runs() {
         "the lifespan's db path"
     );
 }
+
+/// `google-drive sign-out` without a stored sign-in says so; `sign-in` with a
+/// missing client file is a usage error, and without one this build (which
+/// has no built-in OAuth client) says how to sign in. No browser opens: both
+/// fail before the consent.
+#[test]
+fn google_drive_sign_in_and_sign_out() {
+    let sb = Sandbox::new(&[]);
+    let token = sb.path("google_drive_token.json");
+    let token_arg = token.display().to_string();
+
+    let out = sb.cli(&["google-drive", "sign-out", "--token-path", &token_arg]);
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains("No sign-in was stored."),
+        "{}",
+        stdout(&out)
+    );
+
+    let missing = sb.cli(&[
+        "google-drive",
+        "sign-in",
+        "/definitely/not/here.json",
+        "--token-path",
+        &token_arg,
+    ]);
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(
+        stderr(&missing).contains("does not exist"),
+        "{}",
+        stderr(&missing)
+    );
+
+    let no_builtin = sb.cli(&["google-drive", "sign-in", "--token-path", &token_arg]);
+    assert_eq!(no_builtin.status.code(), Some(1));
+    assert!(
+        stderr(&no_builtin).contains("no built-in OAuth client"),
+        "{}",
+        stderr(&no_builtin)
+    );
+    assert!(!token.exists());
+
+    // A stored sign-in is deleted even though Google cannot be reached at the
+    // address in the file: the sign-out never leaves tokens behind.
+    std::fs::write(
+        &token,
+        r#"{"version":1,"client_id":"c","client_secret":"s","refresh_token":"r","access_token":"a","expires_at":0.0,"email":"me@example.com"}"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let out = sb.cli(&["google-drive", "sign-out", "--token-path", &token_arg]);
+    assert_ok(&out);
+    assert!(stdout(&out).contains("Signed out."), "{}", stdout(&out));
+    assert!(!token.exists());
+}

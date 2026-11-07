@@ -306,7 +306,7 @@ cocoindex google-drive sign-out      # revokes the sign-in at Google and deletes
 
 The same two steps are available in Python as `UserAccount().sign_in(client_secrets_path)` (with no argument for CocoIndex's own client) and `UserAccount().sign_out()`.
 
-The Rust SDK has no `cocoindex google-drive` command. The Rust `UserAccount` reads and writes the same token file as the Python SDK, at the same default location, so one sign-in serves both: sign in with the Python CLI, or call `UserAccount::new()?.sign_in(client_secrets_path).await?` once from a small binary. The Rust `sign_in` always takes the client secrets file. `sign_out().await?` revokes the sign-in and deletes the file.
+The `cocoindex` binary for Rust projects has the same two commands. The Rust `UserAccount` reads and writes the same token file as the Python SDK, at the same default location, so one sign-in serves both. From code, `UserAccount::new()?.sign_in(Some(client_secrets_path)).await?` signs in with your own client and `sign_in(None)` with the client built into the release, when it has one; `sign_out().await?` revokes the sign-in and deletes the file.
 
 ### UserAccount
 
@@ -325,7 +325,7 @@ class UserAccount(token_path: str | os.PathLike[str] | None = None)
 pub fn UserAccount::new() -> Result<Self>
 pub fn UserAccount::with_token_path(token_path: impl Into<PathBuf>) -> Self
 pub fn UserAccount::token_path(&self) -> &Path
-pub async fn UserAccount::sign_in(&self, client_secrets_path: impl AsRef<Path>) -> Result<String>
+pub async fn UserAccount::sign_in(&self, client_secrets_path: Option<&Path>) -> Result<String>
 pub async fn UserAccount::sign_out(&self) -> Result<bool>
 pub fn UserAccount::email(&self) -> Result<String>
 pub fn UserAccount::is_signed_in(&self) -> bool
@@ -374,7 +374,7 @@ mount_each!(files.into_iter().map(|file| (file.key(), file)), |file| {
 .await?;
 ```
 
-`from_user_account` reads the token file now and fails with a message that says how to sign in when no usable sign-in is stored. The client's identity is the account's address, so a refreshed token keeps memoized work and a different account invalidates it.
+`from_user_account` reads the token file now and fails with a message that says how to sign in when no usable sign-in is stored. The sign-in errors are typed: `SignInError::of(&error)` recovers a `SignInError` from the SDK error, `SignInRequired` when a run has no working sign-in (none stored, or Google refused the stored one) and `Failed` for the rest; the message never contains a token. The client's identity is the account's address, so a refreshed token keeps memoized work and a different account invalidates it.
 
 </Fragment>
 </LangTabs>
