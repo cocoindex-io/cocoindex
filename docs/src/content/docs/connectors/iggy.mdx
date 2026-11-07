@@ -25,13 +25,15 @@ from cocoindex.connectors import iggy
 <Fragment slot="rust">
 
 ```rust
-use cocoindex::connectors::iggy::{self, IggyConsumer, IggyProducer};
+use cocoindex::connectors::iggy::{self, IggyConsumer, IggyProducer, IggyReceivedMessage};
 ```
 
-The Rust SDK needs the `iggy` Cargo feature of the `cocoindex` crate. `cocoindex::connectors::iggy::prelude` re-exports the upstream `iggy` crate's prelude (`StreamClient`, `TopicClient`, ...), for creating streams and topics without a direct dependency on that crate.
+`cocoindex::connectors::iggy::prelude` re-exports the upstream `iggy` crate's prelude (`StreamClient`, `TopicClient`, ...), for creating streams and topics without a direct dependency on that crate.
 
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 Install the optional dependency:
 
@@ -42,6 +44,19 @@ pip install cocoindex[iggy]
 The connector expects an `apache_iggy.IggyClient` that you create, connect, and
 provide through your app context. Streams and topics are user-managed:
 CocoIndex does not create or drop them.
+
+</Lang>
+
+<Lang only="rust">
+
+Enable the `iggy` Cargo feature of the `cocoindex` crate.
+
+The connector has two connection handles: an `IggyProducer` for the target,
+provided through your app context, and an `IggyConsumer` that you pass to the
+source functions. Streams and topics are user-managed: CocoIndex does not
+create or drop them.
+
+</Lang>
 
 {/* Rust: examples/rust/csv_to_iggy/src/main.rs and rust/sdk/cocoindex/tests/iggy_source.rs */}
 <LangTabs>
@@ -61,7 +76,7 @@ let producer = IggyProducer::connect("iggy://iggy:iggy@localhost:8090").await?;
 let consumer = IggyConsumer::connect("iggy://iggy:iggy@localhost:8090").await?;
 ```
 
-The Rust SDK has two connection handles. `IggyProducer` is provided under a `ContextKey` for the target; `IggyConsumer` is passed to the source functions directly. Both connect from a connection string; credentials in the string log in on connect, and `producer.client()` gives the underlying `IggyClient`.
+Both handles connect from a connection string; credentials in the string log in on connect and are stripped from the handle's stable identity. `producer.client()` gives the underlying `IggyClient`. For a client you built and connected yourself, `IggyProducer::from_client(client, state_id)` and `IggyConsumer::from_client(client, state_id)` wrap it; `state_id` is the server's stable identity (its address), never a credential.
 
 </Fragment>
 </LangTabs>
@@ -128,12 +143,16 @@ pub struct IggyPollOptions {
 }
 ```
 
-The Rust stream reads every partition of the topic, so it has no `partition_id`. It has no `initial_high_watermark` either: readiness is reached when every partition is read up to its current offset.
+`IggyTopicStream` is a `LiveStream<IggyReceivedMessage>`. It is also a `LiveMapFeed<String, IggyReceivedMessage>` for `ctx.mount_each_live`: each message becomes a distinct child keyed by its `"{partition}:{offset}"` position. An `IggyReceivedMessage` carries the message's `partition`, `offset`, `id`, `timestamp`, `checksum` and `payload`, with `payload_str()` for the text form.
 
 </Fragment>
 </LangTabs>
 
-`TopicStream.payloads()` adapts the stream to `LiveStream[bytes]` when the
+<RustNote>
+The stream reads every partition of the topic, so it has no `partition_id`. It has no `initial_high_watermark` either: readiness is reached when every partition is read up to the offset it had when the watch started.
+</RustNote>
+
+<Lang only="python">`TopicStream.payloads()` adapts the stream to `LiveStream[bytes]`</Lang><Lang only="rust">`IggyTopicStream::payloads()` adapts the stream to a `LiveStream<Vec<u8>>`</Lang> when the
 processing logic only needs message payload bytes.
 
 {/* Rust: rust/sdk/cocoindex/tests/iggy_source.rs */}
@@ -153,17 +172,21 @@ events = iggy.topic_as_stream(
 <Fragment slot="rust">
 
 ```rust
+let events = iggy::topic_as_stream(&consumer, "cocoindex-worker", "orders", "events").payloads();
+```
+
+To process every message in its own component instead, mount the stream itself:
+
+```rust
 let feed = iggy::topic_as_stream(&consumer, "cocoindex-worker", "orders", "events");
-ctx.mount_each_live(&"stream", feed, move |_ctx, value: Vec<u8>| {
+ctx.mount_each_live(&"stream", feed, move |_ctx, message: IggyReceivedMessage| {
     async move {
-        println!("{}", String::from_utf8_lossy(&value));
+        println!("{}", message.payload_str());
         Ok(())
     }
 })
 .await?;
 ```
-
-The Rust SDK has no `LiveStream` type and no `payloads()` view. `IggyTopicStream` is the payload feed itself: a `LiveMapFeed<String, Vec<u8>>` keyed by the message's `"{partition}:{offset}"` position, so every message becomes a distinct child of `ctx.mount_each_live`.
 
 </Fragment>
 </LangTabs>
@@ -214,26 +237,39 @@ pub fn topic_as_map_with_options(
     options: IggySourceOptions,
 ) -> IggyTopicMap
 
-pub type IggyKeyFn = Arc<dyn Fn(&[u8]) -> Option<String> + Send + Sync>;
-pub type IggyIsDeletionFn = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
+pub type IggyKeyFn = Arc<dyn Fn(&IggyReceivedMessage) -> Option<String> + Send + Sync>;
+pub type IggyIsDeletionFn = Arc<dyn Fn(&IggyReceivedMessage) -> bool + Send + Sync>;
 
 pub struct IggySourceOptions {
     /// Partition to consume (default `0`).
     pub partition: u32,
     pub poll: IggyPollOptions,
-    /// Custom deletion predicate over the payload (default: never delete).
+    /// Custom deletion predicate over the message (default: never delete).
     pub is_deletion: Option<IggyIsDeletionFn>,
 }
 ```
 
-`IggyTopicMap` is a `LiveMapFeed<String, Vec<u8>>`: the key is what `key_fn` returns and the value is the message payload. It reads one partition.
+`IggyTopicMap` is a `LiveMapFeed<String, IggyReceivedMessage>`: the key is what `key_fn` returns and the value is the latest message for that key. It reads one partition.
 
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
 Iggy Python messages do not expose Kafka-style keys or tombstones, so `key` is
 required. Return `None` from `key` to skip a message. Pass `is_deletion` if your
 payload format has application-level delete events.
+
+</Lang>
+
+<Lang only="rust">
+
+Iggy messages do not carry Kafka-style keys or tombstones, so `key_fn` is
+required. Return `None` from `key_fn` to skip a message. Set
+`options.is_deletion` if your payload format has application-level delete
+events.
+
+</Lang>
 
 {/* Rust: rust/sdk/cocoindex/tests/iggy_source.rs */}
 <LangTabs>
@@ -263,16 +299,18 @@ items = iggy.topic_as_map(
 ```rust
 /// `key_fn` recovering the key from a `"<key>=<value>"` payload.
 fn key_fn() -> iggy::IggyKeyFn {
-    Arc::new(|payload: &[u8]| {
-        let s = String::from_utf8_lossy(payload);
-        s.split_once('=').map(|(k, _)| k.to_string())
+    Arc::new(|message: &IggyReceivedMessage| {
+        message
+            .payload_str()
+            .split_once('=')
+            .map(|(k, _)| k.to_string())
     })
 }
 
 let feed = iggy::topic_as_map(&consumer, "cocoindex-worker", "orders", "events", key_fn());
-ctx.mount_each_live(&"messages", feed, move |_ctx, value: Vec<u8>| {
+ctx.mount_each_live(&"messages", feed, move |_ctx, message: IggyReceivedMessage| {
     async move {
-        println!("{}", String::from_utf8_lossy(&value));
+        println!("{}", message.payload_str());
         Ok(())
     }
 })
@@ -309,16 +347,29 @@ The source connector disables Iggy auto-commit and stores offsets after the
 downstream readiness handle completes. This mirrors Kafka-style back-pressure:
 an offset is stored only after CocoIndex has finished processing the message.
 
+<Lang only="python">
+
 For single-partition topics, the connector can infer the initial high watermark
 from Iggy's topic details. For multi-partition topics, pass
 `initial_high_watermark` for the consumed partition; the current Python SDK does
 not expose per-partition high-watermark callbacks.
 
-The Rust sources store the consumer group's offset on the server once a polled batch's children have synced, and a later live run resumes from it instead of scanning. The catch-up scan of `topic_as_map` reads the partition log up to its current offset, compacted to the latest payload per key.
+</Lang>
+
+<Lang only="rust">
+
+The consumer group's offset is stored on the server once a polled batch's
+children have synced, and a later live run resumes from it instead of
+scanning. The catch-up scan of `topic_as_map` reads the partition log up to its
+current offset, compacted to the latest message per key. Unless
+`IggyPollOptions::allow_replay` is set, an offset lower than the one stored is
+not stored.
+
+</Lang>
 
 ## As Target
 
-The target connector sends bytes or strings to a user-managed Iggy
+The target connector sends <Lang only="python">bytes or strings</Lang><Lang only="rust">byte payloads</Lang> to a user-managed Iggy
 stream/topic/partition.
 
 {/* Rust: examples/rust/csv_to_iggy/src/main.rs */}
@@ -350,12 +401,13 @@ let options = iggy::IggyTopicOptions {
     partition: 0,
     ..Default::default()
 };
-let target = iggy::mount_iggy_topic_target(&ctx, &PRODUCER, "orders", "derived-events", options)?;
+let target =
+    iggy::mount_iggy_topic_target(&ctx, &PRODUCER, "orders", "derived-events", options).await?;
 
 target.declare_message(&ctx, "order-123", br#"{"status":"ready"}"#)?;
 ```
 
-`mount_iggy_topic_target` is synchronous and returns a ready handle. `declare_message(ctx, key, value)` takes a `&str` key and any byte slice as the value.
+`declare_message(ctx, key, value)` takes a non-empty `&str` key and any byte slice as the value; `declare_message_bytes` takes a binary key. A `&str` key and its UTF-8 bytes are distinct target states.
 
 </Fragment>
 </LangTabs>
@@ -384,21 +436,22 @@ target = await iggy.mount_iggy_topic_target(
 let options = iggy::IggyTopicOptions {
     partition: 0,
     // Iggy has no tombstone; emit a delete marker for removed rows.
-    deletion_value_fn: Some(Arc::new(|key: &str| {
-        format!("{{\"_deleted\":\"{key}\"}}").into_bytes()
+    deletion_value_fn: Some(Arc::new(|key: &[u8]| {
+        format!("{{\"_deleted\":\"{}\"}}", String::from_utf8_lossy(key)).into_bytes()
     })),
 };
-let target = iggy::mount_iggy_topic_target(&ctx, &PRODUCER, "orders", "derived-events", options)?;
+let target =
+    iggy::mount_iggy_topic_target(&ctx, &PRODUCER, "orders", "derived-events", options).await?;
 ```
 
-Without a `deletion_value_fn`, deleting a declared message is an error. The full program is `examples/rust/csv_to_iggy`.
+Without a `deletion_value_fn`, deleting a declared message is an error. The callback receives the key as stored: a `&str` key is its UTF-8 bytes. The full program is `examples/rust/csv_to_iggy`.
 
 </Fragment>
 </LangTabs>
 
 ### Abandoning a topic
 
-Removing the topic declaration itself — or calling `App.drop()` — **abandons**
+Removing the topic declaration itself — or calling <Lang only="python">`App.drop()`</Lang><Lang only="rust">`App::drop_state`</Lang> — **abandons**
 the topic: CocoIndex stops producing to it and sends no deletion messages for
 the messages it produced earlier. Changing the stream, topic, or partition in
 code abandons the old one the same way. Avoid reusing an abandoned topic in a
@@ -411,6 +464,9 @@ first: keep the topic declared but declare no messages in it, run an update,
 then remove the declaration.
 
 ### Target APIs
+
+`iggy_topic_target()` takes the same arguments as the two functions below and
+builds the topic's target state alone, for <Lang only="python">`coco.mount_target()`</Lang><Lang only="rust">`mount_target` or `declare_target_state_with_child`</Lang>.
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/iggy.rs */}
 <LangTabs>
@@ -450,7 +506,7 @@ pub fn declare_iggy_topic_target(
     options: IggyTopicOptions,
 ) -> Result<IggyTopicTarget>
 
-pub fn mount_iggy_topic_target(
+pub async fn mount_iggy_topic_target(
     ctx: &Ctx,
     producer: &ContextKey<IggyProducer>,
     stream: impl Into<String>,
@@ -458,18 +514,34 @@ pub fn mount_iggy_topic_target(
     options: IggyTopicOptions,
 ) -> Result<IggyTopicTarget>
 
+pub fn iggy_topic_target(
+    ctx: &Ctx,
+    producer: &ContextKey<IggyProducer>,
+    stream: impl Into<String>,
+    topic: impl Into<String>,
+    options: IggyTopicOptions,
+) -> Result<TargetState<TopicSpec>>
+
 pub struct IggyTopicOptions {
     /// Partition to send messages to (default `0`).
     pub partition: u32,
     /// Value to send when a previously-declared message is removed.
     pub deletion_value_fn: Option<DeletionValueFn>,
 }
-pub type DeletionValueFn = Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync>;
+/// Takes the key as stored: a `&str` key is its UTF-8 bytes.
+pub type DeletionValueFn = Arc<dyn Fn(&[u8]) -> Vec<u8> + Send + Sync>;
 
 pub fn IggyTopicTarget::declare_message(
     &self,
     ctx: &Ctx,
     key: &str,
+    value: impl AsRef<[u8]>,
+) -> Result<()>
+
+pub fn IggyTopicTarget::declare_message_bytes(
+    &self,
+    ctx: &Ctx,
+    key: &[u8],
     value: impl AsRef<[u8]>,
 ) -> Result<()>
 ```

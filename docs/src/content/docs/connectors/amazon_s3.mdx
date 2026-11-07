@@ -25,10 +25,10 @@ from cocoindex.connectors import amazon_s3
 use cocoindex::connectors::amazon_s3::{self, ListOptions, S3Client, S3File};
 ```
 
-The Rust SDK needs the `amazon_s3` Cargo feature of the `cocoindex` crate. The Rust connector uses the official `aws-sdk-s3` crate, re-exported as `cocoindex::connectors::amazon_s3::aws_sdk_s3`.
-
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 :::note[Installation]
 This connector requires the `aiobotocore` library. Install with:
@@ -38,15 +38,45 @@ pip install cocoindex[amazon_s3]
 ```
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+:::note[Installation]
+Enable the `amazon_s3` feature of the `cocoindex` crate:
+
+```toml
+cocoindex = { git = "https://github.com/cocoindex-io/cocoindex", features = ["amazon_s3"] }
+```
+
+The connector uses the official `aws-sdk-s3` crate, re-exported as `cocoindex::connectors::amazon_s3::aws_sdk_s3`, so you can create buckets and upload objects without a direct dependency.
+:::
+
+</Lang>
+
 ## As source
 
 The connector provides two ways to read from S3:
+
+<Lang only="python">
 
 - `list_objects()` — List and iterate over objects in a bucket (with optional prefix and filtering)
 - `get_object()` — Fetch a single object by its key
 - `read()` — Read object content directly by S3 URI
 
 Both require an aiobotocore S3 client, which you create and manage yourself:
+
+</Lang>
+
+<Lang only="rust">
+
+- `list_objects()` — List the objects in a bucket (with optional prefix and filtering)
+- `S3Client::get_object()` / `S3Client::get_object_uri()` — Fetch a single object by its key or `s3://` URI
+- `S3Client::read()` — Read an object's content
+
+All of them go through an `S3Client`, which you create and provide to the app as a context key:
+
+</Lang>
 
 {/* Rust: examples/rust/amazon_s3_embedding/src/main.rs; rust/sdk/cocoindex/src/connectors/amazon_s3.rs (S3Client) */}
 <LangTabs>
@@ -97,7 +127,7 @@ let app = Environment::builder()
 
 ### list_objects
 
-List objects in an S3 bucket. Returns an `S3Walker` that supports async iteration.
+List objects in an S3 bucket. Returns an `S3Walker`<Lang only="python"> that supports async iteration</Lang>.
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/amazon_s3.rs */}
 <LangTabs>
@@ -137,10 +167,12 @@ pub async fn S3Walker::list(&self) -> Result<Vec<S3File>>
 pub async fn S3Walker::items(&self) -> Result<Vec<(String, S3File)>>
 ```
 
-The walker is not an iterator: `list()` returns every matching object, and `items()` the `(key, file)` pairs for `mount_each!`. The Rust prefix is passed to S3 as given, so `"data"` also matches `database.csv`: name a folder with its trailing slash, `"data/"`. The prefix and a `/` after it are stripped from the relative keys.
+The walker is not an iterator: `list()` returns every matching object, and `items()` the `(key, file)` pairs for `mount_each!`.
 
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 **Parameters:**
 
@@ -152,9 +184,29 @@ The walker is not an iterator: `list()` returns every matching object, and `item
 
 **Returns:** An `S3Walker` that can be used with `async for` loops.
 
+</Lang>
+
+<Lang only="rust">
+
+**Parameters:**
+
+- `client` — The `S3Client`.
+- `bucket` — The S3 bucket name.
+- `options.prefix` — Only list objects whose key starts with this prefix. The prefix and a `/` after it are stripped from the relative keys of the returned files.
+- `options.path_matcher` — Optional filter for files. Patterns are matched against the relative path (after prefix stripping). See [PatternFilePathMatcher](../common_resources/data_types#patternfilepathmatcher).
+- `options.max_file_size` — Skip objects larger than this size in bytes.
+
+**Returns:** An `S3Walker`; `list()` and `items()` list the bucket once each time you call them.
+
+</Lang>
+
+<RustNote>
+The prefix is passed to S3 as given, not read as a folder: `"data"` also matches `database.csv`. Name a folder with its trailing slash, `"data/"`, and select objects by the start of their name with `path_matcher`.
+</RustNote>
+
 ### Iterating files
 
-`list_objects()` returns an `S3Walker` that yields `S3File` objects (implementing the [`FileLike`](../common_resources/data_types#filelike) base class):
+`list_objects()` returns an `S3Walker` that <Lang only="python">yields</Lang><Lang only="rust">lists</Lang> `S3File` objects (implementing the [`FileLike`](../common_resources/data_types#filelike) base class):
 
 {/* Rust: rust/sdk/cocoindex/tests/amazon_s3_source.rs */}
 <LangTabs>
@@ -200,7 +252,7 @@ See [`FileLike`](../common_resources/data_types#filelike) for details on the fil
 
 ### Keyed iteration with `items()`
 
-`S3Walker.items()` yields `(str, S3File)` pairs, useful for associating each file with a stable string key: the object key relative to the prefix, exactly as stored. Keys are not normalized, so `a//b.txt` and `a/b.txt` are two items:
+<Lang only="python">`S3Walker.items()` yields `(str, S3File)` pairs</Lang><Lang only="rust">`S3Walker::items()` returns `(String, S3File)` pairs</Lang>, useful for associating each file with a stable string key: the object key relative to the prefix, exactly as stored. Keys are not normalized, so `a//b.txt` and `a/b.txt` are two items:
 
 {/* Rust: rust/sdk/cocoindex/tests/amazon_s3_source.rs */}
 <LangTabs>
@@ -256,14 +308,11 @@ let files = amazon_s3::list_objects(
     &bucket,
     ListOptions {
         prefix,
-        path_matcher: Some(Arc::new(
-            PatternFilePathMatcher::include(["**/*.md"])
-                .map_err(|e| Error::engine(format!("matcher: {e}")))?,
-        )),
+        path_matcher: Some(Arc::new(PatternFilePathMatcher::include(["**/*.md"])?)),
         ..Default::default()
     },
 )
-.list()
+.items()
 .await?;
 ```
 
@@ -330,10 +379,10 @@ pub async fn S3Client::get_object(&self, bucket: &str, key: &str) -> Result<S3Fi
 pub async fn S3Client::get_object_uri(&self, uri: &str) -> Result<S3File>
 ```
 
-The two Python forms are two Rust methods on the client.
-
 </Fragment>
 </LangTabs>
+
+<Lang only="python">
 
 **Parameters:**
 
@@ -341,7 +390,18 @@ The two Python forms are two Rust methods on the client.
 - `bucket_name_or_uri` — Either a full S3 URI (`s3://bucket/key`) or the bucket name when `key` is supplied separately.
 - `key` — The full S3 object key. Required when `bucket_name_or_uri` is a bucket name; must be omitted when a URI is given.
 
-**Returns:** An `S3File` (FileLike) for the specified object.
+</Lang>
+
+<Lang only="rust">
+
+**Parameters:**
+
+- `bucket`, `key` — The bucket name and the full S3 object key, for `get_object`.
+- `uri` — A full S3 URI (`s3://bucket/key`), for `get_object_uri`.
+
+</Lang>
+
+**Returns:** An `S3File` (FileLike) for the specified object. Its relative path is the full key. It is an error if the object does not exist.
 
 **Example:**
 
@@ -382,7 +442,7 @@ let data = f.read().await?;
 
 ### read
 
-Read object content directly from an S3 URI, without fetching metadata first.
+<Lang only="python">Read object content directly from an S3 URI, without fetching metadata first.</Lang><Lang only="rust">Read an object's content through the client.</Lang>
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/amazon_s3.rs */}
 <LangTabs>
@@ -405,10 +465,16 @@ pub async fn S3Client::read_range(&self, file: &S3File, len: u64) -> Result<Vec<
 pub async fn S3Client::read_text(&self, file: &S3File) -> Result<String>
 ```
 
-The Rust client reads an `S3File`, not a URI: get the file with `get_object_uri` first. `read_range` reads the first `len` bytes.
+`read_range` reads the first `len` bytes with a ranged request. `read_text` decodes the content as UTF-8 (BOM-aware, lossy on invalid UTF-8).
 
 </Fragment>
 </LangTabs>
+
+<RustNote>
+The client reads an `S3File`, not a URI: get the file with `get_object_uri` first, which costs one metadata request.
+</RustNote>
+
+<Lang only="python">
 
 **Parameters:**
 
@@ -417,6 +483,8 @@ The Rust client reads an `S3File`, not a URI: get the file with `get_object_uri`
 - `size` — Number of bytes to read. If -1 (default), read the entire object.
 
 **Returns:** The object content as bytes.
+
+</Lang>
 
 **Example:**
 
@@ -445,6 +513,8 @@ let head = client.read_range(&f, 3).await?;
 
 Each file returned by the connector has an `S3FilePath` — a [`FilePath`](../common_resources/data_types#filepath) specialized for S3:
 
+<Lang only="python">
+
 - **Relative path** (`file.file_path.path`) — The object key relative to the walker prefix (or the full key if no prefix was used).
 - **Resolved path** (`file.file_path.resolve()`) — The full S3 object key.
 - **Identity** — Two `S3FilePath`s are equal only if they have the same bucket and the same relative key.
@@ -455,7 +525,26 @@ For example, with `prefix="data/"` and an object key `"data/docs/readme.md"`:
 
 A derived path (`parent`, `/`, `with_name()`, `with_suffix()`) resolves to the object key of the new path in the same folder: `file.file_path.with_suffix(".txt").resolve()` → `"data/docs/readme.txt"`.
 
-The Rust `S3FilePath` (`file.file_path()`) has `bucket()`, `path()` (the relative key, a `&str`) and `resolve()` (the full object key). Its memo key is the bucket and the relative key. It has no derived-path methods. `S3File` has the public fields `size`, `modified_secs` and `etag`, plus `key()`, `read()`, `read_size(n)` and `read_text()`; it implements `FileLike` and `MemoInput`.
+</Lang>
+
+<Lang only="rust">
+
+- **Relative path** (`file.file_path().path()`, a `&str`) — The object key relative to the walker prefix (or the full key if no prefix was used). `file.key()` returns it as a `String`, the key for `mount_each!`.
+- **Resolved path** (`file.file_path().resolve()`) — The full S3 object key.
+- **Bucket** (`file.file_path().bucket()`).
+- **Identity** — The memo key is the bucket and the relative key.
+
+For example, with `prefix: "data/"` and an object key `"data/docs/readme.md"`:
+- `file.file_path().path()` → `"docs/readme.md"`
+- `file.file_path().resolve()` → `"data/docs/readme.md"`
+
+`S3File` has the public fields `size`, `modified_secs` and `etag`, plus `key()`, `read()`, `read_size(n)` and `read_text()`; it implements `FileLike` and `MemoInput`. Its memo key holds only stable metadata (the path, size, modified time and ETag), never the client.
+
+</Lang>
+
+<RustNote>
+`S3FilePath` has no derived-path methods (`parent`, `/`, `with_name()`, `with_suffix()`).
+</RustNote>
 
 ### Example
 
@@ -506,8 +595,8 @@ use cocoindex::resources::file::PatternFilePathMatcher;
 cocoindex::context_key!(static S3: S3Client);
 
 #[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: S3File) -> Result<()> {
-    let text = ctx.get_key(&S3)?.read_text(&file).await?;
+async fn process_file(_ctx: &Ctx, file: S3File) -> Result<()> {
+    let text = file.read_text().await?;
     // ... process the file content ...
     Ok(())
 }
@@ -518,21 +607,14 @@ async fn app_main(ctx: Ctx, bucket: String, prefix: String) -> Result<()> {
         &bucket,
         ListOptions {
             prefix,
-            path_matcher: Some(Arc::new(
-                PatternFilePathMatcher::include(["**/*.md"])
-                    .map_err(|e| Error::engine(format!("matcher: {e}")))?,
-            )),
+            path_matcher: Some(Arc::new(PatternFilePathMatcher::include(["**/*.md"])?)),
             ..Default::default()
         },
     )
-    .list()
+    .items()
     .await?;
 
-    mount_each!(
-        files.into_iter().map(|f| (f.key(), f)),
-        |file| process_file(ctx, file)
-    )
-    .await?;
+    mount_each!(files, |file| process_file(ctx, file)).await?;
     Ok(())
 }
 ```
