@@ -33,15 +33,16 @@ uv tool install prek                         # one-time; some hooks also need `p
 prek run ruff-check ruff-format --all-files  # Lint (applying safe fixes), then format Python code (same as CI)
 cargo fmt                                    # Format Rust code
 ./dev/run_cargo_clippy.sh                    # Lint Rust code other than the Rust SDK and its CLI (same as CI)
-./dev/run_cargo_clippy_sdk.sh                # Lint the Rust SDK and its CLI, `rust/cli` (same as CI)
+./dev/run_cargo_clippy_sdk.sh                # Lint the Rust SDK and its CLI, `rust/cli` (same as the daily CI)
 ```
 
 ### Pre-submission Checks
 
-CI enforces the full pre-commit hook suite from `.pre-commit-config.yaml`, which
-covers more than the commands above — notably regenerating the CLI docs
-(`docs/src/content/docs/cli.mdx`) whenever `cli.py` changes. Before pushing, run
-the hooks whose inputs your branch changed, as PR CI does:
+CI enforces the pre-commit hook suite from `.pre-commit-config.yaml`, which covers
+more than the commands above — notably regenerating the CLI docs
+(`docs/src/content/docs/cli.mdx`) whenever `cli.py` changes. The Rust SDK hooks,
+described below, are the exception. Before pushing, run the hooks whose inputs
+your branch changed, as PR CI does:
 
 ```bash
 prek run --from-ref origin/main --to-ref HEAD
@@ -51,8 +52,11 @@ prek run --from-ref origin/main --to-ref HEAD
 (`cargo-test-sdk`, `cargo-clippy-sdk`, `cargo-test-rust-externs`) included. The
 Rust SDK isn't launched yet, so those hooks run only for a change under
 `rust/sdk/`, `rust/cli/`, `examples/rust/` or `benchmarks/*/rust/`, not for a change to the
-code the SDK builds on. The `Rust SDK Daily` workflow runs them on `main` every
-day and files an issue when they fail.
+code the SDK builds on. CI runs them on no pull request and in no merge group,
+even for a change to the SDK, because they are slow, so the local run is the only
+check before such a change lands. The `Rust SDK Daily` workflow runs them on
+`main` every day and files an issue when they fail;
+`gh workflow run rust_sdk_daily.yml --ref <branch>` runs them on a branch.
 
 ### Pull Requests and CI
 
