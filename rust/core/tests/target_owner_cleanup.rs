@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use cocoindex_core::state::stable_path::{StableKey, StablePath};
 use cocoindex_core::state::target_state_path::TargetStatePath;
-use cocoindex_core::state_store::{AppStore, CommitPlan, Storage, StorageSettings};
+use cocoindex_core::state_store::{
+    AppStore, CommitPlan, Storage, StorageSettings, TrackingInfoWrite,
+};
 use cocoindex_utils::fingerprint::Fingerprint;
 use tempfile::TempDir;
 
@@ -80,7 +82,7 @@ async fn commit_owner_deletes(
     deletes: Vec<TargetStatePath>,
 ) {
     let plan = CommitPlan {
-        new_tracking_info: None,
+        tracking_info: TrackingInfoWrite::Delete,
         target_owners_to_upsert: Vec::new(),
         target_owners_to_delete: deletes,
         fn_memo_clear_all_first: false,
