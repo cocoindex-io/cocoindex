@@ -48,7 +48,7 @@ fn pick_app(requested: Option<&str>, apps: &[AppInfo]) -> CliResult<AppInfo> {
             .find(|a| a.name == name)
             .cloned()
             .ok_or_else(|| {
-                CliError::usage(format!(
+                CliError::failure(format!(
                     "No app named '{name}'. Available apps: {}",
                     app_names(apps.iter().filter(usable))
                 ))
@@ -57,10 +57,10 @@ fn pick_app(requested: Option<&str>, apps: &[AppInfo]) -> CliResult<AppInfo> {
             let registered: Vec<&AppInfo> = apps.iter().filter(|a| a.registered).collect();
             match registered.as_slice() {
                 [one] => Ok((*one).clone()),
-                [] => Err(CliError::usage(
+                [] => Err(CliError::failure(
                     "No apps found in the target binary. Make sure it has a #[cocoindex::app] function.",
                 )),
-                many => Err(CliError::usage(format!(
+                many => Err(CliError::failure(format!(
                     "Multiple apps found: {}. Please specify which app to use with ':app_name' syntax.",
                     app_names(many.iter().copied())
                 ))),
@@ -116,7 +116,7 @@ pub async fn ls(target: Option<String>, db: Option<PathBuf>, build: BuildOpts) -
         (None, None) => match std::env::var_os(DB_PATH_ENV) {
             Some(db) => Some(PathBuf::from(db)),
             None => {
-                return Err(CliError::usage(
+                return Err(CliError::failure(
                     "Please specify either APP_TARGET or --db option (or set COCOINDEX_DB environment variable).\n  \
                      cocoindex ls ./my_crate      # List apps of a crate\n  \
                      cocoindex ls --db ./my.db    # List apps from database",
@@ -206,20 +206,20 @@ pub async fn show(args: ShowArgs) -> CliResult<()> {
         second.clone()
     };
     if (mode.recursive || mode.parents) && stable_path.is_none() {
-        return Err(CliError::usage(
+        return Err(CliError::failure(
             "-r/--recursive and -p/--parents require a stable_path argument.",
         ));
     }
     if mode.target_states && (stable_path.is_some() || mode.long || mode.recursive || mode.parents)
     {
-        return Err(CliError::usage(
+        return Err(CliError::failure(
             "--target-states cannot be combined with stable_path, -l, -r or -p.",
         ));
     }
 
     let (db_path, app) = if db_mode {
         let (Some(db), Some(app)) = (db, app_name) else {
-            return Err(CliError::usage(
+            return Err(CliError::failure(
                 "Both --db and --app-name are required when APP_TARGET is not specified.",
             ));
         };
@@ -516,7 +516,7 @@ mod tests {
     fn several_apps_need_a_name() {
         let apps = vec![app("A", true, false), app("B", true, true)];
         let err = pick_app(None, &apps).unwrap_err();
-        assert_eq!(err.code, 2);
+        assert_eq!(err.code, 1);
         assert!(err.message.contains("Multiple apps found: A, B"));
         let err = pick_app(None, &[]).unwrap_err();
         assert!(err.message.contains("No apps found"));

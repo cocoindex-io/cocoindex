@@ -298,25 +298,26 @@ async fn list_apps(
 }
 
 /// The app an `update`/`drop` acts on: `--app NAME`, else the binary's only
-/// registered app.
+/// registered app. A name that matches nothing, or several apps and no name,
+/// is a failure (exit 1), like the Python CLI's `ClickException`.
 fn resolve_app(requested: Option<&str>) -> std::result::Result<&'static AppEntry, Failure> {
     let apps = registry::apps();
     match requested {
         Some(name) => registry::find_app(name).ok_or_else(|| {
-            Failure::Usage(format!(
+            Failure::Error(Error::engine(format!(
                 "no #[cocoindex::app] named `{name}` in this binary; available: {}",
                 app_names(apps)
-            ))
+            )))
         }),
         None => match apps {
             [only] => Ok(only),
-            [] => Err(Failure::Usage(
-                "this binary has no #[cocoindex::app]".to_string(),
-            )),
-            many => Err(Failure::Usage(format!(
+            [] => Err(Failure::Error(Error::engine(
+                "this binary has no #[cocoindex::app]",
+            ))),
+            many => Err(Failure::Error(Error::engine(format!(
                 "this binary has several apps; pass the name: {}",
                 app_names(many)
-            ))),
+            )))),
         },
     }
 }
