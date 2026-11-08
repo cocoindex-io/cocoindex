@@ -184,6 +184,16 @@ impl DorisConnection {
     /// port (used for DDL/DELETE) and builds an HTTP client for Stream Load. The
     /// `database` must already exist.
     pub async fn connect(config: DorisConfig) -> Result<Self> {
+        for (name, value) in [
+            ("retry_base_delay", config.retry_base_delay),
+            ("retry_max_delay", config.retry_max_delay),
+        ] {
+            if !(value.is_finite() && value >= 0.0) {
+                return Err(Error::engine(format!(
+                    "DorisConfig.{name} must be a finite number of seconds >= 0, got {value}"
+                )));
+            }
+        }
         // Doris speaks the MySQL wire protocol but rejects the `SET
         // sql_mode=CONCAT(@@sql_mode, …)` and timezone statements sqlx issues on
         // connect ("Set statement doesn't support non-constant expr"). Disable
@@ -1429,8 +1439,11 @@ async fn stream_load(
                         e.message
                     )));
                 }
-                let delay = (config.retry_base_delay * 2f64.powi(attempt as i32))
-                    .min(config.retry_max_delay);
+                // Both delays are finite and >= 0 (checked in `connect`), so
+                // `delay` is too, even when the doubling overflows to infinity.
+                let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
+                let delay =
+                    (config.retry_base_delay * 2f64.powi(exponent)).min(config.retry_max_delay);
                 tracing::warn!(
                     "doris stream load attempt {} failed ({}); retrying in {:.1}s",
                     attempt + 1,
@@ -1508,7 +1521,10 @@ async fn do_stream_load(
     }
     let text = resp.text().await.map_err(transport_err)?;
     let result: JsonValue = serde_json::from_str(&text).map_err(|_| StreamLoadError {
-        message: format!("invalid stream load response: {}", truncate(&text, 200)),
+        message: format!(
+            "invalid stream load response: {}",
+            super::truncate_for_error(&text, 200)
+        ),
         retryable: false,
     })?;
     let load_status = result
@@ -1570,14 +1586,6 @@ fn stream_load_label() -> String {
         .unwrap_or(0);
     let rand = uuid::Uuid::new_v4().simple().to_string();
     format!("cocoindex_{millis}_{}", &rand[..8])
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1864,6 +1872,19 @@ fn validate_indexes(schema: &TableSchema, options: &DorisTableOptions) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn connect_rejects_a_retry_delay_that_cannot_be_slept() {
+        for (base, max) in [(-1.0, 30.0), (f64::NAN, 30.0), (1.0, f64::INFINITY)] {
+            let mut config = config();
+            config.retry_base_delay = base;
+            config.retry_max_delay = max;
+            let Err(err) = DorisConnection::connect(config).await else {
+                panic!("connect accepted retry delays ({base}, {max})");
+            };
+            assert!(err.to_string().contains("must be a finite number"), "{err}");
+        }
+    }
 
     fn config() -> DorisConfig {
         DorisConfig::new("localhost", "testdb")

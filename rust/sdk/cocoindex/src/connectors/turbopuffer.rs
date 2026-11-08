@@ -29,6 +29,7 @@ use crate::target_state::{
 // Connection
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 struct ConnInner {
     http: reqwest::Client,
     base_url: String,
@@ -67,9 +68,7 @@ impl TurbopufferConnection {
     /// for pointing at a mock server in tests.
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
-        let inner = Arc::get_mut(&mut self.inner)
-            .expect("with_base_url must be called before the connection is shared");
-        inner.base_url = base_url;
+        Arc::make_mut(&mut self.inner).base_url = base_url;
         self
     }
 

@@ -253,6 +253,9 @@ impl crate::memo::MemoInput for DriveFile {
 /// random wait of up to `2^n` × [`RETRY_BACKOFF_UNIT`]; Drive's usage-limits
 /// guide asks clients to do exactly that.
 const RETRIES: u32 = 5;
+/// The longest an access token is cached, whatever `expires_in` says: a huge
+/// value would overflow `Instant`, and refreshing early is harmless.
+const MAX_TOKEN_TTL_SECS: u64 = 86_400;
 const RETRY_BACKOFF_UNIT: Duration = Duration::from_secs(1);
 
 /// A random fraction in `[0, 1)`, for the retry jitter.
@@ -662,7 +665,8 @@ impl GoogleDriveClient {
                     .json()
                     .await
                     .map_err(|e| Error::engine(format!("parse token response: {e}")))?;
-                let ttl = token.expires_in.max(60);
+                // Clamped above too: a huge `expires_in` would overflow `Instant`.
+                let ttl = token.expires_in.clamp(60, MAX_TOKEN_TTL_SECS);
                 *guard = Some(CachedToken {
                     token: token.access_token.clone(),
                     expires_at: Instant::now() + Duration::from_secs(ttl),
@@ -1436,12 +1440,18 @@ fn url_decode(value: &str) -> String {
     while i < bytes.len() {
         match bytes[i] {
             b'+' => out.push(b' '),
-            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&value[i + 1..i + 3], 16) {
-                Ok(b) => {
+            // Byte-wise: slicing the `str` could cut a multi-byte character
+            // (`%aé`), and `from_str_radix` alone would take a sign (`%+1`).
+            b'%' => match bytes
+                .get(i + 1..i + 3)
+                .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+                .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok())
+            {
+                Some(b) => {
                     out.push(b);
                     i += 2;
                 }
-                Err(_) => out.push(b'%'),
+                None => out.push(b'%'),
             },
             b => out.push(b),
         }
@@ -1610,7 +1620,7 @@ fn random_urlsafe(bytes: usize) -> String {
 /// Compare two strings in time independent of where they differ.
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
-    let mut diff = (a.len() ^ b.len()) as u8;
+    let mut diff = u8::from(a.len() != b.len());
     for i in 0..a.len().max(b.len()) {
         diff |= a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0);
     }
@@ -1986,6 +1996,26 @@ impl GoogleDriveSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_decode_handles_malformed_escapes() {
+        assert_eq!(url_decode("a%20b+c"), "a b c");
+        // A `%` before a multi-byte character must not slice inside it.
+        assert_eq!(url_decode("%a\u{e9}"), "%a\u{e9}");
+        assert_eq!(url_decode("%\u{e9}"), "%\u{e9}");
+        assert_eq!(url_decode("%+1"), "% 1"); // a sign is no hex digit; `+` is a space
+        assert_eq!(url_decode("%4"), "%4");
+        assert_eq!(url_decode("%"), "%");
+    }
+
+    #[test]
+    fn constant_time_eq_compares_lengths_exactly() {
+        assert!(constant_time_eq("state", "state"));
+        assert!(!constant_time_eq("state", "stat"));
+        // Lengths that differ by 256 with NUL padding were once equal.
+        let padded = format!("state{}", "\0".repeat(256));
+        assert!(!constant_time_eq("state", &padded));
+    }
 
     #[test]
     fn export_mime_mapping() {

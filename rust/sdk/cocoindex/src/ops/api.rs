@@ -48,6 +48,9 @@ const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const RETRY_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const RETRY_MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// The longest timeout a request gets (about a year): a longer one, such as
+/// `Duration::MAX` for "no timeout", would overflow `Instant`.
+const MAX_TIMEOUT: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 /// Statuses worth another try: a fast failure that batch composition and time
 /// can change (Python's `_RETRYABLE_HTTP_STATUS_CODES` plus every 5xx).
 const RETRYABLE_STATUSES: &[u16] = &[408, 409, 425, 429];
@@ -146,7 +149,10 @@ impl Endpoint {
     ) -> std::result::Result<reqwest::Response, RequestFailure> {
         let timeout = ctx
             .and_then(Ctx::remaining_deadline)
-            .map_or(self.timeout, |remaining| remaining.min(self.timeout));
+            .map_or(self.timeout, |remaining| remaining.min(self.timeout))
+            // `with_timeout(Duration::MAX)` means "no timeout"; adding it to
+            // `Instant::now()` would overflow.
+            .min(MAX_TIMEOUT);
         let deadline = Instant::now() + timeout;
         let timed_out = || {
             let err = ctx
