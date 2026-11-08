@@ -1177,8 +1177,12 @@ pub(crate) async fn file_memo_state(
     let modified_nanos = system_time_nanos(metadata.modified);
     let prev_state = prev.and_then(|value| value.deserialize::<FileMemoState>().ok());
 
+    // An equal mtime skips the fingerprint, unless the backend gives one for
+    // free (an S3 ETag, a Drive md5): mtimes can be coarse (S3 has whole
+    // seconds) and miss a quick overwrite. Python's `__coco_memo_state__`.
     if let Some(ref prev_state) = prev_state
         && prev_state.modified_nanos == modified_nanos
+        && metadata.content_fingerprint.is_none()
     {
         return MemoStateDecision::new(&prev_state, true);
     }
@@ -1581,6 +1585,62 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(unchanged.memo_valid);
+    }
+
+    /// A remote object whose mtime has whole-second precision: an overwrite
+    /// within the same second keeps the mtime and changes only the
+    /// fingerprint the backend hands out with the metadata (an ETag).
+    struct SameSecondObject {
+        etag: Fingerprint,
+        cache: crate::resources::file::FileContentCache,
+    }
+
+    #[async_trait]
+    impl crate::resources::file::FileLike for SameSecondObject {
+        fn file_path(&self) -> crate::resources::file::FilePath {
+            crate::resources::file::FilePath::new("bucket/object.txt")
+        }
+
+        fn cache(&self) -> &crate::resources::file::FileContentCache {
+            &self.cache
+        }
+
+        async fn fetch_metadata(&self) -> Result<crate::resources::file::FileMetadata> {
+            Ok(crate::resources::file::FileMetadata {
+                size: 1,
+                modified: UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+                content_fingerprint: Some(self.etag),
+            })
+        }
+
+        async fn read_impl(&self, _size: Option<usize>) -> Result<Vec<u8>> {
+            panic!("the metadata fingerprint must be used without reading the content")
+        }
+    }
+
+    /// An equal mtime does not hide a changed metadata fingerprint, as in
+    /// Python's `FileLike.__coco_memo_state__`.
+    #[tokio::test]
+    async fn file_memo_state_checks_a_free_fingerprint_despite_an_equal_mtime() {
+        let object = |etag: &str| SameSecondObject {
+            etag: Fingerprint::from_bytes(etag.as_bytes()),
+            cache: crate::resources::file::FileContentCache::new(),
+        };
+        let (state, valid) = file_memo_state(&object("v1"), None)
+            .await
+            .unwrap()
+            .into_parts();
+        assert!(!valid);
+        let stored = MemoStateValue::from_profile_value(state);
+
+        let same = file_memo_state(&object("v1"), Some(&stored)).await.unwrap();
+        assert!(same.memo_valid, "an unchanged ETag must hit");
+
+        let overwritten = file_memo_state(&object("v2"), Some(&stored)).await.unwrap();
+        assert!(
+            !overwritten.memo_valid,
+            "a changed ETag within the same mtime second must miss"
+        );
     }
 
     #[tokio::test]
