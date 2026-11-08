@@ -132,6 +132,15 @@ pub struct SnowflakeConnection {
     inner: Arc<ConnectionInner>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for SnowflakeConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SnowflakeConnection")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl SnowflakeConnection {
     /// Build a connection. No request is made until the first statement.
     pub fn new(config: SnowflakeConfig) -> Self {

@@ -534,6 +534,15 @@ pub struct GoogleDriveClient {
     inner: Arc<ClientInner>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for GoogleDriveClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GoogleDriveClient")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl GoogleDriveClient {
     /// Build a client from a service-account JSON key file (the standard
     /// `type: service_account` key downloaded from Google Cloud).

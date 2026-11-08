@@ -43,6 +43,15 @@ pub struct TurbopufferConnection {
     inner: Arc<ConnInner>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for TurbopufferConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TurbopufferConnection")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl TurbopufferConnection {
     /// Connect to a Turbopuffer region (e.g. `gcp-us-central1`) with an API key.
     pub fn new(region: &str, api_key: &str) -> Self {

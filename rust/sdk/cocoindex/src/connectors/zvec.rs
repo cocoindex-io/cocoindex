@@ -122,6 +122,15 @@ pub struct ManagedConnection {
     inner: Arc<ConnectionInner>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for ManagedConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManagedConnection")
+            .field("base_path", &self.inner.base_path)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Create a [`ManagedConnection`] rooted at `base_path`. The directory is
 /// created if missing.
 pub fn connect(base_path: impl AsRef<Path>, options: ConnectOptions) -> Result<ManagedConnection> {
