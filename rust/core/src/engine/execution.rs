@@ -856,6 +856,10 @@ struct SinkInput<Prof: EngineProfile> {
     /// sink for the declaring action. Read back after the sink call; a slot the
     /// sink left unfulfilled is an error.
     pending_children: Vec<(TargetStateProvider<Prof>, ChildTargetSlot<Prof>)>,
+    /// The smallest [`TargetStateProvider::depth`] of the providers whose
+    /// target states sent actions to this sink: sinks apply in this order
+    /// (see [`sinks_in_apply_order`]).
+    provider_depth: usize,
 }
 
 impl<Prof: EngineProfile> Default for SinkInput<Prof> {
@@ -864,18 +868,22 @@ impl<Prof: EngineProfile> Default for SinkInput<Prof> {
             actions: Vec::new(),
             factory_children: Vec::new(),
             pending_children: Vec::new(),
+            provider_depth: usize::MAX,
         }
     }
 }
 
 impl<Prof: EngineProfile> SinkInput<Prof> {
-    /// `child`: the child provider of the action's target state, with how its
-    /// sink provides child handlers.
+    /// `provider`: the provider of the action's target state. `child`: the
+    /// child provider of the action's target state, with how its sink
+    /// provides child handlers.
     fn add_action(
         &mut self,
+        provider: &TargetStateProvider<Prof>,
         action: Prof::TargetAction,
         child: Option<(TargetStateProvider<Prof>, ChildHandling)>,
     ) -> Result<()> {
+        self.provider_depth = self.provider_depth.min(provider.depth());
         let child_slot = match child {
             None => None,
             Some((child_provider, ChildHandling::Factory)) => {
@@ -901,6 +909,23 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
         self.actions.push((action, child_slot));
         Ok(())
     }
+}
+
+/// A component's sinks in the order they apply: those of shallower providers
+/// first, so a container's sink (a table) applies before the sink of the
+/// target states inside it (its rows), and those before the sinks of their
+/// provider's attachments (an index over the rows, which may need the rows
+/// to build). Sinks at one depth keep no particular order.
+#[allow(
+    clippy::mutable_key_type,
+    reason = "`TargetActionSinkKeeper` hashes and compares by `Arc` identity"
+)]
+fn sinks_in_apply_order<Prof: EngineProfile>(
+    actions_by_sinks: HashMap<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>,
+) -> Vec<(TargetActionSinkKeeper<Prof>, SinkInput<Prof>)> {
+    let mut sinks: Vec<_> = actions_by_sinks.into_iter().collect();
+    sinks.sort_by_key(|(_, input)| input.provider_depth);
+    sinks
 }
 
 /// The child handlers of the [`ChildHandling::Factory`] sinks' child-bearing
@@ -1302,7 +1327,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             // (`target_state_key_bytes`, `recon_output`, `child_provider`).
             // The guard drops at the end of this scope so subsequent awaits
             // in this iteration aren't carrying a `!Send` borrow.
-            let (target_state_key_bytes, recon_output, child_provider) = {
+            let (target_state_key_bytes, recon_output, child_provider, provider) = {
                 let guard = declared_target_states.lock().await;
                 let decl = guard.get(target_state_path).ok_or_else(|| {
                     internal_error!("declared entry vanished mid-pre_commit: {target_state_path}")
@@ -1350,6 +1375,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     decl.item_key_bytes.to_vec(),
                     recon_output,
                     decl.child_provider.clone(),
+                    decl.provider.clone(),
                 )
             };
 
@@ -1408,7 +1434,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 let child = child_provider
                     .map(|child_provider| (child_provider, recon_output.sink.child_handling()));
                 let sink_input = actions_by_sinks.entry(recon_output.sink).or_default();
-                sink_input.add_action(recon_output.action, child)?;
+                sink_input.add_action(&provider, recon_output.action, child)?;
 
                 if let Some(item) = &mut prev_item {
                     // Update existing item.
@@ -1517,7 +1543,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 actions_by_sinks
                     .entry(recon_output.sink)
                     .or_default()
-                    .add_action(recon_output.action, None)?;
+                    .add_action(target_states_provider, recon_output.action, None)?;
                 item.states.push((
                     curr_version,
                     match recon_output
@@ -1951,7 +1977,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         // with nothing applied.
         pending_fulfillments.extend(build_factory_children(comp_ctx, &actions_by_sinks).await?);
         let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
-        for (sink, input) in actions_by_sinks {
+        for (sink, input) in sinks_in_apply_order(actions_by_sinks) {
             sink.apply(
                 host_runtime_ctx,
                 Arc::clone(comp_ctx.host_ctx()),
