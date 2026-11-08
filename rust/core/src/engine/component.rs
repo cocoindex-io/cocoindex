@@ -840,6 +840,9 @@ async fn lookup_component_memo<Prof: EngineProfile>(
         states_changed: true,
     }) = &own_validation
     {
+        let row_fp = row_fp.ok_or_else(|| {
+            internal_error!("memo states changed for a memo row that stores none")
+        })?;
         update_component_memo_states(comp_ctx.app_store(), comp_ctx.stable_path(), states, row_fp)
             .await?;
     }

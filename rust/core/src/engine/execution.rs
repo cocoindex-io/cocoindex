@@ -92,8 +92,9 @@ pub(crate) struct RestoredComponentMemo<Prof: EngineProfile> {
     pub target_provider_deps: TargetProviderDeps,
     /// Fingerprint of the row bytes this memo was decoded from. A later
     /// refresh of its memo states applies only while the row still has it
-    /// (see `update_component_memo_states`).
-    pub row_fp: Fingerprint,
+    /// (see `update_component_memo_states`). `None` when the memo stores no
+    /// states, so there is nothing to refresh: the row is then not hashed.
+    pub row_fp: Option<Fingerprint>,
     /// See `db_schema::ComponentMemoizationInfo::has_open_descendants`.
     pub has_open_descendants: bool,
     /// See `db_schema::ComponentMemoizationInfo::open_children`.
@@ -110,7 +111,6 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
         let Some(memo_bytes) = app_store.read_component_memo(path).await? else {
             return Ok(None);
         };
-        let row_fp = Fingerprint::from_bytes(&memo_bytes);
         let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&memo_bytes)?;
         if let Some(processor_fp) = processor_fp
             && memo_info.processor_fp == processor_fp
@@ -127,6 +127,10 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
             let ret = Prof::FunctionData::from_bytes(bytes.as_ref());
             match ret {
                 Ok(ret) => {
+                    let has_states = !memo_info.memo_states.is_empty()
+                        || !memo_info.context_memo_states.is_empty()
+                        || !memo_info.data_deps.is_empty();
+                    let row_fp = has_states.then(|| Fingerprint::from_bytes(&memo_bytes));
                     let memo_states = deserialize_memo_values::<Prof>(&memo_info.memo_states)?;
                     let context_memo_states =
                         deserialize_context_memo_states::<Prof>(&memo_info.context_memo_states)?;
@@ -1788,7 +1792,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                                 wtxn,
                                 PrecommitReadPlan {
                                     self_path: c.stable_path.clone(),
-                                    self_token: process_token,
                                 },
                             )
                             .await?;
