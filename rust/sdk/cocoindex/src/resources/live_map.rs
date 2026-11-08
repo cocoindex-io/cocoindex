@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -268,14 +269,31 @@ impl<K: LiveMapKey, V: LiveMapValue> LiveMapFeed<K, V> for LiveMap<K, V> {
             subscriber.update_all().await?;
         }
         let snapshot_seq = self.inner.lock().scan_seq;
-        while let Some(SeqChange { seq, change }) = rx.recv().await {
-            if seq <= snapshot_seq {
-                continue;
+        // Each change is queued without waiting for the one before it: the
+        // engine runs different keys' children concurrently and coalesces a
+        // key's queued changes into its latest, so a burst is not consumed one
+        // entry at a time. A key's changes still apply in the order they were
+        // made. A failure a handler propagates ends the watch, as when each
+        // change was awaited in turn.
+        let mut in_flight = futures::stream::FuturesUnordered::new();
+        loop {
+            tokio::select! {
+                change = rx.recv() => {
+                    let Some(SeqChange { seq, change }) = change else { break };
+                    if seq <= snapshot_seq {
+                        continue;
+                    }
+                    let handle = match change {
+                        Change::Upsert(key, value) => subscriber.start_update(key, value).await?,
+                        Change::Delete(key) => subscriber.start_delete(key).await?,
+                    };
+                    in_flight.push(handle.ready());
+                }
+                Some(result) = in_flight.next(), if !in_flight.is_empty() => result?,
             }
-            match change {
-                Change::Upsert(key, value) => subscriber.update(key, value).await?,
-                Change::Delete(key) => subscriber.delete(key).await?,
-            }
+        }
+        while let Some(result) = in_flight.next().await {
+            result?;
         }
         Ok(())
     }
