@@ -55,6 +55,15 @@ pub struct LanceDatabase {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for LanceDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LanceDatabase")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Options for [`LanceDatabase::connect_with_options`], the connection options
 /// Python passes through `connect_async(uri, **options)` for a local or
 /// object-store database. (LanceDB Cloud, `db://`, is not built into the SDK's

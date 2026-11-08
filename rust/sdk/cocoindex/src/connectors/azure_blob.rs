@@ -319,7 +319,7 @@ pub enum Credential {
 /// of the Azure SDK's `DefaultAzureCredential` that need no interactive sign-in.
 /// The token is for `https://storage.azure.com/`, and the identity needs
 /// `Storage Blob Data Reader` on the container.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum TokenCredential {
     /// The first of these that is configured where the process runs:
     /// [`ClientSecret`](Self::ClientSecret) from `AZURE_TENANT_ID`,
@@ -345,6 +345,43 @@ pub enum TokenCredential {
     AzureCli,
 }
 
+impl std::fmt::Debug for TokenCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenCredential::Default => f.write_str("Default"),
+            TokenCredential::ClientSecret {
+                tenant_id,
+                client_id,
+                ..
+            } => f
+                .debug_struct("ClientSecret")
+                .field("tenant_id", tenant_id)
+                .field("client_id", client_id)
+                .field("client_secret", &"<redacted>")
+                .finish(),
+            TokenCredential::ManagedIdentity { client_id } => f
+                .debug_struct("ManagedIdentity")
+                .field("client_id", client_id)
+                .finish(),
+            TokenCredential::AzureCli => f.write_str("AzureCli"),
+        }
+    }
+}
+
+/// Secrets are redacted.
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Credential::AccountKey(_) => f.write_str("AccountKey(<redacted>)"),
+            Credential::SasToken(_) => f.write_str("SasToken(<redacted>)"),
+            Credential::BearerToken(_) => f.write_str("BearerToken(<redacted>)"),
+            Credential::TokenCredential(source) => {
+                f.debug_tuple("TokenCredential").field(source).finish()
+            }
+        }
+    }
+}
+
 enum Auth {
     SharedKey { key: Vec<u8> },
     Sas { query: String },
@@ -367,6 +404,16 @@ struct ContainerClientInner {
 #[derive(Clone)]
 pub struct ContainerClient {
     inner: Arc<ContainerClientInner>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for ContainerClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContainerClient")
+            .field("account_name", &self.inner.account_name)
+            .field("container_name", &self.inner.container_name)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ContainerClient {

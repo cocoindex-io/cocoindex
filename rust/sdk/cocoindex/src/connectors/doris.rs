@@ -52,8 +52,8 @@ use crate::target_state::{
 
 /// Connection configuration for a Doris cluster. Mirrors Python's
 /// `DorisConnectionConfig`. Construct with [`DorisConfig::new`] and adjust with
-/// the builder setters.
-#[derive(Clone, Debug)]
+/// the builder setters. Its `Debug` output redacts the password.
+#[derive(Clone)]
 pub struct DorisConfig {
     /// Frontend host (used for both the MySQL query port and Stream Load HTTP).
     pub fe_host: String,
@@ -177,6 +177,37 @@ pub struct DorisConnection {
     pool: MySqlPool,
     http: reqwest::Client,
     state_id: Arc<str>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for DorisConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DorisConnection")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for DorisConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DorisConfig")
+            .field("fe_host", &self.fe_host)
+            .field("database", &self.database)
+            .field("fe_http_port", &self.fe_http_port)
+            .field("query_port", &self.query_port)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("enable_https", &self.enable_https)
+            .field("be_load_host", &self.be_load_host)
+            .field("batch_size", &self.batch_size)
+            .field("stream_load_timeout", &self.stream_load_timeout)
+            .field("max_retries", &self.max_retries)
+            .field("retry_base_delay", &self.retry_base_delay)
+            .field("retry_max_delay", &self.retry_max_delay)
+            .field("replication_num", &self.replication_num)
+            .field("buckets", &self.buckets)
+            .finish()
+    }
 }
 
 impl DorisConnection {
@@ -1893,6 +1924,13 @@ mod tests {
             };
             assert!(err.to_string().contains("must be a finite number"), "{err}");
         }
+    }
+
+    #[test]
+    fn config_debug_redacts_the_password() {
+        let debug = format!("{:?}", config().password("hunter2"));
+        assert!(!debug.contains("hunter2"), "{debug}");
+        assert!(debug.contains("<redacted>"), "{debug}");
     }
 
     fn config() -> DorisConfig {

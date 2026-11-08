@@ -70,7 +70,8 @@ const LIST_FIELDS: &str = "name,size,md5,timeModified,etag";
 
 /// Credentials and endpoint for an OCI API-key principal, as found in an
 /// `~/.oci/config` profile (the same file the OCI CLI and Python SDK read).
-#[derive(Clone, Debug)]
+/// Its `Debug` output redacts the pass-phrase.
+#[derive(Clone)]
 pub struct OciConfig {
     /// Tenancy OCID.
     pub tenancy: String,
@@ -85,6 +86,22 @@ pub struct OciConfig {
     /// The key's pass-phrase, for a PKCS#8 encrypted key (`BEGIN ENCRYPTED
     /// PRIVATE KEY`, as `oci setup config` writes one).
     pub pass_phrase: Option<String>,
+}
+
+impl std::fmt::Debug for OciConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OciConfig")
+            .field("tenancy", &self.tenancy)
+            .field("user", &self.user)
+            .field("fingerprint", &self.fingerprint)
+            .field("key_file", &self.key_file)
+            .field("region", &self.region)
+            .field(
+                "pass_phrase",
+                &self.pass_phrase.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 impl OciConfig {
@@ -665,6 +682,15 @@ impl InstancePrincipal {
 #[derive(Clone)]
 pub struct OciClient {
     inner: Arc<OciClientInner>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for OciClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OciClient")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl OciClient {

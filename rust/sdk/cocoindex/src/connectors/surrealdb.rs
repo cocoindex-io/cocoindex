@@ -267,14 +267,24 @@ pub struct Graph {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for Graph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Graph")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 fn surreal_err(e: surrealdb::Error) -> Error {
     Error::engine(format!("surrealdb: {e}"))
 }
 
 /// How [`Graph::connect_with_credentials`] signs in (Python's `credentials`
 /// dict of `ConnectionFactory`). A namespace or database user belongs to the
-/// namespace and database the connection uses.
-#[derive(Clone, Debug)]
+/// namespace and database the connection uses. Its `Debug` output redacts
+/// passwords and record-access parameters.
+#[derive(Clone)]
 pub enum Credentials {
     /// Sign in as a root user.
     Root { username: String, password: String },
@@ -287,6 +297,28 @@ pub enum Credentials {
     Record { access: String, params: JsonValue },
     /// No sign-in, for a server started without authentication.
     None,
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let user = |f: &mut std::fmt::Formatter<'_>, kind: &str, username: &str| {
+            f.debug_struct(kind)
+                .field("username", &username)
+                .field("password", &"<redacted>")
+                .finish()
+        };
+        match self {
+            Credentials::Root { username, .. } => user(f, "Root", username),
+            Credentials::Namespace { username, .. } => user(f, "Namespace", username),
+            Credentials::Database { username, .. } => user(f, "Database", username),
+            Credentials::Record { access, .. } => f
+                .debug_struct("Record")
+                .field("access", access)
+                .field("params", &"<redacted>")
+                .finish(),
+            Credentials::None => f.write_str("None"),
+        }
+    }
 }
 
 impl Graph {

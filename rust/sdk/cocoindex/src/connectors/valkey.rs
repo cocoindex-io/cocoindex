@@ -44,6 +44,15 @@ pub struct Valkey {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for Valkey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Valkey")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Connection settings for [`Valkey::connect_with_config`] — the Rust analogue
 /// of Python's `create_client_config`. For anything these fields do not cover
 /// (client certificates, a username, a database number), build a

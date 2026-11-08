@@ -51,6 +51,15 @@ pub struct QdrantConnection {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for QdrantConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QdrantConnection")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl QdrantConnection {
     /// Connect to a Qdrant server (gRPC URL, e.g. `http://localhost:6334`)
     /// with the client's default settings. For an API key, TLS or timeouts,

@@ -241,6 +241,15 @@ pub struct S3Client {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for S3Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Client")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl S3Client {
     /// Build a client from the standard AWS environment (region, credentials, and
     /// `AWS_ENDPOINT_URL`). When `AWS_ENDPOINT_URL` is set (e.g. for MinIO),

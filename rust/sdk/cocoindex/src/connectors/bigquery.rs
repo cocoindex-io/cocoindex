@@ -131,6 +131,15 @@ pub struct BigQueryConnection {
     inner: Arc<ConnectionInner>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for BigQueryConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BigQueryConnection")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl BigQueryConnection {
     /// Resolve credentials (see the module docs) and build a connection. No
     /// request is made until the first query.

@@ -240,6 +240,15 @@ pub struct KafkaProducer {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for KafkaProducer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KafkaProducer")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl KafkaProducer {
     /// Connect to a Kafka (or Redpanda) cluster given its bootstrap servers,
     /// e.g. `["localhost:9092"]`, in plaintext without authentication.
@@ -979,6 +988,15 @@ pub struct KafkaConsumer {
     client: Arc<Client>,
     state_id: Arc<str>,
     consumer_group: Option<Arc<str>>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for KafkaConsumer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KafkaConsumer")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl KafkaConsumer {
