@@ -683,7 +683,7 @@ impl<D: Persist + Clone> UserStateCache<D> {
             Entry::Occupied(mut e) => match e.get() {
                 UserStateEntry::Declared(_) => {
                     already_declared_bail!(
-                        "coco.use_state() key {:?} declared more than once in the same component run",
+                        "use_state key {:?} declared more than once in the same component run",
                         e.key()
                     );
                 }
@@ -710,7 +710,7 @@ impl<D: Persist + Clone> UserStateCache<D> {
             }
             _ => {
                 client_bail!(
-                    "coco.use_state() key {:?} has not been declared via use_state() in this component run",
+                    "use_state key {:?} has not been declared via use_state in this component run",
                     key
                 );
             }
