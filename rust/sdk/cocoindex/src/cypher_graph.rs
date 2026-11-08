@@ -53,6 +53,12 @@ pub(crate) trait CypherExecutor: Clone + Send + Sync + 'static {
     /// with [`table_root_provider`] for this executor type.
     fn table_provider() -> &'static StaticRootProvider;
 
+    /// Validate a table (label) or relation (relationship type) name. Neo4j
+    /// is stricter: it names schema objects after the label.
+    fn validate_table_name(name: &str, what: &str) -> Result<()> {
+        validate_ident(name, what)
+    }
+
     /// Execute a statement with no bound parameters (DDL: indexes/constraints,
     /// built only from validated identifiers).
     async fn execute(&self, cypher: &str) -> Result<()>;
@@ -417,7 +423,20 @@ impl TableTarget {
         id: impl IntoStableKey,
         row: &R,
     ) -> Result<()> {
-        declare_target_state(ctx, self.provider.target_state(id, record_state(row)?))
+        let id = id.into_stable_key();
+        let state = record_state(row)?;
+        // The node is keyed by `id`; a row that also carries the primary key
+        // must agree, or the stored key would silently differ from the row.
+        if let Some(value) = state.fields.get(&*self.primary_key)
+            && !value.is_null()
+            && *value != key_json(&key_value(id.clone())?)
+        {
+            return Err(Error::engine(format!(
+                "record id {id:?} differs from the row's primary key {:?} = {value}",
+                self.primary_key
+            )));
+        }
+        declare_target_state(ctx, self.provider.target_state(id, state))
     }
 
     /// Declare a vector index on `field` as an attachment of this node table.
@@ -721,7 +740,7 @@ pub(crate) fn table_target_state<C: CypherExecutor>(
     options: ManagedTargetOptions,
 ) -> Result<TargetState<TableSpec>> {
     let table_name = table_name.into();
-    validate_ident(&table_name, "table name")?;
+    C::validate_table_name(&table_name, "table name")?;
     let spec = TableSpec::table(table_name.clone(), schema, options.managed_by);
     let provider = C::table_provider().get(ctx)?;
     Ok(provider.target_state(
@@ -748,7 +767,7 @@ pub(crate) fn relation_target_state<C: CypherExecutor>(
     options: ManagedTargetOptions,
 ) -> Result<TargetState<TableSpec>> {
     let relation_name = relation_name.into();
-    validate_ident(&relation_name, "relation name")?;
+    C::validate_table_name(&relation_name, "relation name")?;
     let from_endpoint = TableEndpoint {
         table_name: from_table.table_name().to_string(),
         primary_key: from_table.primary_key().to_string(),
@@ -1682,12 +1701,38 @@ async fn apply_records<C: CypherExecutor>(
     spec: &TableSpec,
     actions: Vec<RecordAction>,
 ) -> Result<()> {
+    if graph.dialect() == "falkordb" {
+        check_falkordb_keys(spec, &actions)?;
+    }
     let (upserts, deletes): (Vec<_>, Vec<_>) = actions
         .into_iter()
         .partition(|action| action.state.is_some());
     let ordered: Vec<RecordAction> = upserts.into_iter().chain(deletes).collect();
     for chunk in ordered.chunks(MAX_ACTIONS_PER_TXN) {
         apply_chunk(graph, spec, chunk).await?;
+    }
+    Ok(())
+}
+
+/// FalkorDB leaves an empty string out of a property index, so a `MERGE` on
+/// an empty-string key never finds the node it wrote: the next write adds a
+/// duplicate, or fails the uniqueness constraint. Fail the batch before it
+/// writes anything instead.
+fn check_falkordb_keys(spec: &TableSpec, actions: &[RecordAction]) -> Result<()> {
+    let empty = |key: &KeyValue| matches!(key, KeyValue::Str(s) if s.is_empty());
+    for action in actions {
+        let endpoints = action
+            .state
+            .as_ref()
+            .and_then(|state| state.relation.as_ref())
+            .map(|rel| [&rel.from_id, &rel.to_id]);
+        if empty(&action.record_id) || endpoints.is_some_and(|ids| ids.into_iter().any(empty)) {
+            return Err(Error::engine(format!(
+                "FalkorDB cannot key a record of {} by an empty string: its index skips \
+                 empty strings",
+                spec.table_name
+            )));
+        }
     }
     Ok(())
 }
@@ -1810,10 +1855,39 @@ fn record_state<R: Serialize>(row: &R) -> Result<RecordState> {
             ));
         }
     };
+    for (name, value) in &fields {
+        check_property_value(name, value)?;
+    }
     Ok(RecordState {
         fields,
         relation: None,
     })
+}
+
+/// Reject a property value neither Neo4j nor FalkorDB stores, before
+/// anything is written: a map, a list holding a null or a map, or an integer
+/// beyond `i64` (which would otherwise reach Neo4j as a float, losing
+/// precision). The other limits differ by server (Neo4j also refuses nested
+/// and mixed-type lists) and are left to it.
+fn check_property_value(name: &str, value: &JsonValue) -> Result<()> {
+    let bad = |what: &str| {
+        Err(Error::engine(format!(
+            "graph target property {name:?} {what}: properties hold a primitive or a list of \
+             primitives"
+        )))
+    };
+    match value {
+        JsonValue::Object(_) => bad("is a map"),
+        JsonValue::Number(n) if n.is_u64() && n.as_i64().is_none() => bad(&format!(
+            "is the integer {n}, beyond the 64-bit signed range"
+        )),
+        JsonValue::Array(items) => items.iter().try_for_each(|item| match item {
+            JsonValue::Null => bad("is a list holding a null"),
+            JsonValue::Object(_) => bad("is a list holding a map"),
+            _ => check_property_value(name, item),
+        }),
+        _ => Ok(()),
+    }
 }
 
 fn key_value(key: StableKey) -> Result<KeyValue> {
@@ -3301,6 +3375,105 @@ mod tests {
             rows(&calls[0].1)[0]["props"],
             serde_json::json!({ "name": "alice", "age": 30 })
         );
+    }
+
+    /// Declare one `Person` record keyed by `id` with `row`, on `graph`.
+    async fn declare_person(
+        graph: &RecordingGraph,
+        id: &'static str,
+        row: serde_json::Value,
+    ) -> Result<()> {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = recording_app(graph, tmp.path()).await;
+        app.run(move |ctx| {
+            let row = row.clone();
+            async move {
+                let people = mount_table_target_with_options(
+                    &ctx,
+                    &RECORDING,
+                    "Person",
+                    TableSchema::schemaless("id")?,
+                    ManagedTargetOptions::default(),
+                )
+                .await?;
+                people.declare_record(&ctx, id, &row)
+            }
+        })
+        .await
+        .map(|_| ())
+    }
+
+    #[tokio::test]
+    async fn property_values_no_graph_stores_are_refused_before_writing() {
+        for (row, what) in [
+            (
+                serde_json::json!({ "n": u64::MAX }),
+                "beyond the 64-bit signed range",
+            ),
+            (serde_json::json!({ "m": { "a": 1 } }), "is a map"),
+            (serde_json::json!({ "l": [1, null] }), "holding a null"),
+            (serde_json::json!({ "l": [{ "a": 1 }] }), "holding a map"),
+            (serde_json::json!({ "l": [[1], [null]] }), "holding a null"),
+        ] {
+            let graph = RecordingGraph::new("neo4j");
+            let err = declare_person(&graph, "a", row.clone())
+                .await
+                .expect_err(&row.to_string());
+            assert!(err.to_string().contains(what), "{row}: {err}");
+            assert!(graph.param_calls().is_empty(), "{row}: nothing is written");
+        }
+        // What one server or the other stores is passed on.
+        for row in [
+            serde_json::json!({ "n": i64::MAX, "f": 1e300, "l": [], "ll": [[1], ["a"]] }),
+            serde_json::json!({ "none": null, "mixed": [1, 2.5] }),
+        ] {
+            let graph = RecordingGraph::new("neo4j");
+            declare_person(&graph, "a", row.clone()).await.unwrap();
+            assert_eq!(graph.param_calls().len(), 1, "{row}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_record_id_differing_from_the_row_primary_key_is_refused() {
+        let graph = RecordingGraph::new("neo4j");
+        for row in [
+            serde_json::json!({ "id": "b" }),
+            serde_json::json!({ "id": 1 }),
+        ] {
+            let err = declare_person(&graph, "a", row.clone())
+                .await
+                .expect_err(&row.to_string());
+            assert!(err.to_string().contains("differs"), "{row}: {err}");
+        }
+        // A row without the key, or with a null one, takes the record id.
+        declare_person(&graph, "a", serde_json::json!({ "name": "x" }))
+            .await
+            .unwrap();
+        declare_person(&graph, "a", serde_json::json!({ "id": null }))
+            .await
+            .unwrap();
+        assert!(
+            graph
+                .param_calls()
+                .iter()
+                .all(|(_, params)| rows(params)[0]["key"] == "a")
+        );
+    }
+
+    #[tokio::test]
+    async fn falkordb_refuses_an_empty_string_key_before_writing() {
+        let graph = RecordingGraph::new("falkordb");
+        let err = declare_person(&graph, "", serde_json::json!({ "id": "" }))
+            .await
+            .expect_err("an empty-string key");
+        assert!(err.to_string().contains("empty string"), "{err}");
+        assert!(graph.param_calls().is_empty());
+
+        let neo4j = RecordingGraph::new("neo4j");
+        declare_person(&neo4j, "", serde_json::json!({ "id": "" }))
+            .await
+            .unwrap();
+        assert_eq!(neo4j.param_calls().len(), 1);
     }
 
     #[tokio::test]

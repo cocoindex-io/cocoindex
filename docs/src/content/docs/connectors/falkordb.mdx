@@ -287,6 +287,10 @@ pub fn TableTarget::declare_record<R: serde::Serialize>(
 
 The node's primary-key value is passed as `id` (a `&str`, `String`, `i64` or `u64`) and the row serializes to the node's properties with serde.
 
+A row that also carries the primary-key field must hold the same value as `id` (a null counts as absent), or the declaration fails. A property value must be a primitive or a list of primitives: a map, a list holding a null or a map, an integer beyond `i64`, or a NaN or infinite float fails the declaration before anything is written.
+
+FalkorDB leaves empty strings out of its property indexes, so a `MERGE` on an empty-string key would never find the node it wrote: an empty-string `id`, or an empty-string relationship endpoint, fails the batch before it writes anything.
+
 </Fragment>
 </LangTabs>
 
