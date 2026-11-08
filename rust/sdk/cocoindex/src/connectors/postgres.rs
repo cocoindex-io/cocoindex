@@ -607,10 +607,15 @@ struct TableAction {
     /// The primary-key signature changed: drop and recreate the table.
     #[serde(default)]
     recreate: bool,
-    /// Non-PK columns whose declared type changed since the last run; retype
-    /// them (preserving rows where the cast allows).
+    /// Non-PK columns whose declared type or nullability changed since the
+    /// last run; retype them (preserving rows where the cast allows).
     #[serde(default)]
     retype_cols: Vec<String>,
+    /// Columns a previous run declared that this run doesn't: drop them.
+    /// Columns this target never declared (added by someone else, or by the
+    /// table's own SQL command attachment) are left alone, as in Python.
+    #[serde(default)]
+    drop_cols: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -709,50 +714,53 @@ impl TargetHandler<TableSpec> for TableHandler {
             // Always emit when declared so the sink builds the row child.
             Some(spec) => {
                 let tracking = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
-                // The previous system-managed spec (if any) drives the schema-
-                // evolution decision: a PK-signature change forces a destructive
-                // drop+recreate; a non-PK column type change is an in-place
-                // retype; a column drop is lossy. (`reconcile_columns` in the
-                // sink still handles plain add/drop against `information_schema`.)
-                let prev_spec = prev
+                // The previous system-managed specs drive the schema-evolution
+                // decision: a PK-signature change forces a destructive
+                // drop+recreate; a non-PK column type or nullability change is
+                // an in-place retype; a column drop is lossy.
+                let prev_specs: Vec<TableSpec> = prev
                     .iter()
-                    .find(|v| v.managed_by.is_system())
-                    .map(|v| v.tracking_record.clone());
+                    .filter(|v| v.managed_by.is_system())
+                    .map(|v| v.tracking_record.clone())
+                    .collect();
                 let _resolved =
                     resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
 
                 let mut recreate = false;
                 let mut retype_cols: Vec<String> = Vec::new();
-                let mut dropped_col = false;
-                if spec.managed_by.is_system()
-                    && let Some(prev_spec) = &prev_spec
-                {
-                    if pk_signature(prev_spec) != pk_signature(&spec) {
-                        recreate = true;
-                    } else {
+                let mut drop_cols: Vec<String> = Vec::new();
+                if spec.managed_by.is_system() {
+                    let desired_pk = pk_signature(&spec);
+                    recreate = prev_specs.iter().any(|p| pk_signature(p) != desired_pk);
+                    if !recreate {
                         let pk: std::collections::HashSet<&String> =
                             spec.table_schema.primary_key().iter().collect();
                         for (name, col) in spec.table_schema.columns() {
                             if pk.contains(name) {
                                 continue;
                             }
-                            if let Some(prev_col) = prev_spec.table_schema.columns().get(name)
-                                && prev_col.pg_type != col.pg_type
-                            {
+                            let changed = prev_specs.iter().any(|p| {
+                                p.table_schema.columns().get(name).is_some_and(|prev_col| {
+                                    prev_col.pg_type != col.pg_type
+                                        || prev_col.nullable != col.nullable
+                                })
+                            });
+                            if changed {
                                 retype_cols.push(name.clone());
                             }
                         }
-                        dropped_col = prev_spec
-                            .table_schema
-                            .columns()
-                            .keys()
-                            .any(|name| !spec.table_schema.columns().contains_key(name));
+                        let dropped: std::collections::BTreeSet<&String> = prev_specs
+                            .iter()
+                            .flat_map(|p| p.table_schema.columns().keys())
+                            .filter(|name| !spec.table_schema.columns().contains_key(*name))
+                            .collect();
+                        drop_cols = dropped.into_iter().cloned().collect();
                     }
                 }
 
                 let child_invalidation = if recreate {
                     Some(TargetChildInvalidation::Destructive)
-                } else if dropped_col || !retype_cols.is_empty() {
+                } else if !drop_cols.is_empty() || !retype_cols.is_empty() {
                     Some(TargetChildInvalidation::Lossy)
                 } else {
                     None
@@ -765,6 +773,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         drop: None,
                         recreate,
                         retype_cols,
+                        drop_cols,
                     }),
                     sink: self.sink.get(table_sink),
                     tracking_record: Some(tracking),
@@ -793,6 +802,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                         }),
                         recreate: false,
                         retype_cols: Vec::new(),
+                        drop_cols: Vec::new(),
                     }),
                     sink: self.sink.get(table_sink),
                     tracking_record: None,
@@ -821,6 +831,9 @@ fn table_sink() -> TargetActionSink<TableAction> {
                                 .await?;
                         }
                         define_table(&db, &spec).await?;
+                        if !a.drop_cols.is_empty() && spec.managed_by.is_system() {
+                            drop_columns(&db, &spec, &a.drop_cols).await?;
+                        }
                         if !a.retype_cols.is_empty() {
                             apply_retypes(&db, &spec, &a.retype_cols).await?;
                         }
@@ -1140,15 +1153,17 @@ impl SqlCommandHandler {
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
-                        // Run previous teardown first (on change or removal), then setup.
+                        // Run previous teardown first (on change or removal), then
+                        // setup. Each runs as a simple query, so it may hold several
+                        // `;`-separated statements, as with Python's `conn.execute`.
                         if let Some(teardown) = action.prev_teardown_sql {
-                            sqlx::query(&teardown)
+                            sqlx::raw_sql(&teardown)
                                 .execute(db.pool())
                                 .await
                                 .map_err(pg_err)?;
                         }
                         if let Some(spec) = action.spec {
-                            sqlx::query(&spec.setup_sql)
+                            sqlx::raw_sql(&spec.setup_sql)
                                 .execute(db.pool())
                                 .await
                                 .map_err(pg_err)?;
@@ -1212,30 +1227,29 @@ async fn define_table(db: &Database, spec: &TableSpec) -> Result<()> {
     Ok(())
 }
 
-/// Bring an existing system-managed table's columns in line with the declared
-/// schema: add columns that are missing and drop columns that are no longer
-/// declared. Reconciling against the live `information_schema` (rather than a
-/// stored schema history) is idempotent and self-healing — a column drop that
-/// fails (e.g. a dependent view) simply surfaces as an error and is retried on
-/// the next run once the dependency is gone.
+/// Add the declared columns an existing system-managed table is missing (a
+/// table created by an earlier run with fewer columns, or a column someone
+/// else dropped). Reconciling against the live `information_schema` is
+/// idempotent and self-healing. Columns are compared by the name the server
+/// stores, which it truncates to 63 bytes.
 async fn reconcile_columns(db: &Database, spec: &TableSpec) -> Result<()> {
     let schema_name = spec.pg_schema_name.as_deref().unwrap_or("public");
     let existing: Vec<String> = sqlx::query_scalar(
-        "SELECT column_name FROM information_schema.columns \
+        "SELECT column_name::text FROM information_schema.columns \
          WHERE table_schema = $1 AND table_name = $2",
     )
-    .bind(schema_name)
-    .bind(&spec.table_name)
+    .bind(stored_ident(schema_name))
+    .bind(stored_ident(&spec.table_name))
     .fetch_all(db.pool())
     .await
     .map_err(pg_err)?;
     let existing: std::collections::BTreeSet<String> = existing.into_iter().collect();
 
-    // Add declared columns the table is missing. Added columns are nullable
-    // (a NOT NULL add would fail against existing rows) — the PK columns are
-    // fixed at CREATE time and never added here.
+    // Added columns are nullable (a NOT NULL add would fail against existing
+    // rows), as in Python; the PK columns are fixed at CREATE time and never
+    // added here.
     for (name, col) in spec.table_schema.columns() {
-        if !existing.contains(name) {
+        if !existing.contains(stored_ident(name)) {
             let sql = format!(
                 "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
                 qualified_table_name(spec),
@@ -1245,25 +1259,29 @@ async fn reconcile_columns(db: &Database, spec: &TableSpec) -> Result<()> {
             sqlx::query(&sql).execute(db.pool()).await.map_err(pg_err)?;
         }
     }
+    Ok(())
+}
 
-    // Drop columns that are no longer declared.
-    let desired: std::collections::BTreeSet<&str> = spec
-        .table_schema
-        .columns()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    for name in &existing {
-        if !desired.contains(name.as_str()) {
-            let sql = format!(
-                "ALTER TABLE {} DROP COLUMN IF EXISTS {}",
-                qualified_table_name(spec),
-                quote_ident(name),
-            );
-            sqlx::query(&sql).execute(db.pool()).await.map_err(pg_err)?;
-        }
+/// Drop columns a previous run declared and this one doesn't. A drop that
+/// fails (a dependent view, say) fails the run, and the next run, which still
+/// sees the column in the previous spec, retries it.
+async fn drop_columns(db: &Database, spec: &TableSpec, cols: &[String]) -> Result<()> {
+    for name in cols {
+        let sql = format!(
+            "ALTER TABLE {} DROP COLUMN IF EXISTS {}",
+            qualified_table_name(spec),
+            quote_ident(name),
+        );
+        sqlx::query(&sql).execute(db.pool()).await.map_err(pg_err)?;
     }
     Ok(())
+}
+
+/// The name the server stores for an identifier: Postgres truncates one longer
+/// than 63 bytes (`NAMEDATALEN - 1`). Identifiers are ASCII
+/// ([`validate_ident`]), so a byte cut is a character cut.
+fn stored_ident(name: &str) -> &str {
+    &name[..name.len().min(63)]
 }
 
 /// The primary-key signature `(column, pg_type)*` used to detect a PK change
@@ -1284,11 +1302,12 @@ fn pk_signature(spec: &TableSpec) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Apply in-place type changes to existing non-PK columns. Tries
-/// `ALTER COLUMN ... TYPE` (preserves rows when the cast is valid); on failure
-/// (an incompatible cast) it drops and re-adds the column — mirroring Python's
-/// drop-retry on `_apply_column_actions`. PK columns are never retyped here (a PK
-/// change is handled by a full recreate).
+/// Apply in-place type and nullability changes to existing non-PK columns.
+/// Tries `ALTER COLUMN ... TYPE ..., ALTER COLUMN ... SET/DROP NOT NULL`
+/// (preserves rows when the cast is valid and no NULL breaks the constraint);
+/// on failure it drops and re-adds the column, nullable — mirroring Python's
+/// drop-retry in `_apply_column_actions`. PK columns are never retyped here (a
+/// PK change is handled by a full recreate).
 async fn apply_retypes(db: &Database, spec: &TableSpec, cols: &[String]) -> Result<()> {
     if spec.managed_by.is_user() {
         return Ok(());
@@ -1299,8 +1318,13 @@ async fn apply_retypes(db: &Database, spec: &TableSpec, cols: &[String]) -> Resu
             continue;
         };
         let ident = quote_ident(name);
+        let set_null = if col.nullable {
+            "DROP NOT NULL"
+        } else {
+            "SET NOT NULL"
+        };
         let alter = format!(
-            "ALTER TABLE {table} ALTER COLUMN {ident} TYPE {}",
+            "ALTER TABLE {table} ALTER COLUMN {ident} TYPE {}, ALTER COLUMN {ident} {set_null}",
             col.pg_type
         );
         if sqlx::query(&alter).execute(db.pool()).await.is_err() {
