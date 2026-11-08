@@ -172,7 +172,8 @@ impl Environment {
 
     /// Run the `on_shutdown` hooks (most recently registered first), then
     /// close the state db. Hooks run once; a second call only closes.
-    /// Await every running update or drop before calling this.
+    /// Await every running update or drop before calling this. A live update
+    /// never ends on its own, and the SDK cannot stop one yet.
     pub async fn shutdown(&self) {
         // A poisoned lock still holds the hooks; run them anyway.
         let hooks: Vec<ShutdownHook> = std::mem::take(
@@ -629,6 +630,15 @@ impl App {
     ///
     /// Returns an error if the provided closure returns an error, or if internal engine
     /// orchestration fails.
+    ///
+    /// # Cancellation
+    ///
+    /// The update runs as a task on the engine's runtime. Dropping the
+    /// returned future (or the [`UpdateHandle`] of [`App::start_update`])
+    /// does not stop it: it runs to completion, and a live update runs until
+    /// the process exits. The same holds for [`App::run`],
+    /// [`App::update_with_options`], [`App::preview`] and
+    /// [`App::drop_state`].
     pub async fn update<F, Fut, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(Ctx) -> Fut + Send + 'static,
@@ -978,7 +988,8 @@ impl std::fmt::Debug for PreviewAction {
     }
 }
 
-/// Handle returned by [`App::start_update`].
+/// Handle returned by [`App::start_update`]. Dropping it does not stop the
+/// update (see the cancellation notes on [`App::update`]).
 pub struct UpdateHandle<T> {
     core: AppOpHandle<Value>,
     preview_collector: Option<Arc<std::sync::Mutex<Vec<Action>>>>,
@@ -1037,7 +1048,8 @@ where
     }
 }
 
-/// Handle returned by [`App::start_drop_state`].
+/// Handle returned by [`App::start_drop_state`]. Dropping it does not stop
+/// the drop (see the cancellation notes on [`App::update`]).
 pub struct DropHandle {
     core: AppOpHandle<()>,
 }
