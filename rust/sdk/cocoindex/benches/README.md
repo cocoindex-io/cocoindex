@@ -23,7 +23,7 @@ live under [`benchmarks/`](../../../../benchmarks/) at the repository root.
 | Group | Benchmark ids | Reported as |
 | ----- | ------------- | ----------- |
 | `memo_call` | `hit/small`, `hit/large_100k`, `miss/small`, `miss/large_100k` | per call of a `#[cocoindex::function(memo)]`, inside one update |
-| `component_overhead` | `mount_each/warm/{1000,10000}`, `use_mount/warm/{1000,10000}` | per trivial component on a warm run |
+| `component_overhead` | `mount_each/warm/{1000,10000}`, `mount_each_memo/warm/{1000,10000}`, `use_mount/warm/{1000,10000}` | per trivial component on a warm run: `mount_each` children run and commit, `mount_each_memo` children are component-memo hits |
 | `fingerprint` | `from_vec/{1k,100k,10m}`, `from_bytes/{1k,100k,10m}` | bytes per second of `Fingerprint::from(&Vec<u8>)` against `Fingerprint::from_bytes` |
 | `target_reconcile` | `cold/10000`, `no_change/10000` | per row declared into a counting no-op `TargetHandler` |
 | `batched_fn` | `concurrent_calls/{1000,10000}` | per call of a `#[cocoindex::function(batching)]` with a trivial body |
