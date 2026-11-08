@@ -557,3 +557,119 @@ async fn matrix_search_matches_the_reference_resolution() {
 
     assert_eq!(resolved.to_map(), expected);
 }
+
+#[tokio::test]
+async fn a_single_entity_is_its_own_canonical_without_a_resolver_call() {
+    let resolver = Arc::new(ScriptedResolver::default());
+    let result = resolve(
+        &["solo"],
+        embedder(&[("solo", &[1.0, 0.0])]),
+        resolver.clone(),
+        None,
+        ResolveOptions::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.canonical_of("solo").unwrap(), "solo");
+    assert_eq!(result.to_map().len(), 1);
+    assert!(resolver.calls().is_empty());
+}
+
+#[tokio::test]
+async fn duplicate_names_are_resolved_once() {
+    let resolver = ScriptedResolver::deciding("b", &["a"], PairDecision::matched("a"));
+    let result = resolve(
+        &["b", "a", "b", "a", "a"],
+        embedder(&[("a", &[1.0, 0.0]), ("b", &[0.99, 0.05])]),
+        resolver.clone(),
+        None,
+        ResolveOptions::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.to_map().len(), 2);
+    assert_eq!(result.canonical_of("b").unwrap(), "a");
+    assert_eq!(
+        resolver.calls(),
+        vec![("b".to_string(), vec!["a".to_string()])]
+    );
+}
+
+/// An embedder that returns no numbers would leave nothing to compare; it is
+/// an error, not a silently empty result.
+#[tokio::test]
+async fn zero_dimensional_embeddings_are_rejected() {
+    let err = resolve(
+        &["a", "b"],
+        embedder(&[("a", &[]), ("b", &[])]),
+        Arc::new(ScriptedResolver::default()),
+        None,
+        ResolveOptions::default(),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("0 dimensions"), "{err}");
+}
+
+#[tokio::test]
+async fn a_non_finite_embedding_is_rejected() {
+    for bad in [f32::NAN, f32::INFINITY] {
+        let vectors: Vec<(String, Vec<f32>)> = vec![
+            ("a".to_string(), vec![1.0, 0.0]),
+            ("b".to_string(), vec![bad, 0.0]),
+        ];
+        let embedder = Arc::new(ScriptedEmbedder {
+            vectors: vectors.into_iter().collect(),
+        });
+        let err = resolve(
+            &["a", "b"],
+            embedder,
+            Arc::new(ScriptedResolver::default()),
+            None,
+            ResolveOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("non-finite"), "{err}");
+    }
+}
+
+/// The result depends on the set of names, not on the order they come in.
+#[tokio::test]
+async fn resolution_does_not_depend_on_input_order() {
+    use rand::SeedableRng;
+    use rand::seq::SliceRandom;
+    let Clustered {
+        entities,
+        cluster_of,
+    } = clustered_vectors(20, 4, 30, 16);
+    let embedder = Arc::new(ScriptedEmbedder {
+        vectors: entities.iter().cloned().collect(),
+    });
+    let resolver = Arc::new(ClusterResolver { cluster_of });
+    let mut names: Vec<String> = entities.iter().map(|(name, _)| name.clone()).collect();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+    let mut first = None;
+    for _ in 0..4 {
+        names.shuffle(&mut rng);
+        let (names, embedder, resolver) = (names.clone(), embedder.clone(), resolver.clone());
+        let resolved = in_update(move |ctx| async move {
+            resolve_entities(
+                &ctx,
+                names.iter(),
+                &*embedder,
+                &*resolver,
+                None,
+                ResolveOptions::default(),
+            )
+            .await
+        })
+        .await
+        .unwrap()
+        .to_map();
+        match &first {
+            None => first = Some(resolved),
+            Some(first) => assert_eq!(&resolved, first),
+        }
+    }
+}

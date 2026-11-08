@@ -444,3 +444,37 @@ async fn use_mount_each_drains_started_siblings_on_deadline_error() {
         "B's started work must drain to commit before use_mount_each returns"
     );
 }
+
+static BATCH_BODY_SAW_DEADLINE: AtomicBool = AtomicBool::new(true);
+
+#[cocoindex::function(batching)]
+async fn advances_clock_in_batch(
+    ctx: &cocoindex::Ctx,
+    items: Vec<i64>,
+) -> cocoindex::Result<Vec<i64>> {
+    BATCH_BODY_SAW_DEADLINE.store(ctx.has_deadline(), Ordering::SeqCst);
+    testing_advance_deadline_clock(Duration::from_secs(20));
+    Ok(items)
+}
+
+/// Like Python's `test_batched_runner_body_is_deadline_isolated` and
+/// `test_batched_runner_caller_checks_deadline_after_return`: the batch body
+/// runs without its callers' deadline, and a caller whose deadline expired
+/// while the batch ran gets `DeadlineExceeded`, not the result.
+#[tokio::test]
+async fn batched_caller_checks_its_deadline_after_the_batch_returns() {
+    let _clock = TestClockGuard::new();
+    let (app, _env) = temp_app("sdk_deadline_batched_after_return").await;
+    let err = app
+        .update(|ctx| async move {
+            let scoped = ctx.with_timeout(Duration::from_secs(10));
+            advances_clock_in_batch(&scoped, 1).await
+        })
+        .await
+        .unwrap_err();
+    assert_deadline(err);
+    assert!(
+        !BATCH_BODY_SAW_DEADLINE.load(Ordering::SeqCst),
+        "the batch body must not inherit a caller's deadline"
+    );
+}
