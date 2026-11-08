@@ -140,7 +140,9 @@ CONT_NAME = "C"
 
 @dataclass
 class Source:
-    files: dict[Any, tuple[int, int]] = field(default_factory=dict)  # key->(content, nchunks)
+    files: dict[Any, tuple[int, int]] = field(
+        default_factory=dict
+    )  # key->(content, nchunks)
     archive: dict[Any, int] = field(default_factory=dict)
     grp: dict[str, int] = field(default_factory=dict)
     um: dict[str, int] = field(default_factory=dict)
@@ -169,17 +171,23 @@ EXT_DEP = coco.DataDep("panel-ext", validate=_validate_ext)
 
 @coco.fn(memo=True)
 async def chunk_fn(side: str, k: Any, i: int, content: int, provider: Any) -> None:
-    coco.declare_target_state(provider.target_state(f"row|{_kr(k)}#{i}", content * 10 + i))
+    coco.declare_target_state(
+        provider.target_state(f"row|{_kr(k)}#{i}", content * 10 + i)
+    )
     _flat(side, f"c|{_kr(k)}#{i}", content + i)
 
 
-async def _file_body(entry: tuple[Any, tuple[int, int]], side: str, provider: Any) -> None:
+async def _file_body(
+    entry: tuple[Any, tuple[int, int]], side: str, provider: Any
+) -> None:
     k, (content, n) = entry
     e = EXT.get(_kr(k), 0)
     coco.use_data_dep(EXT_DEP, key=_kr(k), state=e)
     _flat(side, f"f|{_kr(k)}", (content, e))
     for i in range(n):
-        await coco.mount(coco.component_subpath(i), chunk_fn, side, k, i, content, provider)
+        await coco.mount(
+            coco.component_subpath(i), chunk_fn, side, k, i, content, provider
+        )
 
 
 _FILE_FNS: dict[int, Any] = {}
@@ -219,7 +227,9 @@ async def um_fn(side: str, items: dict[str, int]) -> int:
 
 @coco.fn
 def declare_cont(side: str) -> coco.PendingTargetStateProvider[str, None]:
-    return coco.declare_target_state_with_child(CONT_P[side].target_state(CONT_NAME, None))
+    return coco.declare_target_state_with_child(
+        CONT_P[side].target_state(CONT_NAME, None)
+    )
 
 
 @coco.fn
@@ -278,7 +288,9 @@ def owners(app: coco.App[Any, Any]) -> dict[tuple[str, ...], Path]:
         out: dict[tuple[str, ...], Path] = {}
         async for entry in coco_inspect.iter_target_states(app):
             assert not entry.dangling, entry.readable_path
-            segs = [s[1:-1] if s.startswith('"') else s for s in entry.readable_segments]
+            segs = [
+                s[1:-1] if s.startswith('"') else s for s in entry.readable_segments
+            ]
             kind = "flat" if "panel_flat" in segs[0] else "cont"
             if kind == "cont" and len(segs) > 2:
                 key: tuple[str, ...] = ("row", segs[-1])
@@ -291,9 +303,7 @@ def owners(app: coco.App[Any, Any]) -> dict[tuple[str, ...], Path]:
 
 
 def _is_prefix(p: Path, q: Path) -> bool:
-    return len(p) <= len(q) and all(
-        type(a) is type(b) and a == b for a, b in zip(p, q)
-    )
+    return len(p) <= len(q) and all(type(a) is type(b) and a == b for a, b in zip(p, q))
 
 
 class Failure(AssertionError):
@@ -327,10 +337,14 @@ class Panel:
         self.env = common.create_test_env(
             __file__, suffix=suffix, exception_handler=_record_error
         )
-        self.env_dir = str(get_env_db_path(f"core__test_component_selector_panel__{suffix}") / "mdb")
+        self.env_dir = str(
+            get_env_db_path(f"core__test_component_selector_panel__{suffix}") / "mdb"
+        )
         self.raw = raw
         self.apps = {
-            s: coco.App(coco.AppConfig(name=f"panel_{s}", environment=self.env), app_main, s)
+            s: coco.App(
+                coco.AppConfig(name=f"panel_{s}", environment=self.env), app_main, s
+            )
             for s in SIDES
         }
 
@@ -451,21 +465,32 @@ def check_untouched(page: list[Path], before: Snap, after: Snap) -> None:
                 continue
             if row.entry == "0x40" and row.subject in taken_from:
                 continue
-            if row.entry == "0x20" and any(_is_prefix(row.subject, t) for t in taken_from):
+            if row.entry == "0x20" and any(
+                _is_prefix(row.subject, t) for t in taken_from
+            ):
                 continue
             if row.kind == "target_state" and a is not None:
                 new_owner = classify_row(key, a).subject
-                if row.subject in taken_from and new_owner is not None and not _uncovered(
-                    page, new_owner
+                if (
+                    row.subject in taken_from
+                    and new_owner is not None
+                    and not _uncovered(page, new_owner)
                 ):
                     continue
             change = "added" if b is None else "removed" if a is None else "changed"
             raise Failure(f"LMDB row {row.entry} of unselected {row.subject} {change}")
     for k in sorted(set(before.ext) | set(after.ext), key=repr):
-        if before.ext.get(k) == after.ext.get(k) and before.own.get(k) == after.own.get(k):
+        if before.ext.get(k) == after.ext.get(k) and before.own.get(k) == after.own.get(
+            k
+        ):
             continue
         ob, oa = before.own.get(k), after.own.get(k)
-        if ob is not None and ob in taken_from and oa is not None and not _uncovered(page, oa):
+        if (
+            ob is not None
+            and ob in taken_from
+            and oa is not None
+            and not _uncovered(page, oa)
+        ):
             continue
         if any(o is not None and _uncovered(page, o) for o in (ob, oa)):
             raise Failure(
@@ -499,7 +524,13 @@ def compare_actions(
     gone_deletes = 0
     for action, n in list(extra_u.items()):
         tag, key, value = action
-        ext_key = ("flat", key) if tag == "flat" else ("row", key) if tag.startswith("row") else ("cont", key)
+        ext_key = (
+            ("flat", key)
+            if tag == "flat"
+            else ("row", key)
+            if tag.startswith("row")
+            else ("cont", key)
+        )
         owner = before.own.get(ext_key)
         if value is None and owner is not None and not _uncovered(page, owner):
             gone_deletes += n
@@ -518,10 +549,18 @@ def compare_with_replay(panel: Panel, where: str) -> None:
     s_ext, r_ext = external("sut"), external("replay")
     s_own, r_own = owners(panel.apps["sut"]), owners(panel.apps["replay"])
     if s_ext != r_ext:
-        diff = {k: (s_ext.get(k), r_ext.get(k)) for k in set(s_ext) | set(r_ext) if s_ext.get(k) != r_ext.get(k)}
+        diff = {
+            k: (s_ext.get(k), r_ext.get(k))
+            for k in set(s_ext) | set(r_ext)
+            if s_ext.get(k) != r_ext.get(k)
+        }
         raise Failure(f"{where}: external sut != replay: {diff}")
     if s_own != r_own:
-        diff = {k: (s_own.get(k), r_own.get(k)) for k in set(s_own) | set(r_own) if s_own.get(k) != r_own.get(k)}
+        diff = {
+            k: (s_own.get(k), r_own.get(k))
+            for k in set(s_own) | set(r_own)
+            if s_own.get(k) != r_own.get(k)
+        }
         raise Failure(f"{where}: owners sut != replay: {diff}")
     STATS["plain updates equal to replay"] += 1
 
@@ -573,7 +612,9 @@ def run_panel(seed: int, iters: int, raw: RawReader | None) -> list[str]:
             pi = rng.randrange(pages)
             page = paths[pi * size : (pi + 1) * size]
             STATS[f"page size {size}"] += 1
-            log.append(f"[{it}] page {pi}/{pages} size {size}: {page}{' destructive' if destructive else ''}")
+            log.append(
+                f"[{it}] page {pi}/{pages} size {size}: {page}{' destructive' if destructive else ''}"
+            )
             sel = [_sp(p) for p in page]
             CONT["sut"].child_invalidation = "destructive" if destructive else None
             try:

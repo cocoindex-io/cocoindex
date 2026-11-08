@@ -980,6 +980,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// It borrows its in-flight token from `lender`, the run that mounted the
     /// live component, for as long as that run lasts, and reads and writes
     /// the store through `app_store`, that run's handle.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_borrowing_from(
         component: Component<Prof>,
         lender: Option<Lender>,
@@ -1002,6 +1003,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn from_parts(
         component: Component<Prof>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
