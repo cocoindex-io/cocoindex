@@ -666,7 +666,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         fn_memos: FnMemoCache<Prof>,
         user_states: UserStateCache<Prof::FunctionData>,
         tracking: PrecommittedTracking,
-    ) -> Result<()> {
+    ) -> Result<ChildDeletes> {
         self.commit_writes(child_existence, fn_memos, user_states, tracking)
             .await?;
         self.launch_child_component_gc().await
@@ -841,8 +841,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
     /// Phase 5 GC: snapshot-read tombstones and spawn child delete
     /// operations. Outside the commit txn — tombstones are durable and the
-    /// GC sweep is idempotent.
-    async fn launch_child_component_gc(&self) -> Result<()> {
+    /// GC sweep is idempotent. Returns whether every tombstone is gone once
+    /// the deletes finish (see [`ChildDeletes`]).
+    async fn launch_child_component_gc(&self) -> Result<ChildDeletes> {
         // Cascade the parent's on_error to descendant orphan deletes.
         //
         // - Delete-mode parent (recursive cascade from `App.drop()`'s
@@ -864,6 +865,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
         // Standalone snapshot read — `list_tombstones` opens its own
         // fresh `RoTxn` internally.
         let tombstones = self.app_store.list_tombstones(&self.component_path).await?;
+        if tombstones.is_empty() {
+            return Ok(ChildDeletes::Done);
+        }
         let mut handles = Vec::with_capacity(tombstones.len());
         // A tombstone left by an earlier run for a component this run's selector
         // does not cover stays for a run that covers it: the deletion would
@@ -896,8 +900,35 @@ impl<Prof: EngineProfile> Committer<Prof> {
         for handle in handles {
             handle.ready().await?;
         }
-        Ok(())
+        // A child delete that failed keeps its tombstone, and with no handler
+        // (or one that swallows) its handle still resolves `Ok`; the store is
+        // what tells. Each child delete cleans its tombstone before its
+        // handle resolves, so one still listed is a delete still owed.
+        if self
+            .app_store
+            .list_tombstones(&self.component_path)
+            .await?
+            .is_empty()
+        {
+            Ok(ChildDeletes::Done)
+        } else {
+            Ok(ChildDeletes::Pending)
+        }
     }
+}
+
+/// What a commit's Phase 5 GC sweep left owed, for the run that committed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChildDeletes {
+    /// The run leaves no child delete owed: the sweep deleted every child it
+    /// found, or found none. A run that sweeps nothing reports it too: a
+    /// preview, which persists nothing, and the delete of a component that
+    /// was mounted again, whose own builds sweep its tombstones.
+    Done,
+    /// A child delete failed, and its tombstone stays under the component.
+    /// Only a later commit of this same component sweeps it again, so the
+    /// run must make sure one happens: see `Component::execute_once`.
+    Pending,
 }
 
 struct SinkInput<Prof: EngineProfile> {
@@ -1832,6 +1863,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
 pub(crate) struct SubmitOutput<Prof: EngineProfile> {
     pub built_target_states_providers: Option<TargetStateProviderRegistry<Prof>>,
     pub touched_previous_states: bool,
+    pub child_deletes: ChildDeletes,
 }
 
 #[instrument(name = "submit", skip_all)]
@@ -1928,6 +1960,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     return Ok(SubmitOutput {
                         built_target_states_providers: None,
                         touched_previous_states: false,
+                        child_deletes: ChildDeletes::Done,
                     });
                 }
                 Some(db_schema::StablePathNodeType::Directory) => {
@@ -2186,6 +2219,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         return Ok(SubmitOutput {
             built_target_states_providers,
             touched_previous_states,
+            child_deletes: ChildDeletes::Done,
         });
     }
 
@@ -2226,16 +2260,19 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // Commit. `AppStore::commit` is a normal trait method — no
     // session handoff needed.
     let committer = Committer::new(comp_ctx, target_states_providers)?;
-    if let Err(e) = committer
+    let child_deletes = match committer
         .commit(child_existence, fn_memos, user_states, tracking)
         .await
     {
-        // The commit txn either committed or rolled back before
-        // returning Err — either way the stage marker may still be
-        // live, so clear it via the retry helper.
-        cleanup_pending_token(comp_ctx, process_token).await;
-        return Err(e);
-    }
+        Ok(child_deletes) => child_deletes,
+        Err(e) => {
+            // The commit txn either committed or rolled back before
+            // returning Err — either way the stage marker may still be
+            // live, so clear it via the retry helper.
+            cleanup_pending_token(comp_ctx, process_token).await;
+            return Err(e);
+        }
+    };
 
     // Fulfill child handlers and register their attachment providers.
     // Done after commit so the immutable borrow on providers is released.
@@ -2248,6 +2285,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     Ok(SubmitOutput {
         built_target_states_providers,
         touched_previous_states,
+        child_deletes,
     })
 }
 

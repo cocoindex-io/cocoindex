@@ -12,9 +12,10 @@ use crate::engine::context::{
 };
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
-    OpenDescendantsVerdict, RestoredComponentMemo, cleanup_tombstone, delete_component_memo,
-    eager_existence_upsert, post_submit_for_build, submit, update_component_memo_states,
-    use_or_invalidate_component_memoization, validate_open_descendants,
+    ChildDeletes, OpenDescendantsVerdict, RestoredComponentMemo, cleanup_tombstone,
+    delete_component_memo, eager_existence_upsert, post_submit_for_build, submit,
+    update_component_memo_states, use_or_invalidate_component_memoization,
+    validate_open_descendants,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -1494,6 +1495,18 @@ impl<Prof: EngineProfile> Component<Prof> {
                     }
                 })
                 .await?;
+                // A child delete that the commit's GC sweep owed failed. Its
+                // tombstone stays under this component, and only a later run
+                // of this component sweeps it again, so count it as a failed
+                // descendant: a build stores no memo (and its ancestors none,
+                // through the outcome), so the next update runs it again; a
+                // delete keeps its own tombstone, so its parent's next sweep
+                // deletes it again. The GC-spawned deletes register with this
+                // component's readiness only after it resolved, so their
+                // outcomes never reach `children_outcome`.
+                if submit_output.child_deletes == ChildDeletes::Pending {
+                    children_outcome.has_exception = true;
+                }
 
                 let build_output = match ret {
                     Some(ret) => {
@@ -1617,11 +1630,14 @@ impl<Prof: EngineProfile> Component<Prof> {
                         })
                     }
                     None => {
-                        // Delete path. When any descendant delete failed,
-                        // skip `cleanup_tombstone` (symmetric with the
-                        // build branch skipping `post_submit_for_build`)
-                        // — that preserves the tombstone for the next
-                        // reconcile to retry.
+                        // Delete path. When any descendant delete failed
+                        // (including a child delete the GC sweep left
+                        // owed, see above), skip `cleanup_tombstone`
+                        // (symmetric with the build branch skipping
+                        // `post_submit_for_build`) — that preserves the
+                        // tombstone for the next reconcile to retry, and
+                        // with it the way back to the child tombstones
+                        // keyed under this component.
                         //
                         // We do NOT propagate via `Err` from here.
                         // Descendant-failure propagation to awaiting
@@ -1955,11 +1971,13 @@ mod tests {
     /// Applies nothing but counts its `apply` calls. With `children`, it
     /// provides a `CountingHandler` counting into the given counter for every
     /// child-bearing action, in the given way: from `child_handlers` or by
-    /// fulfilling the slots in `apply`.
+    /// fulfilling the slots in `apply`. With `failing`, `apply` fails (after
+    /// counting) while the flag is set.
     #[derive(Default)]
     struct NoopSink {
         apply_calls: Arc<AtomicUsize>,
         children: Option<(ChildHandling, Arc<AtomicUsize>)>,
+        failing: Option<Arc<AtomicBool>>,
     }
 
     impl NoopSink {
@@ -1969,6 +1987,7 @@ mod tests {
             let sink = Self {
                 apply_calls: apply_calls.clone(),
                 children: Some((child_handling, child_reconcile_calls.clone())),
+                failing: None,
             };
             (sink, apply_calls, child_reconcile_calls)
         }
@@ -1980,6 +1999,7 @@ mod tests {
                 sink: TargetActionSinkKeeper::new(NoopSink::default()),
                 reject: false,
                 change_only: false,
+                plans_deletes: false,
             }
         }
     }
@@ -2008,6 +2028,11 @@ mod tests {
             actions: &[TargetActionWithChildSlot<TestProfile>],
         ) -> crate::prelude::Result<()> {
             self.apply_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(failing) = &self.failing
+                && failing.load(Ordering::SeqCst)
+            {
+                cocoindex_utils::client_bail!("injected sink failure");
+            }
             for slot in actions.iter().filter_map(|(_, slot)| slot.as_ref()) {
                 slot.fulfill(self.child_handler())?;
             }
@@ -2015,10 +2040,10 @@ mod tests {
         }
     }
 
-    /// Plans an action for every desired target state (none for a deletion)
-    /// and counts its `reconcile` calls. With `reject`, it rejects every
-    /// desired target state instead, as a connector rejecting a declared
-    /// value does.
+    /// Plans an action for every desired target state (for a deletion, only
+    /// with `plans_deletes`) and counts its `reconcile` calls. With `reject`,
+    /// it rejects every desired target state instead, as a connector
+    /// rejecting a declared value does.
     struct CountingHandler {
         reconcile_calls: Arc<AtomicUsize>,
         sink: TargetActionSinkKeeper<TestProfile>,
@@ -2027,6 +2052,7 @@ mod tests {
         /// nothing for a desired target state the stored records already
         /// hold, and a deletion for one no longer declared.
         change_only: bool,
+        plans_deletes: bool,
     }
 
     impl TargetHandler<TestProfile> for CountingHandler {
@@ -2055,10 +2081,13 @@ mod tests {
                     child_invalidation: None,
                 }));
             }
-            Ok(desired_target_state.map(|_| TargetReconcileOutput {
+            if desired_target_state.is_none() && !self.plans_deletes {
+                return Ok(None);
+            }
+            Ok(Some(TargetReconcileOutput {
                 action: (),
                 sink: self.sink.clone(),
-                tracking_record: Some(TestData(Vec::new())),
+                tracking_record: desired_target_state.map(|_| TestData(Vec::new())),
                 child_invalidation: None,
             }))
         }
@@ -2999,6 +3028,7 @@ mod tests {
                                 sink: container_sink,
                                 reject: false,
                                 change_only: false,
+                                plans_deletes: false,
                             },
                         )?;
                         *child_provider.lock().unwrap() = Some(declare_target_state_with_child(
@@ -3254,6 +3284,7 @@ mod tests {
                 sink: TargetActionSinkKeeper::new(NoopSink::default()),
                 reject: false,
                 change_only: false,
+                plans_deletes: false,
             },
         )
         .unwrap();
@@ -3454,6 +3485,7 @@ mod tests {
                 let sink = TargetActionSinkKeeper::new(NoopSink {
                     apply_calls: apply_calls.clone(),
                     children: None,
+                    failing: None,
                 });
                 Box::pin(async move {
                     let provider = register_root_target_state_provider(
@@ -3464,6 +3496,7 @@ mod tests {
                             sink,
                             reject: false,
                             change_only: true,
+                            plans_deletes: false,
                         },
                     )?;
                     for key in keys {
@@ -3632,6 +3665,7 @@ mod tests {
                     sink: TargetActionSinkKeeper::new(NoopSink::default()),
                     reject,
                     change_only: false,
+                    plans_deletes: false,
                 },
             )
             .unwrap();
@@ -3929,6 +3963,150 @@ mod tests {
             )
             .unwrap()
             .is_some()
+        );
+    }
+
+    /// The root mounts `m` while `mount` is set; `m` declares nothing and
+    /// mounts `m/l`, which declares one target state through a handler that
+    /// plans its delete, applied by `sink`.
+    fn nested_root(sink: TargetActionSinkKeeper<TestProfile>, mount: bool) -> TestProcessor {
+        fn new_processor(name: &str) -> TestProcessor {
+            TestProcessor::new(
+                name,
+                Fingerprint::from(&format!("nested_root/{name}")).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+        }
+        type ProviderSlot = Arc<Mutex<Option<TargetStateProvider<TestProfile>>>>;
+        let provider: ProviderSlot = Default::default();
+        let leaf = {
+            let provider = provider.clone();
+            new_processor("leaf").with_on_process(Arc::new(move |ctx| {
+                let provider = provider.lock().unwrap().clone().unwrap();
+                Box::pin(async move {
+                    declare_target_state(
+                        &ctx,
+                        &FnCallContext::default(),
+                        provider,
+                        StableKey::Int(0),
+                        (),
+                    )?;
+                    Ok(TestData(b"leaf".to_vec()))
+                })
+            }))
+        };
+        let leaf = Mutex::new(Some(leaf));
+        let mid = new_processor("mid").with_on_process(Arc::new(move |ctx| {
+            let leaf = leaf.lock().unwrap().take().unwrap();
+            Box::pin(async move {
+                let child = ctx
+                    .component()
+                    .mount_child(&FnCallContext::new(true), key_path(ctx.component(), "l"))?;
+                child
+                    .use_mount(&ctx, leaf, DeadlineContext::NONE)
+                    .await?
+                    .result(Some(&ctx))
+                    .await?;
+                Ok(TestData(b"mid".to_vec()))
+            })
+        }));
+        let mid = Mutex::new(Some(mid));
+        new_processor("root").with_on_process(Arc::new(move |ctx| {
+            let mid = mid.lock().unwrap().take().unwrap();
+            let provider = provider.clone();
+            let sink = sink.clone();
+            Box::pin(async move {
+                *provider.lock().unwrap() = Some(register_root_target_state_provider(
+                    &ctx,
+                    "target".to_string(),
+                    CountingHandler {
+                        reconcile_calls: Arc::new(AtomicUsize::new(0)),
+                        sink,
+                        reject: false,
+                        plans_deletes: true,
+                        change_only: false,
+                    },
+                )?);
+                if mount {
+                    let child = ctx
+                        .component()
+                        .mount_child(&FnCallContext::new(true), key_path(ctx.component(), "m"))?;
+                    child
+                        .use_mount(&ctx, mid, DeadlineContext::NONE)
+                        .await?
+                        .result(Some(&ctx))
+                        .await?;
+                }
+                Ok(TestData(b"ret".to_vec()))
+            })
+        }))
+    }
+
+    /// A child delete that fails under a deleted parent keeps the parent's
+    /// tombstone too, so the next update deletes the parent again, and with
+    /// it the child. Were the parent's tombstone cleaned, the child's, keyed
+    /// under the gone parent, would never be swept again.
+    #[tokio::test]
+    async fn a_failed_delete_under_a_deleted_parent_is_retried() {
+        let (app, _dir) = test_app("failed_delete_under_deleted_parent").await;
+        let failing = Arc::new(AtomicBool::new(false));
+        let sink = NoopSink {
+            failing: Some(failing.clone()),
+            ..Default::default()
+        };
+        let apply_calls = sink.apply_calls.clone();
+        let sink = TargetActionSinkKeeper::new(sink);
+        let update = |mount: bool| {
+            let (handle, _) = app
+                .update(
+                    nested_root(sink.clone(), mount),
+                    AppUpdateOptions::default(),
+                    Arc::new(()),
+                    None,
+                )
+                .unwrap();
+            handle.result()
+        };
+        let app_store = app.app_ctx().persisting_app_store();
+        let m = StablePath::root().concat_part(StableKey::Str(Arc::from("m")));
+        let l = StablePath::root().concat_part(StableKey::Str(Arc::from("l")));
+
+        update(true).await.unwrap();
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 1, "the upsert");
+
+        // Unmount `m`; the delete of `m/l`'s target state fails. With no
+        // handler installed, the update still succeeds.
+        failing.store(true, Ordering::SeqCst);
+        update(false).await.unwrap();
+        failing.store(false, Ordering::SeqCst);
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 2, "the failed delete");
+        assert_eq!(app_store.list_tombstones(&m).await.unwrap(), vec![l]);
+        assert_eq!(
+            app_store
+                .list_tombstones(&StablePath::root())
+                .await
+                .unwrap(),
+            vec![m.clone()],
+            "`m` keeps its tombstone while its child's delete is owed"
+        );
+
+        update(false).await.unwrap();
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 3, "the retried delete");
+        assert!(app_store.list_tombstones(&m).await.unwrap().is_empty());
+        assert!(
+            app_store
+                .list_tombstones(&StablePath::root())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        update(false).await.unwrap();
+        assert_eq!(
+            apply_calls.load(Ordering::SeqCst),
+            3,
+            "nothing left to delete"
         );
     }
 }
