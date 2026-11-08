@@ -1134,9 +1134,17 @@ enum FsOp {
     WriteFile {
         content: Vec<u8>,
         create_parent_dirs: bool,
+        /// A previous run declared a directory here: remove that directory
+        /// (with what is under it) before writing the file.
+        #[serde(default)]
+        replaces_dir: bool,
     },
     CreateDir {
         create_parent_dirs: bool,
+        /// A previous run declared a file here: remove it before creating the
+        /// directory.
+        #[serde(default)]
+        replaces_file: bool,
     },
     RemoveFile,
     RemoveDir,
@@ -1190,6 +1198,10 @@ impl TargetHandler<FsEntry> for FileHandler {
         if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
             return Ok(None);
         }
+        // What a previous run declared here: a directory, a file, or both
+        // (when the previous state is uncertain).
+        let was_dir = prev.iter().any(|p| *p == dir_fingerprint());
+        let was_file = prev.iter().any(|p| *p != dir_fingerprint());
         let op = match desired {
             Some(FsEntry::File {
                 content,
@@ -1197,10 +1209,14 @@ impl TargetHandler<FsEntry> for FileHandler {
             }) => FsOp::WriteFile {
                 content,
                 create_parent_dirs,
+                replaces_dir: was_dir,
             },
-            Some(FsEntry::Dir { create_parent_dirs }) => FsOp::CreateDir { create_parent_dirs },
+            Some(FsEntry::Dir { create_parent_dirs }) => FsOp::CreateDir {
+                create_parent_dirs,
+                replaces_file: was_file,
+            },
             // A removed entry: a directory if it was tracked as one.
-            None if prev.iter().any(|p| *p == dir_fingerprint()) => FsOp::RemoveDir,
+            None if was_dir => FsOp::RemoveDir,
             None => FsOp::RemoveFile,
         };
         Ok(Some(TargetReconcileOutput {
@@ -1240,6 +1256,17 @@ fn entry_path(key: &StableKey) -> Result<(Option<String>, PathBuf)> {
 
 /// Apply a batch of entry actions: directories are created before the files
 /// in them, and files are removed before the directories they were in.
+///
+/// An entry declared as a file where a previous run declared a directory (or
+/// the other way round) replaces what that run created; something of the other
+/// kind that CocoIndex didn't create is an error, as it would be in Python.
+///
+/// Two keys can name one entry: names that differ only in case on a
+/// case-insensitive file system, or a path through a symlinked directory. When
+/// an update moves an entry from one key to the other, the write for the new
+/// key and the removal for the old key arrive in one batch; the removal is
+/// skipped there, since it would remove the entry just written (Python's
+/// `_apply_entry_actions` does the same).
 fn apply_fs_actions(actions: Vec<(PathBuf, FsOp)>) -> std::io::Result<()> {
     let mut creates = Vec::new();
     let mut writes = Vec::new();
@@ -1247,17 +1274,26 @@ fn apply_fs_actions(actions: Vec<(PathBuf, FsOp)>) -> std::io::Result<()> {
     let mut dir_removes = Vec::new();
     for (path, op) in actions {
         match op {
-            FsOp::CreateDir { create_parent_dirs } => creates.push((path, create_parent_dirs)),
+            FsOp::CreateDir {
+                create_parent_dirs,
+                replaces_file,
+            } => creates.push((path, create_parent_dirs, replaces_file)),
             FsOp::WriteFile {
                 content,
                 create_parent_dirs,
-            } => writes.push((path, content, create_parent_dirs)),
+                replaces_dir,
+            } => writes.push((path, content, create_parent_dirs, replaces_dir)),
             FsOp::RemoveFile => file_removes.push(path),
             FsOp::RemoveDir => dir_removes.push(path),
         }
     }
+    let track_written = !file_removes.is_empty() || !dir_removes.is_empty();
+    let mut written = std::collections::HashSet::new();
     creates.sort_by(|a, b| a.0.cmp(&b.0));
-    for (path, create_parent_dirs) in creates {
+    for (path, create_parent_dirs, replaces_file) in creates {
+        if replaces_file && is_kind(&path, false) {
+            remove_file_if_exists(&path)?;
+        }
         if create_parent_dirs {
             std::fs::create_dir_all(&path)?;
         } else if let Err(e) = std::fs::create_dir(&path)
@@ -1265,28 +1301,84 @@ fn apply_fs_actions(actions: Vec<(PathBuf, FsOp)>) -> std::io::Result<()> {
         {
             return Err(e);
         }
+        if track_written && let Some(id) = entry_identity(&path) {
+            written.insert(id);
+        }
     }
-    for (path, content, create_parent_dirs) in writes {
+    for (path, content, create_parent_dirs, replaces_dir) in writes {
+        if replaces_dir && is_kind(&path, true) {
+            std::fs::remove_dir_all(&path)?;
+        }
         if create_parent_dirs && let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&path, &content)?;
+        if track_written && let Some(id) = entry_identity(&path) {
+            written.insert(id);
+        }
     }
+    let written_here = |path: &Path| {
+        !written.is_empty()
+            && std::fs::symlink_metadata(path)
+                .ok()
+                .and_then(|m| identity_of(&m))
+                .is_some_and(|id| written.contains(&id))
+    };
     for path in file_removes {
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
+        if !written_here(&path) {
+            remove_file_if_exists(&path)?;
         }
     }
     // Deepest first, so a removed tree's subdirectories go before it.
     dir_removes.sort_by(|a, b| b.cmp(a));
     for path in dir_removes {
-        if path.is_dir() {
+        if path.is_dir() && !written_here(&path) {
             std::fs::remove_dir_all(&path)?;
         }
     }
     Ok(())
+}
+
+/// Whether `path` is a directory (`dir`) or something else, without following
+/// a symlink at `path` itself. `false` when nothing is there.
+fn is_kind(path: &Path, dir: bool) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() == dir)
+}
+
+/// Remove a file; nothing there (or a file where a parent directory was
+/// expected) is not an error.
+fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// The identity of the entry at `path` (following symlinks, as a write does).
+fn entry_identity(path: &Path) -> Option<(u64, u64)> {
+    std::fs::metadata(path).ok().and_then(|m| identity_of(&m))
+}
+
+/// `(device, inode)`; `None` where the platform reports no inode numbers. On
+/// Windows, where the standard library exposes no stable file index, the
+/// moved-entry check is skipped.
+#[cfg(unix)]
+fn identity_of(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    (metadata.ino() != 0).then(|| (metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn identity_of(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
 }
 
 fn file_sink() -> TargetActionSink<FsAction> {
@@ -1499,12 +1591,14 @@ mod tests {
                 FsOp::WriteFile {
                     content: b"A".to_vec(),
                     create_parent_dirs: false,
+                    replaces_dir: false,
                 },
             ),
             (
                 root.join("sub"),
                 FsOp::CreateDir {
                     create_parent_dirs: false,
+                    replaces_file: false,
                 },
             ),
         ])
@@ -1517,6 +1611,7 @@ mod tests {
             FsOp::WriteFile {
                 content: b"B".to_vec(),
                 create_parent_dirs: false,
+                replaces_dir: false,
             },
         )]);
         assert!(missing.is_err());
@@ -1525,6 +1620,7 @@ mod tests {
             FsOp::WriteFile {
                 content: b"B".to_vec(),
                 create_parent_dirs: true,
+                replaces_dir: false,
             },
         )])
         .unwrap();
