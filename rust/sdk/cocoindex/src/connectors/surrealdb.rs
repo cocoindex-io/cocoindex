@@ -445,14 +445,12 @@ fn json_object_keys(info: Option<&JsonValue>, field: &str) -> Vec<String> {
 /// A SurrealDB table target — a handle to declare records on.
 ///
 /// As a `mount_each!` / `use_mount!` or memoized function argument it
-/// fingerprints by its stable key, the graph key and table name; the managed-by
-/// flag and runtime provider are not part of the identity.
+/// fingerprints by its stable key, the graph key and table name; the runtime
+/// provider is not part of the identity.
 #[derive(Clone, Serialize)]
 pub struct TableTarget {
     graph_key: Arc<str>,
     table_name: Arc<str>,
-    #[serde(skip)]
-    managed_by: ManagedBy,
     /// The table's record provider; also carries its vector-index attachment.
     #[serde(skip)]
     records: TargetStateProvider<RecordState>,
@@ -522,7 +520,9 @@ impl TableTarget {
 
     /// Declare a vector index on `field` as an attachment of this table. The
     /// index is created/recreated/dropped to match the declared options
-    /// (`DEFINE INDEX … <METHOD> DIMENSION … DIST … TYPE …`).
+    /// (`DEFINE INDEX … <METHOD> DIMENSION … DIST … TYPE …`), on a
+    /// user-managed table too (as in Python): declaring it hands it to
+    /// CocoIndex.
     pub fn declare_vector_index(
         &self,
         ctx: &Ctx,
@@ -545,7 +545,7 @@ impl TableTarget {
             method: options.method.to_string(),
             dimension,
             vector_type: options.vector_type.to_string(),
-            managed_by: self.managed_by,
+            managed_by: ManagedBy::System,
         };
         declare_target_state(
             ctx,
@@ -724,7 +724,6 @@ fn table_handle(
     TableTarget {
         graph_key: Arc::from(graph.name()),
         table_name: Arc::from(spec.table_name),
-        managed_by: spec.managed_by,
         records,
     }
 }
@@ -1333,7 +1332,8 @@ enum RecordWrite {
     /// Fields mode, group removed: unset the fields it owned. A missing record
     /// is fine.
     UnsetFields(Vec<String>),
-    /// Relation records are single-owner: `DELETE` + `RELATE` replaces the edge.
+    /// Relation records are single-owner: the edge is replaced whole, in place
+    /// when its endpoints are unchanged, else by `DELETE` + `RELATE`.
     Relate {
         fields: Map<String, JsonValue>,
         endpoints: RelationEndpoints,
@@ -1647,22 +1647,74 @@ fn table_sink() -> TargetActionSink<TableAction> {
 // Record handler (child) + sink + vector-index attachment
 // ---------------------------------------------------------------------------
 
+/// One write to a table: a record write, or a change to one of its vector
+/// indexes. Records and indexes share one sink, so that one apply sees both and
+/// can order them: an index whose definition changes is removed before the
+/// records are written, and defined after them. The engine orders no two
+/// sinks, and a changed index cannot be defined over the old records (a new
+/// dimension), nor the new records written under the old index.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+enum TableWrite {
+    Record(RecordAction),
+    Index(VectorIndexAction),
+}
+
+/// The sink of a table's record and vector-index writes (see [`TableWrite`]).
+fn table_write_sink(graph_key: String, spec: TableSpec) -> TargetActionSink<TableWrite> {
+    TargetActionSink::from_async_fn_with_ctx(
+        move |host_ctx, actions: Vec<TargetAction<TableWrite>>| {
+            let graph_key = graph_key.clone();
+            let spec = spec.clone();
+            async move {
+                let graph = resolve_graph(&host_ctx, &graph_key)?;
+                let mut records = Vec::new();
+                let mut indexes = Vec::new();
+                for action in actions {
+                    match action {
+                        TargetAction::Create(write)
+                        | TargetAction::Update(write)
+                        | TargetAction::Delete(write) => match write {
+                            TableWrite::Record(record) => records.push(record),
+                            TableWrite::Index(index) => indexes.push(index),
+                        },
+                    }
+                }
+                for index in &indexes {
+                    remove_vector_index(&graph, index).await?;
+                }
+                apply_records(&graph, &spec, records).await?;
+                for index in &indexes {
+                    define_vector_index(&graph, index).await?;
+                }
+                Ok(())
+            }
+        },
+    )
+}
+
 struct RecordHandler {
-    sink: SinkCache<RecordAction>,
+    /// Shared with the vector-index attachment handler (see [`TableWrite`]).
+    sink: SinkCache<TableWrite>,
     graph_key: String,
     spec: TableSpec,
 }
 
+impl RecordHandler {
+    fn write_sink(&self) -> TargetActionSink<TableWrite> {
+        self.sink
+            .get(|| table_write_sink(self.graph_key.clone(), self.spec.clone()))
+    }
+}
+
 impl TargetHandler<RecordState> for RecordHandler {
     type TrackingRecord = RecordTracking;
-    type Action = RecordAction;
+    type Action = TableWrite;
 
     fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
         Ok(vec![(
             "vector_index".to_string(),
             ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
-                sink: SinkCache::default(),
-                graph_key: self.graph_key.clone(),
+                sink: self.write_sink(),
             }),
         )])
     }
@@ -1673,7 +1725,7 @@ impl TargetHandler<RecordState> for RecordHandler {
         desired: Option<RecordState>,
         prev: Vec<RecordTracking>,
         prev_may_be_missing: bool,
-    ) -> Result<Option<TargetReconcileOutput<RecordAction, RecordTracking>>> {
+    ) -> Result<Option<TargetReconcileOutput<TableWrite, RecordTracking>>> {
         let RecordKey { record_id, group } = RecordKey::from_stable_key(&key)?;
         let in_fields_mode = group.is_some();
         let (write, tracking) = match desired {
@@ -1732,36 +1784,11 @@ impl TargetHandler<RecordState> for RecordHandler {
             }
         };
         Ok(Some(TargetReconcileOutput {
-            action: TargetAction::Update(RecordAction { record_id, write }),
-            sink: self.sink.get(|| self.record_sink()),
+            action: TargetAction::Update(TableWrite::Record(RecordAction { record_id, write })),
+            sink: self.write_sink(),
             tracking_record: tracking,
             child_invalidation: None,
         }))
-    }
-}
-
-impl RecordHandler {
-    fn record_sink(&self) -> TargetActionSink<RecordAction> {
-        let graph_key = self.graph_key.clone();
-        let spec = self.spec.clone();
-        TargetActionSink::from_async_fn_with_ctx(
-            move |host_ctx, actions: Vec<TargetAction<RecordAction>>| {
-                let graph_key = graph_key.clone();
-                let spec = spec.clone();
-                async move {
-                    let graph = resolve_graph(&host_ctx, &graph_key)?;
-                    let actions = actions
-                        .into_iter()
-                        .map(|action| match action {
-                            TargetAction::Create(r)
-                            | TargetAction::Update(r)
-                            | TargetAction::Delete(r) => r,
-                        })
-                        .collect();
-                    apply_records(&graph, &spec, actions).await
-                }
-            },
-        )
     }
 }
 
@@ -1780,6 +1807,8 @@ pub struct VectorIndexSpec {
     method: String,
     dimension: usize,
     vector_type: String,
+    /// Always `System`: a declared index is CocoIndex's, whoever manages the
+    /// table. Kept so that tracking records written with it read back.
     #[serde(default)]
     managed_by: ManagedBy,
 }
@@ -1793,13 +1822,13 @@ struct VectorIndexAction {
 }
 
 struct VectorIndexHandler {
-    sink: SinkCache<VectorIndexAction>,
-    graph_key: String,
+    /// The table's record sink (see [`TableWrite`]).
+    sink: TargetActionSink<TableWrite>,
 }
 
 impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
     type TrackingRecord = VectorIndexSpec;
-    type Action = VectorIndexAction;
+    type Action = TableWrite;
 
     fn reconcile(
         &self,
@@ -1807,7 +1836,7 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
         desired: Option<VectorIndexSpec>,
         prev: Vec<VectorIndexSpec>,
         prev_may_be_missing: bool,
-    ) -> Result<Option<TargetReconcileOutput<VectorIndexAction, VectorIndexSpec>>> {
+    ) -> Result<Option<TargetReconcileOutput<TableWrite, VectorIndexSpec>>> {
         let name = match &key {
             StableKey::Str(s) | StableKey::Symbol(s) => s.to_string(),
             other => {
@@ -1831,80 +1860,53 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
             .or_else(|| prev.first().map(|p| p.table_name.clone()))
             .unwrap_or_default();
         Ok(Some(TargetReconcileOutput {
-            action: TargetAction::Update(VectorIndexAction {
+            action: TargetAction::Update(TableWrite::Index(VectorIndexAction {
                 name,
                 table_name,
                 spec: desired.clone(),
-            }),
-            sink: self.sink.get(|| self.vector_index_sink()),
+            })),
+            sink: self.sink.clone(),
             tracking_record: desired,
             child_invalidation: None,
         }))
     }
 }
 
-impl VectorIndexHandler {
-    fn vector_index_sink(&self) -> TargetActionSink<VectorIndexAction> {
-        let graph_key = self.graph_key.clone();
-        TargetActionSink::from_async_fn_with_ctx(
-            move |host_ctx, actions: Vec<TargetAction<VectorIndexAction>>| {
-                let graph_key = graph_key.clone();
-                async move {
-                    let graph = resolve_graph(&host_ctx, &graph_key)?;
-                    for action in actions {
-                        let action = match action {
-                            TargetAction::Create(a)
-                            | TargetAction::Update(a)
-                            | TargetAction::Delete(a) => a,
-                        };
-                        apply_vector_index(&graph, action).await?;
-                    }
-                    Ok(())
-                }
-            },
-        )
-    }
-}
-
-async fn apply_vector_index(graph: &Graph, action: VectorIndexAction) -> Result<()> {
+/// The first half of applying a [`VectorIndexAction`], before the records of
+/// its batch are written: remove the index.
+async fn remove_vector_index(graph: &Graph, action: &VectorIndexAction) -> Result<()> {
     validate_ident(&action.name, "vector index name")?;
     validate_ident(&action.table_name, "table name")?;
-    match action.spec {
-        // User-managed indexes: CocoIndex does not own the DDL.
-        Some(spec) if spec.managed_by.is_user() => Ok(()),
-        Some(spec) => {
-            validate_ident(&spec.field, "vector index field")?;
-            run_query(
-                graph,
-                &format!(
-                    "REMOVE INDEX IF EXISTS {} ON TABLE {}",
-                    action.name, action.table_name
-                ),
-            )
-            .await?;
-            let stmt = format!(
-                "DEFINE INDEX {} ON {} FIELDS {} {} DIMENSION {} DIST {} TYPE {}",
-                action.name,
-                action.table_name,
-                spec.field,
-                spec.method.to_uppercase(),
-                spec.dimension,
-                spec.metric.to_uppercase(),
-                spec.vector_type.to_uppercase(),
-            );
-            run_query(graph, &stmt).await
-        }
-        None => {
-            run_query(
-                graph,
-                &format!(
-                    "REMOVE INDEX IF EXISTS {} ON TABLE {}",
-                    action.name, action.table_name
-                ),
-            )
-            .await
-        }
-    }
+    run_query(
+        graph,
+        &format!(
+            "REMOVE INDEX IF EXISTS {} ON TABLE {}",
+            action.name, action.table_name
+        ),
+    )
+    .await
+}
+
+/// The second half, after the records of its batch are written: define the
+/// index, unless it is removed.
+async fn define_vector_index(graph: &Graph, action: &VectorIndexAction) -> Result<()> {
+    let Some(spec) = &action.spec else {
+        return Ok(());
+    };
+    validate_ident(&action.name, "vector index name")?;
+    validate_ident(&action.table_name, "table name")?;
+    validate_ident(&spec.field, "vector index field")?;
+    let stmt = format!(
+        "DEFINE INDEX {} ON {} FIELDS {} {} DIMENSION {} DIST {} TYPE {}",
+        action.name,
+        action.table_name,
+        spec.field,
+        spec.method.to_uppercase(),
+        spec.dimension,
+        spec.metric.to_uppercase(),
+        spec.vector_type.to_uppercase(),
+    );
+    run_query(graph, &stmt).await
 }
 
 async fn run_query(graph: &Graph, stmt: &str) -> Result<()> {
@@ -2171,19 +2173,29 @@ fn record_chunk(spec: &TableSpec, actions: Vec<RecordAction>) -> Result<RecordCh
             RecordWrite::Relate { fields, endpoints } => {
                 validate_ident(&endpoints.from_table, "relation from table name")?;
                 validate_ident(&endpoints.to_table, "relation to table name")?;
-                let mut record = record_params(id, fields_params(schema, &fields)?);
-                record.insert(
-                    "f",
-                    Value::RecordId(endpoints.from_id.to_record_id(&endpoints.from_table)),
-                );
-                record.insert(
-                    "t",
-                    Value::RecordId(endpoints.to_id.to_record_id(&endpoints.to_table)),
-                );
+                let from = Value::RecordId(endpoints.from_id.to_record_id(&endpoints.from_table));
+                let to = Value::RecordId(endpoints.to_id.to_record_id(&endpoints.to_table));
+                // The content carries the endpoints, so that `UPDATE … CONTENT`
+                // keeps them.
+                let mut content = fields_params(schema, &fields)?;
+                content.insert("in", from.clone());
+                content.insert("out", to.clone());
+                let mut record = record_params(id, content);
+                record.insert("f", from);
+                record.insert("t", to);
+                // An edge that exists between the same endpoints is replaced
+                // in place. Otherwise any old edge is deleted and the new one
+                // related: SurrealDB 3.2 cannot create a record deleted earlier
+                // in the same transaction, so only an edge whose endpoints
+                // change takes `DELETE` + `RELATE`.
                 (
-                    "DELETE $r.id RETURN NONE; \
-                     RELATE ($r.f)->($r.id)->($r.t) CONTENT $r.c RETURN NONE;"
-                        .to_string(),
+                    "IF (SELECT VALUE [in, out] FROM ONLY $r.id) = [$r.f, $r.t] { \
+                     UPDATE $r.id CONTENT $r.c RETURN NONE; \
+                     } ELSE { \
+                     DELETE $r.id RETURN NONE; \
+                     RELATE ($r.f)->($r.id)->($r.t) CONTENT $r.c RETURN NONE; \
+                     };"
+                    .to_string(),
                     record,
                 )
             }
@@ -2648,13 +2660,28 @@ mod tests {
         assert_eq!(
             chunk.surql,
             "BEGIN TRANSACTION;\n\
-             FOR $r IN $g0 { DELETE $r.id RETURN NONE; \
-             RELATE ($r.f)->($r.id)->($r.t) CONTENT $r.c RETURN NONE; };\n\
+             FOR $r IN $g0 { \
+             IF (SELECT VALUE [in, out] FROM ONLY $r.id) = [$r.f, $r.t] { \
+             UPDATE $r.id CONTENT $r.c RETURN NONE; \
+             } ELSE { \
+             DELETE $r.id RETURN NONE; \
+             RELATE ($r.f)->($r.id)->($r.t) CONTENT $r.c RETURN NONE; \
+             }; };\n\
              COMMIT TRANSACTION;\n"
         );
         let [r1, r2] = &bound_records(&chunk, 0)[..] else {
             panic!("expected two relations");
         };
+        // The content carries the endpoints, which `UPDATE … CONTENT` keeps.
+        let Some(Value::Object(content)) = r1.get("c") else {
+            panic!("expected the content object");
+        };
+        assert_eq!(
+            content.get("since"),
+            Some(&Value::Number(Number::Int(2020)))
+        );
+        assert_eq!(content.get("in"), r1.get("f"));
+        assert_eq!(content.get("out"), r1.get("t"));
         assert_eq!(
             r1.get("id"),
             Some(&Value::RecordId(RecordId::new("knows", "r1")))
