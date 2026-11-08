@@ -1,8 +1,11 @@
 """Assemble an app: default roles + built-in tools, and build a ``coco.App`` for a flow prompt.
 
-Usage:
+Usage, from the folder the prompt talks about (README.md, *Running*):
 
-    LLM_MODEL=openai/gpt-6.1-terra python -m cocoindex_agents.app "For every .md under ./docs, ..."
+    python -m cocoindex_agents.app "For every .md under ./docs, ..."
+
+``$LLM_MODEL`` picks the model, and the run's state is kept in ``$COCOINDEX_DB``,
+else ``./.coco_db``.
 
 The sample flows under ``flows/`` drive this with checked-in data.
 """
@@ -10,6 +13,7 @@ The sample flows under ``flows/`` drive this with checked-in data.
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 
 import cocoindex as coco
@@ -18,6 +22,7 @@ from .litellm_client import LiteLLMClient
 from .model import MODEL_CLIENT
 from .roles import default_roles
 from .session import run_open_session
+from .spec import SessionResult
 from .tools import (
     AGENTS_CONFIG,
     AgentsConfig,
@@ -66,7 +71,7 @@ def build_app(
     env: coco.Environment,
     config: AgentsConfig,
     scratch: SessionScratch | None = None,
-) -> coco.App[..., object]:
+) -> coco.App[..., SessionResult]:
     """One app per flow. The orchestrator is an open session: skipped while what it read is unchanged.
 
     ``scratch`` is marked when the orchestrator's body runs; left untouched,
@@ -91,13 +96,18 @@ def main(argv: list[str] | None = None) -> int:
     # LiteLLM's aiohttp transport leaves a pending close task at interpreter
     # exit ("Task was destroyed but it is pending"); httpx does not.
     litellm.disable_aiohttp_transport = True
-    env = coco.Environment(coco.Settings.from_env())
+    # ``Settings.from_env`` does not read ``COCOINDEX_DB``; the default state
+    # directory sits beside the data, as the sample flows keep theirs.
+    db_path = pathlib.Path(os.environ.get("COCOINDEX_DB") or ".coco_db")
+    env = coco.Environment(coco.Settings.from_env(db_path=db_path))
     config = default_config(os.environ.get("LLM_MODEL", DEFAULT_MODEL))
     env.context_provider.provide(MODEL_CLIENT, LiteLLMClient())
     env.context_provider.provide(AGENTS_CONFIG, config)
     app = build_app("cocoindex_agents", " ".join(args), env=env, config=config)
     result = app.update_blocking(report_to_stdout=True)
-    print(result)
+    # A list only in preview mode, which this run is not.
+    assert isinstance(result, SessionResult)
+    print(result.answer)
     return 0
 
 
