@@ -128,13 +128,18 @@ pub type ExceptionHandler =
 /// rewritten) error propagates to the next outer handler, with
 /// [`ExceptionContext::source`] set to [`ExceptionSource::Handler`], and
 /// finally out.
+///
+/// `make_ctx` runs only when `chain` has a handler: with none in scope (the
+/// common case) the context is never built, so a mount pays no path
+/// formatting for an error that may never happen.
 pub(crate) fn build_chained_on_error(
     chain: &[ExceptionHandler],
-    ctx: ExceptionContext,
+    make_ctx: impl FnOnce() -> ExceptionContext,
 ) -> Option<OnError> {
     if chain.is_empty() {
         return None;
     }
+    let ctx = make_ctx();
     let chain: Vec<ExceptionHandler> = chain.to_vec();
     Some(Arc::new(move |err: CoreError| {
         let chain = chain.clone();
@@ -269,7 +274,7 @@ impl LiveComponentOperator {
             format!("{}:process", self.name),
         );
         let on_error =
-            build_chained_on_error(&self.handler_chain, self.exc_ctx(MountKind::UpdateFull));
+            build_chained_on_error(&self.handler_chain, || self.exc_ctx(MountKind::UpdateFull));
         self.controller
             .update_full(processor, on_error)
             .await
@@ -306,10 +311,9 @@ impl LiveComponentOperator {
             None,
             format!("{}:update", self.name),
         );
-        let on_error = build_chained_on_error(
-            &self.handler_chain,
-            self.child_exc_ctx(MountKind::Update, &child_path),
-        );
+        let on_error = build_chained_on_error(&self.handler_chain, || {
+            self.child_exc_ctx(MountKind::Update, &child_path)
+        });
         let handle = self
             .controller
             .update(child_path, processor, on_error)
@@ -337,10 +341,9 @@ impl LiveComponentOperator {
     /// returned handle's [`ready`](ReadyHandle::ready) awaits its sync.
     pub async fn start_delete<K: Display>(&self, key: K) -> Result<ReadyHandle> {
         let child_path = self.child_path(&key);
-        let on_error = build_chained_on_error(
-            &self.handler_chain,
-            self.child_exc_ctx(MountKind::Delete, &child_path),
-        );
+        let on_error = build_chained_on_error(&self.handler_chain, || {
+            self.child_exc_ctx(MountKind::Delete, &child_path)
+        });
         let handle = self
             .controller
             .delete(child_path, on_error)

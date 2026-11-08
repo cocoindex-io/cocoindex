@@ -1080,18 +1080,15 @@ impl Ctx {
                         f.clone(),
                         processor_name.clone(),
                     );
-                    let on_error = build_chained_on_error(
-                        &handler_chain,
-                        ExceptionContext {
-                            env_name: env_name.clone(),
-                            stable_path: stable_path.clone(),
-                            parent_stable_path: None,
-                            processor_name: Some(processor_name.clone()),
-                            mount_kind: MountKind::UpdateFull,
-                            is_background: ready_marked && controller.is_live(),
-                            source: ExceptionSource::Component,
-                        },
-                    );
+                    let on_error = build_chained_on_error(&handler_chain, || ExceptionContext {
+                        env_name: env_name.clone(),
+                        stable_path: stable_path.clone(),
+                        parent_stable_path: None,
+                        processor_name: Some(processor_name.clone()),
+                        mount_kind: MountKind::UpdateFull,
+                        is_background: ready_marked && controller.is_live(),
+                        source: ExceptionSource::Component,
+                    });
                     match controller.update_full(processor, on_error).await {
                         Ok(()) => {
                             controller.mark_ready().await;
@@ -1405,18 +1402,15 @@ impl Ctx {
         .with_context_memo_state(has_context_memo_state)
         .with_state_inputs(memo.map(|memo| memo.state_inputs).unwrap_or_default());
 
-        let on_error = build_chained_on_error(
-            &handler_chain,
-            ExceptionContext {
-                env_name: self.state.name.clone(),
-                stable_path: child_path.to_string(),
-                parent_stable_path: Some(self.mount_base_path(comp_ctx).to_string()),
-                processor_name: Some(processor_name),
-                mount_kind: MountKind::Mount,
-                is_background: true,
-                source: ExceptionSource::Component,
-            },
-        );
+        let on_error = build_chained_on_error(&handler_chain, || ExceptionContext {
+            env_name: self.state.name.clone(),
+            stable_path: child_path.to_string(),
+            parent_stable_path: Some(self.mount_base_path(comp_ctx).to_string()),
+            processor_name: Some(processor_name),
+            mount_kind: MountKind::Mount,
+            is_background: true,
+            source: ExceptionSource::Component,
+        });
         child_component
             .mount(comp_ctx, processor, on_error)
             .await
