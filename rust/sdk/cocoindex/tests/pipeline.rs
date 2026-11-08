@@ -1796,7 +1796,10 @@ mod batched_test {
             DEADLINE_BLOCKER_RELEASE.notify_one();
             let blocked = blocker.await.unwrap();
 
-            assert_eq!(expired?, 1);
+            // The body ran without the expired caller's deadline, but that
+            // caller checks its own once the result is back, like Python's
+            // batched runner.
+            assert!(expired.unwrap_err().is_deadline_exceeded());
             assert_eq!(ordinary?, 2);
             assert_eq!(blocked?, 0);
             Ok(())
@@ -3840,4 +3843,60 @@ mod mount_macros_file_state {
         assert_eq!(CALLS.load(Ordering::SeqCst), 2);
         assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"two");
     }
+}
+
+/// Ids from `generate_id` and a shared `IdGenerator` stay unique when many
+/// components allocate them concurrently, and each `(component, dep)` keeps
+/// its id on the next run.
+#[tokio::test]
+async fn ids_are_unique_under_concurrency_and_stable_across_runs() {
+    let (app, _dir) = temp_app("ids_concurrent").await;
+
+    async fn allocate(app: &App) -> Vec<(u32, u32, u64, u64, uuid::Uuid)> {
+        app.update(|ctx| async move {
+            let per_component = (0..40u32).map(|component| {
+                let ctx = ctx.clone();
+                async move {
+                    ctx.scope(&format!("c{component}"), move |ctx| async move {
+                        let id_gen = IdGenerator::new();
+                        let id_gen = &id_gen;
+                        ctx.map(0..25u32, |dep| {
+                            let ctx = &ctx;
+                            async move {
+                                let id = generate_id(ctx, &dep).await?;
+                                // A per-dep dependency keeps the ordinal of
+                                // each call independent of arrival order.
+                                let from_gen = id_gen.next_id(ctx, &dep).await?;
+                                let uuid = generate_uuid(ctx, &dep).await?;
+                                Ok((component, dep, id, from_gen, uuid))
+                            }
+                        })
+                        .await
+                    })
+                    .await
+                }
+            });
+            let nested = futures::future::try_join_all(per_component).await?;
+            Ok(nested.into_iter().flatten().collect::<Vec<_>>())
+        })
+        .await
+        .unwrap()
+    }
+
+    let first = allocate(&app).await;
+    assert_eq!(first.len(), 40 * 25);
+    let ids: std::collections::HashSet<u64> = first
+        .iter()
+        .flat_map(|(_, _, id, from_gen, _)| [*id, *from_gen])
+        .collect();
+    assert_eq!(ids.len(), 2 * 40 * 25, "every id is distinct");
+    let uuids: std::collections::HashSet<uuid::Uuid> =
+        first.iter().map(|(_, _, _, _, uuid)| *uuid).collect();
+    assert_eq!(uuids.len(), 40 * 25, "every uuid is distinct");
+
+    let mut second = allocate(&app).await;
+    let mut first = first;
+    first.sort();
+    second.sort();
+    assert_eq!(first, second, "ids are stable across runs");
 }

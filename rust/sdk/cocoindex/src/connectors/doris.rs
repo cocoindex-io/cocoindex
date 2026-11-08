@@ -2071,8 +2071,7 @@ mod tests {
         for bad in ["db`; DROP DATABASE x; --", "", "my-db", "a b"] {
             let err = DorisConnection::connect(DorisConfig::new("127.0.0.1", bad))
                 .await
-                .err()
-                .expect("rejected before connecting");
+                .expect_err("rejected before connecting");
             assert!(err.to_string().contains("database name"), "{bad:?}: {err}");
         }
     }
