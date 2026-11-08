@@ -132,7 +132,7 @@ pub async fn ls(target: Option<String>, db: Option<PathBuf>, build: BuildOpts) -
         if names.is_empty() {
             println!("No persisted apps found in the database.");
         } else {
-            println!("{}:", db.display());
+            println!("{}:", format_db_path(&db.display().to_string()));
             for name in names {
                 println!("  {name}");
             }

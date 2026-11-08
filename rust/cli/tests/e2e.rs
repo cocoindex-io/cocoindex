@@ -200,7 +200,8 @@ fn update_preview_ls_show_drop() {
 
     let ls_db = sb.cli(&["ls", "--db", &sb.db()]);
     assert_ok(&ls_db);
-    assert_eq!(stdout(&ls_db), format!("{}:\n  FixtureApp\n", sb.db()));
+    // Inside the working directory, the path shows relative, as in Python.
+    assert_eq!(stdout(&ls_db), "./db:\n  FixtureApp\n");
 
     // show, straight from the db.
     let show = sb.cli(&["show", "--db", &sb.db(), "--app-name", "FixtureApp"]);
