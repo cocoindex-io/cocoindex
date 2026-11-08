@@ -387,7 +387,7 @@ def _revoke(client: httpx.Client, token: str) -> bool:
 
 
 def _say(message: str) -> None:
-    """Print a line the person must act on, flushed: the flow is blocking while they read it."""
+    """Print what the person reads, flushed: the flow is blocking while they read it."""
     print(message, flush=True)
 
 
