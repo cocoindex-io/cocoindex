@@ -360,6 +360,10 @@ name = "batching_runner"
 required-features = ["testing"]
 
 [[test]]
+name = "batching_edges"
+required-features = ["testing"]
+
+[[test]]
 name = "deadline"
 required-features = ["testing"]
 
