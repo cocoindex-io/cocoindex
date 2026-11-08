@@ -654,3 +654,12 @@ def test_recursive_splitter_code_source_custom_language() -> None:
     via_str = splitter.split(text, chunk_size=10, min_chunk_size=4, language="myformat")
     assert via_source == via_str
     assert [c.text for c in via_source] == ["Part1", "Part2", "Part3"]
+
+
+def test_recursive_splitter_keeps_text_past_the_root_node() -> None:
+    """YAML's root node stops before a stray byte order mark; with an overlap
+    the splitter descends into it and must still keep the text after it."""
+    splitter = RecursiveSplitter()
+    text = "{日本語﻿é```"
+    chunks = splitter.split(text, chunk_size=373, chunk_overlap=15, language="yaml")
+    assert "".join(c.text for c in chunks) == text
