@@ -851,6 +851,12 @@ fn json_array<T>(value: &JsonValue, convert: impl Fn(&JsonValue) -> Option<T>) -
     value.as_array()?.iter().map(convert).collect()
 }
 
+/// `value` as an `f32`, or `None` when it is beyond the `f32` range: the cast
+/// would store an infinity.
+fn f32_value(value: f64) -> Option<f32> {
+    Some(value as f32).filter(|v| v.is_finite())
+}
+
 /// A declared document: its id and its non-null fields.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DocState {
@@ -925,7 +931,7 @@ fn scalar_value(
             .and_then(|v| u32::try_from(v).ok())
             .map(FieldValue::Uint32),
         ScalarType::Uint64 => value.as_u64().map(FieldValue::Uint64),
-        ScalarType::Float => value.as_f64().map(|v| FieldValue::Float(v as f32)),
+        ScalarType::Float => value.as_f64().and_then(f32_value).map(FieldValue::Float),
         ScalarType::Double => value.as_f64().map(FieldValue::Double),
         ScalarType::String => value.as_str().map(|s| FieldValue::String(s.to_string())),
         ScalarType::ArrayBool => json_array(value, JsonValue::as_bool).map(FieldValue::ArrayBool),
@@ -942,7 +948,7 @@ fn scalar_value(
             json_array(value, JsonValue::as_u64).map(FieldValue::ArrayUint64)
         }
         ScalarType::ArrayFloat => {
-            json_array(value, |v| v.as_f64().map(|v| v as f32)).map(FieldValue::ArrayFloat)
+            json_array(value, |v| v.as_f64().and_then(f32_value)).map(FieldValue::ArrayFloat)
         }
         ScalarType::ArrayDouble => {
             json_array(value, JsonValue::as_f64).map(FieldValue::ArrayDouble)
@@ -963,16 +969,17 @@ fn field_value(col: &Column, value: &JsonValue) -> Result<FieldValue> {
             .map(|s| FieldValue::String(s.to_string()))
             .ok_or_else(|| value_mismatch(col, "a string", value)),
         ColumnKind::Dense { dimension, .. } => {
-            // A non-finite element serializes as null, so it fails here.
+            // A non-finite element serializes as null, so it fails here, and
+            // so does an element beyond the `f32` range.
             let vector = value
                 .as_array()
                 .and_then(|items| {
                     items
                         .iter()
-                        .map(|x| x.as_f64().map(|x| x as f32))
+                        .map(|x| x.as_f64().and_then(f32_value))
                         .collect::<Option<Vec<f32>>>()
                 })
-                .ok_or_else(|| value_mismatch(col, "a vector of finite numbers", value))?;
+                .ok_or_else(|| value_mismatch(col, "a vector of finite 32-bit floats", value))?;
             if vector.len() != *dimension as usize {
                 return Err(Error::engine(format!(
                     "zvec vector column {:?} expects dimension {dimension}, got {}",
@@ -1063,21 +1070,32 @@ fn build_doc(state: &DocState) -> Result<Doc> {
     Ok(doc)
 }
 
-/// Fail if any document of a write was rejected.
-fn check_write(operation: &str, result: &zvec_rust::WriteResult) -> Result<()> {
+/// Fail if any document of a write was rejected. A delete of a document that
+/// is not there succeeds: the document may never have been written (its write
+/// failed in an earlier run) or may have been removed behind CocoIndex's back.
+fn check_write(operation: WriteOperation, result: &zvec_rust::WriteResult) -> Result<()> {
     if result.error_count == 0 {
         return Ok(());
     }
-    let first = result
-        .results
-        .iter()
-        .find(|r| !r.is_success())
-        .map(|r| format!(": code={:?} message={}", r.code, r.message))
-        .unwrap_or_default();
+    let mut failures = result.results.iter().filter(|r| {
+        !r.is_success()
+            && !(operation == WriteOperation::Delete && r.code == zvec_rust::ErrorCode::NotFound)
+    });
+    let Some(first) = failures.next() else {
+        return Ok(());
+    };
     Err(Error::engine(format!(
-        "zvec {operation} failed for {} document(s){first}",
-        result.error_count
+        "zvec {operation:?} failed for {} document(s): code={:?} message={}",
+        1 + failures.count(),
+        first.code,
+        first.message
     )))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WriteOperation {
+    Upsert,
+    Delete,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1121,6 +1139,10 @@ impl DocHandler {
     }
 }
 
+/// The most documents one zvec write takes: zvec refuses a larger upsert or
+/// delete ("Too many docs: N exceeds max write batch size of 1024").
+const MAX_WRITE_BATCH: usize = 1024;
+
 fn apply_docs(
     conn: &ManagedConnection,
     collection_name: &str,
@@ -1138,19 +1160,19 @@ fn apply_docs(
         }
     }
 
-    if !upserts.is_empty() {
-        let docs: Vec<&Doc> = upserts.iter().collect();
+    for chunk in upserts.chunks(MAX_WRITE_BATCH) {
+        let docs: Vec<&Doc> = chunk.iter().collect();
         let result = collection
             .upsert(&docs)
             .map_err(|e| zvec_err(format_args!("upsert into {collection_name:?}"), e))?;
-        check_write("upsert", &result)?;
+        check_write(WriteOperation::Upsert, &result)?;
     }
-    if !deletes.is_empty() {
-        let ids: Vec<&str> = deletes.iter().map(String::as_str).collect();
+    for chunk in deletes.chunks(MAX_WRITE_BATCH) {
+        let ids: Vec<&str> = chunk.iter().map(String::as_str).collect();
         let result = collection
             .delete(&ids)
             .map_err(|e| zvec_err(format_args!("delete from {collection_name:?}"), e))?;
-        check_write("delete", &result)?;
+        check_write(WriteOperation::Delete, &result)?;
     }
     collection
         .optimize()
@@ -1401,10 +1423,16 @@ fn collection_sink() -> TargetActionSink<CollectionAction> {
 // User-facing API
 // ---------------------------------------------------------------------------
 
-/// A target for writing documents to a zvec collection.
-#[derive(Clone)]
+/// A target for writing documents to a zvec collection. It serializes to the
+/// connection's `ContextKey` name and the collection name, so it can be an
+/// argument of a memoized function or of a mounted component.
+#[derive(Clone, Serialize)]
 pub struct CollectionTarget {
+    db_key: Arc<str>,
+    collection_name: Arc<str>,
+    #[serde(skip)]
     schema: CollectionSchema,
+    #[serde(skip)]
     docs: TargetStateProvider<DocState>,
 }
 
@@ -1495,10 +1523,17 @@ pub fn declare_collection_target_with_options(
     schema: CollectionSchema,
     options: ManagedTargetOptions,
 ) -> Result<CollectionTarget> {
-    let target_state = collection_target_with_options(ctx, db, collection_name, schema, options)?;
+    let collection_name: Arc<str> = Arc::from(collection_name.into());
+    let target_state =
+        collection_target_with_options(ctx, db, collection_name.to_string(), schema, options)?;
     let schema = target_state.value().schema.clone();
     let docs = declare_target_state_with_child::<CollectionSpec, DocState>(ctx, target_state)?;
-    Ok(CollectionTarget { schema, docs })
+    Ok(CollectionTarget {
+        db_key: Arc::from(db.name()),
+        collection_name,
+        schema,
+        docs,
+    })
 }
 
 /// Mount a zvec collection target and return a ready-to-use
@@ -1528,10 +1563,17 @@ pub async fn mount_collection_target_with_options(
     schema: CollectionSchema,
     options: ManagedTargetOptions,
 ) -> Result<CollectionTarget> {
-    let target_state = collection_target_with_options(ctx, db, collection_name, schema, options)?;
+    let collection_name: Arc<str> = Arc::from(collection_name.into());
+    let target_state =
+        collection_target_with_options(ctx, db, collection_name.to_string(), schema, options)?;
     let schema = target_state.value().schema.clone();
     let docs = mount_target::<CollectionSpec, DocState>(ctx, target_state).await?;
-    Ok(CollectionTarget { schema, docs })
+    Ok(CollectionTarget {
+        db_key: Arc::from(db.name()),
+        collection_name,
+        schema,
+        docs,
+    })
 }
 
 #[cfg(test)]
@@ -1626,5 +1668,24 @@ mod tests {
         // A NaN element reaches the connector as null.
         let err = field_value(&vector, &serde_json::json!([1.0, null, 2.0])).unwrap_err();
         assert!(err.to_string().contains("finite"), "{err}");
+        // A finite `f64` beyond the `f32` range is an error, not an infinity.
+        let err = field_value(&vector, &serde_json::json!([1.0, 1e39, 2.0])).unwrap_err();
+        assert!(err.to_string().contains("finite 32-bit floats"), "{err}");
+        for data_type in [ScalarType::Float, ScalarType::ArrayFloat] {
+            let float = column(
+                "f",
+                ColumnKind::Scalar {
+                    data_type,
+                    encoding: ValueEncoding::Native,
+                    indexed: true,
+                },
+            );
+            let value = match data_type {
+                ScalarType::Float => serde_json::json!(-1e39),
+                _ => serde_json::json!([0.5, -1e39]),
+            };
+            let err = field_value(&float, &value).unwrap_err();
+            assert!(err.to_string().contains("\"f\""), "{data_type:?}: {err}");
+        }
     }
 }
