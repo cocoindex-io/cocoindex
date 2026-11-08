@@ -361,8 +361,13 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                                             lang_config,
                                             full_text: self.full_text,
                                             cursor: Some(cursor),
-                                            next_start_pos: node.start_byte(),
-                                            end_pos: node.end_byte(),
+                                            // The chunk's range, not the node's:
+                                            // a root node may not span the whole
+                                            // text (YAML's stops before a stray
+                                            // BOM), and the gaps around its
+                                            // children must still be covered.
+                                            next_start_pos: current_chunk.range.start,
+                                            end_pos: current_chunk.range.end,
                                         },
                                     ));
                                     continue;
@@ -709,6 +714,25 @@ fn finalize_chunks(text: &str, mut output: Vec<ChunkOutput>) -> Vec<Chunk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_split_keeps_text_past_the_end_of_the_root_node() {
+        // YAML's root node stops before a stray byte order mark, and with an
+        // overlap the root is descended into: the text after it must stay.
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let text = "{日本語\u{feff}é```";
+        let config = RecursiveChunkConfig {
+            chunk_size: 373,
+            min_chunk_size: None,
+            chunk_overlap: Some(15),
+        };
+        let chunks = chunker.split(&CodeSource::with_language(text, "yaml"), config);
+        let covered: String = chunks
+            .iter()
+            .map(|chunk| &text[chunk.range.start..chunk.range.end])
+            .collect();
+        assert_eq!(covered, text);
+    }
 
     #[test]
     fn test_split_basic() {
