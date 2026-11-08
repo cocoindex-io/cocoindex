@@ -16,13 +16,18 @@ const PER_LINE_BREAK_LEVEL_GAP_COST: usize = 64;
 /// The cost of a chunk with no content at all: as much as 16 syntax-level gaps.
 /// A chunk under `min_chunk_size` pays this times its squared shortfall.
 const TOO_SMALL_CHUNK_COST: u64 = 16 * SYNTAX_LEVEL_GAP_COST as u64;
-/// Extra cost of a chunk under a quarter of `chunk_size`.
+/// Extra cost of a chunk under a quarter of `chunk_size` that is also under
+/// `min_chunk_size`. A chunk at or over `min_chunk_size` pays nothing, so an
+/// explicit floor below `chunk_size / 4` stays authoritative.
 const TINY_CHUNK_COST: usize = 6 * SYNTAX_LEVEL_GAP_COST;
 /// The same with overlap on: a chunk that is mostly overlap adds little.
 const TINY_CHUNK_WITH_OVERLAP_COST: usize = 16 * SYNTAX_LEVEL_GAP_COST;
-/// Cost of a chunk boundary inside a syntax node that fits in `chunk_size`.
+/// Cost per side of a chunk boundary inside a syntax node that fits in
+/// `chunk_size`. Both chunks that meet at the boundary pay it, as they do
+/// `SYNTAX_LEVEL_GAP_COST`, so one cut costs twice this in total.
 const CUT_FITTING_NODE_COST: u32 = 8 * SYNTAX_LEVEL_GAP_COST as u32;
-/// Cost of a chunk boundary between a node's header and its `body`.
+/// Cost per side of a chunk boundary between a node's header and its `body`.
+/// Both chunks that meet at the boundary pay it, so one cut costs twice this.
 const CUT_HEADER_FROM_BODY_COST: u32 = 4 * SYNTAX_LEVEL_GAP_COST as u32;
 /// The cost is computed in fixed point, without a division per chunk:
 /// `(shortfall · (2³² - 1) / min_chunk_size)² >> TOO_SMALL_CHUNK_COST_SHIFT`,
@@ -365,20 +370,42 @@ struct InternalRecursiveChunker<'s> {
     tiny_chunk_cost: usize,
 }
 
-/// A syntax node being walked, as a byte range, for `boundary_cut_cost`.
-type NodeSpan = (usize, usize);
+/// A frame of the syntax walk in `collect_atom_chunks`.
+struct WalkFrame<'t, 's: 't> {
+    iter: ChunkIterator<'t, 's>,
+    /// The syntax node this frame walks inside of, if it fits in `chunk_size`:
+    /// a cut inside it is avoidable, since the node can stay whole.
+    fitting_node: Option<TextRange>,
+}
 
 impl<'t, 's: 't> InternalRecursiveChunker<'s> {
+    /// `range`, a syntax node's range, if the node fits in `chunk_size`. A
+    /// chunk that starts after only indentation on its line starts at the
+    /// line's beginning, so the indentation counts toward the node's size.
+    fn fitting_node(&self, range: TextRange) -> Option<TextRange> {
+        if range.len() > self.chunk_size {
+            return None;
+        }
+        let bytes = self.full_text.as_bytes();
+        let mut line_start = range.start;
+        while line_start > 0 && matches!(bytes[line_start - 1], b' ' | b'\t') {
+            line_start -= 1;
+        }
+        if line_start > 0 && bytes[line_start - 1] != b'\n' {
+            line_start = range.start;
+        }
+        (range.end - line_start <= self.chunk_size).then_some(range)
+    }
+
     /// The cost of cutting at the start of the atom at `range`, given the
-    /// syntax nodes (outermost first) that the walk is inside of.
+    /// frames of the syntax walk that the atom is inside of.
     ///
-    /// A cut inside a node that fits in `chunk_size` is avoidable, since that
-    /// node can stay whole in one chunk; it costs `CUT_FITTING_NODE_COST` for
-    /// the largest such node. A cut that leaves a header without its body
-    /// costs `CUT_HEADER_FROM_BODY_COST`.
+    /// A cut inside a node that fits in `chunk_size` costs
+    /// `CUT_FITTING_NODE_COST`, however many such nodes contain it. A cut that
+    /// leaves a header without its body costs `CUT_HEADER_FROM_BODY_COST`.
     fn boundary_cut_cost(
         &self,
-        nodes: &[Option<NodeSpan>],
+        frames: &[WalkFrame<'t, 's>],
         range: TextRange,
         follows_header: bool,
     ) -> u32 {
@@ -389,26 +416,32 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
         } else {
             0
         };
-        for &(start, end) in nodes.iter().flatten() {
-            if !(start < pos && pos < end && end - start <= self.chunk_size) {
-                continue;
-            }
-            // A chunk that starts after only indentation on its line starts at
-            // the line's beginning, so the indentation counts toward its size.
-            let bytes = self.full_text.as_bytes();
-            let mut line_start = start;
-            while line_start > 0 && matches!(bytes[line_start - 1], b' ' | b'\t') {
-                line_start -= 1;
-            }
-            if line_start > 0 && bytes[line_start - 1] != b'\n' {
-                line_start = start;
-            }
-            if end - line_start <= self.chunk_size {
-                cost += CUT_FITTING_NODE_COST;
-                break;
-            }
+        if frames
+            .iter()
+            .filter_map(|frame| frame.fitting_node)
+            .any(|node| node.start < pos && pos < node.end)
+        {
+            cost += CUT_FITTING_NODE_COST;
         }
         cost
+    }
+
+    /// Collects an atom. The header cost stays on until the body's first
+    /// content atom: a `{` that opens the body, or a whitespace gap that
+    /// `collect` drops, keeps it on, else the cut moves to just past them.
+    fn collect_leaf(
+        &self,
+        frames: &[WalkFrame<'t, 's>],
+        follows_header: &mut bool,
+        range: TextRange,
+        atom_collector: &mut AtomChunksCollector<'s>,
+    ) {
+        let cost = self.boundary_cut_cost(frames, range, *follows_header);
+        let text = self.full_text[range.start..range.end].trim();
+        if !text.is_empty() && !text.chars().all(|c| matches!(c, '{' | '(' | '[')) {
+            *follows_header = false;
+        }
+        atom_collector.collect(range, cost);
     }
 
     fn collect_atom_chunks(
@@ -416,88 +449,96 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
         chunk: InternalChunk<'t, 's>,
         atom_collector: &mut AtomChunksCollector<'s>,
     ) {
-        // For each frame of `iter_stack`, the syntax node it walks, if any.
-        let mut frame_nodes: Vec<Option<NodeSpan>> = vec![match &chunk.kind {
-            ChunkKind::TreeSitterNode { node, .. } => Some((node.start_byte(), node.end_byte())),
+        let root_node = match &chunk.kind {
+            ChunkKind::TreeSitterNode { .. } => self.fitting_node(chunk.range),
             ChunkKind::RegexpSepChunk { .. } => None,
+        };
+        let mut frames = vec![WalkFrame {
+            iter: ChunkIterator::Once(std::iter::once(chunk)),
+            fitting_node: root_node,
         }];
-        // Set on reaching a node's `body`: the next atom starts the body.
+        // Set on reaching a node's `body`: the cost of cutting the header from
+        // the body applies until the body's first content atom.
         let mut follows_header = false;
-        let mut iter_stack: Vec<ChunkIterator<'t, 's>> =
-            vec![ChunkIterator::Once(std::iter::once(chunk))];
 
-        while !iter_stack.is_empty() {
-            atom_collector.curr_level = iter_stack.len();
+        while !frames.is_empty() {
+            atom_collector.curr_level = frames.len();
 
-            if let Some(current_chunk) = iter_stack.last_mut().unwrap().next() {
+            if let Some(current_chunk) = frames.last_mut().unwrap().iter.next() {
                 follows_header |= current_chunk.is_body;
                 if current_chunk.range.len() <= self.min_atom_chunk_size {
-                    let cost = self.boundary_cut_cost(
-                        &frame_nodes,
+                    self.collect_leaf(
+                        &frames,
+                        &mut follows_header,
                         current_chunk.range,
-                        std::mem::take(&mut follows_header),
+                        atom_collector,
                     );
-                    atom_collector.collect(current_chunk.range, cost);
                 } else {
                     match current_chunk.kind {
                         ChunkKind::TreeSitterNode {
                             tree_sitter_info: lang_config,
                             node,
                         } => {
+                            let fitting_node = self.fitting_node(current_chunk.range);
                             if !lang_config.terminal_node_kind_ids.contains(&node.kind_id()) {
                                 let mut cursor = node.walk();
                                 if cursor.goto_first_child() {
-                                    frame_nodes.push(Some((node.start_byte(), node.end_byte())));
-                                    iter_stack.push(ChunkIterator::TreeSitter(
-                                        TreeSitterNodeIter {
+                                    frames.push(WalkFrame {
+                                        iter: ChunkIterator::TreeSitter(TreeSitterNodeIter {
                                             lang_config,
                                             full_text: self.full_text,
                                             cursor: Some(cursor),
                                             next_start_pos: node.start_byte(),
                                             end_pos: node.end_byte(),
-                                        },
-                                    ));
+                                        }),
+                                        fitting_node,
+                                    });
                                     continue;
                                 }
                             }
-                            frame_nodes.push(None);
-                            iter_stack.push(ChunkIterator::Once(std::iter::once(InternalChunk {
-                                full_text: self.full_text,
-                                range: current_chunk.range,
-                                kind: ChunkKind::RegexpSepChunk {
-                                    lang_config: &DEFAULT_LANGUAGE_CONFIG,
-                                    next_regexp_sep_id: 0,
-                                },
-                                is_body: false,
-                            })));
+                            // A terminal node, or one with no children, is split
+                            // as text; a cut inside it still cuts the node.
+                            frames.push(WalkFrame {
+                                iter: ChunkIterator::Once(std::iter::once(InternalChunk {
+                                    full_text: self.full_text,
+                                    range: current_chunk.range,
+                                    kind: ChunkKind::RegexpSepChunk {
+                                        lang_config: &DEFAULT_LANGUAGE_CONFIG,
+                                        next_regexp_sep_id: 0,
+                                    },
+                                    is_body: false,
+                                })),
+                                fitting_node,
+                            });
                         }
                         ChunkKind::RegexpSepChunk {
                             lang_config,
                             next_regexp_sep_id,
                         } => {
                             if next_regexp_sep_id >= lang_config.separator_regex.len() {
-                                let cost = self.boundary_cut_cost(
-                                    &frame_nodes,
+                                self.collect_leaf(
+                                    &frames,
+                                    &mut follows_header,
                                     current_chunk.range,
-                                    std::mem::take(&mut follows_header),
+                                    atom_collector,
                                 );
-                                atom_collector.collect(current_chunk.range, cost);
                             } else {
-                                frame_nodes.push(None);
-                                iter_stack.push(ChunkIterator::Text(TextChunksIter::new(
-                                    lang_config,
-                                    current_chunk.full_text,
-                                    current_chunk.range,
-                                    next_regexp_sep_id,
-                                )));
+                                frames.push(WalkFrame {
+                                    iter: ChunkIterator::Text(TextChunksIter::new(
+                                        lang_config,
+                                        current_chunk.full_text,
+                                        current_chunk.range,
+                                        next_regexp_sep_id,
+                                    )),
+                                    fitting_node: None,
+                                });
                             }
                         }
                     }
                 }
             } else {
-                iter_stack.pop();
-                frame_nodes.pop();
-                let level_after_pop = iter_stack.len();
+                frames.pop();
+                let level_after_pop = frames.len();
                 atom_collector.curr_level = level_after_pop;
                 if level_after_pop < atom_collector.min_level {
                     atom_collector.min_level = level_after_pop;
@@ -1052,6 +1093,110 @@ def load(path):
                 );
             }
         }
+    }
+
+    const RUST_SAMPLE: &str = r#"use std::collections::HashMap;
+
+/// Items in stock, by name.
+pub struct Inventory {
+    items: HashMap<String, u32>,
+}
+
+impl Inventory {
+    pub fn new() -> Self {
+        Self {
+            items: HashMap::new(),
+        }
+    }
+
+    pub fn add(&mut self, name: &str, count: u32) {
+        *self.items.entry(name.to_string()).or_insert(0) += count;
+    }
+
+    pub fn remove(&mut self, name: &str, count: u32) -> Result<(), String> {
+        let have = self.items.get_mut(name).ok_or_else(|| format!("no {name}"))?;
+        if *have < count {
+            return Err(format!("only {have} of {name}, asked for {count}"));
+        }
+        *have -= count;
+        Ok(())
+    }
+
+    pub fn low_stock(&self, limit: u32) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .items
+            .iter()
+            .filter(|(_, count)| **count < limit)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+pub fn total(inventory: &Inventory) -> u32 {
+    inventory.items.values().sum()
+}
+"#;
+
+    /// A `fn`, `impl` or `struct` header ending in `{` is not left at the end
+    /// of a chunk with its body in the next one. In a brace language the
+    /// body's first atom is `{`, so the header cost must hold past it.
+    #[test]
+    fn test_split_rust_keeps_header_with_body() {
+        let text = RUST_SAMPLE;
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        for chunk_size in (100..=1100).step_by(25) {
+            let chunks = chunker.split(
+                &CodeSource::with_language(text, "rust"),
+                RecursiveChunkConfig {
+                    chunk_size,
+                    min_chunk_size: None,
+                    chunk_overlap: None,
+                },
+            );
+            for chunk in &chunks[..chunks.len() - 1] {
+                let chunk_text = text[chunk.range.start..chunk.range.end].trim_end();
+                let last_line = chunk_text.rsplit('\n').next().unwrap().trim();
+                let is_header = ["fn ", "pub fn ", "impl ", "pub struct "]
+                    .iter()
+                    .any(|p| last_line.starts_with(p));
+                assert!(
+                    !(is_header && last_line.ends_with('{')),
+                    "chunk_size {chunk_size}: a chunk ends on a header, at line {}:\n{chunk_text}",
+                    chunk.end.line,
+                );
+            }
+        }
+    }
+
+    /// A node of a terminal kind is split as text, but a cut inside it still
+    /// cuts the node: a doc comment that fits stays whole.
+    #[test]
+    fn test_split_javascript_keeps_fitting_comment_whole() {
+        let comment = format!(
+            "/**\n{} */",
+            " * Adds two numbers and returns their sum, for the totals.\n".repeat(4)
+        );
+        let text = format!(
+            "{comment}\nfunction add(a, b) {{\n  const sum = a + b;\n  return sum;\n}}\n\
+             function sub(a, b) {{\n  return a - b;\n}}\n"
+        );
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let chunks = chunker.split(
+            &CodeSource::with_language(&text, "javascript"),
+            RecursiveChunkConfig {
+                chunk_size: 300,
+                min_chunk_size: None,
+                chunk_overlap: None,
+            },
+        );
+        assert_eq!(
+            &text[chunks[0].range.start..chunks[0].range.end],
+            comment,
+            "chunks: {:?}",
+            chunks.iter().map(|c| c.range).collect::<Vec<_>>(),
+        );
     }
 
     /// The fixed-point too-small cost stays in range at any `min_chunk_size`,
