@@ -602,3 +602,200 @@ async fn bigquery_live_upsert_and_delete() -> Result<()> {
         .await;
     result
 }
+
+/// A column list, each `(name, BigQuery type, required)`.
+type BqCols = Vec<(&'static str, &'static str, bool)>;
+
+fn bq_schema(cols: &BqCols, pk: &[&str]) -> Result<TableSchema> {
+    TableSchema::new(
+        cols.iter().map(|(name, ty, required)| {
+            let def = ColumnDef::new(*ty);
+            (*name, if *required { def.not_null() } else { def })
+        }),
+        pk.iter().copied(),
+    )
+}
+
+/// One run declaring JSON `rows` into `analytics.<table>`.
+async fn declare_json(
+    conn: &BigQueryConnection,
+    db_path: &Path,
+    table: &'static str,
+    cols: BqCols,
+    pk: &'static [&'static str],
+    rows: Vec<JsonValue>,
+) -> Result<()> {
+    let app = Environment::builder()
+        .db_path(db_path)
+        .provide_key(&BQ, conn.clone())
+        .build()
+        .await?
+        .app("BigQueryEdgeTest")
+        .await?;
+    app.run(move |ctx| async move {
+        let target =
+            bigquery::mount_table_target(&ctx, &BQ, "analytics", table, bq_schema(&cols, pk)?)
+                .await?;
+        for row in &rows {
+            target.declare_row(&ctx, row)?;
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(())
+}
+
+/// Schema evolution between runs issues the DDL Python's connector does: an
+/// added column is `ADD COLUMN` (nullable: BigQuery rejects a REQUIRED add), a
+/// removed one `DROP COLUMN`, a retyped or re-nullabled one is dropped and
+/// added again with the rows rewritten, and a primary-key change recreates
+/// the table.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bigquery_schema_evolution_issues_column_ddl() -> Result<()> {
+    let Some(server) = bigquery_server().await else {
+        return Ok(());
+    };
+    let conn = connection(&server);
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("db");
+    let row = json!({"id": 1, "a": "x", "b": 2, "c": "y"});
+    let run = |cols: BqCols, pk: &'static [&'static str]| {
+        let conn = conn.clone();
+        let db = db.clone();
+        let row = row.clone();
+        async move { declare_json(&conn, &db, "evo", cols, pk, vec![row]).await }
+    };
+    let ddl = |queries: Vec<(String, Vec<JsonValue>)>| -> Vec<String> {
+        queries
+            .into_iter()
+            .map(|(q, _)| q)
+            .filter(|q| !q.starts_with("MERGE") && !q.starts_with("DELETE"))
+            .collect()
+    };
+
+    run(vec![("id", "INT64", true), ("a", "STRING", false)], &["id"]).await?;
+    server.reset().await;
+    let server = bigquery_server_on(server).await.unwrap();
+    run(
+        vec![
+            ("id", "INT64", true),
+            ("a", "STRING", false),
+            ("b", "INT64", true),
+        ],
+        &["id"],
+    )
+    .await?;
+    assert_eq!(
+        ddl(received_queries(&server).await),
+        ["ALTER TABLE `analytics.evo` ADD COLUMN `b` INT64"]
+    );
+
+    server.reset().await;
+    let server = bigquery_server_on(server).await.unwrap();
+    run(
+        vec![
+            ("id", "INT64", true),
+            ("a", "STRING", true),
+            ("c", "STRING", false),
+        ],
+        &["id"],
+    )
+    .await?;
+    let mut statements = ddl(received_queries(&server).await);
+    statements.sort();
+    assert_eq!(
+        statements,
+        [
+            "ALTER TABLE `analytics.evo` ADD COLUMN `a` STRING",
+            "ALTER TABLE `analytics.evo` ADD COLUMN `c` STRING",
+            "ALTER TABLE `analytics.evo` DROP COLUMN IF EXISTS `a`",
+            "ALTER TABLE `analytics.evo` DROP COLUMN IF EXISTS `b`",
+        ]
+    );
+    // A lossy change rewrites the row.
+    assert!(
+        received_queries(&server)
+            .await
+            .iter()
+            .any(|(q, _)| q.starts_with("MERGE")),
+        "the row is rewritten after a lossy column change"
+    );
+
+    server.reset().await;
+    let server = bigquery_server_on(server).await.unwrap();
+    run(
+        vec![
+            ("id", "INT64", true),
+            ("a", "STRING", true),
+            ("c", "STRING", false),
+        ],
+        &["id", "a"],
+    )
+    .await?;
+    let statements = ddl(received_queries(&server).await);
+    assert_eq!(
+        statements,
+        [
+            "DROP TABLE IF EXISTS `analytics.evo`",
+            "CREATE SCHEMA IF NOT EXISTS `analytics`",
+            "CREATE TABLE `analytics.evo` (`id` INT64 NOT NULL, `a` STRING NOT NULL, `c` STRING, \
+             PRIMARY KEY (`id`, `a`) NOT ENFORCED)",
+        ]
+    );
+    Ok(())
+}
+
+/// Rows go in `MERGE` statements of at most 2,000 parameters: with 2 columns
+/// that is 1,000 rows, so 1,000 rows → 1 statement and 1,001 → 2; deletes of
+/// a single-column key take 2,000 keys per statement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bigquery_batches_follow_the_parameter_limit() -> Result<()> {
+    let cols: BqCols = vec![("id", "INT64", true), ("v", "STRING", false)];
+    for (n, merges) in [(1usize, 1usize), (1000, 1), (1001, 2), (2001, 3)] {
+        let Some(server) = bigquery_server().await else {
+            return Ok(());
+        };
+        let conn = connection(&server);
+        let tmp = tempfile::tempdir().unwrap();
+        let rows = (0..n as i64)
+            .map(|id| json!({"id": id, "v": "x"}))
+            .collect();
+        declare_json(
+            &conn,
+            &tmp.path().join("db"),
+            "batch",
+            cols.clone(),
+            &["id"],
+            rows,
+        )
+        .await?;
+        let queries = received_queries(&server).await;
+        let count = queries
+            .iter()
+            .filter(|(q, _)| q.starts_with("MERGE"))
+            .count();
+        assert_eq!(count, merges, "{n} rows");
+        assert!(queries.iter().all(|(_, params)| params.len() <= 2000));
+        if n == 2001 {
+            server.reset().await;
+            let server = bigquery_server_on(server).await.unwrap();
+            declare_json(
+                &conn,
+                &tmp.path().join("db"),
+                "batch",
+                cols.clone(),
+                &["id"],
+                vec![],
+            )
+            .await?;
+            let deletes: Vec<usize> = received_queries(&server)
+                .await
+                .iter()
+                .filter(|(q, _)| q.starts_with("DELETE"))
+                .map(|(_, params)| params.len())
+                .collect();
+            assert_eq!(deletes, [2000, 1]);
+        }
+    }
+    Ok(())
+}

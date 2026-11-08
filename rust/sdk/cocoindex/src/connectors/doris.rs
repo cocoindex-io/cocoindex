@@ -184,6 +184,10 @@ impl DorisConnection {
     /// port (used for DDL/DELETE) and builds an HTTP client for Stream Load. The
     /// `database` must already exist.
     pub async fn connect(config: DorisConfig) -> Result<Self> {
+        // The database name is spliced into DDL, `DELETE` and the Stream Load
+        // URL, so it gets the identifier allow-list too (as in Python, after
+        // CVE-2026-28438).
+        validate_ident(&config.database, "database name")?;
         for (name, value) in [
             ("retry_base_delay", config.retry_base_delay),
             ("retry_max_delay", config.retry_max_delay),
@@ -1818,17 +1822,22 @@ fn json_scalar_to_stable_key(value: &JsonValue) -> Result<StableKey> {
 fn sql_value_literal(value: &JsonValue) -> String {
     match value {
         JsonValue::String(s) => {
-            let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
-            format!("'{escaped}'")
+            format!("'{}'", escape_string_literal(s))
         }
         JsonValue::Bool(b) => if *b { "1" } else { "0" }.to_string(),
         JsonValue::Number(n) => n.to_string(),
         JsonValue::Null => "NULL".to_string(),
-        other => {
-            let escaped = other.to_string().replace('\\', "\\\\").replace('\'', "\\'");
-            format!("'{escaped}'")
-        }
+        other => format!("'{}'", escape_string_literal(&other.to_string())),
     }
+}
+
+/// The body of a single-quoted MySQL string literal: `\`, `'` and U+0000
+/// (which would end the statement text early in some MySQL-protocol parsers)
+/// escaped.
+fn escape_string_literal(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace('\0', "\\0")
 }
 
 // ---------------------------------------------------------------------------
@@ -2012,6 +2021,22 @@ mod tests {
         assert_eq!(sql_value_literal(&JsonValue::from("a\\b")), "'a\\\\b'");
         assert_eq!(sql_value_literal(&JsonValue::from(7)), "7");
         assert_eq!(sql_value_literal(&JsonValue::from(true)), "1");
+        assert_eq!(sql_value_literal(&JsonValue::from("a\0b")), "'a\\0b'");
+        assert_eq!(
+            sql_value_literal(&JsonValue::from("x' OR '1'='1")),
+            "'x\\' OR \\'1\\'=\\'1'"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_a_database_name_outside_the_identifier_allow_list() {
+        for bad in ["db`; DROP DATABASE x; --", "", "my-db", "a b"] {
+            let err = DorisConnection::connect(DorisConfig::new("127.0.0.1", bad))
+                .await
+                .err()
+                .expect("rejected before connecting");
+            assert!(err.to_string().contains("database name"), "{bad:?}: {err}");
+        }
     }
 
     #[test]
