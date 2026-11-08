@@ -1,7 +1,10 @@
 //! Edge-case scenarios for the SurrealDB target: relation updates, record id
 //! forms, payload values, vectors, failed batches and recovery, out-of-band
-//! changes and chunk boundaries. Each test needs a SurrealDB server at
-//! `SURREALDB_URL` (default `127.0.0.1:8787`) and skips without one.
+//! changes and chunk boundaries. Each test runs on the SurrealDB server
+//! `SURREALDB_URL` names (signing in as `SURREALDB_USER`/`SURREALDB_PASS`,
+//! default `root`/`root`), else on the embedded in-memory engine (feature
+//! `surrealdb_mem`), else on a local server at `127.0.0.1:8787`, skipping
+//! when none answers.
 #![cfg(feature = "surrealdb")]
 
 use cocoindex::connectors::surrealdb::{self, ColumnDef, Graph, TableSchema, VectorIndexOptions};
@@ -9,19 +12,37 @@ use cocoindex::prelude::*;
 
 cocoindex::context_key!(static GRAPH: Graph, key = "surrealdb_scenarios_graph");
 
-/// A fresh database on the server `SURREALDB_URL` names, plus an app on it.
+/// Without `SURREALDB_URL`: the embedded in-memory engine when the
+/// `surrealdb_mem` feature is on, else a local server (the tests skip when
+/// none answers).
+fn default_url() -> &'static str {
+    if cfg!(feature = "surrealdb_mem") {
+        "mem://"
+    } else {
+        "127.0.0.1:8787"
+    }
+}
+
+/// A fresh database, plus an app on it.
 async fn scenario(tag: &str) -> Option<(Graph, App, tempfile::TempDir)> {
-    let url = std::env::var("SURREALDB_URL").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
+    let url = std::env::var("SURREALDB_URL").unwrap_or_else(|_| default_url().to_string());
     let ns = std::env::var("SURREALDB_NS").unwrap_or_else(|_| "cocoindex".to_string());
-    let user = std::env::var("SURREALDB_USER").unwrap_or_else(|_| "root".to_string());
-    let pass = std::env::var("SURREALDB_PASS").unwrap_or_else(|_| "root".to_string());
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let db_name = format!("rust_sdk_surrealdb_{tag}_{}_{nanos}", std::process::id());
-    let Ok(graph) = Graph::connect(&url, &ns, &db_name, &user, &pass).await else {
-        eprintln!("skipping SurrealDB {tag} test; no local SurrealDB connection");
+    let credentials = if url.starts_with("mem://") {
+        // The embedded engine runs without authentication.
+        surrealdb::Credentials::None
+    } else {
+        surrealdb::Credentials::Root {
+            username: std::env::var("SURREALDB_USER").unwrap_or_else(|_| "root".to_string()),
+            password: std::env::var("SURREALDB_PASS").unwrap_or_else(|_| "root".to_string()),
+        }
+    };
+    let Ok(graph) = Graph::connect_with_credentials(&url, &ns, &db_name, credentials).await else {
+        eprintln!("skipping SurrealDB {tag} test; no SurrealDB connection");
         return None;
     };
     let dir = tempfile::tempdir().unwrap();

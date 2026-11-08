@@ -53,6 +53,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "affinitypool"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4a46f56d354df11b6bcd8ca4f84fa03ac816cc41c72568a1b337d8f7e5af90e"
+dependencies = [
+ "arc-swap",
+ "async-task",
+ "crossbeam-deque",
+ "crossbeam-utils",
+ "libc",
+ "num_cpus",
+ "parking_lot",
+ "thiserror 2.0.20",
+ "winapi",
+]
+
+[[package]]
 name = "ahash"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1405,6 +1422,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bincode"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
+dependencies = [
+ "bincode_derive",
+ "serde",
+ "unty",
+]
+
+[[package]]
+name = "bincode_derive"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf95709a440f45e986983918d0e8a1f30a9b1df04918fc828670606804ac3c09"
+dependencies = [
+ "virtue",
+]
+
+[[package]]
 name = "bit-vec"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2721,6 +2758,16 @@ version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "803d13fb3b09d88be9f4dbc29062c66b19bf7170867ceb746d2a8689bf6c7a26"
 dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-skiplist"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df29de440c58ca2cc6e587ec3d22347551a32435fbde9d2bff64e78a9ffa151b"
+dependencies = [
+ "crossbeam-epoch",
  "crossbeam-utils",
 ]
 
@@ -4191,6 +4238,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ext-sort"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05e74d1b500434b40de2a046ab65f27528040d272241da81ba9c5bf143d703fb"
+dependencies = [
+ "log",
+ "rayon",
+ "rmp-serde",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
 name = "ext-trait"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5133,7 +5193,7 @@ version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c255bdf46e07fb840d120a36dcc81f385140d7191c76a7391672675c01a55d"
 dependencies = [
- "bincode",
+ "bincode 1.3.3",
  "byteorder",
  "heed-traits",
  "serde",
@@ -10747,6 +10807,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8cd76c36f8b545a9371eec050bb2ae83750a6f60bae8c6d92d06956943348f4c"
 dependencies = [
  "addr",
+ "affinitypool",
  "ahash 0.8.12",
  "ammonia",
  "anyhow",
@@ -10765,6 +10826,7 @@ dependencies = [
  "diskann-utils",
  "diskann-vector",
  "dmp",
+ "ext-sort",
  "fastnum",
  "fst",
  "futures",
@@ -10817,7 +10879,9 @@ dependencies = [
  "surrealdb-protocol",
  "surrealdb-strand",
  "surrealdb-types",
+ "surrealmx",
  "sysinfo",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -10907,6 +10971,28 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "surrealmx"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e8a87f050a4860832ccf4a53e43ea264e98d27618983602b5c575e6df296054"
+dependencies = [
+ "arc-swap",
+ "bincode 2.0.1",
+ "bytes",
+ "crossbeam-deque",
+ "crossbeam-queue",
+ "crossbeam-skiplist",
+ "lz4",
+ "papaya",
+ "parking_lot",
+ "serde",
+ "smallvec",
+ "thiserror 2.0.20",
+ "tracing",
+ "web-time",
 ]
 
 [[package]]
@@ -12310,6 +12396,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
+name = "unty"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
+
+[[package]]
 name = "ureq"
 version = "2.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12425,6 +12517,12 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "virtue"
+version = "0.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "vsimd"

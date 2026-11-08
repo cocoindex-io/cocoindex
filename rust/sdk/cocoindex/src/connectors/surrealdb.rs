@@ -37,7 +37,7 @@ use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 use surrealdb::Surreal;
-use surrealdb::engine::remote::ws::{Client, Ws};
+use surrealdb::engine::any::{self, Any};
 use surrealdb::opt::auth;
 use surrealdb::types::{
     Bytes, Datetime, Decimal, Duration, Number, Object, QueryError, RecordId, RecordIdKey,
@@ -263,7 +263,7 @@ impl IntoRecordId for &str {
 
 #[derive(Clone)]
 pub struct Graph {
-    db: Arc<Surreal<Client>>,
+    db: Arc<Surreal<Any>>,
     state_id: Arc<str>,
 }
 
@@ -321,8 +321,22 @@ impl std::fmt::Debug for Credentials {
     }
 }
 
+/// The endpoint `url` names: a `host:port` without a scheme is a WebSocket
+/// server (`ws://host:port`); `ws://`, `wss://` and `mem://` (the embedded
+/// in-memory engine) are taken as they are.
+fn endpoint(url: &str) -> String {
+    if url.contains("://") {
+        url.to_string()
+    } else {
+        format!("ws://{url}")
+    }
+}
+
 impl Graph {
-    /// Connect over WebSocket and sign in as the root user `user`.
+    /// Connect and sign in as the root user `user`. `url` is a WebSocket
+    /// server, `host:port` or `ws://`/`wss://` (TLS) `host:port`, or `mem://`
+    /// for the embedded in-memory engine (a fresh, private database for each
+    /// connection).
     pub async fn connect(
         url: &str,
         ns: &str,
@@ -342,14 +356,15 @@ impl Graph {
         .await
     }
 
-    /// Connect over WebSocket and sign in with `credentials`.
+    /// Connect to `url` (as [`Graph::connect`] takes it) and sign in with
+    /// `credentials`.
     pub async fn connect_with_credentials(
         url: &str,
         ns: &str,
         db_name: &str,
         credentials: Credentials,
     ) -> Result<Self> {
-        let db = Surreal::new::<Ws>(url).await.map_err(surreal_err)?;
+        let db = any::connect(endpoint(url)).await.map_err(surreal_err)?;
         match credentials {
             Credentials::Root { username, password } => {
                 db.signin(auth::Root { username, password }).await.map(drop)
@@ -399,7 +414,7 @@ impl Graph {
 
     /// The underlying client, for queries of your own (Python's
     /// `ConnectionFactory.acquire()`).
-    pub fn client(&self) -> &Surreal<Client> {
+    pub fn client(&self) -> &Surreal<Any> {
         &self.db
     }
 

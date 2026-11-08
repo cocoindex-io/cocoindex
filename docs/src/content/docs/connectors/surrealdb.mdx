@@ -109,7 +109,7 @@ async fn main() -> Result<()> {
 }
 ```
 
-`Graph::connect(url, ns, db, user, pass)` opens one WebSocket connection and signs in as a root user. `url` is the host and port, without the `ws://` scheme or `/rpc` path. A `Graph` has no `close()` method; `builder.on_shutdown(..)` in a `#[cocoindex::lifespan]` function is the place for teardown.
+`Graph::connect(url, ns, db, user, pass)` opens one connection and signs in as a root user. `url` is a WebSocket server, as `host:port` or with a `ws://` or `wss://` scheme (an `/rpc` path is optional), or `mem://` for SurrealDB's embedded in-memory engine (the `surrealdb_mem` feature): each `mem://` connection is a fresh, private database, which suits tests (connect with `Credentials::None`, below). A `Graph` has no `close()` method; `builder.on_shutdown(..)` in a `#[cocoindex::lifespan]` function is the place for teardown.
 
 </Fragment>
 </LangTabs>
@@ -138,9 +138,9 @@ let graph = Graph::connect_with_credentials(
 - `Namespace { username, password }` — a user of the connection's namespace.
 - `Database { username, password }` — a user of the connection's database.
 - `Record { access, params }` — a record user, through the access method `access` of the connection's database, with the `params` (a `serde_json::Value`) that method expects.
-- `None` — no sign-in, for a server started without authentication.
+- `None` — no sign-in, for a server started without authentication or the embedded `mem://` engine.
 
-The graph's stable identity is the context key's name; the credentials are not part of any stored state. `graph.client()` returns the underlying `surrealdb::Surreal` client, for queries of your own.
+The graph's stable identity is the context key's name; the credentials are not part of any stored state. `graph.client()` returns the underlying `surrealdb::Surreal<surrealdb::engine::any::Any>` client, for queries of your own.
 
 </Lang>
 

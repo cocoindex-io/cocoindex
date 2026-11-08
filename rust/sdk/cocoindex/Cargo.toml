@@ -96,6 +96,10 @@ surrealdb = [
     "chrono",
     "rust_decimal",
 ]
+# SurrealDB's embedded in-memory engine (`Graph::connect("mem://", ..)`), which
+# the SDK's SurrealDB tests run on. It builds the SurrealDB engine itself
+# (`surrealdb-core`), which the WebSocket client alone does not need.
+surrealdb_mem = ["surrealdb", "surrealdb/kv-mem"]
 # Kafka source and target (pure-Rust `rskafka`); TLS via rustls with the
 # Mozilla roots, client-side PEM parsing via `rustls-pki-types`.
 kafka = [

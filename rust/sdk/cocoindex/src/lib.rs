@@ -97,6 +97,7 @@
 //! | `sqlite` | [`connectors::sqlite`] target | |
 //! | `doris` | [`connectors::doris`] target (MySQL protocol + Stream Load) | |
 //! | `surrealdb` | [`connectors::surrealdb`] target | |
+//! | `surrealdb_mem` | SurrealDB's embedded in-memory engine for [`connectors::surrealdb`] (`mem://`) | |
 //! | `lancedb` | [`connectors::lancedb`] target (embedded) | |
 //! | `qdrant` | [`connectors::qdrant`] target | `protoc` |
 //! | `turbopuffer` | [`connectors::turbopuffer`] target | |
