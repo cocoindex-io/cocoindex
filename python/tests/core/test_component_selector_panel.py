@@ -327,7 +327,7 @@ class Panel:
         self.env = common.create_test_env(
             __file__, suffix=suffix, exception_handler=_record_error
         )
-        self.env_dir = str(get_env_db_path(f"test_panel_flow__{suffix}") / "mdb")
+        self.env_dir = str(get_env_db_path(f"core__test_component_selector_panel__{suffix}") / "mdb")
         self.raw = raw
         self.apps = {
             s: coco.App(coco.AppConfig(name=f"panel_{s}", environment=self.env), app_main, s)
