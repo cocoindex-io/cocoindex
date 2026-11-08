@@ -60,6 +60,47 @@ fn is_retryable_status(status: reqwest::StatusCode) -> bool {
     RETRYABLE_STATUSES.contains(&status.as_u16()) || status.is_server_error()
 }
 
+/// Statuses about who we are or what we asked for (credentials, payment,
+/// permissions, an unknown model): batch composition cannot change them
+/// (Python's `_GLOBAL_LITELLM_EXCEPTION_CLASSES`).
+const GLOBAL_FAILURE_STATUSES: &[u16] = &[401, 402, 403, 404];
+
+/// Why a request failed, so a batch body can tell the failures a smaller
+/// batch may avoid from those it cannot.
+enum RequestFailure {
+    /// The request bound or the caller's deadline expired. Never split: each
+    /// half would take a fresh bound against a backend already too slow.
+    TimedOut(Error),
+    /// A failure that fails every request alike (see
+    /// [`GLOBAL_FAILURE_STATUSES`]).
+    Global(Error),
+    /// Anything else: a rejected request, a transport error, an undecodable
+    /// response. A smaller request may pass where this one did not.
+    Other(Error),
+}
+
+impl RequestFailure {
+    /// The error a batch body returns: [`Error::retry_with_smaller_batch`]
+    /// for a failure a smaller batch may avoid, like Python's
+    /// `LiteLLMEmbedder._embed`.
+    fn into_batch_error(self) -> Error {
+        match self {
+            RequestFailure::Other(err) => Error::retry_with_smaller_batch(err),
+            RequestFailure::TimedOut(err) | RequestFailure::Global(err) => err,
+        }
+    }
+}
+
+impl From<RequestFailure> for Error {
+    fn from(failure: RequestFailure) -> Self {
+        match failure {
+            RequestFailure::TimedOut(err)
+            | RequestFailure::Global(err)
+            | RequestFailure::Other(err) => err,
+        }
+    }
+}
+
 /// Shared HTTP configuration of the three clients in this module.
 #[derive(Clone)]
 struct Endpoint {
@@ -102,30 +143,27 @@ impl Endpoint {
         ctx: Option<&Ctx>,
         build: impl Fn() -> reqwest::RequestBuilder,
         what: &str,
-    ) -> Result<reqwest::Response> {
+    ) -> std::result::Result<reqwest::Response, RequestFailure> {
         let timeout = ctx
             .and_then(Ctx::remaining_deadline)
             .map_or(self.timeout, |remaining| remaining.min(self.timeout));
         let deadline = Instant::now() + timeout;
         let timed_out = || {
-            if let Some(ctx) = ctx {
-                ctx.check_cancellation()?;
-            }
-            Err(Error::engine(format!(
-                "{what} did not complete within {timeout:?}"
-            )))
+            let err = ctx
+                .and_then(|ctx| ctx.check_cancellation().err())
+                .unwrap_or_else(|| {
+                    Error::engine(format!("{what} did not complete within {timeout:?}"))
+                });
+            Err(RequestFailure::TimedOut(err))
         };
         let mut backoff = RETRY_INITIAL_BACKOFF;
         loop {
             // The permit covers one attempt only: a sleeping retry holds no
             // slot (cf. Python's `_inflight_permit`).
             let permit = match &self.inflight {
-                Some(semaphore) => Some(
-                    semaphore
-                        .acquire()
-                        .await
-                        .map_err(|_| Error::engine("in-flight request limiter closed"))?,
-                ),
+                Some(semaphore) => Some(semaphore.acquire().await.map_err(|_| {
+                    RequestFailure::Other(Error::engine("in-flight request limiter closed"))
+                })?),
                 None => None,
             };
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -143,7 +181,12 @@ impl Endpoint {
                     let status = resp.status();
                     if !is_retryable_status(status) {
                         let body = resp.text().await.unwrap_or_default();
-                        return Err(Error::engine(format!("{what} failed ({status}): {body}")));
+                        let err = Error::engine(format!("{what} failed ({status}): {body}"));
+                        return Err(if GLOBAL_FAILURE_STATUSES.contains(&status.as_u16()) {
+                            RequestFailure::Global(err)
+                        } else {
+                            RequestFailure::Other(err)
+                        });
                     }
                     resp.headers()
                         .get(reqwest::header::RETRY_AFTER)
@@ -152,7 +195,11 @@ impl Endpoint {
                         .map(Duration::from_secs)
                 }
                 Ok(Err(e)) if e.is_connect() || e.is_request() => None,
-                Ok(Err(e)) => return Err(Error::engine(format!("{what} failed: {e}"))),
+                Ok(Err(e)) => {
+                    return Err(RequestFailure::Other(Error::engine(format!(
+                        "{what} failed: {e}"
+                    ))));
+                }
             };
             let delay = retry_after.unwrap_or(backoff).min(RETRY_MAX_BACKOFF);
             if Instant::now() + delay >= deadline {
@@ -209,10 +256,14 @@ async fn embed_api_scheduled(
     embedder: ScheduledApiEmbedder,
     input_type: Option<String>,
 ) -> Result<Vec<Vec<f32>>> {
-    embedder
+    // A failure a smaller request may avoid (a provider's payload cap, one
+    // rejected input) halves the batch, down to the one text it belongs to.
+    let response = embedder
         .0
-        .request_embeddings(None, texts, input_type.as_deref())
+        .fetch_embeddings(&texts, input_type.as_deref())
         .await
+        .map_err(RequestFailure::into_batch_error)?;
+    embeddings_in_input_order(response.data, texts.len())
 }
 
 impl ApiEmbedder {
@@ -248,7 +299,12 @@ impl ApiEmbedder {
 
     /// Bound each embedding request, retries included. Defaults to 10 minutes;
     /// raise it for a slow endpoint, since one request carries up to 64 texts.
+    ///
+    /// # Panics
+    ///
+    /// If `timeout` is zero: every request would expire before it is sent.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        assert!(!timeout.is_zero(), "timeout must be positive");
         self.endpoint.timeout = timeout;
         self
     }
@@ -256,7 +312,15 @@ impl ApiEmbedder {
     /// Cap how many requests this embedder keeps open against the backend at
     /// once. Uncapped by default; useful for self-hosted endpoints that reject
     /// bursts with 429s. The cap is shared by all clones of this embedder.
+    ///
+    /// # Panics
+    ///
+    /// If `max_inflight_requests` is zero: no request could ever be sent.
     pub fn with_max_inflight_requests(mut self, max_inflight_requests: usize) -> Self {
+        assert!(
+            max_inflight_requests > 0,
+            "max_inflight_requests must be positive"
+        );
         self.endpoint.inflight = Some(Arc::new(Semaphore::new(max_inflight_requests)));
         self
     }
@@ -301,18 +365,19 @@ impl ApiEmbedder {
     /// batching: the path for code outside a CocoIndex update, such as
     /// embedding a search query.
     pub async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        self.request_embeddings(None, texts, None).await
-    }
-
-    async fn request_embeddings(
-        &self,
-        ctx: Option<&Ctx>,
-        texts: Vec<String>,
-        input_type: Option<&str>,
-    ) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        let response = self.fetch_embeddings(&texts, None).await?;
+        embeddings_in_input_order(response.data, texts.len())
+    }
+
+    /// Send one `/embeddings` request for `texts` and decode the response.
+    async fn fetch_embeddings(
+        &self,
+        texts: &[String],
+        input_type: Option<&str>,
+    ) -> std::result::Result<EmbeddingResponse, RequestFailure> {
         let url = self.endpoint.url("embeddings");
         let mut body = json!({ "model": self.model, "input": texts });
         if let Some(dimensions) = self.dimensions {
@@ -324,7 +389,7 @@ impl ApiEmbedder {
         let resp = self
             .endpoint
             .send_with_retry(
-                ctx,
+                None,
                 || {
                     self.endpoint
                         .authorize(self.endpoint.client.post(&url).json(&body))
@@ -332,11 +397,11 @@ impl ApiEmbedder {
                 "embedding request",
             )
             .await?;
-        let parsed: EmbeddingResponse = resp
-            .json()
-            .await
-            .map_err(|e| Error::engine(format!("embedding response decode failed: {e}")))?;
-        embeddings_in_input_order(parsed.data, texts.len())
+        resp.json().await.map_err(|e| {
+            RequestFailure::Other(Error::engine(format!(
+                "embedding response decode failed: {e}"
+            )))
+        })
     }
 
     /// The embedding dimension, discovered by embedding a probe text and
@@ -484,7 +549,12 @@ impl ApiTranscriber {
 
     /// Bound each transcription request, retries included. Defaults to 10
     /// minutes; raise it for long audio, since one request carries a whole file.
+    ///
+    /// # Panics
+    ///
+    /// If `timeout` is zero: every request would expire before it is sent.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        assert!(!timeout.is_zero(), "timeout must be positive");
         self.endpoint.timeout = timeout;
         self
     }
