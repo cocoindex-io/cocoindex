@@ -196,7 +196,7 @@ Python writes a record with `UPSERT ... MERGE`, which merges nested objects. Rus
 
 <Lang only="rust">
 
-**Server version.** A relation record that changes is replaced with `DELETE` and then `RELATE` in one transaction. SurrealDB 3.2.4 rejects this with "already exists"; use SurrealDB 3.3.5 or later when relation records change.
+**Server version.** A relation record whose fields change is replaced in place. A relation record whose endpoints change (one with an explicit `id`) is replaced with `DELETE` and then `RELATE` in one transaction. SurrealDB 3.2 rejects that with "already exists"; use SurrealDB 3.3.5 or later to move such a relation.
 
 </Lang>
 
