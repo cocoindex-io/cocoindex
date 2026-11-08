@@ -395,13 +395,16 @@ impl<Prof: EngineProfile> LiveComponentState<Prof> {
         }
     }
 
-    /// Resolve readiness with error. Drops the guard without calling
-    /// resolve(); the guard's Drop reports failure to the parent.
-    fn resolve_ready_with_error(&self, _err: Error) {
+    /// Resolve readiness with `err`: the parent's readiness fails with this
+    /// error, so the caller that waits on it sees why `process_live` failed
+    /// rather than a generic "build cancelled".
+    fn resolve_ready_with_error(&self, err: Error) {
         let mut state = self.readiness.lock().unwrap();
         if !state.ready {
             state.ready = true;
-            state.guard.take();
+            if let Some(guard) = state.guard.take() {
+                guard.resolve_result(Err(SharedError::from(err)));
+            }
             self.ready_notify.notify_waiters();
         }
     }
@@ -697,35 +700,10 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
         // Synchronously remove the existence entry and write a tombstone,
-        // matching the prior implementation's contract.
-        if let Some((parent_ref, child_key)) = subpath.as_ref().split_parent() {
-            let app_store = self.app_store.clone();
-            let parent_path: StablePath = parent_ref.into();
-            let child_key = child_key.clone();
-            let component_path = self.component.stable_path().clone();
-            let relative_child = subpath.as_ref().strip_parent(component_path.as_ref())?;
-            let relative_child: StablePath = relative_child.into();
-            self.app_store
-                .run_txn(move |wtxn| {
-                    let app_store = app_store.clone();
-                    let parent_path = parent_path.clone();
-                    let child_key = child_key.clone();
-                    let component_path = component_path.clone();
-                    let relative_child = relative_child.clone();
-                    Box::pin(async move {
-                        app_store
-                            .remove_child_with_tombstone(
-                                wtxn,
-                                &parent_path,
-                                &child_key,
-                                &component_path,
-                                &relative_child,
-                            )
-                            .await
-                    })
-                })
-                .await?;
-        }
+        // matching the prior implementation's contract. The drain task does
+        // it again when the op runs (see `run_op`).
+        remove_existence_with_tombstone(&self.app_store, self.component.stable_path(), &subpath)
+            .await?;
         self.dispatch(subpath, Op::Delete { on_error }).await
     }
 
@@ -1214,6 +1192,47 @@ async fn drain_task_body<Prof: EngineProfile>(
     }
 }
 
+/// Remove `subpath`'s existence entry under its parent and write its
+/// tombstone under `component_path` (the live component), in one txn. Both
+/// writes are idempotent.
+async fn remove_existence_with_tombstone(
+    app_store: &AppStore,
+    component_path: &StablePath,
+    subpath: &StablePath,
+) -> Result<()> {
+    let Some((parent_ref, child_key)) = subpath.as_ref().split_parent() else {
+        return Ok(());
+    };
+    let parent_path: StablePath = parent_ref.into();
+    let child_key = child_key.clone();
+    let relative_child: StablePath = subpath
+        .as_ref()
+        .strip_parent(component_path.as_ref())?
+        .into();
+    let component_path = component_path.clone();
+    let store = app_store.clone();
+    app_store
+        .run_txn(move |wtxn| {
+            let store = store.clone();
+            let parent_path = parent_path.clone();
+            let child_key = child_key.clone();
+            let component_path = component_path.clone();
+            let relative_child = relative_child.clone();
+            Box::pin(async move {
+                store
+                    .remove_child_with_tombstone(
+                        wtxn,
+                        &parent_path,
+                        &child_key,
+                        &component_path,
+                        &relative_child,
+                    )
+                    .await
+            })
+        })
+        .await
+}
+
 /// Execute a single op. Returns `Result<()>` from the underlying child
 /// `run_in_background` / `delete` flow.
 #[allow(clippy::too_many_arguments)]
@@ -1268,6 +1287,15 @@ async fn run_op<Prof: EngineProfile>(
             if app_store.write_scope() != crate::state_store::WriteScope::Persisted {
                 return Ok(());
             }
+            // Remove the existence entry again, now that this subpath's
+            // earlier ops have finished. An update that was already running
+            // when the delete was dispatched wrote it back (its build's eager
+            // existence upsert), and the delete run below takes an existing
+            // `Component` entry for a re-mount and deletes nothing, which
+            // would leave the update's target states behind. Ops of one
+            // subpath run one at a time, and none runs during `update_full`,
+            // so nothing writes the entry between here and the delete run.
+            remove_existence_with_tombstone(app_store, component.stable_path(), subpath).await?;
             let context = ComponentProcessorContext::new_borrowing_from(
                 child.clone(),
                 Some(lender.clone()),
