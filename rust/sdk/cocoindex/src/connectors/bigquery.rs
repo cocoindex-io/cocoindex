@@ -285,7 +285,8 @@ impl BigQueryConnection {
             .map_err(|e| Error::engine(format!("bigquery: parse token response: {e}")))?;
         *guard = Some(CachedToken {
             token: token.access_token.clone(),
-            expires_at: Instant::now() + Duration::from_secs(token.expires_in.max(60)),
+            // Clamped above too: a huge `expires_in` would overflow `Instant`.
+            expires_at: Instant::now() + Duration::from_secs(token.expires_in.clamp(60, 86_400)),
         });
         Ok(token.access_token)
     }
@@ -392,7 +393,7 @@ impl BigQueryConnection {
                         .and_then(JsonValue::as_str)
                         .map(str::to_string)
                 })
-                .unwrap_or_else(|| truncate(&text, 500));
+                .unwrap_or_else(|| super::truncate_for_error(&text, 500));
             return Err(Error::engine(format!("bigquery: HTTP {status}: {message}")));
         }
         serde_json::from_str(&text)
@@ -450,14 +451,6 @@ fn decode_cell(ty: &str, raw: JsonValue) -> JsonValue {
             _ => raw,
         },
         _ => raw,
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
     }
 }
 

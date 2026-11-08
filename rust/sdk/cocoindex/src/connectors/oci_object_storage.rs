@@ -646,7 +646,10 @@ impl InstancePrincipal {
         let mut session = self.session.lock().await;
         let now = chrono::Utc::now().timestamp();
         if let Some(current) = session.as_ref()
-            && now <= current.expires_at - SESSION_TOKEN_EXPIRY_MARGIN_SECS
+            && now
+                <= current
+                    .expires_at
+                    .saturating_sub(SESSION_TOKEN_EXPIRY_MARGIN_SECS)
         {
             return Ok(current.signer.clone());
         }

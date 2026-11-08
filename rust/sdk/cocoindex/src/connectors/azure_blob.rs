@@ -745,11 +745,17 @@ fn parse_token_response(body: &str, what: &str) -> Result<FreshToken> {
             ))
         })?
         .to_string();
+    // A day at most: a huge value from the server would overflow `SystemTime`
+    // (here or where the renewal time is computed); renewing early is harmless.
+    let max = Duration::from_secs(86_400);
     let expires_in = match (number("expires_in"), number("expires_on")) {
-        (Some(secs), _) => Duration::from_secs(secs),
-        (None, Some(at)) => (UNIX_EPOCH + Duration::from_secs(at))
-            .duration_since(SystemTime::now())
-            .unwrap_or_default(),
+        (Some(secs), _) => Duration::from_secs(secs).min(max),
+        (None, Some(at)) => UNIX_EPOCH
+            .checked_add(Duration::from_secs(at))
+            .map_or(max, |at| {
+                at.duration_since(SystemTime::now()).unwrap_or_default()
+            })
+            .min(max),
         (None, None) => {
             return Err(Error::engine(format!(
                 "azure blob {what}: token response has no expires_in or expires_on"

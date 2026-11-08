@@ -338,7 +338,7 @@ async fn send_json(request: reqwest::RequestBuilder, token: Option<&str>) -> Res
     if !status.is_success() {
         return Err(Error::engine(format!(
             "snowflake: HTTP {status}: {}",
-            truncate(&text, 500)
+            super::truncate_for_error(&text, 500)
         )));
     }
     serde_json::from_str(&text)
@@ -420,14 +420,6 @@ fn decode_cell(ty: &str, raw: JsonValue) -> JsonValue {
             _ => raw,
         },
         _ => raw,
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
     }
 }
 
