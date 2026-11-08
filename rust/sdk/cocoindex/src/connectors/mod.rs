@@ -12,6 +12,8 @@ pub mod doris;
 pub mod falkordb;
 #[cfg(feature = "google_drive")]
 pub mod gdrive;
+#[cfg(all(test, any(feature = "neo4j", feature = "falkordb")))]
+mod graph_live_tests;
 #[cfg(feature = "iggy")]
 pub mod iggy;
 #[cfg(feature = "kafka")]
