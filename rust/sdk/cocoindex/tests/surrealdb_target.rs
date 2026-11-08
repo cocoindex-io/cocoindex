@@ -5,9 +5,33 @@ use cocoindex::prelude::*;
 
 cocoindex::context_key!(static GRAPH: Graph, key = "surrealdb_smoke_graph");
 
+/// Without `SURREALDB_URL`: the embedded in-memory engine when the
+/// `surrealdb_mem` feature is on, else a local server (the tests skip when
+/// none answers).
+fn default_url() -> &'static str {
+    if cfg!(feature = "surrealdb_mem") {
+        "mem://"
+    } else {
+        "127.0.0.1:8787"
+    }
+}
+
+/// The server `SURREALDB_URL` names, else [`default_url`].
+fn surrealdb_url() -> String {
+    std::env::var("SURREALDB_URL").unwrap_or_else(|_| default_url().to_string())
+}
+
 async fn try_graph(db_name: &str) -> Option<Graph> {
-    let url = std::env::var("SURREALDB_URL").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
+    let url = surrealdb_url();
     let ns = std::env::var("SURREALDB_NS").unwrap_or_else(|_| "cocoindex".to_string());
+    if url.starts_with("mem://") {
+        // The embedded engine runs without authentication.
+        return Some(
+            Graph::connect_with_credentials(&url, &ns, db_name, surrealdb::Credentials::None)
+                .await
+                .unwrap(),
+        );
+    }
     let user = std::env::var("SURREALDB_USER").unwrap_or_else(|_| "root".to_string());
     let pass = std::env::var("SURREALDB_PASS").unwrap_or_else(|_| "root".to_string());
     Graph::connect(&url, &ns, db_name, &user, &pass).await.ok()
@@ -939,11 +963,17 @@ async fn surrealdb_connects_with_a_database_user_when_available() {
         std::process::id(),
         chrono_like_timestamp()
     );
+    let url = surrealdb_url();
+    if url.starts_with("mem://") {
+        // Each embedded connection is a database of its own, and signs in to
+        // nothing.
+        eprintln!("skipping SurrealDB credentials test; it needs a server");
+        return;
+    }
     let Some(root) = try_graph(&db_name).await else {
         eprintln!("skipping SurrealDB credentials test; no local SurrealDB connection");
         return;
     };
-    let url = std::env::var("SURREALDB_URL").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
     let ns = std::env::var("SURREALDB_NS").unwrap_or_else(|_| "cocoindex".to_string());
     root.client()
         .query("DEFINE USER writer ON DATABASE PASSWORD 'writer-pass' ROLES OWNER")
