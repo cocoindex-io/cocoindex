@@ -282,4 +282,132 @@ mod live {
         let _ = app.drop_state().await;
         let _ = tokio::time::timeout(Duration::from_secs(10), handle.result()).await;
     }
+
+    /// Consumes the map with a slow per-entry component that records each
+    /// value it processed (in order, per key) and the latest value per key.
+    struct SlowConsumer {
+        lm: LiveMap<String, String>,
+        latest: Arc<Mutex<std::collections::BTreeMap<String, String>>>,
+        runs: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LiveComponent for SlowConsumer {
+        async fn process(&self, ctx: Ctx) -> Result<()> {
+            let (latest, runs) = (self.latest.clone(), self.runs.clone());
+            ctx.mount_each_live(&"each", self.lm.clone(), move |_ctx, value: String| {
+                let (latest, runs) = (latest.clone(), runs.clone());
+                async move {
+                    runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    let (key, _) = value.split_once('=').unwrap();
+                    latest
+                        .lock()
+                        .unwrap()
+                        .insert(key.to_string(), value.clone());
+                    Ok(())
+                }
+            })
+            .await
+        }
+    }
+
+    /// A burst of changes from the producer: 200 new entries at once are
+    /// consumed concurrently (the consumer takes 50ms an entry, so one at a
+    /// time would need ten seconds), and 50 rewrites of one entry end at the
+    /// last one with fewer runs than writes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn live_map_burst_is_consumed_concurrently_and_coalesced() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::open("live_map_burst", dir.path().join("lmdb"))
+            .await
+            .unwrap();
+        let source = Arc::new(Mutex::new(vec![("seed".to_string(), "seed=0".to_string())]));
+        let trigger = Arc::new(Notify::new());
+        let latest = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let handle = {
+            let (source, trigger, latest, runs) = (
+                source.clone(),
+                trigger.clone(),
+                latest.clone(),
+                runs.clone(),
+            );
+            app.start_update_with_options(
+                UpdateOptions {
+                    live: true,
+                    ..UpdateOptions::default()
+                },
+                move |ctx| async move {
+                    let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
+                    ctx.mount_live(
+                        &"producer",
+                        Producer {
+                            lm: lm.clone(),
+                            source,
+                            trigger,
+                        },
+                    )
+                    .await?;
+                    ctx.mount_live(&"consumer", SlowConsumer { lm, latest, runs })
+                        .await
+                },
+            )
+            .unwrap()
+        };
+        type Pred = Box<dyn Fn(&std::collections::BTreeMap<String, String>) -> bool>;
+        let wait = |pred: Pred, secs: u64| {
+            let latest = latest.clone();
+            async move {
+                let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+                while !pred(&latest.lock().unwrap()) {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out; consumed {:?}",
+                        latest.lock().unwrap().len()
+                    );
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        };
+        wait(Box::new(|m| m.contains_key("seed")), 10).await;
+
+        let started = std::time::Instant::now();
+        source
+            .lock()
+            .unwrap()
+            .extend((0..200).map(|i| (format!("k{i:03}"), format!("k{i:03}=v"))));
+        trigger.notify_one();
+        wait(Box::new(|m| m.len() == 201), 30).await;
+        let took = started.elapsed();
+        eprintln!("live map: 200 entries consumed in {took:?}");
+        assert!(
+            took < Duration::from_secs(5),
+            "200 entries at 50ms each took {took:?}: consumed one at a time"
+        );
+
+        // Rewrite one entry 50 times, one producer pass each.
+        let runs_before = runs.load(std::sync::atomic::Ordering::SeqCst);
+        for i in 0..50 {
+            source.lock().unwrap()[0] = ("seed".to_string(), format!("seed={i}"));
+            trigger.notify_one();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        wait(
+            Box::new(|m| m.get("seed").map(String::as_str) == Some("seed=49")),
+            30,
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            latest.lock().unwrap().get("seed").map(String::as_str),
+            Some("seed=49")
+        );
+        let seed_runs = runs.load(std::sync::atomic::Ordering::SeqCst) - runs_before;
+        eprintln!("live map: 50 rewrites of one entry ran its component {seed_runs} times");
+
+        let _ = app.drop_state().await;
+        let _ = tokio::time::timeout(Duration::from_secs(10), handle.result()).await;
+    }
 }

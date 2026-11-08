@@ -260,22 +260,48 @@ mod live {
                     }
                 }
             }
+            // Each key appears once in the batch, so its deletes and updates
+            // are queued together and awaited together: the engine runs the
+            // children concurrently (bounded by its admission limit) instead
+            // of one after another, which is what keeps a burst of thousands
+            // of files from taking thousands of round trips.
+            let mut handles = Vec::with_capacity(deletes.len() + updates.len());
             for key in deletes {
                 if updates.contains_key(&key) {
                     continue;
                 }
-                subscriber.delete(key.clone()).await?;
-                self.known_keys().remove(&key);
+                let handle = subscriber.start_delete(key.clone()).await?;
+                handles.push((key, false, handle));
             }
             // Every event re-runs its file's component, as in the Python SDK:
             // an equal size and mtime is not proof of equal content (a rewrite
             // in the mtime's own tick keeps it), so whether the work can be
             // skipped is the file memo state's decision, not the feed's.
             for (key, entry) in updates {
-                subscriber.update(key.clone(), entry).await?;
-                self.known_keys().insert(key);
+                let handle = subscriber.start_update(key.clone(), entry).await?;
+                handles.push((key, true, handle));
             }
-            Ok(())
+            let results =
+                futures::future::join_all(handles.into_iter().map(
+                    |(key, present, handle)| async move { (key, present, handle.ready().await) },
+                ))
+                .await;
+            let mut first_error = None;
+            let mut known = self.known_keys();
+            for (key, present, result) in results {
+                match result {
+                    Ok(()) if present => {
+                        known.insert(key);
+                    }
+                    Ok(()) => {
+                        known.remove(&key);
+                    }
+                    Err(e) => {
+                        first_error.get_or_insert(e);
+                    }
+                }
+            }
+            first_error.map_or(Ok(()), Err)
         }
     }
 

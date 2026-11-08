@@ -346,4 +346,93 @@ mod tests {
         assert_eq!(recorder.ready.load(Ordering::SeqCst), 1);
         assert!(source.commits.lock().unwrap().is_empty());
     }
+
+    /// A subscriber whose handle for `fail_on` fails (a handler propagated
+    /// the child's error).
+    struct FailingOn {
+        fail_on: i64,
+        delivered: Mutex<Vec<i64>>,
+    }
+
+    #[crate::async_trait]
+    impl LiveStreamSubscriber<(&'static str, i64)> for FailingOn {
+        async fn send(&self, message: (&'static str, i64)) -> Result<ReadyHandle> {
+            self.delivered.lock().unwrap().push(message.1);
+            let fail = message.1 == self.fail_on;
+            Ok(ReadyHandle::from_future(async move {
+                if fail {
+                    Err(crate::error::Error::engine("poison message"))
+                } else {
+                    Ok(())
+                }
+            }))
+        }
+
+        async fn mark_ready(&self) {}
+    }
+
+    // A message whose processing fails ends the watch with its error and is
+    // never committed, so the next watch delivers it again; what was committed
+    // before it stays committed.
+    #[tokio::test]
+    async fn a_failed_message_is_not_committed_and_ends_the_watch() {
+        let Fakes { tails, .. } = fakes(vec![("a", vec!["x", "y", "z"])]);
+        let source = tails[0].source.clone();
+        let subscriber = FailingOn {
+            fail_on: 1,
+            delivered: Mutex::new(Vec::new()),
+        };
+        let err =
+            tokio::time::timeout(Duration::from_secs(5), watch_partitions(tails, &subscriber))
+                .await
+                .expect("the watch did not end on the failure")
+                .expect_err("a failed message must end the watch");
+        assert!(err.to_string().contains("poison message"), "{err}");
+        let commits: Vec<i64> = source
+            .commits
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(n, _)| *n)
+            .collect();
+        assert_eq!(commits, vec![1], "committed past the failed message");
+        assert_eq!(*subscriber.delivered.lock().unwrap(), vec![0, 1]);
+    }
+
+    /// A partition whose fetch fails.
+    struct BrokenPartition;
+
+    #[crate::async_trait]
+    impl PartitionSource<(&'static str, i64)> for BrokenPartition {
+        async fn fetch(&self, _offset: i64) -> Result<Vec<(i64, (&'static str, i64))>> {
+            Err(crate::error::Error::engine("broker unreachable"))
+        }
+        async fn commit(&self, _next: i64) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    // A fetch error ends the watch: the shared loop does not retry, so a
+    // source that should survive a transient broker error must retry inside
+    // its own `fetch` (Iggy's `polling_retry_interval` does; Kafka's fetch
+    // does not).
+    #[tokio::test]
+    async fn a_fetch_error_ends_the_watch() {
+        let recorder = Recorder {
+            delivered: Mutex::new(Vec::new()),
+            processed: Arc::default(),
+            ready: AtomicUsize::new(0),
+        };
+        let tails = vec![PartitionTail {
+            source: BrokenPartition,
+            start: 0,
+            high_watermark: 3,
+        }];
+        let err = tokio::time::timeout(Duration::from_secs(5), watch_partitions(tails, &recorder))
+            .await
+            .unwrap()
+            .expect_err("a fetch error must end the watch");
+        assert!(err.to_string().contains("broker unreachable"), "{err}");
+        assert_eq!(recorder.ready.load(Ordering::SeqCst), 0);
+    }
 }
