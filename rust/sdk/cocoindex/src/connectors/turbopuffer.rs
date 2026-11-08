@@ -496,8 +496,16 @@ struct Row {
     attributes: Map<String, JsonValue>,
 }
 
-/// Error if any element of a vector is non-finite (NaN/±Inf).
-fn reject_nonfinite_vector(id: &RowId, field: &str, v: &[f32]) -> Result<()> {
+/// Error if a vector does not have its field's length, or if any element is
+/// non-finite (NaN/±Inf).
+fn validate_vector(id: &RowId, field: &str, v: &[f32], def: &VectorDef) -> Result<()> {
+    if v.len() != def.schema.size {
+        return Err(Error::engine(format!(
+            "turbopuffer row {id}: vector field {field:?} has {} elements but the schema expects {}",
+            v.len(),
+            def.schema.size
+        )));
+    }
     if v.iter().any(|x| !x.is_finite()) {
         return Err(Error::engine(format!(
             "turbopuffer row {id}: vector field {field:?} contains a non-finite (NaN/Inf) element"
@@ -510,22 +518,16 @@ impl Row {
     /// The wire shape Turbopuffer expects: `{id, vector, ...attributes}` or
     /// `{id, text_vector, image_vector, ...attributes}`.
     fn to_upsert(&self, schema: &NamespaceSchema) -> Result<JsonValue> {
-        // Reject non-finite vector elements: `json!` turns NaN/±Inf into JSON
+        // Check each vector against its field: a wrong length fails only this
+        // row here, not the whole write; and `json!` turns NaN/±Inf into JSON
         // null, silently corrupting the embedding sent to Turbopuffer.
-        match &self.vector {
-            RowVector::Single(v) => reject_nonfinite_vector(&self.id, "vector", v)?,
-            RowVector::Named(m) => {
-                for (name, v) in m {
-                    reject_nonfinite_vector(&self.id, name, v)?;
-                }
-            }
-        }
         let mut obj = Map::new();
         obj.insert("id".into(), self.id.to_json());
 
         let vector_fields = schema.vector_fields();
         let reserved = match (&vector_fields, &self.vector) {
-            (VectorFields::Single(_), RowVector::Single(vector)) => {
+            (VectorFields::Single(def), RowVector::Single(vector)) => {
+                validate_vector(&self.id, DEFAULT_VECTOR_FIELD, vector, def)?;
                 obj.insert(DEFAULT_VECTOR_FIELD.into(), json!(vector));
                 schema.vector_field_names()
             }
@@ -548,12 +550,13 @@ impl Row {
                     )));
                 }
                 for (name, vector) in row_vectors {
-                    if !vectors.contains_key(name) {
+                    let Some(def) = vectors.get(name) else {
                         return Err(Error::engine(format!(
                             "turbopuffer row {}: unexpected vector field {:?}",
                             self.id, name
                         )));
-                    }
+                    };
+                    validate_vector(&self.id, name, vector, def)?;
                     obj.insert(name.clone(), json!(vector));
                 }
                 schema.vector_field_names()
@@ -587,10 +590,17 @@ impl Row {
 }
 
 /// A declarative Turbopuffer namespace target. See the [module docs](self).
-#[derive(Clone)]
+///
+/// As a `mount_each!` / `use_mount!` or memoized function argument it
+/// fingerprints by its stable key, the connection key and namespace; the
+/// schema and runtime provider are not part of the identity.
+#[derive(Clone, Serialize)]
 pub struct NamespaceTarget {
+    conn_key: Arc<str>,
     namespace: Arc<str>,
+    #[serde(skip)]
     schema: NamespaceSchema,
+    #[serde(skip)]
     rows: TargetStateProvider<Row>,
 }
 
@@ -624,6 +634,7 @@ pub async fn mount_namespace_target_with_options(
     let schema = ts.value().schema.clone();
     let rows = mount_target::<NamespaceSpec, Row>(ctx, ts).await?;
     Ok(NamespaceTarget {
+        conn_key: Arc::from(conn.name()),
         namespace: Arc::from(name),
         schema,
         rows,
@@ -708,6 +719,7 @@ pub fn declare_namespace_target_with_options(
     let schema = ts.value().schema.clone();
     let rows = declare_target_state_with_child::<NamespaceSpec, Row>(ctx, ts)?;
     Ok(NamespaceTarget {
+        conn_key: Arc::from(conn.name()),
         namespace: Arc::from(name),
         schema,
         rows,

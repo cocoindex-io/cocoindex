@@ -290,7 +290,7 @@ Each entry in `memo_key(..)`:
 
 The macro checks the names at compile time. A transform also suppresses the argument type's `memo_state` validation; use a newtype when the freshness check must stay.
 
-**Target handles.** A target handle is where output goes, not an input of the computation, so it is not `MemoInput`. `DirTarget` and the Postgres, SQLite, Doris, SurrealDB, LanceDB, Neo4j and FalkorDB table and relation targets are `Serialize` instead: as an argument of a memoized function or of `mount!`, `use_mount!` or `mount_each!`, one is keyed by its stable key. The other connectors' handles are only `Clone`. Skip those in the memo key; you can skip any handle the same way:
+**Target handles.** A target handle is where output goes, not an input of the computation, so it is not `MemoInput`. `DirTarget`, the Postgres, SQLite, Doris, SurrealDB, LanceDB, Neo4j and FalkorDB table and relation targets, the Qdrant collection, the Valkey index and the Turbopuffer namespace targets are `Serialize` instead: as an argument of a memoized function or of `mount!`, `use_mount!` or `mount_each!`, one is keyed by its stable key. The other connectors' handles are only `Clone`. Skip those in the memo key; you can skip any handle the same way:
 
 {/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (target_state_of_nested_memo_survives_outer_memo_hit) */}
 ```rust

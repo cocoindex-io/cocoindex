@@ -643,7 +643,34 @@ impl NamedPointVector {
     }
 }
 
-/// Check a sparse vector's own shape: one value per index, no index twice.
+/// Check a dense vector against its field: the declared length, and finite
+/// elements (Qdrant stores a NaN, which then poisons every score it is in).
+fn validate_dense_vector(v: &[f32], size: u64) -> std::result::Result<(), String> {
+    if v.len() as u64 != size {
+        return Err(format!(
+            "has {} elements but the collection expects {size}",
+            v.len()
+        ));
+    }
+    if v.iter().any(|x| !x.is_finite()) {
+        return Err("contains a non-finite (NaN/Inf) element".to_string());
+    }
+    Ok(())
+}
+
+/// Check a multivector: at least one vector, each a valid dense vector.
+fn validate_multivector(vs: &[Vec<f32>], size: u64) -> std::result::Result<(), String> {
+    if vs.is_empty() {
+        return Err("has no vectors".to_string());
+    }
+    for (i, v) in vs.iter().enumerate() {
+        validate_dense_vector(v, size).map_err(|detail| format!("vector {i} {detail}"))?;
+    }
+    Ok(())
+}
+
+/// Check a sparse vector's own shape: one value per index, no index twice,
+/// finite values.
 fn validate_sparse_vector(indices: &[u32], values: &[f32]) -> std::result::Result<(), String> {
     if indices.len() != values.len() {
         return Err(format!(
@@ -651,6 +678,9 @@ fn validate_sparse_vector(indices: &[u32], values: &[f32]) -> std::result::Resul
             indices.len(),
             values.len()
         ));
+    }
+    if values.iter().any(|x| !x.is_finite()) {
+        return Err("contains a non-finite (NaN/Inf) value".to_string());
     }
     let mut seen = std::collections::HashSet::with_capacity(indices.len());
     if let Some(dup) = indices.iter().find(|index| !seen.insert(**index)) {
@@ -701,6 +731,28 @@ fn canonical_uuid_text(text: &str) -> Option<String> {
     uuid::Uuid::parse_str(text)
         .ok()
         .map(|id| id.hyphenated().to_string())
+}
+
+/// Check a payload for values Qdrant cannot store as given: Qdrant keeps
+/// integers as `i64`, and the client turns a larger one into a rounded float.
+fn validate_payload(payload: &Map<String, JsonValue>) -> std::result::Result<(), String> {
+    fn check(path: &str, value: &JsonValue) -> std::result::Result<(), String> {
+        match value {
+            JsonValue::Number(n) if n.as_i64().is_none() && n.is_u64() => Err(format!(
+                "field {path:?} holds the integer {n}, beyond the i64 range Qdrant stores; \
+                 store it as a string or a float"
+            )),
+            JsonValue::Array(items) => items
+                .iter()
+                .enumerate()
+                .try_for_each(|(i, item)| check(&format!("{path}[{i}]"), item)),
+            JsonValue::Object(fields) => fields
+                .iter()
+                .try_for_each(|(k, v)| check(&format!("{path}.{k}"), v)),
+            _ => Ok(()),
+        }
+    }
+    payload.iter().try_for_each(|(k, v)| check(k, v))
 }
 
 const POINT_ID_RULE: &str = "Qdrant point IDs must be an unsigned 64-bit integer or a UUID; see \
@@ -755,8 +807,19 @@ struct Point {
 }
 
 impl Point {
+    /// Check the point against the collection schema: its vectors' shapes,
+    /// lengths and values, and its payload. Run at declare time, so a bad
+    /// point fails its own declaration rather than the whole batch's write.
+    fn validate(&self, schema: &CollectionSchema) -> Result<()> {
+        self.to_qdrant_vectors(schema)?;
+        validate_payload(&self.payload)
+            .map_err(|detail| Error::engine(format!("qdrant point {}: payload {detail}", self.id)))
+    }
+
     fn to_qdrant_vectors(&self, schema: &CollectionSchema) -> Result<Vectors> {
         let vector_fields = schema.vector_fields();
+        let invalid =
+            |detail: String| Error::engine(format!("qdrant point {}: vector {detail}", self.id));
         match (&vector_fields, &self.vector) {
             (VectorFields::Single(def), PointVector::Single(v)) => {
                 if def.is_multivector() {
@@ -765,6 +828,7 @@ impl Point {
                         self.id
                     )));
                 }
+                validate_dense_vector(v, def.vector_size()).map_err(invalid)?;
                 Ok(Vector::new_dense(v.clone()).into())
             }
             (VectorFields::Single(def), PointVector::Multi(v)) => {
@@ -774,6 +838,7 @@ impl Point {
                         self.id
                     )));
                 }
+                validate_multivector(v, def.vector_size()).map_err(invalid)?;
                 Ok(Vector::new_multi(v.clone()).into())
             }
             (VectorFields::Single(_), PointVector::Named(_)) => Err(Error::engine(format!(
@@ -796,11 +861,25 @@ impl Point {
 
                 let mut named = HashMap::new();
                 for (name, point_vector) in point_vectors {
+                    let field_invalid = |detail: String| {
+                        Error::engine(format!(
+                            "qdrant point {}: vector field {:?} {detail}",
+                            self.id, name
+                        ))
+                    };
                     let shape_matches = if let Some(def) = vectors.get(name) {
                         match point_vector {
-                            NamedPointVector::Single(_) => !def.is_multivector(),
-                            NamedPointVector::Multi(_) => def.is_multivector(),
-                            NamedPointVector::Sparse { .. } => false,
+                            NamedPointVector::Single(v) if !def.is_multivector() => {
+                                validate_dense_vector(v, def.vector_size())
+                                    .map_err(field_invalid)?;
+                                true
+                            }
+                            NamedPointVector::Multi(vs) if def.is_multivector() => {
+                                validate_multivector(vs, def.vector_size())
+                                    .map_err(field_invalid)?;
+                                true
+                            }
+                            _ => false,
                         }
                     } else if schema.sparse_vectors.contains_key(name) {
                         match point_vector {
@@ -848,10 +927,17 @@ impl Point {
 }
 
 /// A declarative Qdrant collection target. See the [module docs](self).
-#[derive(Clone)]
+///
+/// As a `mount_each!` / `use_mount!` or memoized function argument it
+/// fingerprints by its stable key, the connection key and collection name;
+/// the schema and runtime provider are not part of the identity.
+#[derive(Clone, Serialize)]
 pub struct CollectionTarget {
+    conn_key: Arc<str>,
     collection_name: Arc<str>,
+    #[serde(skip)]
     schema: CollectionSchema,
+    #[serde(skip)]
     points: TargetStateProvider<Point>,
 }
 
@@ -886,6 +972,7 @@ pub async fn mount_collection_target_with_options(
     let schema = ts.value().schema.clone();
     let points = mount_target::<CollectionSpec, Point>(ctx, ts).await?;
     Ok(CollectionTarget {
+        conn_key: Arc::from(conn.name()),
         collection_name: Arc::from(name),
         schema,
         points,
@@ -969,6 +1056,7 @@ pub fn declare_collection_target_with_options(
     let schema = ts.value().schema.clone();
     let points = declare_target_state_with_child::<CollectionSpec, Point>(ctx, ts)?;
     Ok(CollectionTarget {
+        conn_key: Arc::from(conn.name()),
         collection_name: Arc::from(name),
         schema,
         points,
@@ -996,7 +1084,7 @@ impl CollectionTarget {
             vector: PointVector::Single(vector),
             payload,
         };
-        point.to_qdrant_vectors(&self.schema)?;
+        point.validate(&self.schema)?;
         declare_target_state(ctx, self.points.target_state(key, point))
     }
 
@@ -1018,7 +1106,7 @@ impl CollectionTarget {
             vector: PointVector::Multi(vectors),
             payload,
         };
-        point.to_qdrant_vectors(&self.schema)?;
+        point.validate(&self.schema)?;
         declare_target_state(ctx, self.points.target_state(key, point))
     }
 
@@ -1049,7 +1137,7 @@ impl CollectionTarget {
             ),
             payload,
         };
-        point.to_qdrant_vectors(&self.schema)?;
+        point.validate(&self.schema)?;
         declare_target_state(ctx, self.points.target_state(key, point))
     }
 }
@@ -1426,7 +1514,9 @@ fn point_sink(
                     deleted.iter().map(QdrantPointId::to_qdrant).collect();
                 if !upserts.is_empty() {
                     client
-                        .upsert_points(UpsertPointsBuilder::new(collection_name.clone(), upserts))
+                        .upsert_points(
+                            UpsertPointsBuilder::new(collection_name.clone(), upserts).wait(true),
+                        )
                         .await
                         .map_err(|e| Error::engine(format!("qdrant upsert_points: {e}")))?;
                 }
@@ -1434,7 +1524,8 @@ fn point_sink(
                     client
                         .delete_points(
                             DeletePointsBuilder::new(collection_name.clone())
-                                .points(PointsIdsList { ids: deletes }),
+                                .points(PointsIdsList { ids: deletes })
+                                .wait(true),
                         )
                         .await
                         .map_err(|e| Error::engine(format!("qdrant delete_points: {e}")))?;
