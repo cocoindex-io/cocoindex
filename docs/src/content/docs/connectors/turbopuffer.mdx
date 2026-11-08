@@ -296,7 +296,7 @@ The id, the vector(s) and the attributes are separate arguments. The id is a `Ro
 <Lang only="rust">
 
 - `id` — Document id (string or unsigned integer).
-- `vector` / `vectors` — For an unnamed-vector schema, pass one `Vec<f32>` to `declare_row`. For a named-vectors schema, pass `(name, vector)` pairs to `declare_named_row`.
+- `vector` / `vectors` — For an unnamed-vector schema, pass one `Vec<f32>` to `declare_row`. For a named-vectors schema, pass `(name, vector)` pairs to `declare_named_row`. Each vector must have its field's dimension and finite elements; otherwise the declare call returns an error.
 - `attributes` — Non-vector attributes (text, tags, metadata, etc.). Turbopuffer infers attribute types from the data.
 
 </Lang>

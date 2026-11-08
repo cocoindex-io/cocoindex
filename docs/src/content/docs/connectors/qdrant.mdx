@@ -328,7 +328,7 @@ impl CollectionTarget {
 }
 ```
 
-The id, the vector and the payload are separate arguments, and the shape of the vector picks the method. The payload is a `serde_json::Map<String, Value>`. Each method checks the point against the collection schema and the id rules (see [Point IDs](#point-ids)) when it is called, and returns an error for a mismatch.
+The id, the vector and the payload are separate arguments, and the shape of the vector picks the method. The payload is a `serde_json::Map<String, Value>`. Each method checks the point against the collection schema and the id rules (see [Point IDs](#point-ids)) when it is called, and returns an error for a mismatch: a vector of the wrong length, an empty multivector, a NaN or infinite element, or a payload integer beyond the `i64` range Qdrant stores. Writes wait until Qdrant has applied them.
 
 </Fragment>
 </LangTabs>

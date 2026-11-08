@@ -381,7 +381,7 @@ index.declare_document(
 
 - `document` — A `valkey::Document` containing:
   - `id` — Document ID (string)
-  - `vector` — Vector data (`Vec<f32>`)
+  - `vector` — Vector data (`Vec<f32>`). It must have the index's dimension and finite elements: the search module stores a hash whose vector it cannot read but never indexes it, so `declare_document` returns an error instead.
   - `payload` — Optional metadata map (values are text, `i64` or `f64`). The key `vector` is reserved for the vector field (see [Data storage](#data-storage)), so `declare_document` returns an error for a payload with that key.
 
 </Lang>
