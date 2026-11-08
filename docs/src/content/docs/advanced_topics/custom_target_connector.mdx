@@ -679,7 +679,7 @@ for (k, v) in rows {
 }
 ```
 
-The provider is registered for the current run, from inside a component, so register it on every run. Once a run stops registering it, the engine cannot reach its handler, and the target states declared through it are left in place; `App::drop_state` leaves them in place too.
+The provider is registered for the current run, from inside a component, so register it on every run. Once a run stops registering it, the engine cannot reach its handler, and the target states declared through it are left in place. `App::drop_state` reverts them through the handler the app's latest run registered; an app opened in a new process has to run once before its drop can reach the handler.
 
 </Fragment>
 </LangTabs>

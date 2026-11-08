@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
@@ -1825,6 +1826,77 @@ async def test_live_component_global_cancel_terminates_update() -> None:
         if not result_task.done():
             result_task.cancel()
         _core.reset_global_cancellation()
+
+
+@pytest.mark.asyncio
+async def test_catch_up_update_beside_running_live_update() -> None:
+    """A catch-up `app.update()` while the same app's live update runs does
+    its work and leaves the live incarnation running: its `process_live` is
+    not cancelled, and its operator still applies updates afterwards."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _source_data["a"] = 1
+
+    # `process_live` runs on the environment's loop, not the test's: signal
+    # across them with thread-safe events, polled.
+    started = threading.Event()
+    cancelled = threading.Event()
+    go = threading.Event()
+    applied = threading.Event()
+
+    async def _wait(event: threading.Event) -> None:
+        for _ in range(1000):
+            if event.is_set():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("timed out")
+
+    class _Live:
+        async def process(self) -> None:
+            _declare_source_entries()
+
+        async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+            await operator.update_full()
+            # In catch-up mode `mark_ready` ends `process_live` here.
+            await operator.mark_ready()
+            started.set()
+            try:
+                await _wait(go)
+                handle = await operator.update(
+                    coco.component_subpath("late"), _declare_item, "late", 7
+                )
+                await handle.ready()
+                applied.set()
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _Live)
+
+    app = coco.App(
+        coco.AppConfig(name="test_catch_up_beside_live", environment=coco_env),
+        _main,
+    )
+    live_task = asyncio.create_task(app.update(live=True).result())
+    try:
+        await _wait(started)
+        _source_data["b"] = 2
+        await asyncio.wait_for(app.update().result(), timeout=10.0)
+        assert "b" in GlobalDictTarget.store.data
+        assert not cancelled.is_set(), "the catch-up update cancelled the live one"
+
+        go.set()
+        await _wait(applied)
+        assert "late" in GlobalDictTarget.store.data
+    finally:
+        await app.drop()
+        live_task.cancel()
+        try:
+            await live_task
+        except BaseException:
+            pass
 
 
 # ============================================================================

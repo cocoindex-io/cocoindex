@@ -94,7 +94,16 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             live,
         } = self;
 
-        // 2. If existing live state, cancel and drain it (with 30s timeout).
+        // 2. A catch-up (non-live) mount — a catch-up or preview update run
+        //    while a live update of the same app is running — leaves a
+        //    running live incarnation at this path alone: replacing it would
+        //    stop the live update's watcher with no notice to anyone. The
+        //    catch-up incarnation runs beside it instead (its runs of this
+        //    component serialize with the live one's on the component's
+        //    build permit) and is not installed as the component's live
+        //    state, so a later mount still finds, and replaces, the live one.
+        //    Any other existing incarnation is cancelled and drained, with a
+        //    30s timeout.
         //
         // Without a timeout, a prior incarnation wedged in non-yielding
         // synchronous Python compute would hold the parent's
@@ -106,7 +115,12 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         // `update_full` reconciles. This trades quiescence for liveness —
         // same trade `App::drop_app` makes (see "drop_app" contract in
         // specs/live_component/design.md).
-        if let Some(existing_state) = child.live_state() {
+        let existing_state = child.live_state();
+        let beside_running_live = !live
+            && existing_state
+                .as_ref()
+                .is_some_and(|state| state.is_running_live());
+        if let Some(existing_state) = existing_state.filter(|_| !beside_running_live) {
             let drain_fut = existing_state.cancel_and_drain();
             if tokio::time::timeout(
                 std::time::Duration::from_secs(LIVE_COMPONENT_DRAIN_TIMEOUT_SECS),
@@ -163,6 +177,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         let state = Arc::new(LiveComponentState::<Prof>::new(
             readiness_guard,
             cancellation_token,
+            live,
         ));
 
         // 6. Install ordering (matters for drop_app race coverage):
@@ -177,8 +192,11 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         // owner exists would die on `upgrade()`. With the strong owner held
         // by `child.live_state`, the Weak in `live_components` upgrades for
         // the lifetime of the live component (or until cancel-and-drain
-        // releases the strong ref).
-        child.set_live_state(state.clone());
+        // releases the strong ref). An incarnation running beside a live one
+        // (step 2) is anchored by its controller alone.
+        if !beside_running_live {
+            child.set_live_state(state.clone());
+        }
         parent_ctx
             .app_ctx()
             .register_live_component(Arc::downgrade(&state));
@@ -329,12 +347,16 @@ pub struct LiveComponentState<Prof: EngineProfile> {
 
     /// JoinHandle of the tokio task running `process_live`. Set by `start()`.
     live_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+
+    /// Whether this incarnation was mounted by a live update.
+    live: bool,
 }
 
 impl<Prof: EngineProfile> LiveComponentState<Prof> {
     pub fn new(
         readiness_guard: ComponentBgChildReadinessChildGuard,
         cancellation_token: tokio_util::sync::CancellationToken,
+        live: bool,
     ) -> Self {
         Self {
             update_full_lock: tokio::sync::Mutex::new(()),
@@ -347,7 +369,14 @@ impl<Prof: EngineProfile> LiveComponentState<Prof> {
             ready_notify: tokio::sync::Notify::new(),
             cancellation_token,
             live_task: Mutex::new(None),
+            live,
         }
+    }
+
+    /// Whether this is a live update's incarnation that has not been
+    /// cancelled: its `process_live` may still be following its source.
+    fn is_running_live(&self) -> bool {
+        self.live && !self.cancellation_token.is_cancelled()
     }
 
     pub fn cancellation_token(&self) -> &tokio_util::sync::CancellationToken {
