@@ -1717,11 +1717,11 @@ mod tests {
         path: &StablePath,
         cache: UserStateCache<TestData>,
     ) {
-        use crate::state_store::CommitPlan;
+        use crate::state_store::{CommitPlan, TrackingInfoWrite};
 
         let plan_data = cache.into_flush_plan().unwrap();
         let plan = CommitPlan {
-            new_tracking_info: None,
+            tracking_info: TrackingInfoWrite::Delete,
             target_owners_to_upsert: Vec::new(),
             target_owners_to_delete: Vec::new(),
             fn_memo_clear_all_first: false,
