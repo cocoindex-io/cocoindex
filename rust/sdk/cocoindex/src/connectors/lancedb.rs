@@ -1307,8 +1307,10 @@ async fn apply_rows(
             .map_err(|e| Error::engine(format!("lancedb merge_insert: {e}")))?;
     }
 
-    for pk in &deletes {
-        let predicate = delete_predicate(&spec.table_schema.primary_key, pk)?;
+    // One delete (one table version) per chunk of keys rather than per key: a
+    // Lance delete is a commit, so a key-at-a-time loop costs a commit each.
+    for chunk in deletes.chunks(DELETE_KEYS_PER_FILTER) {
+        let predicate = delete_predicate(&spec.table_schema.primary_key, chunk)?;
         table
             .delete(&predicate)
             .await
@@ -1331,22 +1333,63 @@ async fn apply_rows(
     Ok(())
 }
 
-fn delete_predicate(primary_key: &[String], pk: &[JsonValue]) -> Result<String> {
-    let mut parts = Vec::with_capacity(primary_key.len());
-    for (name, value) in primary_key.iter().zip(pk) {
-        let rhs = match value {
-            JsonValue::String(s) => format!("'{}'", s.replace('\'', "''")),
-            JsonValue::Number(n) => n.to_string(),
-            other => {
-                return Err(Error::engine(format!(
-                    "unsupported LanceDB key value: {other}"
-                )));
-            }
-        };
+/// Keys per delete filter: bounds the filter's size while keeping the number
+/// of commits a large delete makes small.
+const DELETE_KEYS_PER_FILTER: usize = 1000;
+
+/// The filter matching the rows with any of `keys`: `pk IN (..)` for a
+/// single-column key, an `OR` of per-key `AND`s for a composite one.
+fn delete_predicate(primary_key: &[String], keys: &[Vec<JsonValue>]) -> Result<String> {
+    for name in primary_key {
         validate_identifier(name)?;
-        parts.push(format!("{name} = {rhs}"));
     }
-    Ok(parts.join(" AND "))
+    let key_mismatch = |pk: &[JsonValue]| {
+        Error::engine(format!(
+            "LanceDB key {pk:?} does not match the primary key {primary_key:?}"
+        ))
+    };
+    if let [name] = primary_key {
+        let values = keys
+            .iter()
+            .map(|pk| match pk.as_slice() {
+                [value] => sql_literal(value),
+                _ => Err(key_mismatch(pk)),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return Ok(format!("{name} IN ({})", values.join(", ")));
+    }
+    let conditions = keys
+        .iter()
+        .map(|pk| {
+            if pk.len() != primary_key.len() {
+                return Err(key_mismatch(pk));
+            }
+            let parts = primary_key
+                .iter()
+                .zip(pk)
+                .map(|(name, value)| Ok(format!("{name} = {}", sql_literal(value)?)))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(format!("({})", parts.join(" AND ")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(conditions.join(" OR "))
+}
+
+/// A key value as a Lance SQL literal.
+fn sql_literal(value: &JsonValue) -> Result<String> {
+    match value {
+        JsonValue::String(s) => Ok(format!("'{}'", s.replace('\'', "''"))),
+        // Lance parses the i64 minimum as a negated positive number, which
+        // overflows to a float that no longer matches the key; a cast from a
+        // string is exact (as in the Python connector).
+        JsonValue::Number(n) if n.as_i64() == Some(i64::MIN) => {
+            Ok(format!("CAST('{n}' AS BIGINT)"))
+        }
+        JsonValue::Number(n) => Ok(n.to_string()),
+        other => Err(Error::engine(format!(
+            "unsupported LanceDB key value: {other}"
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1513,7 +1556,7 @@ fn build_record_batch(
                 def.nullable,
                 DataType::Float32,
                 values,
-                |value| value,
+                |value| value.is_finite().then_some(value),
             )?,
             ColumnType::HalfVector(dim) => build_vector_array::<Float16Type>(
                 name,
@@ -1521,7 +1564,7 @@ fn build_record_batch(
                 def.nullable,
                 DataType::Float16,
                 values,
-                f16::from_f32,
+                |value| Some(f16::from_f32(value)).filter(|h| h.is_finite()),
             )?,
         };
         arrays.push(array);
@@ -1536,7 +1579,7 @@ fn build_vector_array<'a, T: ArrowPrimitiveType>(
     nullable: bool,
     item_type: DataType,
     values: impl Iterator<Item = &'a JsonValue>,
-    convert: impl Fn(f32) -> T::Native,
+    convert: impl Fn(f32) -> Option<T::Native>,
 ) -> Result<ArrayRef> {
     let mut builder = FixedSizeListBuilder::new(PrimitiveBuilder::<T>::new(), dim as i32)
         .with_field(Arc::new(Field::new("item", item_type, true)));
@@ -1568,7 +1611,15 @@ fn build_vector_array<'a, T: ArrowPrimitiveType>(
             let f = v.as_f64().ok_or_else(|| {
                 Error::engine(format!("column {column:?} has non-numeric vector element"))
             })?;
-            builder.values().append_value(convert(f as f32));
+            // `convert` refuses a finite value that overflows the element type
+            // (an `f64` beyond the `f32` range, a value beyond the `f16` one),
+            // which would otherwise be stored as an infinity.
+            let element = convert(f as f32).ok_or_else(|| {
+                Error::engine(format!(
+                    "column {column:?} vector element {f} does not fit its element type"
+                ))
+            })?;
+            builder.values().append_value(element);
         }
         builder.append(true);
         count += 1;
@@ -2592,13 +2643,33 @@ mod tests {
         assert_eq!(key, StableKey::Int(42));
         let pk = stable_key_to_pk(&key).unwrap();
         assert_eq!(
-            delete_predicate(&["id".to_string()], &pk).unwrap(),
-            "id = 42"
+            delete_predicate(&["id".to_string()], std::slice::from_ref(&pk)).unwrap(),
+            "id IN (42)"
+        );
+        assert_eq!(
+            delete_predicate(&["id".to_string()], &[vec![JsonValue::from(i64::MIN)]]).unwrap(),
+            "id IN (CAST('-9223372036854775808' AS BIGINT))"
         );
 
-        let pred = delete_predicate(&["name".to_string()], &[JsonValue::from("a'b")]).unwrap();
-        assert_eq!(pred, "name = 'a''b'");
-        assert!(delete_predicate(&["bad-name".to_string()], &pk).is_err());
+        let pred = delete_predicate(
+            &["name".to_string()],
+            &[vec![JsonValue::from("a'b")], vec![JsonValue::from("c")]],
+        )
+        .unwrap();
+        assert_eq!(pred, "name IN ('a''b', 'c')");
+        let pred = delete_predicate(
+            &["file".to_string(), "chunk".to_string()],
+            &[
+                vec![JsonValue::from("a"), JsonValue::from(1)],
+                vec![JsonValue::from("b"), JsonValue::from(2)],
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            pred,
+            "(file = 'a' AND chunk = 1) OR (file = 'b' AND chunk = 2)"
+        );
+        assert!(delete_predicate(&["bad-name".to_string()], &[pk]).is_err());
     }
 
     #[test]
