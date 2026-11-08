@@ -158,6 +158,7 @@ impl<Prof: EngineProfile> App<Prof> {
             ),
         )?;
 
+        let update_refusal = context.update_refusal().clone();
         let root_component = self.root_component.clone();
         let stats_for_task = processing_stats.clone();
         let cancel_token = self.app_ctx().cancellation_token();
@@ -183,7 +184,12 @@ impl<Prof: EngineProfile> App<Prof> {
                     root_component.wait_until_inactive().await;
                 }
                 stats_for_task.notify_terminated();
-                result
+                // A change refused for the selector's sake fails the update,
+                // wherever the run that refused it was (see `UpdateRefusal`).
+                match (result, update_refusal.take()) {
+                    (Ok(_), Some(refusal)) => Err(Error::client(refusal)),
+                    (result, _) => result,
+                }
             }
             .instrument(span),
         );

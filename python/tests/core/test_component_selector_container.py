@@ -42,7 +42,7 @@ def _data() -> dict[str, Any]:
     return {k: v.data for k, v in DictsTarget.store.data.get("D", {}).items()}
 
 
-@pytest.mark.parametrize("invalidation", ["destructive", "lossy"])
+@pytest.mark.parametrize("invalidation", ["destructive"])
 @pytest.mark.parametrize("memo", [False, True])
 def test_container_change_under_a_selector_is_refused(
     invalidation: Any, memo: bool
@@ -127,3 +127,25 @@ def test_container_removal_under_a_selector_is_refused_alike_in_preview() -> Non
 
     app.update_blocking()
     assert DictsTarget.store.data == {}
+
+
+def test_lossy_report_for_an_unchanged_container_is_not_refused() -> None:
+    # A reconcile that cannot trust the previous state (as under
+    # full_reprocess) may report a lossy change for a container whose record
+    # did not change. That converts nothing, so the selective update runs.
+    DictsTarget.store.clear()
+    _rows.clear()
+    _rows.update(a=1, b=1)
+    app = coco.App(
+        coco.AppConfig(name="selector_container_lossy_same", environment=coco_env),
+        _main_for(_row),
+    )
+    app.update_blocking()
+
+    _rows.update(a=2, b=2)
+    DictsTarget.store.child_invalidation = "lossy"
+    try:
+        app.update_blocking(component_selector=[coco.ROOT_PATH / "rows" / "a"])
+    finally:
+        DictsTarget.store.child_invalidation = None
+    assert _data() == {"a": 2, "b": 1}

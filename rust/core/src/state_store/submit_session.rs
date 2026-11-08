@@ -170,6 +170,9 @@ pub struct PrecommitWritePlan {
     /// For each preempted other-owner: their new tracking-info bytes
     /// (with the preempted item removed by the engine).
     pub preempted_owner_updates: BTreeMap<StablePath, Vec<u8>>,
+    /// The preempted owners the update does not run: their memos, and their
+    /// ancestors', are dropped with the takeover.
+    pub preempted_owners_left_out: Vec<StablePath>,
     /// Readable names for the provider segments of the declared
     /// target-state paths, keyed by lone segment fingerprint. Applied
     /// write-once (existing entries left untouched) so inspection can
@@ -439,12 +442,12 @@ impl AppStore {
                             app_store
                                 .write_tracking_info_raw(wtxn, &owner_path, &bytes)
                                 .await?;
-                            // The owner no longer holds what its memo, and the
-                            // memo of each ancestor, say it declares: a hit
-                            // would leave the target state to whoever took it,
-                            // and delete it with them. An owner that is not run
-                            // in this update (a selector leaves it out) would
-                            // otherwise stand on that memo in a later one.
+                        }
+                        // An owner left out of the update no longer holds what
+                        // its memo, and each ancestor's, say it declares: a hit
+                        // in a later update would leave the target state to
+                        // whoever took it, and delete it with them.
+                        for owner_path in &plan.preempted_owners_left_out {
                             let mut memo_path = owner_path.as_ref();
                             loop {
                                 app_store

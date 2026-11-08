@@ -94,6 +94,17 @@ impl ComponentSelector {
         self.classify(path) == ComponentSelection::Selected
     }
 
+    /// The update covers `path`, wherever this view's run is. Unlike
+    /// [`Self::covers`], a view inside a selected subtree answers for paths
+    /// outside it too.
+    pub(crate) fn update_covers(&self, path: &StablePath) -> bool {
+        Self {
+            root: self.root.clone(),
+            within_selected: false,
+        }
+        .covers(path)
+    }
+
     /// A run under this view can leave out something it mounts. False inside a
     /// selected subtree, from where on the run is an ordinary one. That never
     /// comes back on the way down, so the ancestors of a run with this true

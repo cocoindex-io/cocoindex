@@ -1,5 +1,7 @@
 use crate::engine::component::ComponentProcessor;
+use crate::engine::context::UpdateRefusal;
 use crate::prelude::*;
+use crate::state::component_selector::ComponentSelector;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, btree_map};
@@ -1113,16 +1115,18 @@ enum PreCommitOutcome<Prof: EngineProfile> {
 /// update can't delete the data of the components it leaves alone. A preview
 /// with the same selector refuses it alike: it shows what the update would do.
 fn bail_container_change_under_selector(
+    update_refusal: &UpdateRefusal,
     container: &str,
     stable_path: &StablePath,
     change: &str,
 ) -> Result<()> {
-    client_bail!(
-        "container target state {container}, declared by the component at \
-         {stable_path}, needs a {change}, which also affects child components that \
-         component_selector leaves out. A full update is needed: run it without \
-         component_selector"
-    )
+    let message = format!(
+        "container target state {container}, declared by the component at {stable_path}, \
+         needs a {change}, which can affect child components that component_selector leaves \
+         out. A full update is needed: run it without component_selector"
+    );
+    update_refusal.record(&message);
+    Err(Error::client(message))
 }
 
 struct PreCommitCaptures<Prof: EngineProfile> {
@@ -1130,6 +1134,8 @@ struct PreCommitCaptures<Prof: EngineProfile> {
     stable_path: StablePath,
     processor_name: Option<Arc<str>>,
     contained_target_state_paths: Arc<HashSet<TargetStatePath>>,
+    update_refusal: UpdateRefusal,
+    selector: Option<ComponentSelector>,
     target_states_providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     declared_target_states:
         Arc<tokio::sync::Mutex<BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>>>,
@@ -1201,6 +1207,8 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     stable_path: &StablePath,
     full_reprocess: bool,
     limited_by_selector: bool,
+    update_refusal: &UpdateRefusal,
+    selector: Option<&ComponentSelector>,
     processor_name: Option<&str>,
     contained_target_state_paths: &HashSet<TargetStatePath>,
     target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
@@ -1485,15 +1493,39 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     .as_ref()
                     .and_then(|item| item.provider_generation.clone());
 
-                if limited_by_selector
-                    && let Some(container) = &child_provider
+                // A container whose desired record is the one every previous
+                // state holds did not change: its reconcile may still report a
+                // rebuild, because it could not trust the previous state
+                // (`full_reprocess`, a pending state), so that is no reason to
+                // refuse.
+                // A rebuild drops the container's data, so it is always refused.
+                // A lossy change is refused only if the container's record
+                // changed: a reconcile that could not trust the previous state
+                // (`full_reprocess`, a pending state) reports one for a
+                // container that is just as it was, and that converts nothing.
+                let refused = limited_by_selector
+                    && child_provider.is_some()
                     && prev_item.is_some()
-                    && matches!(
-                        recon_output.child_invalidation,
-                        Some(ChildInvalidation::Destructive | ChildInvalidation::Lossy)
-                    )
-                {
+                    && match recon_output.child_invalidation {
+                        Some(ChildInvalidation::Destructive) => true,
+                        Some(ChildInvalidation::Lossy) => {
+                            match (&prev_item, &recon_output.tracking_record) {
+                                (Some(item), Some(record)) => {
+                                    let record = record.to_bytes()?;
+                                    item.states.is_empty()
+                                        || !item
+                                            .states
+                                            .iter()
+                                            .all(|(_, s)| s.as_ref() == Some(record.as_ref()))
+                                }
+                                _ => true,
+                            }
+                        }
+                        None => false,
+                    };
+                if refused && let Some(container) = &child_provider {
                     bail_container_change_under_selector(
+                        update_refusal,
                         &container.display_name(),
                         stable_path,
                         "rebuild",
@@ -1665,7 +1697,12 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 .reconcile(target_state_key, None, &prev_states, prev_may_be_missing)?;
             if let Some(recon_output) = recon_output {
                 if let Some(container_name) = &container_name {
-                    bail_container_change_under_selector(container_name, stable_path, "removal")?;
+                    bail_container_change_under_selector(
+                        update_refusal,
+                        container_name,
+                        stable_path,
+                        "removal",
+                    )?;
                 }
                 actions_by_sinks
                     .entry(recon_output.sink)
@@ -1756,6 +1793,19 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
         .filter(|(_, owner)| owner.modified)
         .map(|(path, owner)| Ok((path.clone(), rmp_serde::to_vec_named(&owner.tracking)?)))
         .collect::<Result<_>>()?;
+    // An old owner this update does not run keeps a memo that says it declares
+    // the target state: a later update would reuse it, declare nothing, and
+    // leave the state to whoever took it. Its memo, and each ancestor's, must
+    // go. An owner the update runs settles it itself, as in a plain update.
+    let preempted_owners_left_out: Vec<StablePath> = selector
+        .map(|selector| {
+            preempted_owner_updates
+                .keys()
+                .filter(|owner| !selector.update_covers(owner))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Provider-generation updates: buffered into the output, applied
     // by `submit()` after the precommit txn commits — so a re-run of this
@@ -1773,6 +1823,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             self_path: stable_path.clone(),
             new_tracking_info: new_tracking_info_bytes,
             preempted_owner_updates,
+            preempted_owners_left_out,
             segment_names,
         },
     })
@@ -1841,6 +1892,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let comp_mode = comp_ctx.mode();
     let full_reprocess = comp_ctx.full_reprocess();
     let limited_by_selector = comp_ctx.update_leaves_out_components();
+    let update_refusal = comp_ctx.update_refusal().clone();
+    let selector = comp_ctx.component_selector().cloned();
     let process_token = comp_ctx.app_ctx().env().process_token();
 
     let mut pending_fulfillments: Vec<(TargetStateProvider<Prof>, Prof::TargetHdl)> = Vec::new();
@@ -1928,6 +1981,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 stable_path: stable_path.clone(),
                 processor_name: processor_name_owned.clone(),
                 contained_target_state_paths: Arc::clone(&contained_target_state_paths),
+                update_refusal: update_refusal.clone(),
+                selector: selector.clone(),
                 target_states_providers: target_states_providers.clone(),
                 declared_target_states: Arc::clone(&declared_target_states),
             });
@@ -1999,6 +2054,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             &c.stable_path,
                             full_reprocess,
                             limited_by_selector,
+                            &c.update_refusal,
+                            c.selector.as_ref(),
                             c.processor_name.as_deref(),
                             &c.contained_target_state_paths,
                             &c.target_states_providers,

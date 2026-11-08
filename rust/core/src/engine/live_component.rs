@@ -1,3 +1,4 @@
+use crate::engine::context::UpdateRefusal;
 use std::collections::HashMap;
 use std::future::Future;
 
@@ -228,6 +229,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             live,
             parent_ctx.preview_collector().cloned(),
             component_selector,
+            parent_ctx.update_refusal().clone(),
             parent_ctx.app_store().clone(),
             providers,
             parent_ctx.admission().lender().clone(),
@@ -527,6 +529,9 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     /// [`ComponentProcessorContext::component_selector`]. It holds for the whole
     /// update, live events included.
     component_selector: Option<ComponentSelector>,
+    /// The mounting update's refusal slot (see [`UpdateRefusal`]), shared by
+    /// this component's runs.
+    update_refusal: UpdateRefusal,
     /// What a run under a selector wrote through
     /// [`Self::write_committed_state`]: it keeps it for its own reads, and does
     /// not persist it. Such a value says something about the whole component
@@ -565,6 +570,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         live: bool,
         preview_collector: Option<PreviewActionCollector<Prof>>,
         component_selector: Option<ComponentSelector>,
+        update_refusal: UpdateRefusal,
         app_store: AppStore,
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         lender: Lender,
@@ -579,6 +585,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             live,
             preview_collector,
             component_selector,
+            update_refusal,
             selective_committed_state: Default::default(),
             app_store,
             providers,
@@ -706,6 +713,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.component_selector.clone(),
             ),
             self.app_store.clone(),
+            self.update_refusal.clone(),
         );
 
         let handle = self
@@ -857,6 +865,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let live = self.live;
         let preview_collector = self.preview_collector.clone();
         let component_selector = self.component_selector.clone();
+        let update_refusal = self.update_refusal.clone();
         let app_store = self.app_store.clone();
         let lender = self.lender.clone();
         let share = self.share.clone();
@@ -877,6 +886,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 live,
                 preview_collector,
                 component_selector,
+                update_refusal,
                 app_store,
                 lender,
                 share,
@@ -1035,6 +1045,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.component_selector.clone(),
             ),
             self.app_store.clone(),
+            self.update_refusal.clone(),
         );
         let fn_ctx = FnCallContext::default();
 
@@ -1173,6 +1184,7 @@ async fn drain_task_body<Prof: EngineProfile>(
     live: bool,
     preview_collector: Option<PreviewActionCollector<Prof>>,
     component_selector: Option<ComponentSelector>,
+    update_refusal: UpdateRefusal,
     app_store: AppStore,
     lender: Lender,
     share: LiveShare,
@@ -1244,6 +1256,7 @@ async fn drain_task_body<Prof: EngineProfile>(
             live,
             &preview_collector,
             component_selector.as_ref(),
+            &update_refusal,
             &app_store,
             &lender,
             &share,
@@ -1346,6 +1359,7 @@ async fn run_op<Prof: EngineProfile>(
     live: bool,
     preview_collector: &Option<PreviewActionCollector<Prof>>,
     component_selector: Option<&ComponentSelector>,
+    update_refusal: &UpdateRefusal,
     app_store: &AppStore,
     lender: &Lender,
     share: &LiveShare,
@@ -1376,6 +1390,7 @@ async fn run_op<Prof: EngineProfile>(
                     ComponentSelector::scoped_to(component_selector, subpath),
                 ),
                 app_store.clone(),
+                update_refusal.clone(),
             );
             let inner_handle = child
                 .run_in_background(processor, context, on_error)
@@ -1405,6 +1420,7 @@ async fn run_op<Prof: EngineProfile>(
                 host_ctx.clone(),
                 ComponentProcessingAction::new_delete(providers.clone(), on_error),
                 app_store.clone(),
+                update_refusal.clone(),
             );
             let inner_handle = child.delete(context)?;
             inner_handle.ready().await

@@ -1320,6 +1320,15 @@ impl Ctx {
         self.__mount_fp(key.into_stable_key(), None, f).await
     }
 
+    /// The update's component selector leaves out a mount at `key`. `mount!`
+    /// asks before it computes the child's memo key, which is user code.
+    #[doc(hidden)]
+    pub fn __selector_leaves_out(&self, key: &StableKey) -> bool {
+        self.comp_ctx.as_ref().is_some_and(|comp_ctx| {
+            comp_ctx.selector_leaves_out(&self.child_path(comp_ctx, key.clone()))
+        })
+    }
+
     /// Background mount with an explicit component-memo fingerprint. The
     /// `mount!` macro calls this; [`Ctx::mount`] is the `memo = None`
     /// (always-run) case.
@@ -1727,7 +1736,13 @@ impl Ctx {
         while let Some((key, value)) = items.next().await {
             parent.check_cancellation()?;
             check_unique_key(&mut keys, key.clone())?;
-            let memo = memo_of(&value)?;
+            // The memo key is user code, which a child the selector leaves out
+            // must not run. The mount below then skips the child itself.
+            let memo = if comp_ctx.selector_leaves_out(&parent.child_path(comp_ctx, key.clone())) {
+                None
+            } else {
+                memo_of(&value)?
+            };
             let body = body.clone();
             let handle = parent
                 .mount_background(comp_ctx, key, processor_name.clone(), memo, move |child| {

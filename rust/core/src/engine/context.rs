@@ -779,6 +779,26 @@ pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     pub component_selector: Option<ComponentSelector>,
 }
 
+/// A change a run refused because the update's selector leaves out components
+/// it would affect: the rebuild or removal of a container target state whose
+/// children the update does not run. The run fails, and the update fails with
+/// the same error when it ends, wherever the run was: a background component's
+/// failure alone only reaches its error handler, and a caller that previews a
+/// slice and then updates it must see the refusal from both.
+#[derive(Clone, Default)]
+pub(crate) struct UpdateRefusal(Arc<parking_lot::Mutex<Option<String>>>);
+
+impl UpdateRefusal {
+    /// Keep the first refusal: it is the one the update reports.
+    pub(crate) fn record(&self, message: &str) {
+        self.0.lock().get_or_insert_with(|| message.to_string());
+    }
+
+    pub(crate) fn take(&self) -> Option<String> {
+        self.0.lock().take()
+    }
+}
+
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
     pub providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     /// Error handler that cascades through descendant deletes triggered
@@ -858,6 +878,11 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     /// This run's in-flight token and the lender its children borrow from;
     /// see [`crate::engine::admission`].
     admission: Admission,
+
+    /// Where a run of this update records that it refused a change for the
+    /// selector's sake (see [`UpdateRefusal`]). One per update: every context
+    /// of the update shares it, live components' runs included.
+    update_refusal: UpdateRefusal,
 
     /// This run's selector left out a child it mounted or one the store holds,
     /// so this subtree is not up to date when the run ends. Set by a mount, by
@@ -946,6 +971,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             host_ctx,
             processing_action,
             app_store,
+            None,
         )
     }
 
@@ -962,6 +988,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
         app_store: AppStore,
+        update_refusal: UpdateRefusal,
     ) -> Self {
         Self::from_parts(
             component,
@@ -971,6 +998,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             host_ctx,
             processing_action,
             app_store,
+            Some(update_refusal),
         )
     }
 
@@ -982,7 +1010,13 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
         app_store: AppStore,
+        update_refusal: Option<UpdateRefusal>,
     ) -> Self {
+        let update_refusal = match (&parent_context, update_refusal) {
+            (Some(parent), _) => parent.update_refusal().clone(),
+            (None, Some(update_refusal)) => update_refusal,
+            (None, None) => UpdateRefusal::default(),
+        };
         let operation_generation = match &parent_context {
             Some(parent) => parent.operation_generation(),
             None => component.app_ctx().next_operation_generation(),
@@ -995,6 +1029,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 app_store,
                 operation_generation,
                 admission,
+                update_refusal,
                 left_out_children: Arc::new(AtomicBool::new(false)),
                 logic_deps: Mutex::new(HashSet::new()),
                 data_deps: Mutex::new(DataDeps::default()),
@@ -1361,6 +1396,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             .is_some_and(|selector| !selector.selects_everything())
     }
 
+    pub(crate) fn update_refusal(&self) -> &UpdateRefusal {
+        &self.inner.update_refusal
+    }
+
     pub(crate) fn mark_left_out_children(&self) {
         self.inner.left_out_children.store(true, Ordering::SeqCst);
     }
@@ -1384,6 +1423,14 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 .child_path_set
                 .add_child(sub_path, StablePathSet::Skipped)
         })
+    }
+
+    /// Whether the selector leaves out a mount at `path`, without recording
+    /// anything: for a host that prepares a mount it would then hand to
+    /// [`Component::mount`], which records the skip itself.
+    pub fn selector_leaves_out(&self, path: &StablePath) -> bool {
+        self.component_selector()
+            .is_some_and(|selector| selector.classify(path) == ComponentSelection::Unselected)
     }
 
     /// Whether the selector leaves out a mount at `path`, recording it if so.
