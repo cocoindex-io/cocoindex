@@ -1796,7 +1796,10 @@ mod batched_test {
             DEADLINE_BLOCKER_RELEASE.notify_one();
             let blocked = blocker.await.unwrap();
 
-            assert_eq!(expired?, 1);
+            // The body ran without the expired caller's deadline, but that
+            // caller checks its own once the result is back, like Python's
+            // batched runner.
+            assert!(expired.unwrap_err().is_deadline_exceeded());
             assert_eq!(ordinary?, 2);
             assert_eq!(blocked?, 0);
             Ok(())
