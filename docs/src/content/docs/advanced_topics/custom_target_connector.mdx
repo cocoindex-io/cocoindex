@@ -6,7 +6,9 @@ description: >
   targets, attachment providers, and idempotent operations.
 toc_max_heading_level: 4
 ---
-A **custom target connector** is the mechanism that connects CocoIndex's declarative target state system to external systems. When you call methods like `dir_target.declare_file()` or `table_target.declare_row()`, a target connector handles the actual synchronization — determining what changed and applying those changes to the external system.
+import LangTabs from '../../../components/LangTabs.astro';
+
+A **custom target connector** is the mechanism that connects CocoIndex's declarative target state system to external systems. When you call methods like <Lang only="python">`dir_target.declare_file()` or `table_target.declare_row()`</Lang><Lang only="rust">`dir_target.declare_file(ctx, name, content)` or `table_target.declare_row(ctx, &row)`</Lang>, a target connector handles the actual synchronization — determining what changed and applying those changes to the external system.
 
 ## When to create a custom target connector
 
@@ -24,9 +26,19 @@ For simple use cases where you just need to write data to an external system wit
 
 The labels distinguish types you implement from types CocoIndex provides.
 
+<Lang only="rust">
+
+The types are in `cocoindex::prelude`: the `TargetHandler<V>` trait, `TargetActionSink<A>`, `TargetAction<A>`, `TargetReconcileOutput<A, R>`, `TargetChildInvalidation`, `TargetStateProvider<V>`, `TargetState<V>`, `ChildTargetDef`, `StableKey`, and the functions `register_root_target_states_provider`, `declare_target_state`, `declare_target_state_with_child` and `mount_target`. The Rust snippets on this page come from `rust/sdk/cocoindex/tests/target_state.rs`, which exercises each piece without an external service. For a complete connector against a database, read `rust/sdk/cocoindex/src/connectors/valkey.rs` (a container target with child documents).
+
+</Lang>
+
 ### TargetHandler *(you implement)*
 
-A `TargetHandler` implements the reconciliation logic. It's a protocol with one required method and one optional method:
+A `TargetHandler` implements the reconciliation logic. It's a <Lang only="python">protocol</Lang><Lang only="rust">trait</Lang> with one required method and one optional method:
+
+{/* Rust: rust/sdk/cocoindex/src/target_state.rs (TargetHandler) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
@@ -44,6 +56,39 @@ class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
     def attachments(self) -> dict[str, TargetHandler]:
         return {}  # Default: no attachments
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub trait TargetHandler<V>: Send + Sync + 'static
+where
+    V: Serialize + DeserializeOwned + Send + 'static,
+{
+    type TrackingRecord: Serialize + DeserializeOwned + Send + Sync + 'static;
+    type Action: Serialize + DeserializeOwned + Send + 'static;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired_target_state: Option<V>,
+        prev_possible_records: Vec<Self::TrackingRecord>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<Self::Action, Self::TrackingRecord>>>;
+
+    // Optional: attachment handlers, keyed by attachment type name.
+    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
+        Ok(Vec::new())
+    }
+}
+```
+
+The value type `V` is the trait's type parameter; the tracking record and the action are associated types. The child handler type is not part of the trait: a container's sink builds it (see [container targets](#implementing-container-targets)).
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 **Type Parameters:**
 
@@ -63,9 +108,37 @@ class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
 - `TargetReconcileOutput` if an action is needed
 - `None` if no changes are required
 
+</Lang>
+
+<Lang only="rust">
+
+**Types:**
+
+- `V`: The specification for the target state (e.g., file content, row data). It is `Serialize + DeserializeOwned`.
+- `TrackingRecord`: What's stored to detect changes on future runs
+- `Action`: What the sink applies to the external system
+
+**Parameters:**
+
+- `key`: `StableKey` — the key the target state was declared with
+- `desired_target_state`: What the user declared, or `None` if no longer declared
+- `prev_possible_records`: Tracking records from previous runs (may have multiple due to interrupted updates)
+- `prev_may_be_missing`: If `true`, the target state might not exist in the external system
+
+**Returns:**
+
+- `Ok(Some(TargetReconcileOutput { .. }))` if an action is needed
+- `Ok(None)` if no changes are required
+
+A container handler (one used with `declare_target_state_with_child` or `mount_target`) must return `Some` output whenever `desired_target_state` is `Some`, even when nothing changed, and its action must be a `Create` or an `Update`: the sink's child handler factory builds the child handler from that action. Returning `None` leaves the child handler missing, and declaring a child target state then fails.
+
+</Lang>
+
 :::warning[Non-blocking and side-effect free]
 The `reconcile()` method must be **non-blocking** and **free of side effects**. It should only compare states and return an action — actual I/O operations happen later in the `TargetActionSink`. CocoIndex may call `reconcile()` more than once for the same target state when it retries a commit internally; only the output of the committed attempt is applied.
 :::
+
+<Lang only="python">
 
 :::info[Type annotations]
 Annotate the `prev_possible_records` parameter with `Collection[YourTrackingRecord]` so CocoIndex can properly reconstruct stored tracking records during deserialization. See [Serialization](../programming_guide/serialization) for details on supported types.
@@ -77,13 +150,27 @@ CocoIndex holds every declared target state until its processing component commi
 So don't rely on the identity of a declared value or an action, or pass mutable state through them; and since the copy is taken at declaration, changes made to a value after it was declared are not seen.
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+:::info[Values and actions are serialized]
+A declared value is serialized when it is declared, and `reconcile` receives a `V` deserialized from that form. The actions and tracking records `reconcile` returns are serialized the same way, and the sink receives actions deserialized from them. So changes made to a value after it was declared are not seen, and no state passes through a value or an action other than its serialized fields.
+:::
+
+</Lang>
+
 ### Tracking record *(you define)*
 
 A **tracking record** captures the essential information needed to detect changes. Good tracking records:
 
 - Are **minimal**: Only include what's needed for change detection
 - Are **deterministic**: Same input always produces the same record
-- Are **serializable**: Must be persistable (typically a NamedTuple or dataclass). Dataclasses and NamedTuples are serialized with msgspec automatically. For types requiring pickle, use `@coco.serialize_by_pickle`.
+- Are **serializable**: Must be persistable<Lang only="python"> (typically a NamedTuple or dataclass). Dataclasses and NamedTuples are serialized with msgspec automatically. For types requiring pickle, use `@coco.serialize_by_pickle`.</Lang><Lang only="rust">: any `Serialize + DeserializeOwned` type.</Lang>
+
+{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (TableSpec, the tracking record of TableHandler) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Example: File tracking record
@@ -91,6 +178,22 @@ A **tracking record** captures the essential information needed to detect change
 class _FileTrackingRecord:
     fingerprint: bytes  # Content hash for change detection
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Example: a table's tracking record (here, the declared table spec itself)
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct TableSpec {
+    generation: String,
+}
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 :::tip[Fingerprinting]
 For content-based change detection, use the `connectorkits.fingerprint` utilities. This lets you detect changes without storing the full content:
@@ -110,9 +213,23 @@ fp = fingerprint_object(obj)
 
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+:::tip[Fingerprinting]
+For content-based change detection, keep a fingerprint instead of the full content: `cocoindex::Fingerprint::from(&value)` fingerprints any `Serialize` value, and `Fingerprint::from_bytes(&bytes)` fingerprints raw bytes. `Fingerprint` is itself `Serialize + DeserializeOwned + PartialEq`, so it can be the tracking record.
+:::
+
+</Lang>
+
 ### Action and TargetActionSink *(you implement)*
 
 An **action** (you define) describes what operation to perform on the external system:
+
+{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (RowAction) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Example: File action
@@ -121,7 +238,26 @@ class _FileAction(NamedTuple):
     content: bytes | None  # None means delete
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+/// One row mutation the sink applies. `value: None` is a delete.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct RowAction {
+    key: String,
+    value: Option<String>,
+}
+```
+
+</Fragment>
+</LangTabs>
+
 A **TargetActionSink** batches and executes actions:
+
+{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (recording_sink), rust/sdk/cocoindex/src/target_state.rs (TargetActionSink::from_async_fn) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Sync sink
@@ -147,11 +283,49 @@ def apply_actions(
             action.path.write_bytes(action.content)
 ```
 
-A **container** target's sink also takes a `child_handler` factory, `child_handler(context_provider, action) -> handler`, which returns the handler for the child target states of a created or updated container. The callback stays the same: it applies the actions. See [Implementing container targets](#implementing-container-targets).
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+/// A sink that records each applied action into `log` as `"<verb> <key>[=<value>]"`.
+fn recording_sink(log: Log) -> TargetActionSink<RowAction> {
+    TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<RowAction>>| {
+        let log = log.clone();
+        async move {
+            let mut log = log.lock().unwrap();
+            for action in actions {
+                let (verb, row) = match action {
+                    TargetAction::Create(r) => ("create", r),
+                    TargetAction::Update(r) => ("update", r),
+                    TargetAction::Delete(r) => ("delete", r),
+                };
+                log.push(match row.value {
+                    Some(v) => format!("{verb} {}={}", row.key, v),
+                    None => format!("{verb} {}", row.key),
+                });
+            }
+            Ok(())
+        }
+    })
+}
+```
+
+A sink is always async. Its closure receives `Vec<TargetAction<A>>`, where each item is `TargetAction::Create(a)`, `Update(a)` or `Delete(a)`, so the operation kind travels beside your action. The action type must be `Serialize + DeserializeOwned`. The closure gets no connection from the environment: move the connection into it when you build the handler (see [Use `ContextKey` for external resource identity](#use-contextkey-for-external-resource-identity)).
+
+The engine batches actions by sink *identity*: actions returned with the same sink (or a clone of it) are applied together in one call, and every `from_async_fn*` call creates a new identity. Build the sink once and return a clone from each `reconcile`.
+
+</Fragment>
+</LangTabs>
+
+A **container** target's sink also takes a `child_handler` factory, <Lang only="python">`child_handler(context_provider, action) -> handler`</Lang><Lang only="rust">`Fn(&A) -> Result<ChildTargetDef>`</Lang>, which returns the handler for the child target states of a created or updated container. The callback stays the same: it applies the actions. See [Implementing container targets](#implementing-container-targets).
 
 ### TargetReconcileOutput *(you return)*
 
 `TargetReconcileOutput` bundles what `reconcile()` returns when an action is needed:
+
+{/* Rust: rust/sdk/cocoindex/src/target_state.rs (TargetReconcileOutput, TargetAction, TargetChildInvalidation) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class TargetReconcileOutput(Generic[ActionT, TrackingRecordT, OptChildHandlerT], NamedTuple):
@@ -161,13 +335,36 @@ class TargetReconcileOutput(Generic[ActionT, TrackingRecordT, OptChildHandlerT],
     child_invalidation: Literal["destructive", "lossy"] | None = None  # For container targets
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub struct TargetReconcileOutput<A, R> {
+    pub action: TargetAction<A>,                            // Create(A) | Update(A) | Delete(A)
+    pub sink: TargetActionSink<A>,                          // How to execute it
+    pub tracking_record: Option<R>,                         // What to remember; None = non-existence
+    pub child_invalidation: Option<TargetChildInvalidation>, // Destructive | Lossy, for containers
+}
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 `OptChildHandlerT` is the handler type of the child target states, which the sink's `child_handler` factory returns for the action (`None` for leaf targets). Nothing in the tuple depends on it; it is how a container handler declares its child handler type.
+
+</Lang>
 
 The `child_invalidation` field is only relevant for **container targets** (those with children). See [Child invalidation](#child-invalidation) for details.
 
 ### TargetStateProvider *(CocoIndex provides)*
 
-A `TargetStateProvider` is a factory that creates `TargetState` objects. You don't implement this class — CocoIndex gives you one when you register a handler or declare a target state with children.
+A `TargetStateProvider` is a factory that creates `TargetState` objects. You don't implement this <Lang only="python">class</Lang><Lang only="rust">type</Lang> — CocoIndex gives you one when you register a handler or declare a target state with children.
+
+{/* Rust: rust/sdk/cocoindex/src/target_state.rs (register_root_target_states_provider, declare_target_state_with_child, mount_target, TargetStateProvider::attachment) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # You get a provider from registration
@@ -180,9 +377,36 @@ child_provider = coco.declare_target_state_with_child(parent_target_state)
 att_provider = child_provider.attachment("vector_index")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// You get a provider from registration, for the current run.
+let provider = register_root_target_states_provider(ctx, "my.target", handler)?;
+
+// Or from declaring a parent target state (the child provider is ready once
+// the enclosing component commits) ...
+let child_provider = declare_target_state_with_child(ctx, parent_target_state)?;
+// ... or from mounting the parent, which commits it in a foreground child
+// component, so the child provider is ready at once.
+let child_provider = mount_target(ctx, parent_target_state).await?;
+
+// Or from an attachment on a mounted child provider.
+let att_provider = child_provider.attachment(ctx, "vector_index")?;
+```
+
+Every call takes the `Ctx`: there is no ambient component context in Rust.
+
+</Fragment>
+</LangTabs>
+
 ### TargetState *(CocoIndex provides)*
 
 A `TargetState` wraps a key and spec. You create these using the provider, then declare them:
+
+{/* Rust: rust/sdk/cocoindex/tests/deadline.rs (declare_memory_row) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Create a target state
@@ -192,6 +416,19 @@ target_state = provider.target_state(key, spec)
 coco.declare_target_state(target_state)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Create a target state and declare it for reconciliation
+declare_target_state(ctx, provider.target_state("row-1", value))?;
+```
+
+The key is anything that implements `IntoStableKey`: a `StableKey`, `&str`, `String`, `i64` or `u64`.
+
+</Fragment>
+</LangTabs>
+
 ## Implementing root target states
 
 Root target states are not nested inside another target.
@@ -200,11 +437,11 @@ Root target states are not nested inside another target.
 
 Understanding what happens at runtime:
 
-1. **Registration**: You define a `TargetHandler` and call `register_root_target_states_provider()`. CocoIndex returns a `TargetStateProvider` — a factory for creating target states associated with your handler.
+1. **Registration**: You define a `TargetHandler` and call `register_root_target_states_provider()`<Lang only="rust"> from inside a component, on every run</Lang>. CocoIndex returns a `TargetStateProvider` — a factory for creating target states associated with your handler.
 
 2. **Declaration**: During execution, user code calls `provider.target_state(key, spec)` to create `TargetState` objects, then `declare_target_state()` to declare them. CocoIndex collects all declared target states.
 
-3. **Reconciliation**: When the processing unit finishes, CocoIndex calls your handler's `reconcile()` method for each target state. For declared target states, `desired_target_state` contains the spec; for previously declared but now missing states, `desired_target_state` is `NON_EXISTENCE` (triggering cleanup). Your `reconcile()` compares the desired state with previous records and returns `TargetReconcileOutput` if an action is needed, or `None` if no changes are required.
+3. **Reconciliation**: When the processing unit finishes, CocoIndex calls your handler's `reconcile()` method for each target state. For declared target states, `desired_target_state` contains the spec; for previously declared but now missing states, `desired_target_state` is <Lang only="python">`NON_EXISTENCE`</Lang><Lang only="rust">`None`</Lang> (triggering cleanup). Your `reconcile()` compares the desired state with previous records and returns <Lang only="python">`TargetReconcileOutput` if an action is needed, or `None`</Lang><Lang only="rust">`Some(TargetReconcileOutput { .. })` if an action is needed, or `None`</Lang> if no changes are required.
 
 4. **Action Execution**: CocoIndex batches actions by their `TargetActionSink` and executes them. The sink applies changes to the external system (database writes, file operations, API calls, etc.). A batch may combine the actions of several processing components that finish around the same time; if the sink fails, CocoIndex retries in smaller batches along component boundaries, so only the components whose actions actually fail are affected. The sink may therefore see an action from a failed batch again — keep actions idempotent.
 
@@ -217,6 +454,10 @@ Due to interrupted updates, `prev_possible_records` may contain multiple records
 ### Step 1: Define your types
 
 Start by defining the types for your provider:
+
+{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (RowAction; RowHandler keeps the row value as its tracking record) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from typing import NamedTuple, Collection
@@ -242,7 +483,40 @@ class _RowAction(NamedTuple):
     data: dict[str, Any] | None  # None = delete
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::{
+    Result, StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
+    declare_target_state, register_root_target_states_provider,
+};
+use serde::{Deserialize, Serialize};
+
+// Key: `StableKey`, built from anything that implements `IntoStableKey`
+// (`&str`, `String`, `i64`, `u64`, ...).
+
+// Value: what the user declares. Here, a `String` row value.
+
+// Tracking record: what to persist for change detection. Here, the value
+// itself (`String`).
+
+/// Action: one row mutation the sink applies. `value: None` is a delete.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct RowAction {
+    key: String,
+    value: Option<String>,
+}
+```
+
+</Fragment>
+</LangTabs>
+
 ### Step 2: Implement the handler
+
+{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (RowHandler, key_str) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class _RowHandler(coco.TargetHandler[_RowSpec, _RowTrackingRecord]):
@@ -302,9 +576,85 @@ class _RowHandler(coco.TargetHandler[_RowSpec, _RowTrackingRecord]):
         )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+/// A flat row handler with full CRUD + no-change detection (tracking record is
+/// the row value itself).
+#[derive(Clone)]
+struct RowHandler {
+    sink: TargetActionSink<RowAction>,
+}
+
+impl TargetHandler<String> for RowHandler {
+    type TrackingRecord = String;
+    type Action = RowAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<String>,
+        prev: Vec<String>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<RowAction, String>>> {
+        let k = key_str(&key);
+        match desired {
+            Some(value) => {
+                // Skip if unchanged
+                let unchanged =
+                    !prev_may_be_missing && !prev.is_empty() && prev.iter().all(|p| *p == value);
+                if unchanged {
+                    return Ok(None);
+                }
+                let row = RowAction {
+                    key: k,
+                    value: Some(value.clone()),
+                };
+                let action = if prev.is_empty() {
+                    TargetAction::Create(row)
+                } else {
+                    TargetAction::Update(row)
+                };
+                Ok(Some(TargetReconcileOutput {
+                    action,
+                    sink: self.sink.clone(),
+                    tracking_record: Some(value),
+                    child_invalidation: None,
+                }))
+            }
+            // Handle deletion
+            None => {
+                if prev.is_empty() && !prev_may_be_missing {
+                    return Ok(None); // Nothing to delete
+                }
+                Ok(Some(TargetReconcileOutput {
+                    action: TargetAction::Delete(RowAction {
+                        key: k,
+                        value: None,
+                    }),
+                    sink: self.sink.clone(),
+                    tracking_record: None,
+                    child_invalidation: None,
+                }))
+            }
+        }
+    }
+}
+```
+
+`key_str` is a helper of the test that renders the `StableKey` as a string; `sink` is the `recording_sink` [above](#action-and-targetactionsink-you-implement).
+
+</Fragment>
+</LangTabs>
+
 ### Step 3: Register the provider
 
 For root-level target states (not nested within another target), register a provider:
+
+{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (flat_target_insert_update_nochange_delete) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 _row_provider = coco.register_root_target_states_provider(
@@ -313,9 +663,34 @@ _row_provider = coco.register_root_target_states_provider(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let provider = register_root_target_states_provider(
+    &ctx,
+    "mycompany.io/mydb/row", // Unique provider name
+    RowHandler {
+        sink: recording_sink(log),
+    },
+)?;
+for (k, v) in rows {
+    declare_target_state(&ctx, provider.target_state(k, v.to_string()))?;
+}
+```
+
+The provider is registered for the current run, from inside a component, so register it on every run. Once a run stops registering it, the engine cannot reach its handler, and the target states declared through it are left in place; `App::drop_state` leaves them in place too.
+
+</Fragment>
+</LangTabs>
+
 ### Step 4: Create user-facing APIs
 
-Wrap the provider in a user-friendly API:
+Wrap the provider in a user-friendly API<Lang only="rust">: a struct that holds the `TargetStateProvider<V>` and whose methods take `&Ctx`</Lang>.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/valkey.rs (IndexTarget::declare_document) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class TableTarget:
@@ -330,6 +705,28 @@ class TableTarget:
         coco.declare_target_state(target_state)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub struct IndexTarget {
+    index_name: Arc<str>,
+    documents: TargetStateProvider<Document>,
+}
+
+impl IndexTarget {
+    /// Declare a document to upsert into the index.
+    pub fn declare_document(&self, ctx: &Ctx, document: Document) -> Result<()> {
+        // ... validate the document ...
+        let key = StableKey::Str(Arc::from(document.id.as_str()));
+        declare_target_state(ctx, self.documents.target_state(key, document))
+    }
+}
+```
+
+</Fragment>
+</LangTabs>
+
 ## Implementing container targets
 
 Container targets (directories, tables) have children (files, rows). A child is a non-root target state.
@@ -340,8 +737,8 @@ For targets **nested inside another target** (e.g., files inside a directory), t
 
 For root targets, you call `register_root_target_states_provider()` and immediately get a provider with your handler. For non-root targets, the handler comes from the **`child_handler` factory of the parent's sink**, which CocoIndex calls with the parent's action:
 
-1. **Declaration**: Call `declare_target_state_with_child(parent_ts)` — returns an **unresolved** child provider immediately
-2. **Resolution**: When the parent reconciles, CocoIndex calls the sink's `child_handler` factory with the parent's action and resolves the child provider with the handler it returns. It does this before the sink applies the action, and in a preview (`app.update(preview=True)`) in place of applying it — so the factory must build the handler from the action alone, with no side effects.
+1. **Declaration**: Call <Lang only="python">`declare_target_state_with_child(parent_ts)`</Lang><Lang only="rust">`declare_target_state_with_child(ctx, parent_ts)`</Lang> — returns an **unresolved** child provider immediately<Lang only="rust">. Or call `mount_target(ctx, parent_ts).await`, which declares and commits the parent in a foreground child component and returns a child provider that is already resolved.</Lang>
+2. **Resolution**: When the parent reconciles, CocoIndex calls the sink's `child_handler` factory with the parent's action and resolves the child provider with the handler it returns. It does this before the sink applies the action, and in a preview (<Lang only="python">`app.update(preview=True)`</Lang><Lang only="rust">`app.preview(..)`</Lang>) in place of applying it — so the factory must build the handler from the action alone, with no side effects.
 3. **Usage**: The child provider can now create child target states, which follow the same reconciliation → execution → tracking flow as root targets.
 
 Some containers only get their identity when created: the external system assigns it (a Notion database or a Google Drive folder gets a server-assigned id). The factory cannot know that id, so let the handler look it up when it applies: the container sink records `key → id` in a connector-level map when it creates (or finds) the container, and the child handler's sink reads the id from that map by the container's key. Containers reconcile and apply on every run, before their children apply, so the map is filled when the children need it; a preview never applies the children, so it never needs the id.
@@ -350,13 +747,17 @@ Some containers only get their identity when created: the external system assign
 
 When a container target undergoes certain changes, the child target states may be affected. The `child_invalidation` field in `TargetReconcileOutput` lets you signal this to CocoIndex:
 
-- **`"destructive"`** — The container change destroys all existing children (e.g., a primary key change that requires dropping and recreating a table). CocoIndex will ignore all previous tracking records for children under this container and treat them as new.
+- **<Lang only="python">`"destructive"`</Lang><Lang only="rust">`TargetChildInvalidation::Destructive`</Lang>** — The container change destroys all existing children (e.g., a primary key change that requires dropping and recreating a table). CocoIndex will ignore all previous tracking records for children under this container and treat them as new.
 
-- **`"lossy"`** — The container change may cause data loss for existing children (e.g., a schema change that removes columns). CocoIndex will force an upsert for all children by setting `prev_may_be_missing=True`, even if their data appears unchanged.
+- **<Lang only="python">`"lossy"`</Lang><Lang only="rust">`TargetChildInvalidation::Lossy`</Lang>** — The container change may cause data loss for existing children (e.g., a schema change that removes columns). CocoIndex will force an upsert for all children by setting <Lang only="python">`prev_may_be_missing=True`</Lang><Lang only="rust">`prev_may_be_missing` to `true`</Lang>, even if their data appears unchanged.
 
 - **`None`** (default) — No impact on children. Normal change detection applies.
 
 Set `child_invalidation` in the **parent handler's** `reconcile()` method when you detect that the container itself has changed in a way that affects its children:
+
+{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (TableSpec, TableAction, TableHandler) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class _DirHandler(coco.TargetHandler[_DirSpec, _DirTrackingRecord, _EntryHandler]):
@@ -376,18 +777,102 @@ class _DirHandler(coco.TargetHandler[_DirSpec, _DirTrackingRecord, _EntryHandler
         )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct TableSpec {
+    generation: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct TableAction {
+    name: String,
+    drop: bool,
+}
+
+/// A container ("table") handler whose sink produces a child row handler per
+/// declared table, and whose child invalidation is configurable.
+struct TableHandler {
+    sink: TargetActionSink<TableAction>,
+    invalidation: Option<TargetChildInvalidation>,
+}
+
+impl TargetHandler<TableSpec> for TableHandler {
+    type TrackingRecord = TableSpec;
+    type Action = TableAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<TableSpec>,
+        prev: Vec<TableSpec>,
+        _prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<TableAction, TableSpec>>> {
+        let name = key_str(&key);
+        match desired {
+            // Always emit an output when the table is declared, so the sink
+            // builds the child handler.
+            Some(spec) => {
+                let changed = !prev.is_empty() && !prev.contains(&spec);
+                let action = if prev.is_empty() {
+                    TargetAction::Create(TableAction { name, drop: false })
+                } else {
+                    TargetAction::Update(TableAction { name, drop: false })
+                };
+                Ok(Some(TargetReconcileOutput {
+                    action,
+                    sink: self.sink.clone(),
+                    tracking_record: Some(spec),
+                    child_invalidation: changed.then_some(self.invalidation).flatten(),
+                }))
+            }
+            None => Ok(Some(TargetReconcileOutput {
+                action: TargetAction::Delete(TableAction { name, drop: true }),
+                sink: self.sink.clone(),
+                tracking_record: None,
+                child_invalidation: Some(TargetChildInvalidation::Destructive),
+            })),
+        }
+    }
+}
+```
+
+</Fragment>
+</LangTabs>
+
 ### Deleting a container
 
 When a container target state is no longer declared, CocoIndex runs the container handler's non-existence action and does **not** reconcile the children individually. The container action is therefore responsible for its children, in one of two shapes:
 
-- **Destroy** — for a container CocoIndex owns, remove it together with its contents (`DROP TABLE`, `shutil.rmtree`, `drop_table`, …). The `_apply_dir_actions` sink in Step 2 below does this.
+- **Destroy** — for a container CocoIndex owns, remove it together with its contents (<Lang only="python">`DROP TABLE`, `shutil.rmtree`, `drop_table`, …). The `_apply_dir_actions` sink in Step 2 below does this.</Lang><Lang only="rust">`DROP TABLE`, removing a directory tree, dropping an index, …). The `TableHandler` above returns a `Delete` action with `drop: true` for this.</Lang>
 - **Abandon** — for a user-managed container (a message topic, a table the user created), leave the contents untouched. Once the container is no longer declared, CocoIndex has released its claim on it and must not write to it again: another writer may now own those keys, writing to a topic the user has since deleted would recreate it on brokers that auto-create topics, and the deletion policy captured from the old declaration (such as a `deletion_value_fn` closure) no longer exists.
 
-The zvec connector (`python/cocoindex/connectors/zvec/_target.py`, `_apply_collection_actions`) implements both: it destroys system-managed collections and leaves user-managed ones alone. `App.drop()` applies the same shapes to every root container (it drops tables and abandons topics without visiting rows or messages) so document on your connector page which shape it uses. The user-facing contract is in [How CocoIndex syncs target states](../programming_guide/target_state#how-cocoindex-syncs-target-states).
+<Lang only="python">
+
+The zvec connector (`python/cocoindex/connectors/zvec/_target.py`, `_apply_collection_actions`) implements both: it destroys system-managed collections and leaves user-managed ones alone. `App.drop()` applies the same shapes to every root container (it drops tables and abandons topics without visiting rows or messages) so document on your connector page which shape it uses.
+
+</Lang>
+
+<Lang only="rust">
+
+The Valkey connector (`rust/sdk/cocoindex/src/connectors/valkey.rs`) implements both: it drops a system-managed index and leaves a user-managed one alone (`ManagedBy::User`, see [statediff](#handle-multiple-previous-states)). Document on your connector page which shape it uses.
+
+</Lang>
+
+The user-facing contract is in [How CocoIndex syncs target states](../programming_guide/target_state#how-cocoindex-syncs-target-states).
+
+<RustNote>
+A connector outside the `cocoindex` crate registers its root provider on each run, so a container is deleted only by a run that still registers the provider and no longer declares the container. `App::drop_state` cannot reach such a handler and leaves its target states in place. Built-in connectors such as Valkey register their root provider with every environment when it is built, so `App::drop_state` and a run that no longer declares their targets reach the handler; that registration is internal to the crate.
+</RustNote>
 
 ### Step 1: Define parent and child handlers
 
 The parent handler reconciles the container itself. The child handler reconciles entries within it:
+
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Parent handler for directory
@@ -407,9 +892,21 @@ class _EntryHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord]):
         ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+The parent is the `TableHandler` [above](#child-invalidation), a `TargetHandler<TableSpec>`. The child is the `RowHandler` from [Step 2 of root target states](#step-2-implement-the-handler), a `TargetHandler<String>`: a child handler is a regular `TargetHandler` for the child value type. The child value type is not part of the parent's trait implementation; the parent's sink names it when it wraps the child handler in a `ChildTargetDef`.
+
+</Fragment>
+</LangTabs>
+
 ### Step 2: Build child handlers with a `child_handler` factory
 
-The parent's sink is built with `from_fn()` (or `from_async_fn()`), plus a `child_handler` factory. The callback creates and drops containers; the factory returns the handler for a container's child target states:
+The parent's sink is built with <Lang only="python">`from_fn()` (or `from_async_fn()`), plus a `child_handler` factory</Lang><Lang only="rust">`TargetActionSink::from_async_fn_with_child_handler(apply, child_handler)`</Lang>. The callback creates and drops containers; the factory returns the handler for a container's child target states<Lang only="rust">: it takes `&A` and returns a `ChildTargetDef`, which wraps a typed child handler</Lang>:
+
+{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (table_sink, log_table_action) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def _apply_dir_actions(
@@ -434,13 +931,54 @@ _dir_sink = coco.TargetActionSink.from_fn(
 )
 ```
 
-CocoIndex calls the factory once per action whose target state was declared with a child (a created or updated container, never a delete) before the callback applies the batch, and in a preview in place of the callback. So the factory is sync, free of side effects, and builds the handler from the action alone (plus connections looked up through `context_provider`). Actions without a child provider (orphan deletes, or leaf actions when one sink is shared between a container and its children) don't reach the factory.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+/// Build a container sink whose child handler factory gives each
+/// created/updated table a fresh child row handler (recording into `row_log`).
+fn table_sink(table_log: Log, row_log: Log) -> TargetActionSink<TableAction> {
+    TargetActionSink::from_async_fn_with_child_handler(
+        move |actions: Vec<TargetAction<TableAction>>| {
+            let table_log = table_log.clone();
+            async move {
+                for action in actions {
+                    log_table_action(&table_log, action);
+                }
+                Ok(())
+            }
+        },
+        move |_: &TableAction| {
+            Ok(ChildTargetDef::new::<String, _>(RowHandler {
+                sink: recording_sink(row_log.clone()),
+            }))
+        },
+    )
+}
+
+fn log_table_action(table_log: &Log, action: TargetAction<TableAction>) {
+    let entry = match action {
+        TargetAction::Create(t) | TargetAction::Update(t) => format!("ensure {}", t.name),
+        TargetAction::Delete(t) => format!("drop {}", t.name),
+    };
+    table_log.lock().unwrap().push(entry);
+}
+```
+
+</Fragment>
+</LangTabs>
+
+CocoIndex calls the factory once per action whose target state was declared with a child (a created or updated container, never a delete) before the callback applies the batch, and in a preview in place of the callback. So the factory is sync, free of side effects, and builds the handler from the action alone<Lang only="python"> (plus connections looked up through `context_provider`)</Lang><Lang only="rust"> (plus what the closure captured when the sink was built)</Lang>. Actions without a child provider (orphan deletes, or leaf actions when one sink is shared between a container and its children) don't reach the factory.
 
 The container handler's `reconcile()` returns an action on every run while the container is declared, even when nothing about it changed: the factory builds the child handler from that action. Preview lists this action too: equality of arbitrary tracking records does not guarantee that applying the action has no external effect.
 
 ### Step 3: Create user-facing API
 
-The user-facing API uses `declare_target_state_with_child()` and exposes methods for declaring children:
+The user-facing API uses <Lang only="python">`declare_target_state_with_child()`</Lang><Lang only="rust">`declare_target_state_with_child()` or `mount_target()`</Lang> and exposes methods for declaring children:
+
+{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (run_table_with), rust/sdk/cocoindex/src/connectors/valkey.rs (declare_index_target_with_options, mount_index_target_with_options) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class DirTarget:
@@ -470,6 +1008,42 @@ def declare_dir_target(path: pathlib.Path) -> DirTarget:
     child_provider = coco.declare_target_state_with_child(parent_ts)
     return DirTarget(child_provider)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let table_provider = register_root_target_states_provider(
+    &ctx,
+    "test/table",
+    TableHandler {
+        sink: make_sink(table_log, row_log),
+        invalidation,
+    },
+)?;
+// Commit the table in a foreground child component; the child provider is
+// ready at once.
+let child: TargetStateProvider<String> = mount_target(
+    &ctx,
+    table_provider.target_state(
+        "docs",
+        TableSpec {
+            generation: generation.to_string(),
+        },
+    ),
+)
+.await?;
+for (k, v) in rows {
+    declare_target_state(&ctx, child.target_state(k, v.to_string()))?;
+}
+```
+
+A connector wraps the child provider in a user-facing struct, as Valkey's `IndexTarget` [above](#step-4-create-user-facing-apis) does: `declare_index_target` returns one built from `declare_target_state_with_child` (its documents resolve when the component commits), and `mount_index_target` one built from `mount_target` (ready at once).
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 ### Migrating from child slots and `ChildTargetDef`
 
@@ -529,6 +1103,18 @@ _dir_sink = coco.TargetActionSink.from_fn(
 
 Leaf sinks need no change. If a leaf sink shares its callback with a container level (one sink per database serving table DDL and row writes), migrate it the same way: leaf actions never reach the factory.
 
+</Lang>
+
+<Lang only="rust">
+
+### Migrating from child slots and child definitions
+
+Two older container sink constructors are deprecated: `TargetActionSink::from_async_fn_with_children`, whose closure receives each action with an `Option<ChildSlot>` and calls `slot.fulfill(ChildTargetDef::new(..))` on each, and `TargetActionSink::from_async_fn_with_child_defs`, whose closure returns a `Vec<Option<ChildTargetDef>>` index-aligned with the actions. A sink built with `from_async_fn_with_children` cannot be previewed.
+
+To migrate, move the construction of the `ChildTargetDef` into a closure `Fn(&A) -> Result<ChildTargetDef>` that builds it from the action alone, drop the slots (or the returned definitions) from the apply closure so it returns `Ok(())`, and build the sink with `from_async_fn_with_child_handler(apply, child_handler)`, as `table_sink` [above](#step-2-build-child-handlers-with-a-child_handler-factory) does.
+
+</Lang>
+
 ## Implementing attachment providers
 
 Attachment providers let a child handler expose **auxiliary target states** alongside its regular children. For example, a PostgreSQL table handler manages rows as regular children, but can also manage vector indexes and SQL command attachments as separate attachment types — each tracked independently.
@@ -557,14 +1143,16 @@ The symbol keys (`@vector_index`, `@sql_command_attachment`) are path namespaces
 
 ### How it works
 
-1. **Handler implements `attachments()`**: The child handler (e.g., row handler) returns a dict of all supported attachment types and their handlers.
+1. **Handler implements `attachments()`**: The child handler (e.g., row handler) returns <Lang only="python">a dict of</Lang><Lang only="rust">a `Vec` of `(name, ChildTargetDef)` pairs for</Lang> all supported attachment types and their handlers.
 2. **Engine eagerly registers attachment providers**: When the child provider is resolved with the handler from the `child_handler` factory, the engine calls `attachments()` and registers all returned types. This ensures orphaned attachments can be cleaned up even when not declared in the current run.
 3. **User code calls `provider.attachment()`**: On a resolved child provider, this retrieves the cached attachment sub-provider.
 4. **Target states declared under the attachment provider** are tracked independently from regular children.
 
 ### Step 1: Implement the attachment handler
 
-An attachment handler is just a regular `TargetHandler` — it implements `reconcile()` and has an action sink:
+An attachment handler is just a regular `TargetHandler` — it implements `reconcile()` and has an action sink<Lang only="rust">. The example below reuses the `RowHandler` from [Step 2 of root target states](#step-2-implement-the-handler) as the attachment handler, with its own recording sink.</Lang><Lang only="python">:</Lang>
+
+<Lang only="python">
 
 ```python
 class _VectorIndexSpec(NamedTuple):
@@ -597,9 +1185,15 @@ class _VectorIndexHandler:
         ...
 ```
 
+</Lang>
+
 ### Step 2: Add `attachments()` to the parent handler
 
-The parent handler (which manages regular children) returns a dict of all supported attachment types:
+The parent handler (which manages regular children) returns <Lang only="python">a dict of </Lang>all supported attachment types:
+
+{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (MainHandler) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
@@ -620,9 +1214,55 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+/// A main handler (CRUD like `RowHandler`) that also exposes an "index"
+/// attachment handler.
+struct MainHandler {
+    sink: TargetActionSink<RowAction>,
+    att_log: Log,
+}
+
+impl TargetHandler<String> for MainHandler {
+    type TrackingRecord = String;
+    type Action = RowAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<String>,
+        prev: Vec<String>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<RowAction, String>>> {
+        RowHandler {
+            sink: self.sink.clone(),
+        }
+        .reconcile(key, desired, prev, prev_may_be_missing)
+    }
+
+    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
+        Ok(vec![(
+            "index".to_string(),
+            ChildTargetDef::new::<String, _>(RowHandler {
+                sink: recording_sink(self.att_log.clone()),
+            }),
+        )])
+    }
+}
+```
+
+</Fragment>
+</LangTabs>
+
 ### Step 3: Expose attachment APIs on the user-facing target
 
-The user-facing target class calls `provider.attachment()` to get the attachment sub-provider, then declares target states on it:
+The user-facing target <Lang only="python">class</Lang><Lang only="rust">struct</Lang> calls `provider.attachment()` to get the attachment sub-provider, then declares target states on it:
+
+{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (attachment_lifecycle_create_and_cleanup) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class TableTarget:
@@ -640,8 +1280,32 @@ class TableTarget:
         coco.declare_target_state(att_provider.target_state(name, spec))
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let provider = register_root_target_states_provider(
+    &ctx,
+    "test/main",
+    MainHandler {
+        sink: recording_sink(main_log),
+        att_log,
+    },
+)?;
+declare_target_state(&ctx, provider.target_state("row", "v1".to_string()))?;
+if declare_attachment {
+    let att: TargetStateProvider<String> = provider.attachment(&ctx, "index")?;
+    declare_target_state(&ctx, att.target_state("idx", "spec1".to_string()))?;
+}
+```
+
+A run that stops declaring the attachment deletes it, even though it was not declared in that run: the engine registered the attachment provider eagerly.
+
+</Fragment>
+</LangTabs>
+
 :::tip[Tracking records for teardown]
-When an attachment has a teardown step (like `DROP INDEX`), store the full spec as the tracking record instead of a fingerprint. This lets you recover the teardown information from `prev_possible_records` when the attachment is deleted or changed. See the `_SqlCommandHandler` in the PostgreSQL connector for an example.
+When an attachment has a teardown step (like `DROP INDEX`), store the full spec as the tracking record instead of a fingerprint. This lets you recover the teardown information from `prev_possible_records` when the attachment is deleted or changed.<Lang only="python"> See the `_SqlCommandHandler` in the PostgreSQL connector for an example.</Lang>
 :::
 
 ## Connector implementation guidelines
@@ -653,6 +1317,8 @@ When a target connector manages state in an external resource (a database, a sea
 Target state keys must be stable across runs for correct reconciliation. CocoIndex uses keys to match current declarations with previously tracked states. If the key is stable, previously tracked states are associated with the current target, so CocoIndex can correctly reconcile — e.g., deleting rows that are no longer declared. If the key changes (because a connection parameter changed), CocoIndex cannot associate previous tracked states with the current target, and treats the target as being in a cleared state — losing the ability to clean up old data.
 
 `ContextKey` solves this by providing a user-defined stable logical name (e.g., `"my_pg"`) that is decoupled from transient connection details:
+
+<Lang only="python">
 
 ```python
 # User creates a stable logical name for the resource
@@ -676,9 +1342,42 @@ This way, changing a password, switching replicas, or rotating credentials won't
 
 See `_TableKey` in [`cocoindex/connectors/postgres/_target.py`](https://github.com/cocoindex-io/cocoindex/blob/main/python/cocoindex/connectors/postgres/_target.py) and [`cocoindex/connectors/surrealdb/_target.py`](https://github.com/cocoindex-io/cocoindex/blob/main/python/cocoindex/connectors/surrealdb/_target.py) for reference implementations.
 
+</Lang>
+
+<Lang only="rust">
+
+Put the key's name (`ContextKey::name()`, the string `"my_pg"`) in the target state key. The Valkey connector's index key holds the database's `ContextKey` name plus the index name:
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/valkey.rs (IndexKey) */}
+```rust
+/// An index target state's key: the database's `ContextKey` name plus the
+/// index name.
+struct IndexKey {
+    db_key: String,
+    index_name: String,
+}
+
+impl IndexKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.db_key)),
+            StableKey::Str(Arc::from(self.index_name)),
+        ]))
+    }
+}
+```
+
+This way, changing a password, switching replicas, or rotating credentials won't invalidate tracked states or break reconciliation.
+
+A sink built with `TargetActionSink::from_async_fn` receives only the actions, not the environment's context values. So resolve the connection with `ctx.get_key(&key)` in the run that registers the provider, and move it into the handler and its sink. The run that registers the provider also produces the delete actions for target states it no longer declares, so the handler has its connection for them too. Pass the typed connection down to child handlers directly, not the key name.
+
+</Lang>
+
 ### Idempotent actions
 
-Actions should be idempotent — applying the same action multiple times should have the same effect as applying it once:
+Actions should be idempotent — applying the same action multiple times should have the same effect as applying it once<Lang only="rust">: for example `CREATE TABLE IF NOT EXISTS`, `DROP INDEX IF EXISTS` and `INSERT ... ON CONFLICT DO UPDATE` rather than a plain `CREATE TABLE` or `INSERT`, which fail when the object already exists. A sink may see an action again after a failed batch is retried.</Lang><Lang only="python">:</Lang>
+
+<Lang only="python">
 
 ```python
 # Good: Idempotent
@@ -691,9 +1390,15 @@ path.mkdir()  # Fails if exists
 await conn.execute("INSERT ...")  # Fails on duplicate key
 ```
 
+</Lang>
+
 ### Handle multiple previous states
 
 Due to interrupted updates, `prev_possible_records` may contain multiple records. Design your reconciliation logic to handle this:
+
+{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (RowHandler) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Check if ALL previous states match (conservative approach)
@@ -702,6 +1407,35 @@ if not prev_may_be_missing and all(
 ):
     return None  # Safe to skip
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Check if ALL previous states match (conservative approach)
+let unchanged =
+    !prev_may_be_missing && !prev.is_empty() && prev.iter().all(|p| *p == value);
+if unchanged {
+    return Ok(None); // Safe to skip
+}
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
+`cocoindex.connectorkits.statediff` packages this decision. `TrackingRecordTransition(desired, prev, prev_may_be_missing)` holds the inputs of one `reconcile()` call (`desired` is `coco.NON_EXISTENCE` for a removed target state), and `diff(transition)` returns `None` (skip) or a `DiffAction`: `"insert"`, `"upsert"`, `"replace"` or `"delete"`. `"replace"` means a previous record differs from the desired one; `"upsert"` means the records match but the target may be missing. For a target the user may own, wrap records in `MutualTrackingRecord(tracking_record, managed_by)` with `managed_by` `"system"` or `"user"`; `resolve_system_transition(transition)` returns `None` for a user-managed target, so it is left alone.
+
+</Lang>
+
+<Lang only="rust">
+
+`cocoindex::statediff` packages this decision. `TrackingRecordTransition { desired, prev, prev_may_be_missing }` holds the inputs of one `reconcile` call, and `diff(Some(&transition))` returns `None` (skip) or a `DiffAction`: `Insert`, `Upsert`, `Replace` or `Delete`. `Replace` means a previous record differs from the desired one; `Upsert` means the records match but the target may be missing. For a target the user may own, wrap records in `MutualTrackingRecord::new(record, managed_by)` with `ManagedBy::System` or `ManagedBy::User`; `resolve_system_transition(desired, prev, prev_may_be_missing)` returns `None` for a user-managed target, so it is left alone.
+
+</Lang>
+
+For a container with keyed parts (a table's primary key and its columns), `CompositeTrackingRecord` and `diff_composite` return the main action plus one transition per part.
 
 ### Efficient change detection
 
@@ -712,7 +1446,9 @@ Choose tracking records that enable efficient change detection without storing f
 | File content | Content hash (fingerprint) |
 | Database row | Row data hash |
 | Schema/structure | Schema definition |
-| Directory existence | `None` (presence is enough) |
+| Directory existence | <Lang only="python">`None`</Lang><Lang only="rust">`()`</Lang> (presence is enough) |
+
+<Lang only="python">
 
 ### Skip reconciling unchanged values
 
@@ -748,9 +1484,17 @@ The attribute has no effect on a container handler, whose `reconcile()` always r
 
 `reconcile()` must keep its own comparison: it is still called for values that aren't plain data (anything other than `None`, `bool`, `int`, `float`, `str`, `bytes`, and `list` / `tuple` / `dict`-with-`str`-keys of those), unchanged or not.
 
+</Lang>
+
+<RustNote>
+The `TargetHandler` trait has no `tracks_value_fingerprint` flag: `reconcile` runs for every declared target state, so it keeps its own comparison and returns `Ok(None)` for an unchanged value.
+</RustNote>
+
 ### Shared action sinks
 
-If all instances of a handler use the same action logic, create a shared sink. The action function must accept `context_provider` as its first argument:
+If all instances of a handler use the same action logic, create a shared sink.<Lang only="python"> The action function must accept `context_provider` as its first argument:</Lang><Lang only="rust"> Build it once, store it in the handler, and return `self.sink.clone()` from each `reconcile`, as `RowHandler` [above](#step-2-implement-the-handler) does: a clone keeps the sink's identity, so the engine applies the actions of every target state that returned it in one call.</Lang>
+
+<Lang only="python">
 
 ```python
 import cocoindex as coco
@@ -772,9 +1516,13 @@ class _MyHandler(coco.TargetHandler[...]):
         )
 ```
 
+</Lang>
+
+<Lang only="python">
+
 ## Complete example: local file system
 
-Here's a simplified version of the `localfs` connector showing the complete pattern:
+Here's a simplified version of the `localfs` connector showing the complete pattern.
 
 ```python
 from __future__ import annotations
@@ -858,3 +1606,15 @@ See the full implementations in:
 
 - [`cocoindex/connectors/localfs/target.py`](https://github.com/cocoindex-io/cocoindex/blob/main/python/cocoindex/connectors/localfs/_target.py) — File system targets
 - [`cocoindex/connectors/postgres/target.py`](https://github.com/cocoindex-io/cocoindex/blob/main/python/cocoindex/connectors/postgres/_target.py) — PostgreSQL tables and rows
+
+</Lang>
+
+<Lang only="rust">
+
+## Complete examples
+
+- [`rust/sdk/cocoindex/tests/target_state.rs`](https://github.com/cocoindex-io/cocoindex/blob/main/rust/sdk/cocoindex/tests/target_state.rs) — the handler, sink and provider snippets on this page, runnable without an external service: flat targets, containers with `mount_target`, child invalidation, attachments, and the deprecated sink shapes
+- [`rust/sdk/cocoindex/src/resources/fs.rs`](https://github.com/cocoindex-io/cocoindex/blob/main/rust/sdk/cocoindex/src/resources/fs.rs) — `DirTarget`, file system targets
+- [`rust/sdk/cocoindex/src/connectors/valkey.rs`](https://github.com/cocoindex-io/cocoindex/blob/main/rust/sdk/cocoindex/src/connectors/valkey.rs) — a Valkey index (container) and its documents, with `statediff` and `ManagedBy`
+
+</Lang>

@@ -13,7 +13,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use cocoindex::ops::api::{ApiEmbedder, ApiTranscriber, LlmPairResolver};
+use cocoindex::ops::api::{
+    ApiChatClient, ApiEmbedder, ApiTranscriber, ChatMessage, LlmPairResolver,
+};
 use cocoindex::prelude::{FileContentCache, FileLike, FileMetadata, FilePath};
 use cocoindex::{CanonicalSide, Ctx, PairResolver, walk_items};
 use futures::future::join_all;
@@ -629,6 +631,142 @@ async fn llm_pair_resolver_memoizes_decisions() {
     assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
 
+// ---------------------------------------------------------------------------
+// ApiChatClient::extract — a typed, memoized JSON-mode completion
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Person {
+    name: String,
+    age: u32,
+}
+
+#[tokio::test]
+async fn chat_client_extract_deserializes_and_memoizes() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(chat_response(r#"{"name": "Ada", "age": 36}"#))
+        .mount(&server)
+        .await;
+    let client = ApiChatClient::new("fake-model").with_base_url(server.uri());
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = app_in(&tempdir, "chat_extract").await;
+
+    let extract = |text: &'static str| {
+        let client = client.clone();
+        app.update(move |ctx| async move {
+            let messages = [
+                ChatMessage::system("Reply with JSON {name, age}."),
+                ChatMessage::user(text),
+            ];
+            client.extract::<Person>(&ctx, &messages).await
+        })
+    };
+
+    for _ in 0..2 {
+        let person = extract("Ada is 36.").await.unwrap();
+        assert_eq!(
+            person,
+            Person {
+                name: "Ada".into(),
+                age: 36
+            }
+        );
+    }
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "the same conversation is served from the memo store"
+    );
+
+    extract("Ada, 36 years old.").await.unwrap();
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["response_format"]["type"], "json_object");
+}
+
+cocoindex::context_key!(static CHAT: ApiChatClient, detect_change);
+
+static CHAT_BODY_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Reads the chat client from a `detect_change` key and calls nothing, so
+/// only the key's memo identity decides whether the body runs again.
+#[cocoindex::function(memo)]
+async fn uses_chat_client(ctx: &Ctx, text: &str) -> cocoindex::Result<String> {
+    let client = ctx.get_key(&CHAT)?;
+    CHAT_BODY_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok(format!("{}:{text}", client.model()))
+}
+
+/// `ApiChatClient` is a `MemoInput`, so it can sit in a `detect_change` key:
+/// changing the model reruns memoized work, an unchanged client does not.
+#[tokio::test]
+async fn chat_client_in_a_detect_change_key_invalidates_on_model_change() {
+    use std::sync::atomic::Ordering;
+    let tempdir = tempfile::tempdir().unwrap();
+    let run = |model: &'static str| {
+        let db = tempdir.path().join("db");
+        async move {
+            let app = cocoindex::Environment::builder()
+                .db_path(db)
+                .provide_key(&CHAT, ApiChatClient::new(model))
+                .build()
+                .await
+                .unwrap()
+                .app("chat_detect_change")
+                .await
+                .unwrap();
+            app.update(|ctx| async move { uses_chat_client(&ctx, "hi").await })
+                .await
+                .unwrap()
+        }
+    };
+
+    assert_eq!(run("model-a").await, "model-a:hi");
+    assert_eq!(run("model-a").await, "model-a:hi");
+    assert_eq!(
+        CHAT_BODY_CALLS.load(Ordering::SeqCst),
+        1,
+        "unchanged client: memo hit"
+    );
+    assert_eq!(run("model-b").await, "model-b:hi");
+    assert_eq!(
+        CHAT_BODY_CALLS.load(Ordering::SeqCst),
+        2,
+        "a new model reruns the body"
+    );
+}
+
+#[tokio::test]
+async fn chat_client_extract_rejects_an_answer_of_another_shape() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(chat_response(r#"{"name": "Ada"}"#))
+        .mount(&server)
+        .await;
+    let client = ApiChatClient::new("fake-model").with_base_url(server.uri());
+    let err = in_update("chat_extract_bad_shape", move |ctx| async move {
+        client
+            .extract::<Person>(&ctx, &[ChatMessage::user("Ada")])
+            .await
+            .map(|person| person.age)
+    })
+    .await
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("expected JSON"),
+        "unexpected error: {err}"
+    );
+}
+
 /// A rate-limited (429) response is retried, honoring `Retry-After`.
 #[tokio::test]
 async fn api_embedder_retries_rate_limited_requests() {
@@ -708,4 +846,348 @@ async fn api_embedder_orders_batch_results_by_index() {
         .await
         .unwrap();
     assert_eq!(out, vec![vec![1.0], vec![2.0]]);
+}
+
+/// An `/embeddings` server that rejects every request carrying `poison` with
+/// `status` and otherwise answers like [`LengthEmbeddings`].
+struct RejectsPoison(u16);
+
+impl Respond for RejectsPoison {
+    fn respond(&self, req: &Request) -> ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        let has_poison = body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|text| text.as_str() == Some("poison"));
+        if has_poison {
+            ResponseTemplate::new(self.0).set_body_string("input rejected")
+        } else {
+            LengthEmbeddings.respond(req)
+        }
+    }
+}
+
+/// Embed `texts` concurrently in one update and return each text's result as
+/// `Ok(vector)` or `Err(message)`.
+async fn embed_all(
+    embedder: ApiEmbedder,
+    texts: Vec<String>,
+) -> Vec<std::result::Result<Vec<f32>, String>> {
+    in_update("api_embed_all", move |ctx| async move {
+        Ok(
+            join_all(texts.into_iter().map(|text| embedder.embed(&ctx, text)))
+                .await
+                .into_iter()
+                .map(|result| result.map_err(|err| err.to_string()))
+                .collect::<Vec<_>>(),
+        )
+    })
+    .await
+    .unwrap()
+}
+
+fn texts_with_poison_at(poison: usize, len: usize) -> Vec<String> {
+    (0..len)
+        .map(|index| {
+            if index == poison {
+                "poison".to_string()
+            } else {
+                format!("text-{index}")
+            }
+        })
+        .collect()
+}
+
+/// Like Python's `LiteLLMEmbedder._embed`: a request one input makes the
+/// provider reject is halved down to that input, so only its caller fails.
+#[tokio::test]
+async fn api_embedder_isolates_a_rejected_input_by_splitting_the_batch() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(RejectsPoison(400))
+        .mount(&server)
+        .await;
+    let embedder = ApiEmbedder::new("fake-model").with_base_url(server.uri());
+    let texts = texts_with_poison_at(17, 40);
+
+    let results = embed_all(embedder, texts.clone()).await;
+    for (text, result) in texts.iter().zip(&results) {
+        if text == "poison" {
+            let err = result.as_ref().unwrap_err();
+            assert!(err.contains("input rejected"), "{err}");
+        } else {
+            assert_eq!(result.as_ref().unwrap(), &vec![text.len() as f32]);
+        }
+    }
+    let bodies = request_bodies(&server).await;
+    assert!(
+        bodies
+            .iter()
+            .any(|body| input_count(body) == 1 && body["input"][0] == "poison"),
+        "the poison input should end up in a request of its own"
+    );
+}
+
+/// A credentials, permission or unknown-model failure fails every request
+/// alike, so the batch is not split (Python's global litellm errors).
+#[tokio::test]
+async fn api_embedder_does_not_split_on_a_global_failure() {
+    for status in [401, 403, 404] {
+        let Some(server) = mock_server().await else {
+            return;
+        };
+        Mock::given(method("POST"))
+            .and(path("/embeddings"))
+            .respond_with(ResponseTemplate::new(status).set_body_string("no access"))
+            .mount(&server)
+            .await;
+        let embedder = ApiEmbedder::new("fake-model").with_base_url(server.uri());
+        let texts: Vec<String> = (0..20).map(|index| format!("text-{index}")).collect();
+
+        let results = embed_all(embedder, texts).await;
+        assert!(results.iter().all(Result::is_err));
+        let bodies = request_bodies(&server).await;
+        assert_eq!(
+            bodies.iter().map(input_count).sum::<usize>(),
+            20,
+            "status {status}: no input should be sent twice"
+        );
+    }
+}
+
+/// A batch that exhausts its timeout is not split either: each half would
+/// take a fresh timeout against a backend that is already too slow.
+#[tokio::test]
+async fn api_embedder_does_not_split_a_timed_out_batch() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(5))
+                .set_body_json(json!({"data": []})),
+        )
+        .mount(&server)
+        .await;
+    let embedder = ApiEmbedder::new("fake-model")
+        .with_base_url(server.uri())
+        .with_timeout(Duration::from_millis(300));
+    let texts: Vec<String> = (0..10).map(|index| format!("text-{index}")).collect();
+
+    let started = Instant::now();
+    let results = embed_all(embedder, texts).await;
+    assert!(started.elapsed() < Duration::from_secs(4));
+    for result in &results {
+        let err = result.as_ref().unwrap_err();
+        assert!(err.contains("did not complete within"), "{err}");
+    }
+    let bodies = request_bodies(&server).await;
+    assert_eq!(bodies.iter().map(input_count).sum::<usize>(), 10);
+}
+
+/// An undecodable response is split like a rejected request; at size one the
+/// caller sees the decode error.
+#[tokio::test]
+async fn api_embedder_reports_a_malformed_response() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{\"data\": [{\"embed"))
+        .mount(&server)
+        .await;
+    let embedder = ApiEmbedder::new("fake-model").with_base_url(server.uri());
+
+    let results = embed_all(embedder.clone(), vec!["a".into(), "b".into()]).await;
+    for result in &results {
+        let err = result.as_ref().unwrap_err();
+        assert!(err.contains("decode failed"), "{err}");
+    }
+    let err = embedder.embed_batch(vec!["a".into()]).await.unwrap_err();
+    assert!(err.to_string().contains("decode failed"), "{err}");
+}
+
+/// A response with fewer vectors than inputs fails the request with a clear
+/// message instead of misaligning vectors with texts.
+#[tokio::test]
+async fn api_embedder_rejects_a_partial_response() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"index": 0, "embedding": [1.0]}]
+        })))
+        .mount(&server)
+        .await;
+    let embedder = ApiEmbedder::new("fake-model").with_base_url(server.uri());
+
+    let err = embedder
+        .embed_batch(vec!["a".into(), "b".into()])
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("returned 1 vectors for 2 inputs"),
+        "{err}"
+    );
+
+    // Duplicate indices are rejected too.
+    server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"index": 0, "embedding": [1.0]}, {"index": 0, "embedding": [2.0]}]
+        })))
+        .mount(&server)
+        .await;
+    let err = embedder
+        .embed_batch(vec!["a".into(), "b".into()])
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("duplicate or out-of-range"),
+        "{err}"
+    );
+}
+
+/// A server error is retried, and `Retry-After` sets the wait before the
+/// next attempt.
+#[tokio::test]
+async fn api_embedder_waits_for_retry_after_before_retrying() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    struct FailsTwice(AtomicUsize);
+    impl Respond for FailsTwice {
+        fn respond(&self, _: &Request) -> ResponseTemplate {
+            match self.0.fetch_add(1, Ordering::SeqCst) {
+                0 => ResponseTemplate::new(503).insert_header("retry-after", "1"),
+                1 => ResponseTemplate::new(429).insert_header("retry-after", "0"),
+                _ => ResponseTemplate::new(200).set_body_json(json!({
+                    "data": [{"embedding": [3.0]}]
+                })),
+            }
+        }
+    }
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(FailsTwice(AtomicUsize::new(0)))
+        .mount(&server)
+        .await;
+    let embedder = ApiEmbedder::new("fake-model").with_base_url(server.uri());
+
+    let started = Instant::now();
+    let out = embedder.embed_batch(vec!["x".into()]).await.unwrap();
+    assert_eq!(out, vec![vec![3.0]]);
+    assert!(started.elapsed() >= Duration::from_millis(950));
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+}
+
+/// A `Retry-After` beyond the request's timeout fails at once rather than
+/// sleeping past the bound.
+#[tokio::test]
+async fn api_embedder_gives_up_when_retry_after_exceeds_the_timeout() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "3600"))
+        .mount(&server)
+        .await;
+    let embedder = ApiEmbedder::new("fake-model")
+        .with_base_url(server.uri())
+        .with_timeout(Duration::from_secs(5));
+
+    let started = Instant::now();
+    let err = embedder.embed_batch(vec!["x".into()]).await.unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(2), "{err}");
+    assert!(err.to_string().contains("did not complete within"), "{err}");
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+/// A refused connection is retried until the timeout, then reported.
+#[tokio::test]
+async fn api_embedder_retries_a_refused_connection_until_the_timeout() {
+    // Bind and drop a listener: the port is then (almost surely) closed.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let embedder = ApiEmbedder::new("fake-model")
+        .with_base_url(format!("http://127.0.0.1:{port}"))
+        .with_timeout(Duration::from_millis(1500));
+
+    let started = Instant::now();
+    let err = embedder.embed_batch(vec!["x".into()]).await.unwrap_err();
+    let elapsed = started.elapsed();
+    assert!(elapsed >= Duration::from_millis(900), "{elapsed:?}: {err}");
+    assert!(elapsed < Duration::from_secs(4), "{elapsed:?}: {err}");
+    assert!(err.to_string().contains("did not complete within"), "{err}");
+}
+
+/// The API key, timeout and in-flight cap are not part of an embedding's memo
+/// key: rotating the key must not re-embed everything.
+#[tokio::test]
+async fn api_embedder_memo_key_excludes_the_api_key() {
+    let Some(server) = length_embedding_server().await else {
+        return;
+    };
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = app_in(&tempdir, "api_key_rotation").await;
+    let configs = [
+        ApiEmbedder::new("fake-model")
+            .with_base_url(server.uri())
+            .with_api_key("key-one"),
+        ApiEmbedder::new("fake-model")
+            .with_base_url(server.uri())
+            .with_api_key("key-two")
+            .with_timeout(Duration::from_secs(30))
+            .with_max_inflight_requests(2),
+    ];
+    for embedder in configs {
+        app.update(move |ctx| async move {
+            assert_eq!(embedder.embed(&ctx, "hello").await?, vec![5.0]);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "the second update should hit the memo");
+    assert_eq!(
+        requests[0].headers.get("authorization").unwrap(),
+        "Bearer key-one"
+    );
+
+    // The model is part of the key.
+    let other_model = ApiEmbedder::new("other-model").with_base_url(server.uri());
+    app.update(move |ctx| async move {
+        other_model.embed(&ctx, "hello").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[test]
+#[should_panic(expected = "max_inflight_requests must be positive")]
+fn api_embedder_rejects_a_zero_inflight_cap() {
+    let _ = ApiEmbedder::new("fake-model").with_max_inflight_requests(0);
+}
+
+#[test]
+#[should_panic(expected = "timeout must be positive")]
+fn api_embedder_rejects_a_zero_timeout() {
+    let _ = ApiEmbedder::new("fake-model").with_timeout(Duration::ZERO);
 }

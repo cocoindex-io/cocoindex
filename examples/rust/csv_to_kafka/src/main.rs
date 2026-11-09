@@ -9,20 +9,19 @@
 //!   cargo run -- consume               # print all messages currently on the topic
 //!
 //! Incrementality (two layers):
-//!   - `process_csv` is memoized, so unchanged CSV files skip parsing entirely;
+//!   - `process_csv` is memoized, so unchanged CSV files skip parsing entirely
+//!     (each file is its own processing component declaring its rows'
+//!     messages, so a removed file takes its messages with it);
 //!   - the managed `KafkaTopicTarget` only *produces* a message when its value
 //!     changed since the last run, and produces a tombstone (null value) for a
 //!     row that disappeared from the source.
 //!
 //! Parallels the Python example:
 //!   - target            : `kafka::mount_kafka_topic_target` (cf. `mount_kafka_topic_target`)
-//!   - per-file compute  : `#[cocoindex::function(memo)]`    (cf. `@coco.fn(memo=True)`)
-//!   - declare a message : `target.declare_message(key, value)`
-//!
-//! Note: unlike the Python example (`live=True` continuous watch), this runs a
-//! single pass per `index` invocation — the Rust SDK's `fs::walk` is one-shot.
+//!   - source            : `walk_dir(..).live()` + `ctx.mount_each_live` (cf. `localfs.walk_dir(live=True)` + `coco.mount_each`)
+//!   - per-file compute  : `#[cocoindex::function(memo)]` declaring its messages (cf. `@coco.fn(memo=True)`)
+//!   - declare a message : `target.declare_message(key, value)` (cf. `topic_target.declare_target_state`)
 
-use cocoindex::resources::fs::FileEntry;
 use cocoindex::connectors::kafka::{self, KafkaProducer};
 use cocoindex::Environment;
 
@@ -39,23 +38,23 @@ fn topic_name() -> String {
     std::env::var("KAFKA_TOPIC").unwrap_or_else(|_| "cocoindex-csv-rows".to_string())
 }
 
-/// Parse one CSV file into `(message_key, json_value)` pairs. Memoized: a file
-/// whose content is unchanged since the last run is not re-parsed.
-#[cocoindex::function(memo)]
-async fn process_csv(_ctx: &Ctx, file: FileEntry) -> Result<Vec<(String, String)>> {
-    let text = file.content_str()?;
+/// Parse one CSV file and declare one message per row (cf. Python `process_csv`).
+/// Memoized on the file: an unchanged file keeps its messages without re-parsing.
+/// The topic target is one per app, so it is not part of the memo key.
+#[cocoindex::function(memo, memo_key(target = skip))]
+async fn process_csv(ctx: &Ctx, file: &FileEntry, target: &kafka::KafkaTopicTarget) -> Result<()> {
+    let text = file.read_text().await?;
     let mut reader = csv::Reader::from_reader(text.as_bytes());
     let headers = reader
         .headers()
         .map_err(|e| Error::engine(format!("csv headers: {e}")))?
         .clone();
     if headers.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
-    let mut out = Vec::new();
     for record in reader.records() {
         let record = record.map_err(|e| Error::engine(format!("csv record: {e}")))?;
-        let Some(first) = record.get(0).filter(|s| !s.is_empty()) else {
+        let Some(key) = record.get(0).filter(|s| !s.is_empty()) else {
             continue;
         };
         let mut row = serde_json::Map::new();
@@ -65,11 +64,10 @@ async fn process_csv(_ctx: &Ctx, file: FileEntry) -> Result<Vec<(String, String)
                 serde_json::Value::String(field.to_string()),
             );
         }
-        let key = first.to_string();
         let value = serde_json::to_string(&row).map_err(|e| Error::engine(format!("json: {e}")))?;
-        out.push((key, value));
+        target.declare_message(ctx, key, value)?;
     }
-    Ok(out)
+    Ok(())
 }
 
 async fn index(producer: KafkaProducer, topic: String) -> Result<()> {
@@ -94,22 +92,20 @@ async fn index(producer: KafkaProducer, topic: String) -> Result<()> {
                     &PRODUCER,
                     topic,
                     kafka::KafkaTopicOptions::default(),
-                )?;
+                )
+                .await?;
 
-                let files = cocoindex::resources::fs::walk_items("./data", &["**/*.csv"])?;
-                println!("found {} CSV file(s)", files.len());
-
-                let per_file = mount_each!(files, |file| process_csv(ctx, file)).await?;
-
-                let mut declared = 0;
-                for messages in &per_file {
-                    for (key, value) in messages {
-                        target.declare_message(&ctx, key, value)?;
-                        declared += 1;
-                    }
-                }
-                println!("declared {declared} row message(s)");
-                Ok(())
+                // The source supports live watch (cf. Python `localfs.walk_dir(live=True)`).
+                let files = walk_dir("./data")
+                    .path_matcher(PatternFilePathMatcher::include(["**/*.csv"])?)
+                    .live();
+                // One processing component per file: each file's messages sync and
+                // clean up with that file (cf. Python `coco.mount_each(process_csv, files.items(), topic_target)`).
+                ctx.mount_each_live(&"process_csv", files, move |ctx, file: FileEntry| {
+                    let target = target.clone();
+                    async move { process_csv(&ctx, &file, &target).await }
+                })
+                .await
             }
         })
         .await?;

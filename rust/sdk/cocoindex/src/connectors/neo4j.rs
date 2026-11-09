@@ -1,6 +1,7 @@
 //! Neo4j graph target helpers.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -10,10 +11,37 @@ use crate::target_state::{STATIC_ROOT_PROVIDERS, StaticRootProvider};
 
 pub use cypher_graph::{ColumnDef, TableSchema, TableSpec, VectorMetric};
 
+/// Retry policy for a transaction that hits a transient error (a deadlock
+/// between concurrent writers of the same nodes): a handful of attempts,
+/// sub-second backoff. Python's `_TXN_MAX_ATTEMPTS` and
+/// `_TXN_RETRY_*_BACKOFF_SECONDS`.
+const TXN_MAX_ATTEMPTS: u32 = 8;
+const TXN_RETRY_INITIAL_BACKOFF: Duration = Duration::from_millis(50);
+const TXN_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(2);
+
 #[derive(Clone)]
 pub struct Graph {
     db: Arc<neo4rs::Graph>,
     database: Arc<str>,
+}
+
+fn neo4j_error(e: neo4rs::Error) -> Error {
+    Error::engine(format!("neo4j: {e}"))
+}
+
+/// A transaction over the server's memory limit. Neo4j reports it as a
+/// transient error, but retrying the same transaction fails the same way.
+fn is_memory_limit(e: &neo4rs::Error) -> bool {
+    is_transient(e) && matches!(e, neo4rs::Error::Neo4j(err) if err.code().contains("Memory"))
+}
+
+/// A transient error Neo4j expects the client to retry (a deadlock).
+fn is_retryable(e: &neo4rs::Error) -> bool {
+    is_transient(e) && !is_memory_limit(e)
+}
+
+fn is_transient(e: &neo4rs::Error) -> bool {
+    matches!(e, neo4rs::Error::Neo4j(err) if err.kind() == neo4rs::Neo4jErrorKind::Transient)
 }
 
 fn normalize_uri(uri: &str) -> String {
@@ -68,6 +96,21 @@ impl cypher_graph::CypherExecutor for Graph {
         &TABLE_PROVIDER
     }
 
+    /// Python's `validate_label`: constraint and index names join the label
+    /// to a property name with `__`, so a label holding `__` or ending in `_`
+    /// could share a schema object's name with another (`A__x` + `y` vs `A` +
+    /// `x__y`).
+    fn validate_table_name(name: &str, what: &str) -> Result<()> {
+        cypher_graph::validate_ident(name, what)?;
+        if name.contains("__") || name.ends_with('_') {
+            return Err(Error::engine(format!(
+                "Invalid Neo4j {what}: {name:?} must not contain '__' or end with '_': \
+                 constraint and index names join it to a property name with '__'"
+            )));
+        }
+        Ok(())
+    }
+
     async fn execute(&self, cypher: &str) -> Result<()> {
         self.db
             .run_on(&self.database, neo4rs::query(cypher))
@@ -80,15 +123,65 @@ impl cypher_graph::CypherExecutor for Graph {
         cypher: &str,
         params: &cypher_graph::CypherParams,
     ) -> Result<()> {
-        let mut query = neo4rs::query(cypher);
-        for (name, value) in params {
-            query = query.param(name, json_to_bolt(value)?);
-        }
         self.db
-            .run_on(&self.database, query)
+            .run_on(&self.database, bolt_query(cypher, params)?)
             .await
-            .map_err(|e| Error::engine(format!("neo4j: {e}")))
+            .map_err(neo4j_error)
     }
+
+    /// Run `statements` in one transaction, retried on a transient error (a
+    /// deadlock: Neo4j expects the client to retry). A failure rolls the
+    /// transaction back and raises.
+    async fn execute_batch(
+        &self,
+        statements: &[cypher_graph::CypherStatement],
+    ) -> Result<cypher_graph::BatchOutcome> {
+        let queries = statements
+            .iter()
+            .map(|statement| bolt_query(&statement.cypher, &statement.params))
+            .collect::<Result<Vec<_>>>()?;
+        let mut backoff = TXN_RETRY_INITIAL_BACKOFF;
+        let mut attempt = 1;
+        loop {
+            match self.run_in_txn(&queries).await {
+                Ok(()) => return Ok(cypher_graph::BatchOutcome::Applied),
+                Err(e) if is_memory_limit(&e) => {
+                    return Ok(cypher_graph::BatchOutcome::OverMemoryLimit(neo4j_error(e)));
+                }
+                Err(e) if is_retryable(&e) && attempt < TXN_MAX_ATTEMPTS => {
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(TXN_RETRY_MAX_BACKOFF);
+                    attempt += 1;
+                }
+                Err(e) => return Err(neo4j_error(e)),
+            }
+        }
+    }
+}
+
+impl Graph {
+    async fn run_in_txn(
+        &self,
+        queries: &[neo4rs::Query],
+    ) -> std::result::Result<(), neo4rs::Error> {
+        let mut txn = self.db.start_txn_on(self.database.as_ref()).await?;
+        for query in queries {
+            if let Err(e) = txn.run(query.clone()).await {
+                // A rollback failure is reported through the run error.
+                let _ = txn.rollback().await;
+                return Err(e);
+            }
+        }
+        txn.commit().await
+    }
+}
+
+fn bolt_query(cypher: &str, params: &cypher_graph::CypherParams) -> Result<neo4rs::Query> {
+    let mut query = neo4rs::query(cypher);
+    for (name, value) in params {
+        query = query.param(name, json_to_bolt(value)?);
+    }
+    Ok(query)
 }
 
 /// Convert a JSON value to a Bolt parameter value (cf. the Python driver's
@@ -240,6 +333,33 @@ mod tests {
         assert!(matches!(weights.value[1], neo4rs::BoltType::Null(_)));
     }
 
+    #[tokio::test]
+    async fn labels_that_could_share_a_schema_object_name_are_refused() -> Result<()> {
+        // `neo4rs` connects lazily: the names are refused before any I/O.
+        let graph = Graph::connect("bolt://127.0.0.1:1", "neo4j", "x", "neo4j").await?;
+        let dir = tempfile::tempdir().unwrap();
+        let app = Environment::builder()
+            .db_path(dir.path().join(".cocoindex_db"))
+            .provide_key(&GRAPH, graph)
+            .build()
+            .await?
+            .app("Neo4jLabelRules")
+            .await?;
+        for (table, relation) in [("A__b", "R"), ("A_", "R"), ("A", "R__x"), ("A", "R_")] {
+            let err = app
+                .run(move |ctx| async move {
+                    let schema = TableSchema::new([("id", ColumnDef::new("STRING"))], "id")?;
+                    let nodes = declare_table_target(&ctx, &GRAPH, table, schema)?;
+                    declare_relation_target(&ctx, &GRAPH, relation, &nodes, &nodes)?;
+                    Ok(())
+                })
+                .await
+                .expect_err(&format!("{table} / {relation}"));
+            assert!(err.to_string().contains("'__'"), "{err}");
+        }
+        Ok(())
+    }
+
     async fn try_graph() -> Option<Graph> {
         let uri = std::env::var("NEO4J_URI").ok()?;
         let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
@@ -279,7 +399,11 @@ mod tests {
             &params,
         )
         .await?;
-        let found = count(&graph, &format!("MATCH (n:`{label}`) RETURN count(n) AS c")).await?;
+        let found = count(
+            &graph,
+            &format!("MATCH (n:`{label}`) RETURN count(n) AS count"),
+        )
+        .await?;
         cypher_graph::CypherExecutor::execute(
             &graph,
             &format!("MATCH (n:`{label}`) DETACH DELETE n"),

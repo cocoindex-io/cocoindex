@@ -78,6 +78,78 @@ export const programmingGuideGroups: SectionGridGroups = [
   },
 ];
 
+// The same cards for the Rust tree, with Rust wording.
+export const programmingGuideRustGroups: SectionGridGroups = [
+  {
+    label: 'Core building blocks',
+    accent: 'coral',
+    cards: [
+      {
+        href: '/docs/rust/programming_guide/app/',
+        title: 'App',
+        glyph: 'app',
+        body: 'Run your pipeline. An App starts the main function and manages updates and shared resources.',
+      },
+      {
+        href: '/docs/rust/programming_guide/target_state/',
+        title: 'Target state',
+        glyph: 'target',
+        body: 'Describe the output you want, such as a file or database row. CocoIndex keeps that output up to date.',
+      },
+      {
+        href: '/docs/rust/programming_guide/processing_component/',
+        title: 'Processing component',
+        glyph: 'component',
+        body: 'Run one part of a pipeline and own its target states. Learn how to create and identify components.',
+      },
+      {
+        href: '/docs/rust/programming_guide/function/',
+        title: 'Functions',
+        glyph: 'function',
+        body: 'Write processing logic with #[cocoindex::function]. Enable memoization to reuse results when inputs and code stay unchanged.',
+      },
+    ],
+  },
+  {
+    label: 'Resources & runtime',
+    blurb: 'Share resources and respond to source changes.',
+    accent: 'palm',
+    cards: [
+      {
+        href: '/docs/rust/programming_guide/context/',
+        title: 'Context',
+        glyph: 'context',
+        body: 'Share database connections, models, and configuration across processing components.',
+      },
+      {
+        href: '/docs/rust/programming_guide/live_mode/',
+        title: 'Live mode',
+        glyph: 'livemode',
+        body: 'Keep an App running so it processes source changes after the first update.',
+      },
+    ],
+  },
+  {
+    label: 'Storage and SDK',
+    blurb: 'Learn how CocoIndex stores results and organizes its Rust crate.',
+    accent: 'peach',
+    cards: [
+      {
+        href: '/docs/rust/programming_guide/serialization/',
+        title: 'Serialization',
+        glyph: 'serialization',
+        body: 'Store function results for reuse. Learn which traits memoized arguments and return values implement.',
+      },
+      {
+        href: '/docs/rust/programming_guide/sdk_overview/',
+        title: 'SDK overview',
+        glyph: 'sdk',
+        body: 'Find the crate\'s modules, feature flags, and common types. Learn how the async-only API runs on Tokio.',
+      },
+    ],
+  },
+];
+
 export const commonResourcesGroups: SectionGridGroup[] = [
   {
     label: 'Types & schema',
@@ -88,7 +160,7 @@ export const commonResourcesGroups: SectionGridGroup[] = [
         href: '/docs/common_resources/data_types/',
         title: 'Data types',
         glyph: 'types',
-        body: 'Shared models across connectors and ops: FileLike, FilePath, FilePathMatcher, Chunk, and the Embedder protocol.',
+        body: 'Shared models across connectors and ops: FileLike, FilePath, FilePathMatcher, Chunk, and the Embedder interface.',
       },
       {
         href: '/docs/common_resources/vector_schema/',

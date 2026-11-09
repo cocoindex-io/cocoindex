@@ -683,7 +683,7 @@ impl<D: Persist + Clone> UserStateCache<D> {
             Entry::Occupied(mut e) => match e.get() {
                 UserStateEntry::Declared(_) => {
                     already_declared_bail!(
-                        "coco.use_state() key {:?} declared more than once in the same component run",
+                        "use_state key {:?} declared more than once in the same component run",
                         e.key()
                     );
                 }
@@ -710,7 +710,7 @@ impl<D: Persist + Clone> UserStateCache<D> {
             }
             _ => {
                 client_bail!(
-                    "coco.use_state() key {:?} has not been declared via use_state() in this component run",
+                    "use_state key {:?} has not been declared via use_state in this component run",
                     key
                 );
             }
@@ -1717,11 +1717,11 @@ mod tests {
         path: &StablePath,
         cache: UserStateCache<TestData>,
     ) {
-        use crate::state_store::CommitPlan;
+        use crate::state_store::{CommitPlan, TrackingInfoWrite};
 
         let plan_data = cache.into_flush_plan().unwrap();
         let plan = CommitPlan {
-            new_tracking_info: None,
+            tracking_info: TrackingInfoWrite::Delete,
             target_owners_to_upsert: Vec::new(),
             target_owners_to_delete: Vec::new(),
             fn_memo_clear_all_first: false,

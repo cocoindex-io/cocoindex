@@ -51,6 +51,15 @@ pub struct QdrantConnection {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for QdrantConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QdrantConnection")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl QdrantConnection {
     /// Connect to a Qdrant server (gRPC URL, e.g. `http://localhost:6334`)
     /// with the client's default settings. For an API key, TLS or timeouts,
@@ -643,7 +652,34 @@ impl NamedPointVector {
     }
 }
 
-/// Check a sparse vector's own shape: one value per index, no index twice.
+/// Check a dense vector against its field: the declared length, and finite
+/// elements (Qdrant stores a NaN, which then poisons every score it is in).
+fn validate_dense_vector(v: &[f32], size: u64) -> std::result::Result<(), String> {
+    if v.len() as u64 != size {
+        return Err(format!(
+            "has {} elements but the collection expects {size}",
+            v.len()
+        ));
+    }
+    if v.iter().any(|x| !x.is_finite()) {
+        return Err("contains a non-finite (NaN/Inf) element".to_string());
+    }
+    Ok(())
+}
+
+/// Check a multivector: at least one vector, each a valid dense vector.
+fn validate_multivector(vs: &[Vec<f32>], size: u64) -> std::result::Result<(), String> {
+    if vs.is_empty() {
+        return Err("has no vectors".to_string());
+    }
+    for (i, v) in vs.iter().enumerate() {
+        validate_dense_vector(v, size).map_err(|detail| format!("vector {i} {detail}"))?;
+    }
+    Ok(())
+}
+
+/// Check a sparse vector's own shape: one value per index, no index twice,
+/// finite values.
 fn validate_sparse_vector(indices: &[u32], values: &[f32]) -> std::result::Result<(), String> {
     if indices.len() != values.len() {
         return Err(format!(
@@ -651,6 +687,9 @@ fn validate_sparse_vector(indices: &[u32], values: &[f32]) -> std::result::Resul
             indices.len(),
             values.len()
         ));
+    }
+    if values.iter().any(|x| !x.is_finite()) {
+        return Err("contains a non-finite (NaN/Inf) value".to_string());
     }
     let mut seen = std::collections::HashSet::with_capacity(indices.len());
     if let Some(dup) = indices.iter().find(|index| !seen.insert(**index)) {
@@ -661,8 +700,13 @@ fn validate_sparse_vector(indices: &[u32], values: &[f32]) -> std::result::Resul
 
 /// A point declared into a collection: an id, its vector(s), and a JSON payload.
 /// A Qdrant point id — an unsigned integer or a UUID string (Qdrant's two
-/// supported id types). Constructible from `u64`, `String`, or `&str`, so
-/// `declare_point(ctx, 7u64, ..)` and `declare_point(ctx, "uuid", ..)` both work.
+/// supported id types). Constructible from `u64`, `uuid::Uuid`, `String`, or
+/// `&str`, so `declare_point(ctx, 7u64, ..)` and `declare_point(ctx, "uuid", ..)`
+/// both work.
+///
+/// A UUID may be given in any text form Qdrant accepts (upper case, 32-char
+/// hex, URN, braced); it is stored in its canonical hyphenated lower-case form,
+/// so all forms of one UUID name one point and one target state.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum QdrantPointId {
     Num(u64),
@@ -674,18 +718,70 @@ impl From<u64> for QdrantPointId {
         Self::Num(v)
     }
 }
+impl From<uuid::Uuid> for QdrantPointId {
+    fn from(v: uuid::Uuid) -> Self {
+        Self::Uuid(v.hyphenated().to_string())
+    }
+}
 impl From<String> for QdrantPointId {
     fn from(v: String) -> Self {
-        Self::Uuid(v)
+        Self::Uuid(canonical_uuid_text(&v).unwrap_or(v))
     }
 }
 impl From<&str> for QdrantPointId {
     fn from(v: &str) -> Self {
-        Self::Uuid(v.to_string())
+        Self::Uuid(canonical_uuid_text(v).unwrap_or_else(|| v.to_string()))
     }
 }
 
+/// The id Qdrant stores a UUID point under: its hyphenated lower-case form.
+/// `None` when the text is not a UUID.
+fn canonical_uuid_text(text: &str) -> Option<String> {
+    uuid::Uuid::parse_str(text)
+        .ok()
+        .map(|id| id.hyphenated().to_string())
+}
+
+/// Check a payload for values Qdrant cannot store as given: Qdrant keeps
+/// integers as `i64`, and the client turns a larger one into a rounded float.
+fn validate_payload(payload: &Map<String, JsonValue>) -> std::result::Result<(), String> {
+    fn check(path: &str, value: &JsonValue) -> std::result::Result<(), String> {
+        match value {
+            JsonValue::Number(n) if n.as_i64().is_none() && n.is_u64() => Err(format!(
+                "field {path:?} holds the integer {n}, beyond the i64 range Qdrant stores; \
+                 store it as a string or a float"
+            )),
+            JsonValue::Array(items) => items
+                .iter()
+                .enumerate()
+                .try_for_each(|(i, item)| check(&format!("{path}[{i}]"), item)),
+            JsonValue::Object(fields) => fields
+                .iter()
+                .try_for_each(|(k, v)| check(&format!("{path}.{k}"), v)),
+            _ => Ok(()),
+        }
+    }
+    payload.iter().try_for_each(|(k, v)| check(k, v))
+}
+
+const POINT_ID_RULE: &str = "Qdrant point IDs must be an unsigned 64-bit integer or a UUID; see \
+     https://qdrant.tech/documentation/manage-data/points/#point-ids. For a stable ID derived \
+     from an arbitrary string key, use a version-5 UUID, e.g. \
+     uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, format!(\"doc/{key}\").as_bytes()).";
+
 impl QdrantPointId {
+    /// Error for a string id that is not a UUID, at declare time: Qdrant would
+    /// reject it at upsert time with an opaque transport error.
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Num(_) => Ok(()),
+            Self::Uuid(text) if canonical_uuid_text(text).is_some() => Ok(()),
+            Self::Uuid(text) => Err(Error::engine(format!(
+                "Invalid Qdrant point ID {text:?}: strings must be UUIDs. {POINT_ID_RULE}"
+            ))),
+        }
+    }
+
     /// The stable target-state key (a string for both variants, preserving the
     /// full `u64` range without an `i64` round-trip).
     fn stable_key(&self) -> StableKey {
@@ -720,8 +816,19 @@ struct Point {
 }
 
 impl Point {
+    /// Check the point against the collection schema: its vectors' shapes,
+    /// lengths and values, and its payload. Run at declare time, so a bad
+    /// point fails its own declaration rather than the whole batch's write.
+    fn validate(&self, schema: &CollectionSchema) -> Result<()> {
+        self.to_qdrant_vectors(schema)?;
+        validate_payload(&self.payload)
+            .map_err(|detail| Error::engine(format!("qdrant point {}: payload {detail}", self.id)))
+    }
+
     fn to_qdrant_vectors(&self, schema: &CollectionSchema) -> Result<Vectors> {
         let vector_fields = schema.vector_fields();
+        let invalid =
+            |detail: String| Error::engine(format!("qdrant point {}: vector {detail}", self.id));
         match (&vector_fields, &self.vector) {
             (VectorFields::Single(def), PointVector::Single(v)) => {
                 if def.is_multivector() {
@@ -730,6 +837,7 @@ impl Point {
                         self.id
                     )));
                 }
+                validate_dense_vector(v, def.vector_size()).map_err(invalid)?;
                 Ok(Vector::new_dense(v.clone()).into())
             }
             (VectorFields::Single(def), PointVector::Multi(v)) => {
@@ -739,6 +847,7 @@ impl Point {
                         self.id
                     )));
                 }
+                validate_multivector(v, def.vector_size()).map_err(invalid)?;
                 Ok(Vector::new_multi(v.clone()).into())
             }
             (VectorFields::Single(_), PointVector::Named(_)) => Err(Error::engine(format!(
@@ -761,11 +870,25 @@ impl Point {
 
                 let mut named = HashMap::new();
                 for (name, point_vector) in point_vectors {
+                    let field_invalid = |detail: String| {
+                        Error::engine(format!(
+                            "qdrant point {}: vector field {:?} {detail}",
+                            self.id, name
+                        ))
+                    };
                     let shape_matches = if let Some(def) = vectors.get(name) {
                         match point_vector {
-                            NamedPointVector::Single(_) => !def.is_multivector(),
-                            NamedPointVector::Multi(_) => def.is_multivector(),
-                            NamedPointVector::Sparse { .. } => false,
+                            NamedPointVector::Single(v) if !def.is_multivector() => {
+                                validate_dense_vector(v, def.vector_size())
+                                    .map_err(field_invalid)?;
+                                true
+                            }
+                            NamedPointVector::Multi(vs) if def.is_multivector() => {
+                                validate_multivector(vs, def.vector_size())
+                                    .map_err(field_invalid)?;
+                                true
+                            }
+                            _ => false,
                         }
                     } else if schema.sparse_vectors.contains_key(name) {
                         match point_vector {
@@ -813,10 +936,17 @@ impl Point {
 }
 
 /// A declarative Qdrant collection target. See the [module docs](self).
-#[derive(Clone)]
+///
+/// As a `mount_each!` / `use_mount!` or memoized function argument it
+/// fingerprints by its stable key, the connection key and collection name;
+/// the schema and runtime provider are not part of the identity.
+#[derive(Clone, Serialize)]
 pub struct CollectionTarget {
+    conn_key: Arc<str>,
     collection_name: Arc<str>,
+    #[serde(skip)]
     schema: CollectionSchema,
+    #[serde(skip)]
     points: TargetStateProvider<Point>,
 }
 
@@ -851,6 +981,7 @@ pub async fn mount_collection_target_with_options(
     let schema = ts.value().schema.clone();
     let points = mount_target::<CollectionSpec, Point>(ctx, ts).await?;
     Ok(CollectionTarget {
+        conn_key: Arc::from(conn.name()),
         collection_name: Arc::from(name),
         schema,
         points,
@@ -859,8 +990,8 @@ pub async fn mount_collection_target_with_options(
 
 /// Build a composable [`TargetState`] for a Qdrant collection (the spec
 /// constructor). Pass it to the generic
-/// [`mount_target`](crate::target_state::mount_target) /
-/// [`declare_target_state_with_child`](crate::target_state::declare_target_state_with_child),
+/// [`mount_target`] /
+/// [`declare_target_state_with_child`],
 /// or use [`declare_collection_target`]/[`mount_collection_target`].
 pub fn collection_target(
     ctx: &Ctx,
@@ -934,6 +1065,7 @@ pub fn declare_collection_target_with_options(
     let schema = ts.value().schema.clone();
     let points = declare_target_state_with_child::<CollectionSpec, Point>(ctx, ts)?;
     Ok(CollectionTarget {
+        conn_key: Arc::from(conn.name()),
         collection_name: Arc::from(name),
         schema,
         points,
@@ -954,13 +1086,14 @@ impl CollectionTarget {
         payload: Map<String, JsonValue>,
     ) -> Result<()> {
         let id = id.into();
+        id.validate()?;
         let key = id.stable_key();
         let point = Point {
             id,
             vector: PointVector::Single(vector),
             payload,
         };
-        point.to_qdrant_vectors(&self.schema)?;
+        point.validate(&self.schema)?;
         declare_target_state(ctx, self.points.target_state(key, point))
     }
 
@@ -975,13 +1108,14 @@ impl CollectionTarget {
         payload: Map<String, JsonValue>,
     ) -> Result<()> {
         let id = id.into();
+        id.validate()?;
         let key = id.stable_key();
         let point = Point {
             id,
             vector: PointVector::Multi(vectors),
             payload,
         };
-        point.to_qdrant_vectors(&self.schema)?;
+        point.validate(&self.schema)?;
         declare_target_state(ctx, self.points.target_state(key, point))
     }
 
@@ -1000,6 +1134,7 @@ impl CollectionTarget {
         K: Into<String>,
     {
         let id = id.into();
+        id.validate()?;
         let key = id.stable_key();
         let point = Point {
             id,
@@ -1011,7 +1146,7 @@ impl CollectionTarget {
             ),
             payload,
         };
-        point.to_qdrant_vectors(&self.schema)?;
+        point.validate(&self.schema)?;
         declare_target_state(ctx, self.points.target_state(key, point))
     }
 }
@@ -1319,10 +1454,11 @@ impl TargetHandler<Point> for PointHandler {
 fn point_id(key: &StableKey) -> Result<QdrantPointId> {
     match key {
         // A numeric string is a `u64` id; any other string is treated as a UUID
-        // id (Qdrant validates the UUID format at upsert time).
+        // id. A key from before point ids were canonicalized (e.g. an upper-case
+        // UUID) maps to the canonical id, so it names the same point.
         StableKey::Str(s) => Ok(match s.parse::<u64>() {
             Ok(n) => QdrantPointId::Num(n),
-            Err(_) => QdrantPointId::Uuid(s.to_string()),
+            Err(_) => QdrantPointId::from(s.as_ref()),
         }),
         StableKey::Int(i) => u64::try_from(*i)
             .map(QdrantPointId::Num)
@@ -1340,6 +1476,29 @@ fn point_fingerprint(point: &Point) -> Result<String> {
     Ok(format!("{fp:?}"))
 }
 
+/// The points a batch upserts and the ids it deletes. A key from before point
+/// ids were canonicalized (e.g. an upper-case UUID) names the same point as its
+/// canonical key upserted in the same batch, so deleting it would remove the
+/// point just written: such a delete is dropped.
+fn split_point_actions(
+    actions: Vec<TargetAction<PointAction>>,
+) -> (Vec<Point>, Vec<QdrantPointId>) {
+    let mut upserts: Vec<Point> = Vec::new();
+    let mut deletes: Vec<QdrantPointId> = Vec::new();
+    for action in actions {
+        match action {
+            TargetAction::Create(a) | TargetAction::Update(a) => {
+                if let Some(point) = a.point {
+                    upserts.push(point);
+                }
+            }
+            TargetAction::Delete(a) => deletes.push(a.id),
+        }
+    }
+    deletes.retain(|id| !upserts.iter().any(|point| point.id == *id));
+    (upserts, deletes)
+}
+
 fn point_sink(
     conn_key: String,
     collection_name: String,
@@ -1352,25 +1511,21 @@ fn point_sink(
             let schema = schema.clone();
             async move {
                 let client = resolve_client(&host_ctx, &conn_key)?;
+                let (upserted, deleted) = split_point_actions(actions);
                 let mut upserts: Vec<PointStruct> = Vec::new();
-                let mut deletes: Vec<qdrant_client::qdrant::PointId> = Vec::new();
-                for action in actions {
-                    match action {
-                        TargetAction::Create(a) | TargetAction::Update(a) => {
-                            if let Some(point) = a.point {
-                                let id = point.id.to_qdrant();
-                                let vectors = point.to_qdrant_vectors(&schema)?;
-                                let payload: Payload = point.payload.into();
-                                let struct_ = PointStruct::new(id, vectors, payload);
-                                upserts.push(struct_);
-                            }
-                        }
-                        TargetAction::Delete(a) => deletes.push(a.id.to_qdrant()),
-                    }
+                for point in upserted {
+                    let id = point.id.to_qdrant();
+                    let vectors = point.to_qdrant_vectors(&schema)?;
+                    let payload: Payload = point.payload.into();
+                    upserts.push(PointStruct::new(id, vectors, payload));
                 }
+                let deletes: Vec<qdrant_client::qdrant::PointId> =
+                    deleted.iter().map(QdrantPointId::to_qdrant).collect();
                 if !upserts.is_empty() {
                     client
-                        .upsert_points(UpsertPointsBuilder::new(collection_name.clone(), upserts))
+                        .upsert_points(
+                            UpsertPointsBuilder::new(collection_name.clone(), upserts).wait(true),
+                        )
                         .await
                         .map_err(|e| Error::engine(format!("qdrant upsert_points: {e}")))?;
                 }
@@ -1378,7 +1533,8 @@ fn point_sink(
                     client
                         .delete_points(
                             DeletePointsBuilder::new(collection_name.clone())
-                                .points(PointsIdsList { ids: deletes }),
+                                .points(PointsIdsList { ids: deletes })
+                                .wait(true),
                         )
                         .await
                         .map_err(|e| Error::engine(format!("qdrant delete_points: {e}")))?;
@@ -1532,12 +1688,72 @@ mod tests {
             QdrantPointId::Num(42)
         );
         assert_eq!(point_id(&StableKey::Int(7)).unwrap(), QdrantPointId::Num(7));
-        // A non-numeric string is taken as a UUID id (Qdrant validates later).
+        // A non-numeric string is taken as a UUID id, in its canonical form.
         assert_eq!(
-            point_id(&StableKey::Str(Arc::from("9b2e...-uuid"))).unwrap(),
-            QdrantPointId::Uuid("9b2e...-uuid".to_string())
+            point_id(&StableKey::Str(Arc::from(
+                "9B2E6F1A-0000-4000-8000-000000000001"
+            )))
+            .unwrap(),
+            QdrantPointId::Uuid("9b2e6f1a-0000-4000-8000-000000000001".to_string())
         );
         assert!(point_id(&StableKey::Int(-1)).is_err());
+    }
+
+    #[test]
+    fn uuid_point_ids_are_canonicalized_and_validated() {
+        let canonical = "9b2e6f1a-0000-4000-8000-000000000001";
+        for form in [
+            "9b2e6f1a-0000-4000-8000-000000000001",
+            "9B2E6F1A-0000-4000-8000-000000000001",
+            "9b2e6f1a000040008000000000000001",
+            "urn:uuid:9b2e6f1a-0000-4000-8000-000000000001",
+            "{9b2e6f1a-0000-4000-8000-000000000001}",
+        ] {
+            let id = QdrantPointId::from(form);
+            assert_eq!(id, QdrantPointId::Uuid(canonical.to_string()), "{form}");
+            assert_eq!(id.stable_key(), StableKey::Str(Arc::from(canonical)));
+            assert!(id.validate().is_ok());
+        }
+        assert_eq!(
+            QdrantPointId::from(uuid::Uuid::parse_str(canonical).unwrap()),
+            QdrantPointId::Uuid(canonical.to_string())
+        );
+        assert!(QdrantPointId::from(7u64).validate().is_ok());
+        let err = QdrantPointId::from("doc-1")
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("strings must be UUIDs"), "{err}");
+        assert!(err.contains("new_v5"), "{err}");
+    }
+
+    #[test]
+    fn a_delete_of_a_point_upserted_under_its_canonical_id_is_dropped() {
+        let point = |id: &str| Point {
+            id: QdrantPointId::from(id),
+            vector: PointVector::Single(vec![0.1, 0.2]),
+            payload: Map::new(),
+        };
+        let a = "9b2e6f1a-0000-4000-8000-000000000001";
+        let b = "9b2e6f1a-0000-4000-8000-000000000002";
+        let actions = vec![
+            TargetAction::Update(PointAction {
+                id: QdrantPointId::from(a),
+                point: Some(point(a)),
+            }),
+            // The pre-canonicalization key of the same point.
+            TargetAction::Delete(PointAction {
+                id: point_id(&StableKey::Str(Arc::from(a.to_uppercase()))).unwrap(),
+                point: None,
+            }),
+            TargetAction::Delete(PointAction {
+                id: QdrantPointId::from(b),
+                point: None,
+            }),
+        ];
+        let (upserts, deletes) = split_point_actions(actions);
+        assert_eq!(upserts.len(), 1);
+        assert_eq!(deletes, vec![QdrantPointId::Uuid(b.to_string())]);
     }
 
     #[test]

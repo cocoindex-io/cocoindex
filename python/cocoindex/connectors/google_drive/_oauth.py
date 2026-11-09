@@ -76,6 +76,9 @@ OWN_CLIENT_DOCS = (
     "https://cocoindex.io/docs/connectors/google_drive#setting-up-the-oauth-client"
 )
 
+# The privacy policy's section on Google user data, which the sign-in links.
+PRIVACY_POLICY = "https://cocoindex.io/privacy-policy/#google-user-data"
+
 
 class SignInError(Exception):
     """A sign-in, sign-out or token refresh failed; the message says what to do."""
@@ -384,7 +387,7 @@ def _revoke(client: httpx.Client, token: str) -> bool:
 
 
 def _say(message: str) -> None:
-    """Print a line the person must act on, flushed: the flow is blocking while they read it."""
+    """Print what the person reads, flushed: the flow is blocking while they read it."""
     print(message, flush=True)
 
 
@@ -519,6 +522,16 @@ def _await_redirect(
             continue
         return params
     raise SignInError("The sign-in timed out before Google redirected back.")
+
+
+def _data_notice(token_path: Path) -> str:
+    """What the sign-in asks Google for, and where it keeps what Google returns."""
+    return (
+        "CocoIndex asks Google for read-only access to your Google Drive.\n"
+        f"The sign-in is stored at {token_path}, on this computer only; "
+        "nothing is sent to CocoIndex.\n"
+        f"How CocoIndex handles Google user data: {PRIVACY_POLICY}\n"
+    )
 
 
 def _instructions(url: str, port: int, browser_opened: bool) -> str:
@@ -671,6 +684,10 @@ def run_sign_in(
     the person reads, and ``browser_available`` to force the no-browser path.
     """
     client_cfg = _resolve_client(client_secrets_path)
+    # Said before the browser opens or the link prints: Google's verification
+    # of a restricted scope wants the app itself to disclose how it uses the
+    # data, not only the privacy policy.
+    say(_data_notice(token_path))
     if browser_available is None:
         browser_available = has_browser()
     owned = http_client is None
@@ -722,10 +739,10 @@ class UserAccount:
     """A personal Google account signed in with OAuth, kept in a token file.
 
     Experimental. ``sign_in`` is the interactive step; run it once, outside any
-    CocoIndex run (``cocoindex google-drive sign-in`` does the same from the
-    shell). A run then passes ``UserAccount()`` to ``GoogleDriveSource``, which
-    reads the file and raises ``SignInRequiredError`` when it holds no usable
-    sign-in.
+    CocoIndex run (``cocoindex auth sign-in google-drive`` does the same from
+    the shell). A run then passes ``UserAccount()`` to ``GoogleDriveSource``,
+    which reads the file and raises ``SignInRequiredError`` when it holds no
+    usable sign-in.
     """
 
     def __init__(self, token_path: str | os.PathLike[str] | None = None) -> None:
@@ -797,7 +814,8 @@ class UserAccount:
         if tokens is None:
             raise SignInRequiredError(
                 f"No usable Google sign-in is stored at {self._token_path}. "
-                "Sign in once with `cocoindex google-drive sign-in <client_secret.json>` "
+                "Sign in once with "
+                "`cocoindex auth sign-in google-drive <client_secret.json>` "
                 "or `UserAccount().sign_in(...)`."
             )
         return tokens

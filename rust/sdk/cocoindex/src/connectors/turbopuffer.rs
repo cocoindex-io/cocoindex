@@ -29,6 +29,7 @@ use crate::target_state::{
 // Connection
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 struct ConnInner {
     http: reqwest::Client,
     base_url: String,
@@ -40,6 +41,15 @@ struct ConnInner {
 #[derive(Clone)]
 pub struct TurbopufferConnection {
     inner: Arc<ConnInner>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for TurbopufferConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TurbopufferConnection")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl TurbopufferConnection {
@@ -67,9 +77,7 @@ impl TurbopufferConnection {
     /// for pointing at a mock server in tests.
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
-        let inner = Arc::get_mut(&mut self.inner)
-            .expect("with_base_url must be called before the connection is shared");
-        inner.base_url = base_url;
+        Arc::make_mut(&mut self.inner).base_url = base_url;
         self
     }
 
@@ -431,19 +439,84 @@ enum RowVector {
     Named(BTreeMap<String, Vec<f32>>),
 }
 
+/// A Turbopuffer row id: a string or an unsigned integer, the two id types
+/// Turbopuffer stores. Constructible from `u64`, `String` or `&str`, so
+/// `declare_row(ctx, 7u64, ..)` and `declare_row(ctx, "doc-1", ..)` both work.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum RowId {
+    Str(String),
+    Int(u64),
+}
+
+impl From<u64> for RowId {
+    fn from(v: u64) -> Self {
+        Self::Int(v)
+    }
+}
+impl From<String> for RowId {
+    fn from(v: String) -> Self {
+        Self::Str(v)
+    }
+}
+impl From<&str> for RowId {
+    fn from(v: &str) -> Self {
+        Self::Str(v.to_string())
+    }
+}
+
+impl RowId {
+    /// The stable target-state key: the string itself, or the integer.
+    fn stable_key(&self) -> Result<StableKey> {
+        match self {
+            Self::Str(s) => Ok(StableKey::Str(Arc::from(s.as_str()))),
+            Self::Int(n) => i64::try_from(*n).map(StableKey::Int).map_err(|_| {
+                Error::engine(format!(
+                    "turbopuffer row id {n} is out of range: an integer id must fit in an i64"
+                ))
+            }),
+        }
+    }
+
+    fn to_json(&self) -> JsonValue {
+        match self {
+            Self::Str(s) => JsonValue::from(s.as_str()),
+            Self::Int(n) => JsonValue::from(*n),
+        }
+    }
+}
+
+/// A string id is quoted, an integer id is bare.
+impl std::fmt::Display for RowId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Str(s) => write!(f, "{s:?}"),
+            Self::Int(n) => write!(f, "{n}"),
+        }
+    }
+}
+
 /// A row declared into a namespace: id + vector(s) + attribute fields.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 struct Row {
-    id: String,
+    id: RowId,
     vector: RowVector,
     attributes: Map<String, JsonValue>,
 }
 
-/// Error if any element of a vector is non-finite (NaN/±Inf).
-fn reject_nonfinite_vector(id: &str, field: &str, v: &[f32]) -> Result<()> {
+/// Error if a vector does not have its field's length, or if any element is
+/// non-finite (NaN/±Inf).
+fn validate_vector(id: &RowId, field: &str, v: &[f32], def: &VectorDef) -> Result<()> {
+    if v.len() != def.schema.size {
+        return Err(Error::engine(format!(
+            "turbopuffer row {id}: vector field {field:?} has {} elements but the schema expects {}",
+            v.len(),
+            def.schema.size
+        )));
+    }
     if v.iter().any(|x| !x.is_finite()) {
         return Err(Error::engine(format!(
-            "turbopuffer row {id:?}: vector field {field:?} contains a non-finite (NaN/Inf) element"
+            "turbopuffer row {id}: vector field {field:?} contains a non-finite (NaN/Inf) element"
         )));
     }
     Ok(())
@@ -453,28 +526,22 @@ impl Row {
     /// The wire shape Turbopuffer expects: `{id, vector, ...attributes}` or
     /// `{id, text_vector, image_vector, ...attributes}`.
     fn to_upsert(&self, schema: &NamespaceSchema) -> Result<JsonValue> {
-        // Reject non-finite vector elements: `json!` turns NaN/±Inf into JSON
+        // Check each vector against its field: a wrong length fails only this
+        // row here, not the whole write; and `json!` turns NaN/±Inf into JSON
         // null, silently corrupting the embedding sent to Turbopuffer.
-        match &self.vector {
-            RowVector::Single(v) => reject_nonfinite_vector(&self.id, "vector", v)?,
-            RowVector::Named(m) => {
-                for (name, v) in m {
-                    reject_nonfinite_vector(&self.id, name, v)?;
-                }
-            }
-        }
         let mut obj = Map::new();
-        obj.insert("id".into(), JsonValue::from(self.id.clone()));
+        obj.insert("id".into(), self.id.to_json());
 
         let vector_fields = schema.vector_fields();
         let reserved = match (&vector_fields, &self.vector) {
-            (VectorFields::Single(_), RowVector::Single(vector)) => {
+            (VectorFields::Single(def), RowVector::Single(vector)) => {
+                validate_vector(&self.id, DEFAULT_VECTOR_FIELD, vector, def)?;
                 obj.insert(DEFAULT_VECTOR_FIELD.into(), json!(vector));
                 schema.vector_field_names()
             }
             (VectorFields::Single(_), RowVector::Named(_)) => {
                 return Err(Error::engine(format!(
-                    "turbopuffer row {:?}: schema declares a single unnamed vector but row uses named vectors",
+                    "turbopuffer row {}: schema declares a single unnamed vector but row uses named vectors",
                     self.id
                 )));
             }
@@ -486,17 +553,18 @@ impl Row {
                     .collect();
                 if !missing.is_empty() {
                     return Err(Error::engine(format!(
-                        "turbopuffer row {:?}: missing vector fields {:?}",
+                        "turbopuffer row {}: missing vector fields {:?}",
                         self.id, missing
                     )));
                 }
                 for (name, vector) in row_vectors {
-                    if !vectors.contains_key(name) {
+                    let Some(def) = vectors.get(name) else {
                         return Err(Error::engine(format!(
-                            "turbopuffer row {:?}: unexpected vector field {:?}",
+                            "turbopuffer row {}: unexpected vector field {:?}",
                             self.id, name
                         )));
-                    }
+                    };
+                    validate_vector(&self.id, name, vector, def)?;
                     obj.insert(name.clone(), json!(vector));
                 }
                 schema.vector_field_names()
@@ -504,7 +572,7 @@ impl Row {
             (VectorFields::Named(vectors), RowVector::Single(_)) => {
                 let names: Vec<_> = vectors.keys().cloned().collect();
                 return Err(Error::engine(format!(
-                    "turbopuffer row {:?}: schema declares named vectors {:?} but row uses a single vector",
+                    "turbopuffer row {}: schema declares named vectors {:?} but row uses a single vector",
                     self.id, names
                 )));
             }
@@ -512,14 +580,14 @@ impl Row {
 
         if self.attributes.contains_key("id") {
             return Err(Error::engine(format!(
-                "turbopuffer row {:?}: attribute name \"id\" is reserved",
+                "turbopuffer row {}: attribute name \"id\" is reserved",
                 self.id
             )));
         }
         for (k, v) in &self.attributes {
             if reserved.iter().any(|field| field == k) {
                 return Err(Error::engine(format!(
-                    "turbopuffer row {:?}: attribute name {:?} is reserved",
+                    "turbopuffer row {}: attribute name {:?} is reserved",
                     self.id, k
                 )));
             }
@@ -530,10 +598,17 @@ impl Row {
 }
 
 /// A declarative Turbopuffer namespace target. See the [module docs](self).
-#[derive(Clone)]
+///
+/// As a `mount_each!` / `use_mount!` or memoized function argument it
+/// fingerprints by its stable key, the connection key and namespace; the
+/// schema and runtime provider are not part of the identity.
+#[derive(Clone, Serialize)]
 pub struct NamespaceTarget {
+    conn_key: Arc<str>,
     namespace: Arc<str>,
+    #[serde(skip)]
     schema: NamespaceSchema,
+    #[serde(skip)]
     rows: TargetStateProvider<Row>,
 }
 
@@ -567,6 +642,7 @@ pub async fn mount_namespace_target_with_options(
     let schema = ts.value().schema.clone();
     let rows = mount_target::<NamespaceSpec, Row>(ctx, ts).await?;
     Ok(NamespaceTarget {
+        conn_key: Arc::from(conn.name()),
         namespace: Arc::from(name),
         schema,
         rows,
@@ -575,8 +651,8 @@ pub async fn mount_namespace_target_with_options(
 
 /// Build a composable [`TargetState`] for a Turbopuffer namespace (the spec
 /// constructor). Pass it to the generic
-/// [`mount_target`](crate::target_state::mount_target) /
-/// [`declare_target_state_with_child`](crate::target_state::declare_target_state_with_child),
+/// [`mount_target`] /
+/// [`declare_target_state_with_child`],
 /// or use [`declare_namespace_target`]/[`mount_namespace_target`].
 pub fn namespace_target(
     ctx: &Ctx,
@@ -651,6 +727,7 @@ pub fn declare_namespace_target_with_options(
     let schema = ts.value().schema.clone();
     let rows = declare_target_state_with_child::<NamespaceSpec, Row>(ctx, ts)?;
     Ok(NamespaceTarget {
+        conn_key: Arc::from(conn.name()),
         namespace: Arc::from(name),
         schema,
         rows,
@@ -663,28 +740,30 @@ impl NamespaceTarget {
     }
 
     /// Declare a row (id + vector + attributes) to upsert into the namespace.
+    /// The id is a string or an unsigned integer (see [`RowId`]).
     pub fn declare_row(
         &self,
         ctx: &Ctx,
-        id: impl Into<String>,
+        id: impl Into<RowId>,
         vector: Vec<f32>,
         attributes: Map<String, JsonValue>,
     ) -> Result<()> {
         let id = id.into();
+        let key = id.stable_key()?;
         let row = Row {
-            id: id.clone(),
+            id,
             vector: RowVector::Single(vector),
             attributes,
         };
         row.to_upsert(&self.schema)?;
-        declare_target_state(ctx, self.rows.target_state(id, row))
+        declare_target_state(ctx, self.rows.target_state(key, row))
     }
 
     /// Declare a row for a named-vector namespace.
     pub fn declare_named_row<I, K>(
         &self,
         ctx: &Ctx,
-        id: impl Into<String>,
+        id: impl Into<RowId>,
         vectors: I,
         attributes: Map<String, JsonValue>,
     ) -> Result<()>
@@ -693,8 +772,9 @@ impl NamespaceTarget {
         K: Into<String>,
     {
         let id = id.into();
+        let key = id.stable_key()?;
         let row = Row {
-            id: id.clone(),
+            id,
             vector: RowVector::Named(
                 vectors
                     .into_iter()
@@ -704,7 +784,7 @@ impl NamespaceTarget {
             attributes,
         };
         row.to_upsert(&self.schema)?;
-        declare_target_state(ctx, self.rows.target_state(id, row))
+        declare_target_state(ctx, self.rows.target_state(key, row))
     }
 }
 
@@ -921,7 +1001,7 @@ fn namespace_sink() -> TargetActionSink<NamespaceAction> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RowAction {
-    id: String,
+    id: RowId,
     row: Option<Row>,
 }
 
@@ -979,10 +1059,12 @@ impl TargetHandler<Row> for RowHandler {
     }
 }
 
-fn row_id(key: &StableKey) -> Result<String> {
+fn row_id(key: &StableKey) -> Result<RowId> {
     match key {
-        StableKey::Str(s) | StableKey::Symbol(s) => Ok(s.to_string()),
-        StableKey::Int(i) => Ok(i.to_string()),
+        StableKey::Str(s) | StableKey::Symbol(s) => Ok(RowId::Str(s.to_string())),
+        StableKey::Int(i) => u64::try_from(*i)
+            .map(RowId::Int)
+            .map_err(|_| Error::engine(format!("negative turbopuffer row id {i}"))),
         other => Err(Error::engine(format!(
             "unsupported turbopuffer row key: {other:?}"
         ))),
@@ -1016,7 +1098,7 @@ fn row_sink(
                                 upserts.push(row.to_upsert(&schema)?);
                             }
                         }
-                        TargetAction::Delete(a) => deletes.push(JsonValue::from(a.id)),
+                        TargetAction::Delete(a) => deletes.push(a.id.to_json()),
                     }
                 }
                 if upserts.is_empty() && deletes.is_empty() {
@@ -1341,6 +1423,34 @@ mod tests {
         row2.vector = RowVector::Single(vec![0.1, 0.3]);
         assert_eq!(row_fingerprint(&row), row_fingerprint(&row.clone()));
         assert_ne!(row_fingerprint(&row), row_fingerprint(&row2));
+    }
+
+    #[test]
+    fn integer_row_ids_round_trip_as_numbers() {
+        let schema = NamespaceSchema::new(2, DistanceMetric::CosineDistance);
+        let row = Row {
+            id: 7u64.into(),
+            vector: RowVector::Single(vec![1.0, 0.0]),
+            attributes: Map::new(),
+        };
+        assert_eq!(
+            row.to_upsert(&schema).unwrap(),
+            json!({ "id": 7, "vector": [1.0, 0.0] })
+        );
+        assert_eq!(RowId::from(7u64).stable_key().unwrap(), StableKey::Int(7));
+        assert_eq!(row_id(&StableKey::Int(7)).unwrap(), RowId::Int(7));
+        assert_eq!(
+            row_id(&StableKey::Str(Arc::from("doc-1"))).unwrap(),
+            RowId::Str("doc-1".to_string())
+        );
+        assert_eq!(
+            RowId::from("doc-1").stable_key().unwrap(),
+            StableKey::Str(Arc::from("doc-1"))
+        );
+        assert!(row_id(&StableKey::Int(-1)).is_err());
+        assert!(RowId::from(u64::MAX).stable_key().is_err());
+        assert_eq!(RowId::from(7u64).to_string(), "7");
+        assert_eq!(RowId::from("a").to_string(), "\"a\"");
     }
 
     #[test]

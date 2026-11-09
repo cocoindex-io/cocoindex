@@ -718,6 +718,51 @@ def test_live_component_incremental_delete_direct() -> None:
     assert "b" not in GlobalDictTarget.store.data
 
 
+class _CreateThenDeleteAtOnceLiveComponent:
+    """Issues an update and a delete of the same new child without awaiting
+    the update first, for many children."""
+
+    async def process(self) -> None:
+        pass
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        handles = []
+        for i in range(50):
+            key = f"tmp{i}"
+            handles.append(
+                await operator.update(
+                    coco.component_subpath(key), _declare_item, key, i
+                )
+            )
+            handles.append(await operator.delete(coco.component_subpath(key)))
+        for handle in handles:
+            await handle.ready()
+        await operator.mark_ready()
+
+
+def test_live_component_delete_right_after_update_leaves_nothing() -> None:
+    """A delete issued while the same child's update is already running wins:
+    the update's target state does not survive it."""
+    GlobalDictTarget.store.clear()
+
+    async def _main() -> None:
+        await coco.mount(
+            coco.component_subpath("live"), _CreateThenDeleteAtOnceLiveComponent
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_live_delete_right_after_update", environment=coco_env
+        ),
+        _main,
+    )
+    app.update_blocking(live=True)
+
+    survivors = [k for k in GlobalDictTarget.store.data if str(k).startswith("tmp")]
+    assert survivors == []
+
+
 class _DeleteOnRequestLiveComponent:
     """Mounts a child per source key; deletes child "b" through
     operator.delete() when `delete_b` is set."""

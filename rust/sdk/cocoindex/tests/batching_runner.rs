@@ -6,18 +6,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
+use cocoindex::testing::TestEnv;
 use cocoindex::{App, Batched, Ctx, Error, GPU, GPURunner, Result, configure_gpu_pool};
 use tokio::sync::Notify;
 use tokio::time::sleep;
 
-async fn temp_app(name: &str) -> (App, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let app = App::builder(name)
-        .db_path(dir.path().join("lmdb"))
-        .build()
-        .await
-        .unwrap();
-    (app, dir)
+async fn temp_app(name: &str) -> (App, TestEnv) {
+    let env = TestEnv::new().await.unwrap();
+    let app = env.app(name).await.unwrap();
+    (app, env)
 }
 
 /// The GPU pool is process-wide, so tests that configure it take turns.
@@ -68,7 +65,7 @@ async fn limited(_ctx: &Ctx, items: Vec<i64>) -> Result<Vec<i64>> {
 
 #[tokio::test]
 async fn retry_with_smaller_batch_splits_until_success() {
-    let (app, _dir) = temp_app("split_until_success").await;
+    let (app, _env) = temp_app("split_until_success").await;
     app.update(|ctx| async move {
         // The first call runs inline and blocks, so the next four queue into
         // one batch of four behind it.
@@ -132,7 +129,7 @@ async fn poisonable(_ctx: &Ctx, items: Vec<i64>) -> Result<Vec<i64>> {
 
 #[tokio::test]
 async fn retry_with_smaller_batch_isolates_poison_item() {
-    let (app, _dir) = temp_app("split_poison_item").await;
+    let (app, _env) = temp_app("split_poison_item").await;
     app.update(|ctx| async move {
         let blocker_ctx = ctx.clone();
         let blocker = tokio::spawn(async move { poisonable(&blocker_ctx, 1).await });
@@ -173,7 +170,7 @@ async fn always_split(_ctx: &Ctx, _items: Vec<i64>) -> Result<Vec<i64>> {
 
 #[tokio::test]
 async fn retry_with_smaller_batch_at_size_one_fails_with_cause() {
-    let (app, _dir) = temp_app("split_size_one").await;
+    let (app, _env) = temp_app("split_size_one").await;
     let err = app
         .update(|ctx| async move { always_split(&ctx, 1).await })
         .await
@@ -201,7 +198,7 @@ async fn memo_limited(_ctx: &Ctx, items: Vec<i64>) -> Result<Vec<i64>> {
 
 #[tokio::test]
 async fn memo_batching_memoizes_results_of_retried_halves() {
-    let (app, _dir) = temp_app("split_memo").await;
+    let (app, _env) = temp_app("split_memo").await;
     async fn run(app: &App) -> Result<Vec<i64>> {
         app.update(|ctx| async move {
             let blocker_ctx = ctx.clone();
@@ -268,7 +265,7 @@ async fn batched_adapter_splits_on_retry_with_smaller_batch() {
         )
     });
 
-    let (app, _dir) = temp_app("split_batched_adapter").await;
+    let (app, _env) = temp_app("split_batched_adapter").await;
     app.update(|ctx| async move {
         let blocker_ctx = ctx.clone();
         let blocker = tokio::spawn(async move { BATCHED.call(&blocker_ctx, 1).await });
@@ -355,7 +352,7 @@ async fn gpu_runner_serializes_calls_on_one_gpu() {
     WHOLE_GPU_IN_FLIGHT.reset();
     WHOLE_GPU_SEEN.lock().unwrap().clear();
 
-    let (app, _dir) = temp_app("runner_one_gpu").await;
+    let (app, _env) = temp_app("runner_one_gpu").await;
     let outputs = app
         .update(|ctx| async move {
             assert_eq!(
@@ -384,7 +381,7 @@ async fn gpu_runner_spreads_calls_over_two_gpus() {
     WHOLE_GPU_IN_FLIGHT.reset();
     WHOLE_GPU_SEEN.lock().unwrap().clear();
 
-    let (app, _dir) = temp_app("runner_two_gpus").await;
+    let (app, _env) = temp_app("runner_two_gpus").await;
     app.update(|ctx| async move {
         let calls = (0..4).map(|item| whole_gpu(&ctx, item));
         futures::future::join_all(calls)
@@ -420,7 +417,7 @@ async fn fractional_gpu_runner_shares_one_gpu_between_two_calls() {
     configure_gpu_pool(NonZeroUsize::new(1).unwrap());
     HALF_GPU_IN_FLIGHT.reset();
 
-    let (app, _dir) = temp_app("runner_half_gpu").await;
+    let (app, _env) = temp_app("runner_half_gpu").await;
     let outputs = app
         .update(|ctx| async move {
             let calls = (0..3).map(|item| half_gpu(&ctx, item));
@@ -463,7 +460,7 @@ async fn gpu_runner_holds_the_gpu_per_physical_batch_and_per_retried_half() {
     GPU_BATCH_IN_FLIGHT.reset();
     GPU_BATCHES.lock().unwrap().clear();
 
-    let (app, _dir) = temp_app("runner_batching").await;
+    let (app, _env) = temp_app("runner_batching").await;
     let outputs = app
         .update(|ctx| async move {
             let calls = [5, -1, 6, 7].map(|item| gpu_batch(&ctx, item));
@@ -487,4 +484,86 @@ async fn gpu_runner_holds_the_gpu_per_physical_batch_and_per_retried_half() {
         batches.iter().any(|(_, items)| items == &[-1]),
         "the rejected pair is retried as halves: {batches:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// A user-defined runner: any `Runner` bounds a function's bodies its own way
+// ---------------------------------------------------------------------------
+
+/// Runs at most `permits` bodies at once, and tags each with a task-local the
+/// body reads, as `GPURunner` sets `current_gpu()`.
+struct Permits(tokio::sync::Semaphore);
+
+tokio::task_local! {
+    static UNDER_PERMITS: bool;
+}
+
+#[async_trait::async_trait]
+impl cocoindex::Runner for Permits {
+    async fn run(&self, body: cocoindex::RunnerBody<'_>) -> Result<cocoindex::RunnerOutput> {
+        let _permit = self
+            .0
+            .acquire()
+            .await
+            .map_err(|e| Error::engine(e.to_string()))?;
+        UNDER_PERMITS.scope(true, body).await
+    }
+}
+
+static PERMITS_IN_FLIGHT: InFlight = InFlight::new();
+
+#[cocoindex::function(memo, runner = Permits(tokio::sync::Semaphore::new(2)))]
+async fn two_at_once(_ctx: &Ctx, item: i64) -> Result<i64> {
+    PERMITS_IN_FLIGHT.enter();
+    assert!(UNDER_PERMITS.get(), "the body runs inside the runner");
+    sleep(Duration::from_millis(30)).await;
+    PERMITS_IN_FLIGHT.leave();
+    Ok(item + 1)
+}
+
+#[tokio::test]
+async fn user_runner_bounds_calls_of_a_plain_function() {
+    PERMITS_IN_FLIGHT.reset();
+    let (app, _dir) = temp_app("user_runner_plain").await;
+    let outputs = app
+        .update(|ctx| async move {
+            let calls = (0..5).map(|item| two_at_once(&ctx, item));
+            futures::future::join_all(calls)
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>>>()
+        })
+        .await
+        .unwrap();
+    assert_eq!(outputs, vec![1, 2, 3, 4, 5]);
+    assert_eq!(PERMITS_IN_FLIGHT.peak.load(Ordering::SeqCst), 2);
+}
+
+static PERMITS_BATCH_IN_FLIGHT: InFlight = InFlight::new();
+
+#[cocoindex::function(batching, max_batch_size = 2, runner = Permits(tokio::sync::Semaphore::new(1)))]
+async fn one_batch_at_once(_ctx: &Ctx, items: Vec<i64>) -> Result<Vec<i64>> {
+    PERMITS_BATCH_IN_FLIGHT.enter();
+    assert!(UNDER_PERMITS.get());
+    sleep(Duration::from_millis(30)).await;
+    PERMITS_BATCH_IN_FLIGHT.leave();
+    Ok(items.into_iter().map(|item| item * 2).collect())
+}
+
+#[tokio::test]
+async fn user_runner_bounds_physical_batches() {
+    PERMITS_BATCH_IN_FLIGHT.reset();
+    let (app, _dir) = temp_app("user_runner_batching").await;
+    let outputs = app
+        .update(|ctx| async move {
+            let calls = (0..6).map(|item| one_batch_at_once(&ctx, item));
+            futures::future::join_all(calls)
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>>>()
+        })
+        .await
+        .unwrap();
+    assert_eq!(outputs, vec![0, 2, 4, 6, 8, 10]);
+    assert_eq!(PERMITS_BATCH_IN_FLIGHT.peak.load(Ordering::SeqCst), 1);
 }

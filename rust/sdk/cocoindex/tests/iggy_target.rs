@@ -129,7 +129,8 @@ async fn iggy_target_sends_skips_and_updates_when_available() -> Result<()> {
                         ..Default::default()
                     };
                     let target =
-                        iggy::mount_iggy_topic_target(&ctx, &PRODUCER, stream, topic, options)?;
+                        iggy::mount_iggy_topic_target(&ctx, &PRODUCER, stream, topic, options)
+                            .await?;
                     for (k, v) in &messages {
                         target.declare_message(&ctx, k, v)?;
                     }
@@ -199,12 +200,13 @@ async fn iggy_target_custom_delete_value_when_available() -> Result<()> {
                 async move {
                     let options = iggy::IggyTopicOptions {
                         partition: PARTITION,
-                        deletion_value_fn: Some(Arc::new(|key: &str| {
-                            format!("{key}=<deleted>").into_bytes()
+                        deletion_value_fn: Some(Arc::new(|key: &[u8]| {
+                            format!("{}=<deleted>", String::from_utf8_lossy(key)).into_bytes()
                         })),
                     };
                     let target =
-                        iggy::mount_iggy_topic_target(&ctx, &PRODUCER, stream, topic, options)?;
+                        iggy::mount_iggy_topic_target(&ctx, &PRODUCER, stream, topic, options)
+                            .await?;
                     for (k, v) in &messages {
                         target.declare_message(&ctx, k, v)?;
                     }

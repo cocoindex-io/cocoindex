@@ -36,7 +36,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding',
     title: 'Semantic search 101',
-    index: '01 / 32',
+    index: '01 / 34',
     category: 'search',
     thumbLabel: 'Markdown · embeddings',
     description: 'Chunk Markdown files, embed each chunk, store the vectors in Postgres, and search them in plain English. The simplest end-to-end vector index, and the one the other search examples build on.',
@@ -53,7 +53,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'index-codebase',
     title: 'Index your codebase',
-    index: '02 / 32',
+    index: '02 / 34',
     category: 'search',
     thumbLabel: 'Code · Tree-sitter',
     description: 'Walk a repo, split by syntax with Tree-sitter, embed, and query your codebase in English. A live vector index for AI coding agents, in ~100 lines.',
@@ -70,7 +70,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'multi-codebase-summarization',
     title: 'Multi-codebase summarization',
-    index: '03 / 32',
+    index: '03 / 34',
     category: 'llm',
     thumbLabel: 'Code · structured output',
     description: 'Walk Python repos, extract typed summaries of classes, functions, and Mermaid call graphs with an LLM, and update a wiki page per project as code changes.',
@@ -88,7 +88,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-to-markdown',
     title: 'PDF to Markdown',
-    index: '04 / 32',
+    index: '04 / 34',
     category: 'ingest',
     thumbLabel: 'PDF · custom blocks',
     description: 'Convert a folder of PDFs to Markdown incrementally, with custom building blocks: only new or changed PDFs are converted again.',
@@ -104,7 +104,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'podcast-to-knowledge-graph',
     title: 'Podcasts to a knowledge graph',
-    index: '05 / 32',
+    index: '05 / 34',
     category: 'agents',
     thumbLabel: 'YouTube · LLM + graph',
     description: 'Turn YouTube podcasts into a queryable knowledge graph — diarized transcription, two-step LLM extraction, embedding-based entity resolution, and a SurrealDB graph.',
@@ -122,7 +122,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'docs-to-knowledge-graph',
     title: 'Docs to a knowledge graph',
-    index: '06 / 32',
+    index: '06 / 34',
     category: 'agents',
     thumbLabel: 'Markdown · LLM + Neo4j',
     description: 'Turn a folder of Markdown docs into a Neo4j concept graph — LLM-extracted (subject, predicate, object) triples that stay in sync as the docs change.',
@@ -138,7 +138,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'meeting-notes-to-knowledge-graph',
     title: 'Meeting notes to a knowledge graph',
-    index: '07 / 32',
+    index: '07 / 34',
     category: 'agents',
     thumbLabel: 'Google Drive · LLM + Neo4j',
     description: 'Turn Google Drive meeting notes into a Neo4j knowledge graph — LLM extraction of organizers, attendees, and tasks, plus embedding-based person entity resolution, kept in sync as notes change.',
@@ -156,7 +156,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'csv-to-kafka',
     title: 'CSV to Kafka',
-    index: '08 / 32',
+    index: '08 / 34',
     category: 'ingest',
     thumbLabel: 'CSV · live Kafka target',
     description: 'Watch a folder of CSV files and publish each row as a JSON message to a Kafka topic — declarative target states, only-changed-rows produces, and live mode in ~60 lines.',
@@ -172,7 +172,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-embedding',
     title: 'Semantic search over PDFs',
-    index: '09 / 32',
+    index: '09 / 34',
     category: 'search',
     thumbLabel: 'PDF · docling + embeddings',
     description: 'Convert local PDFs to Markdown with docling on a GPU runner, chunk, embed, and store the vectors in Postgres — then query in natural language. A vector index over your documents.',
@@ -189,7 +189,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'image-search',
     title: 'Search images by text',
-    index: '10 / 32',
+    index: '10 / 34',
     category: 'image',
     thumbLabel: 'Images · CLIP + Qdrant',
     description: 'Embed images with CLIP, store the vectors in Qdrant, and search your photos in natural language through a FastAPI + React app — live updates, no tags or captions.',
@@ -205,7 +205,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'audio-to-text',
     title: 'Audio to text',
-    index: '11 / 32',
+    index: '11 / 34',
     category: 'ingest',
     thumbLabel: "Audio \u00b7 LiteLLM",
     description: "Transcribe local audio files with a LiteLLM speech-to-text model and store one transcript row per file in Postgres, keyed by filename.",
@@ -222,7 +222,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'hackernews-trending-topics',
     title: 'Trending topics from HackerNews',
-    index: '12 / 32',
+    index: '12 / 34',
     category: 'llm',
     thumbLabel: "HN API \u00b7 LLM topics",
     description: "Scrape recent HackerNews threads and comments via the Algolia HN API, extract topics with an LLM, and rank what is trending in Postgres.",
@@ -239,7 +239,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'paper-metadata',
     title: 'Index academic papers',
-    index: '13 / 32',
+    index: '13 / 34',
     category: 'llm',
     thumbLabel: "PDF \u00b7 LLM extract",
     description: "LLM-extract title, authors, and abstract from academic PDFs into typed rows, embed them, and store it all in Postgres with pgvector.",
@@ -257,7 +257,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'patient-intake-baml',
     title: 'Patient intake forms to typed JSON with BAML',
-    index: '14 / 32',
+    index: '14 / 34',
     category: 'llm',
     thumbLabel: "PDF \u00b7 BAML",
     description: "Extract schema-validated patient records from intake-form PDFs with one type-safe BAML Gemini-vision call per file, writing a JSON file per form.",
@@ -274,7 +274,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'patient-intake-dspy',
     title: 'Patient intake forms to typed JSON with DSPy',
-    index: '15 / 32',
+    index: '15 / 34',
     category: 'llm',
     thumbLabel: "PDF \u00b7 DSPy",
     description: "Render patient intake PDFs to images and extract a typed Patient with a DSPy ChainOfThought vision module on Gemini, writing one validated JSON file per form.",
@@ -292,7 +292,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'postgres-source',
     title: 'Postgres as a source',
-    index: '16 / 32',
+    index: '16 / 34',
     category: 'ingest',
     thumbLabel: "Postgres \u00b7 pgvector",
     description: "Read rows from an existing Postgres table, derive fields, embed each row, and write the vectors back to Postgres with pgvector.",
@@ -309,7 +309,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'files-transform',
     title: 'Transform a folder of files',
-    index: '17 / 32',
+    index: '17 / 34',
     category: 'ingest',
     thumbLabel: "Markdown \u00b7 markdown-it",
     description: "The smallest end-to-end CocoIndex pipeline \u2014 watch a folder of Markdown, render each file to HTML, and write the outputs to a local folder incrementally.",
@@ -326,7 +326,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'kafka-to-lancedb',
     title: 'Consume Kafka into LanceDB',
-    index: '18 / 32',
+    index: '18 / 34',
     category: 'ingest',
     thumbLabel: "Kafka \u00b7 dispatch",
     description: "Consume JSON messages off a Kafka topic and dispatch each one \u2014 by its shape \u2014 into the matching LanceDB table.",
@@ -342,7 +342,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'entire-session-search',
     title: 'Search your AI coding sessions',
-    index: '19 / 32',
+    index: '19 / 34',
     category: 'search',
     thumbLabel: "Entire \u00b7 Embeddings",
     description: "Index AI coding sessions captured by Entire \u2014 transcripts, prompts, and context summaries \u2014 into Postgres for natural-language semantic search.",
@@ -360,7 +360,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'image-search-colpali',
     title: 'Image search with ColPali',
-    index: '20 / 32',
+    index: '20 / 34',
     category: 'image',
     thumbLabel: "Images \u00b7 ColPali",
     description: "Embed images and queries into multi-vector ColPali bags of patch vectors, store them in Qdrant, and rank with late-interaction MaxSim through a FastAPI app.",
@@ -377,7 +377,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding-qdrant',
     title: 'Semantic search with Qdrant',
-    index: '21 / 32',
+    index: '21 / 34',
     category: 'search',
     thumbLabel: "Markdown \u00b7 Qdrant",
     description: "Upsert Markdown chunk vectors into a Qdrant collection. Chunking and embedding run locally; only the target changes from Semantic search 101.",
@@ -394,7 +394,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding-lancedb',
     title: 'Semantic search with LanceDB',
-    index: '22 / 32',
+    index: '22 / 34',
     category: 'search',
     thumbLabel: "Markdown \u00b7 LanceDB",
     description: "Store Markdown chunk vectors in LanceDB, an embedded, file-based store with no server to run. Only the target changes from Semantic search 101.",
@@ -411,7 +411,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding-turbopuffer',
     title: 'Semantic search with Turbopuffer',
-    index: '23 / 32',
+    index: '23 / 34',
     category: 'search',
     thumbLabel: "Markdown \u00b7 Turbopuffer",
     description: "Upsert Markdown chunk vectors into a Turbopuffer namespace, a serverless vector store. Only the target changes from Semantic search 101.",
@@ -428,7 +428,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'amazon-s3-embedding',
     title: 'Embed Markdown from Amazon S3',
-    index: '24 / 32',
+    index: '24 / 34',
     category: 'search',
     thumbLabel: "S3 \u00b7 pgvector",
     description: "Read Markdown from an Amazon S3 bucket instead of a local folder, then chunk, embed, and store the vectors in Postgres.",
@@ -445,7 +445,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'google-drive-embedding',
     title: 'Semantic search over Google Drive',
-    index: '25 / 32',
+    index: '25 / 34',
     category: 'search',
     thumbLabel: "Google Drive \u00b7 Embed",
     description: "Read documents from Google Drive, then chunk, embed, and store the vectors in Postgres with pgvector. Only the source changes from Semantic search 101.",
@@ -462,7 +462,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'oci-object-storage-embedding',
     title: 'Embed OCI Object Storage',
-    index: '26 / 32',
+    index: '26 / 34',
     category: 'search',
     thumbLabel: "OCI \u00b7 pgvector",
     description: "Chunk and embed Markdown objects from an Oracle Cloud (OCI) Object Storage bucket into Postgres/pgvector, with optional live updates via OCI Streaming.",
@@ -478,9 +478,26 @@ export const examples: ExampleCard[] = [
     sourceSlug: 'oci_object_storage_embedding',
   },
   {
+    slug: 'discord-embedding',
+    title: 'Semantic search over Discord',
+    index: '27 / 34',
+    category: 'search',
+    thumbLabel: 'Discord · pgvector',
+    description: 'Chunk and embed Discord forum posts and channel messages into Postgres with pgvector, each row linking back to Discord. Only the posts that change are embedded again.',
+    tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
+      { kind: 'src', label: 'Discord' },
+      { kind: 'tgt', label: 'Postgres' },
+      { kind: 'ops', label: 'Embeddings' },
+      { kind: 'lvl', label: 'Starter' },
+    ],
+    footMeta: '~15 min',
+    sourceSlug: 'discord_text_embedding',
+  },
+  {
     slug: 'face-recognition',
     title: 'Build your own face search',
-    index: '27 / 32',
+    index: '28 / 34',
     category: 'image',
     thumbLabel: 'Photos · face embeddings',
     description: 'Detect every face in a folder of photos, embed each into a 128-d vector with face_recognition (dlib), and index them in Qdrant — then search your photos by face.',
@@ -496,7 +513,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'product-recommendation',
     title: 'Product recommendation graph',
-    index: '28 / 32',
+    index: '29 / 34',
     category: 'agents',
     thumbLabel: 'Products · taxonomy graph',
     description: 'LLM-extract what each product is and what pairs with it from product docs, then build a Neo4j graph for complementary-product recommendations.',
@@ -512,7 +529,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'manuals-llm-extraction',
     title: 'Manuals to structured data',
-    index: '29 / 32',
+    index: '30 / 34',
     category: 'llm',
     thumbLabel: 'PDF manuals · typed records',
     description: 'Convert PDF manuals to Markdown with docling, LLM-extract a typed module summary (classes, methods, arguments), and store one structured record per manual in Postgres.',
@@ -526,9 +543,27 @@ export const examples: ExampleCard[] = [
     sourceSlug: 'manuals_llm_extraction',
   },
   {
+    slug: 'discord-support-faq',
+    title: 'Discord support threads to an FAQ',
+    index: '31 / 34',
+    category: 'llm',
+    thumbLabel: 'Discord · LLM + entity resolution',
+    description: 'Turn Discord support threads into an FAQ an agent can use as its knowledge base: an LLM extracts each question and answer, questions asked in other words are merged, corrections win and disagreements are flagged, and only what changed goes back to the LLM.',
+    tags: [
+      { kind: 'llm', label: 'sentence-transformers' },
+      { kind: 'src', label: 'Discord' },
+      { kind: 'llm', label: 'Any LLM' },
+      { kind: 'ops', label: 'Entity resolution' },
+      { kind: 'tgt', label: 'Local FS' },
+      { kind: 'lvl', label: 'Intermediate' },
+    ],
+    footMeta: '~20 min',
+    sourceSlug: 'discord_support_faq',
+  },
+  {
     slug: 'multi-format-indexing',
     title: 'Multi-format visual search',
-    index: '30 / 32',
+    index: '32 / 34',
     category: 'image',
     thumbLabel: 'PDFs + images · ColPali',
     description: 'Index PDFs and images as page screenshots with the ColPali multi-vector model — no OCR, no chunking — into Qdrant with MaxSim, and search the visual content by text.',
@@ -544,7 +579,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'slides-to-speech',
     title: 'Slides to narrated search',
-    index: '31 / 32',
+    index: '33 / 34',
     category: 'image',
     thumbLabel: 'Slides · vision + TTS',
     description: 'Render each slide, write speaker notes with a vision LLM, narrate them with Pocket TTS locally on the CPU, and embed the notes into LanceDB — search a deck by meaning and play back the narration.',
@@ -561,7 +596,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'sec-edgar-analytics',
     title: 'SEC filing hybrid search',
-    index: '32 / 32',
+    index: '34 / 34',
     category: 'search',
     thumbLabel: 'Filings · vector + full-text',
     description: 'Scrub, chunk, embed, and tag multi-format SEC filings into Apache Doris with both a vector and a full-text index — then retrieve with hybrid (semantic + keyword) RRF search.',
@@ -699,6 +734,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
       { dir: 'entire_session_search', docs: 'entire-session-search', title: 'Entire Session Search', description: 'Semantic search over AI coding sessions captured by Entire — transcripts, prompts, and context summaries into Postgres (pgvector).' },
       { dir: 'amazon_s3_embedding', docs: 'amazon-s3-embedding', title: 'Amazon S3 Embedding', description: 'Embed Markdown files from an S3 bucket into Postgres (pgvector); semantic-search demo.' },
       { dir: 'azure_blob_embedding', title: 'Azure Blob Storage Embedding', description: 'Embed Markdown files from Azure Blob Storage into Postgres (pgvector); query demo.' },
+      { dir: 'discord_text_embedding', docs: 'discord-embedding', title: 'Discord Text Embedding', description: 'Embed Discord forum posts and messages into Postgres (pgvector), each row linking back to Discord; query demo and a seed script.' },
       { dir: 'gdrive_text_embedding', docs: 'google-drive-embedding', title: 'Google Drive Text Embedding', description: 'Embed text files from Google Drive into Postgres (pgvector); query demo.' },
       { dir: 'oci_object_storage_embedding', docs: 'oci-object-storage-embedding', title: 'OCI Object Storage Embedding', description: 'Embed Markdown files from Oracle Cloud (OCI) Object Storage into Postgres (pgvector); query demo.' },
       { dir: 'postgres_source', docs: 'postgres-source', title: 'Postgres as a Source', description: 'Use an existing PostgreSQL table as a CocoIndex source: derive fields, embed, and store the results back.' },
@@ -726,6 +762,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
       { dir: 'patient_intake_extraction_baml', docs: 'patient-intake-baml', title: 'Patient Intake Extraction · BAML', description: 'Extract structured data from patient intake forms with BAML.', run: RUN_MAIN_PY },
       { dir: 'patient_intake_extraction_dspy', docs: 'patient-intake-dspy', title: 'Patient Intake Extraction · DSPy', description: 'Extract structured data from patient intake forms with DSPy.', run: RUN_MAIN_PY },
       { dir: 'manuals_llm_extraction', docs: 'manuals-llm-extraction', title: 'Manuals to Structured Data', description: 'Convert PDF manuals to Markdown with docling, LLM-extract a typed module summary (classes, methods, arguments), and store one structured record per manual in Postgres.', run: RUN_MAIN },
+      { dir: 'discord_support_faq', docs: 'discord-support-faq', title: 'Discord Support Threads → FAQ', description: 'Turn Discord support threads into a knowledge base for an agent: LLM-extract each question and answer, merge repeats with entity resolution, apply corrections, flag disagreements and list open questions, in an FAQ that stays current; a seed script.' },
     ],
   },
   {

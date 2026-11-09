@@ -6,7 +6,9 @@
 //! - [`ContainerClient`] — a clone-cheap handle to one container. It speaks the
 //!   Blob service REST API directly (there is no official Azure Rust SDK in the
 //!   tree) and authenticates with a storage account key (Shared Key), a SAS
-//!   token or a Microsoft Entra ID bearer token: see [`Credential`].
+//!   token, a Microsoft Entra ID bearer token, or an Entra ID token it gets and
+//!   renews itself from a service principal, a managed identity or the Azure
+//!   CLI sign-in: see [`Credential`] and [`TokenCredential`].
 //! - [`list_blobs`] returns an [`AzureBlobWalker`]; [`AzureBlobWalker::list`] /
 //!   [`AzureBlobWalker::items`] enumerate matching blobs as [`AzureBlobFile`]s.
 //!   Use each [`AzureBlobFile::key`] with `Ctx::mount_each` so per-file
@@ -189,12 +191,12 @@ impl AzureBlobFile {
     }
 
     /// Read the blob's full content.
-    pub async fn read(&self) -> Result<Vec<u8>> {
+    pub async fn read(&self) -> Result<bytes::Bytes> {
         <Self as FileLike>::read(self).await
     }
 
     /// Read the first `size` bytes of the blob.
-    pub async fn read_size(&self, size: usize) -> Result<Vec<u8>> {
+    pub async fn read_size(&self, size: usize) -> Result<bytes::Bytes> {
         <Self as FileLike>::read_size(self, size).await
     }
 
@@ -308,12 +310,83 @@ pub enum Credential {
     /// prints. The identity needs `Storage Blob Data Reader`. The client does
     /// not renew the token.
     BearerToken(String),
+    /// A Microsoft Entra ID token the client gets itself and renews as it
+    /// expires, from one of the sources `DefaultAzureCredential` uses.
+    TokenCredential(TokenCredential),
+}
+
+/// Where a [`Credential::TokenCredential`] gets its Entra ID token: the sources
+/// of the Azure SDK's `DefaultAzureCredential` that need no interactive sign-in.
+/// The token is for `https://storage.azure.com/`, and the identity needs
+/// `Storage Blob Data Reader` on the container.
+#[derive(Clone)]
+pub enum TokenCredential {
+    /// The first of these that is configured where the process runs:
+    /// [`ClientSecret`](Self::ClientSecret) from `AZURE_TENANT_ID`,
+    /// `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`;
+    /// [`ManagedIdentity`](Self::ManagedIdentity) when the process runs on
+    /// Azure; else [`AzureCli`](Self::AzureCli).
+    Default,
+    /// A service principal with a client secret (the `AZURE_*` environment
+    /// variables of `DefaultAzureCredential`, given explicitly).
+    ClientSecret {
+        tenant_id: String,
+        client_id: String,
+        client_secret: String,
+    },
+    /// The managed identity of the Azure resource the process runs on: App
+    /// Service, Functions and Container Apps through their identity endpoint
+    /// (`IDENTITY_ENDPOINT` / `IDENTITY_HEADER`), a virtual machine through the
+    /// instance metadata service. `client_id` picks a user-assigned identity;
+    /// `None` is the system-assigned one.
+    ManagedIdentity { client_id: Option<String> },
+    /// The account signed in with `az login`, through
+    /// `az account get-access-token`.
+    AzureCli,
+}
+
+impl std::fmt::Debug for TokenCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenCredential::Default => f.write_str("Default"),
+            TokenCredential::ClientSecret {
+                tenant_id,
+                client_id,
+                ..
+            } => f
+                .debug_struct("ClientSecret")
+                .field("tenant_id", tenant_id)
+                .field("client_id", client_id)
+                .field("client_secret", &"<redacted>")
+                .finish(),
+            TokenCredential::ManagedIdentity { client_id } => f
+                .debug_struct("ManagedIdentity")
+                .field("client_id", client_id)
+                .finish(),
+            TokenCredential::AzureCli => f.write_str("AzureCli"),
+        }
+    }
+}
+
+/// Secrets are redacted.
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Credential::AccountKey(_) => f.write_str("AccountKey(<redacted>)"),
+            Credential::SasToken(_) => f.write_str("SasToken(<redacted>)"),
+            Credential::BearerToken(_) => f.write_str("BearerToken(<redacted>)"),
+            Credential::TokenCredential(source) => {
+                f.debug_tuple("TokenCredential").field(source).finish()
+            }
+        }
+    }
 }
 
 enum Auth {
     SharedKey { key: Vec<u8> },
     Sas { query: String },
     Bearer { header: String },
+    Token(Box<TokenSource>),
 }
 
 struct ContainerClientInner {
@@ -331,6 +404,16 @@ struct ContainerClientInner {
 #[derive(Clone)]
 pub struct ContainerClient {
     inner: Arc<ContainerClientInner>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for ContainerClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContainerClient")
+            .field("account_name", &self.inner.account_name)
+            .field("container_name", &self.inner.container_name)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ContainerClient {
@@ -378,6 +461,9 @@ impl ContainerClient {
             Credential::BearerToken(token) => Auth::Bearer {
                 header: format!("Bearer {}", token.trim()),
             },
+            Credential::TokenCredential(credential) => {
+                Auth::Token(Box::new(TokenSource::new(credential)))
+            }
         };
         Ok(Self {
             inner: Arc::new(ContainerClientInner {
@@ -451,6 +537,7 @@ impl ContainerClient {
         ms_headers.push(("x-ms-version", API_VERSION));
 
         let authorization = match &inner.auth {
+            Auth::Token(source) => Some(format!("Bearer {}", source.token(&inner.http).await?)),
             Auth::SharedKey { key } => {
                 let string_to_sign = shared_key_string_to_sign(
                     method.as_str(),
@@ -519,6 +606,362 @@ impl ContainerClient {
             self.describe(blob_name)
         )))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Entra ID tokens
+// ---------------------------------------------------------------------------
+
+/// The resource the token is for.
+const STORAGE_RESOURCE: &str = "https://storage.azure.com/";
+/// Renew a token this long before it expires (the Azure SDK's refresh offset),
+/// or at half its lifetime when the lifetime is shorter.
+const TOKEN_REFRESH_OFFSET: Duration = Duration::from_secs(300);
+/// How long the instance metadata service probe waits before deciding the
+/// process does not run on an Azure virtual machine.
+const IMDS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long `az account get-access-token` may take.
+const AZURE_CLI_TIMEOUT: Duration = Duration::from_secs(10);
+const IMDS_TOKEN_URL: &str = "http://169.254.169.254/metadata/identity/oauth2/token";
+const DEFAULT_AUTHORITY_HOST: &str = "https://login.microsoftonline.com";
+
+/// An Entra ID token and when to renew it.
+struct CachedToken {
+    token: String,
+    renew_at: SystemTime,
+}
+
+/// Gets and caches the token of a [`TokenCredential`]; the source
+/// [`TokenCredential::Default`] settled on is kept once found.
+struct TokenSource {
+    credential: TokenCredential,
+    state: tokio::sync::Mutex<TokenState>,
+}
+
+#[derive(Default)]
+struct TokenState {
+    cached: Option<CachedToken>,
+    /// The concrete source `Default` found, so the chain runs once.
+    resolved: Option<TokenCredential>,
+}
+
+/// A token as a source returns it: the token and its lifetime.
+struct FreshToken {
+    token: String,
+    expires_in: Duration,
+}
+
+impl FreshToken {
+    fn cached(self) -> CachedToken {
+        let offset = TOKEN_REFRESH_OFFSET.min(self.expires_in / 2);
+        CachedToken {
+            token: self.token,
+            renew_at: SystemTime::now() + (self.expires_in - offset),
+        }
+    }
+}
+
+impl TokenSource {
+    fn new(credential: TokenCredential) -> Self {
+        Self {
+            credential,
+            state: tokio::sync::Mutex::new(TokenState::default()),
+        }
+    }
+
+    /// The current token, renewed when it is about to expire.
+    async fn token(&self, http: &reqwest::Client) -> Result<String> {
+        let mut state = self.state.lock().await;
+        if let Some(cached) = &state.cached
+            && SystemTime::now() < cached.renew_at
+        {
+            return Ok(cached.token.clone());
+        }
+        let source = match &state.resolved {
+            Some(source) => source.clone(),
+            None => {
+                let source = match &self.credential {
+                    TokenCredential::Default => resolve_default(http).await?,
+                    other => other.clone(),
+                };
+                state.resolved = Some(source.clone());
+                source
+            }
+        };
+        let fresh = fetch_token(http, &source).await?;
+        let token = fresh.token.clone();
+        state.cached = Some(fresh.cached());
+        Ok(token)
+    }
+}
+
+fn env_var(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
+/// The identity endpoint of App Service, Functions and Container Apps, when
+/// the process runs there.
+fn app_service_identity_endpoint() -> Option<(String, String)> {
+    Some((env_var("IDENTITY_ENDPOINT")?, env_var("IDENTITY_HEADER")?))
+}
+
+/// The first source [`TokenCredential::Default`] finds configured.
+async fn resolve_default(http: &reqwest::Client) -> Result<TokenCredential> {
+    if let (Some(tenant_id), Some(client_id), Some(client_secret)) = (
+        env_var("AZURE_TENANT_ID"),
+        env_var("AZURE_CLIENT_ID"),
+        env_var("AZURE_CLIENT_SECRET"),
+    ) {
+        return Ok(TokenCredential::ClientSecret {
+            tenant_id,
+            client_id,
+            client_secret,
+        });
+    }
+    let managed = TokenCredential::ManagedIdentity {
+        client_id: env_var("AZURE_CLIENT_ID"),
+    };
+    if app_service_identity_endpoint().is_some() {
+        return Ok(managed);
+    }
+    // On a virtual machine the metadata service answers at once; elsewhere the
+    // link-local address is unreachable.
+    let probe = http
+        .get(imds_token_url())
+        .header("Metadata", "true")
+        .timeout(IMDS_PROBE_TIMEOUT)
+        .send()
+        .await;
+    if probe.is_ok() {
+        return Ok(managed);
+    }
+    if azure_cli_available().await {
+        return Ok(TokenCredential::AzureCli);
+    }
+    Err(Error::engine(
+        "azure blob: no Entra ID credential is configured: set AZURE_TENANT_ID, \
+         AZURE_CLIENT_ID and AZURE_CLIENT_SECRET, run on an Azure resource with a \
+         managed identity, or sign in with `az login`",
+    ))
+}
+
+fn imds_token_url() -> String {
+    match env_var("AZURE_POD_IDENTITY_AUTHORITY_HOST") {
+        Some(host) => format!(
+            "{}/metadata/identity/oauth2/token",
+            host.trim_end_matches('/')
+        ),
+        None => IMDS_TOKEN_URL.to_string(),
+    }
+}
+
+async fn fetch_token(http: &reqwest::Client, source: &TokenCredential) -> Result<FreshToken> {
+    match source {
+        TokenCredential::ClientSecret {
+            tenant_id,
+            client_id,
+            client_secret,
+        } => client_secret_token(http, tenant_id, client_id, client_secret).await,
+        TokenCredential::ManagedIdentity { client_id } => {
+            managed_identity_token(http, client_id.as_deref()).await
+        }
+        TokenCredential::AzureCli => azure_cli_token().await,
+        TokenCredential::Default => unreachable!("Default resolves to a concrete source"),
+    }
+}
+
+/// A token response: `access_token` with `expires_in` (seconds, a number or a
+/// string) or `expires_on` (Unix seconds, a number or a string).
+fn parse_token_response(body: &str, what: &str) -> Result<FreshToken> {
+    let json: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| Error::engine(format!("azure blob {what}: token response: {e}")))?;
+    let number = |name: &str| -> Option<u64> {
+        match json.get(name)? {
+            serde_json::Value::Number(n) => n.as_u64(),
+            serde_json::Value::String(s) => s.parse().ok(),
+            _ => None,
+        }
+    };
+    let token = json
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| {
+            Error::engine(format!(
+                "azure blob {what}: token response has no access_token"
+            ))
+        })?
+        .to_string();
+    // A day at most: a huge value from the server would overflow `SystemTime`
+    // (here or where the renewal time is computed); renewing early is harmless.
+    let max = Duration::from_secs(86_400);
+    let expires_in = match (number("expires_in"), number("expires_on")) {
+        (Some(secs), _) => Duration::from_secs(secs).min(max),
+        (None, Some(at)) => UNIX_EPOCH
+            .checked_add(Duration::from_secs(at))
+            .map_or(max, |at| {
+                at.duration_since(SystemTime::now()).unwrap_or_default()
+            })
+            .min(max),
+        (None, None) => {
+            return Err(Error::engine(format!(
+                "azure blob {what}: token response has no expires_in or expires_on"
+            )));
+        }
+    };
+    Ok(FreshToken { token, expires_in })
+}
+
+async fn token_request(request: reqwest::RequestBuilder, what: &str) -> Result<FreshToken> {
+    let response = request
+        .send()
+        .await
+        .map_err(|e| Error::engine(format!("azure blob {what}: {e}")))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| Error::engine(format!("azure blob {what}: {e}")))?;
+    if !status.is_success() {
+        return Err(Error::engine(format!(
+            "azure blob {what} failed: {status} {body}"
+        )));
+    }
+    parse_token_response(&body, what)
+}
+
+/// The client-credentials grant at the tenant's token endpoint
+/// (`AZURE_AUTHORITY_HOST` overrides the public cloud's authority).
+async fn client_secret_token(
+    http: &reqwest::Client,
+    tenant_id: &str,
+    client_id: &str,
+    client_secret: &str,
+) -> Result<FreshToken> {
+    let authority = env_var("AZURE_AUTHORITY_HOST")
+        .unwrap_or_else(|| DEFAULT_AUTHORITY_HOST.to_string())
+        .trim_end_matches('/')
+        .to_string();
+    let url = format!("{authority}/{tenant_id}/oauth2/v2.0/token");
+    token_request(
+        http.post(&url).form(&[
+            ("grant_type", "client_credentials"),
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("scope", &format!("{STORAGE_RESOURCE}.default")),
+        ]),
+        "client secret token",
+    )
+    .await
+}
+
+/// A managed identity token: through the App Service identity endpoint when
+/// the process runs there, else the instance metadata service.
+async fn managed_identity_token(
+    http: &reqwest::Client,
+    client_id: Option<&str>,
+) -> Result<FreshToken> {
+    let mut query = vec![("resource", STORAGE_RESOURCE)];
+    if let Some(client_id) = client_id {
+        query.push(("client_id", client_id));
+    }
+    match app_service_identity_endpoint() {
+        Some((endpoint, secret)) => {
+            query.push(("api-version", "2019-08-01"));
+            token_request(
+                http.get(&endpoint)
+                    .header("X-IDENTITY-HEADER", secret)
+                    .query(&query),
+                "managed identity token",
+            )
+            .await
+        }
+        None => {
+            query.push(("api-version", "2018-02-01"));
+            token_request(
+                http.get(imds_token_url())
+                    .header("Metadata", "true")
+                    .query(&query),
+                "managed identity token",
+            )
+            .await
+        }
+    }
+}
+
+fn azure_cli_command() -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(if cfg!(windows) { "az.cmd" } else { "az" });
+    command
+        .env("AZURE_CORE_NO_COLOR", "true")
+        .stdin(std::process::Stdio::null());
+    command
+}
+
+async fn azure_cli_available() -> bool {
+    matches!(
+        tokio::time::timeout(AZURE_CLI_TIMEOUT, azure_cli_command().arg("--version").output()).await,
+        Ok(Ok(output)) if output.status.success()
+    )
+}
+
+/// The signed-in account's token, from `az account get-access-token`.
+async fn azure_cli_token() -> Result<FreshToken> {
+    let output = tokio::time::timeout(
+        AZURE_CLI_TIMEOUT,
+        azure_cli_command()
+            .args([
+                "account",
+                "get-access-token",
+                "--output",
+                "json",
+                "--resource",
+                STORAGE_RESOURCE,
+            ])
+            .output(),
+    )
+    .await
+    .map_err(|_| Error::engine("azure blob: the Azure CLI did not answer in time"))?
+    .map_err(|e| Error::engine(format!("azure blob: cannot run the Azure CLI: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::engine(format!(
+            "azure blob: `az account get-access-token` failed: {}",
+            stderr.trim()
+        )));
+    }
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|e| {
+        Error::engine(format!(
+            "azure blob: unexpected output from the Azure CLI: {e}"
+        ))
+    })?;
+    let token = json
+        .get("accessToken")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            Error::engine("azure blob: unexpected output from the Azure CLI: no accessToken")
+        })?
+        .to_string();
+    let expires_at = match json.get("expires_on").and_then(|v| v.as_u64()) {
+        Some(at) => UNIX_EPOCH + Duration::from_secs(at),
+        None => {
+            // The older field: a local time, `2026-11-06 12:00:00.000000`.
+            let local = json
+                .get("expiresOn")
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f").ok())
+                .and_then(|naive| naive.and_local_timezone(chrono::Local).single())
+                .ok_or_else(|| {
+                    Error::engine("azure blob: unexpected output from the Azure CLI: no expiry")
+                })?;
+            UNIX_EPOCH + Duration::from_secs(local.timestamp().max(0) as u64)
+        }
+    };
+    Ok(FreshToken {
+        token,
+        expires_in: expires_at
+            .duration_since(SystemTime::now())
+            .unwrap_or_default(),
+    })
 }
 
 /// The storage account an account URL names: the first path segment when the

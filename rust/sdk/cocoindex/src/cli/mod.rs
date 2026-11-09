@@ -96,8 +96,7 @@ pub async fn dispatch_to(args: Vec<String>, out: &mut (dyn Write + Send)) -> Exi
     };
     match outcome {
         Ok(code) => ExitCode::from(code),
-        Err(Failure::Usage(message)) => emitter.fail(message, EXIT_USAGE),
-        Err(Failure::Error(err)) => emitter.fail(err.to_string(), EXIT_ERROR),
+        Err(err) => emitter.fail(err.to_string(), EXIT_ERROR),
     }
 }
 
@@ -209,17 +208,6 @@ fn verb_name(verb: Verb) -> &'static str {
 // Verbs
 // ---------------------------------------------------------------------------
 
-enum Failure {
-    Usage(String),
-    Error(Error),
-}
-
-impl From<Error> for Failure {
-    fn from(err: Error) -> Self {
-        Failure::Error(err)
-    }
-}
-
 struct Emitter<'a> {
     out: &'a mut (dyn Write + Send),
     /// Set once a record could not be written.
@@ -256,21 +244,18 @@ impl Emitter<'_> {
     }
 }
 
-async fn open_environment() -> std::result::Result<Environment, Failure> {
-    Ok(Environment::from_registered().await?)
+async fn open_environment() -> Result<Environment> {
+    Environment::from_registered().await
 }
 
-async fn run_ls(emitter: &mut Emitter<'_>) -> std::result::Result<u8, Failure> {
+async fn run_ls(emitter: &mut Emitter<'_>) -> Result<u8> {
     let env = open_environment().await?;
     let outcome = list_apps(emitter, &env).await;
     env.shutdown().await;
     outcome
 }
 
-async fn list_apps(
-    emitter: &mut Emitter<'_>,
-    env: &Environment,
-) -> std::result::Result<u8, Failure> {
+async fn list_apps(emitter: &mut Emitter<'_>, env: &Environment) -> Result<u8> {
     let persisted = env.persisted_app_names().await?;
     let mut apps: Vec<AppInfo> = registry::apps()
         .iter()
@@ -298,22 +283,21 @@ async fn list_apps(
 }
 
 /// The app an `update`/`drop` acts on: `--app NAME`, else the binary's only
-/// registered app.
-fn resolve_app(requested: Option<&str>) -> std::result::Result<&'static AppEntry, Failure> {
+/// registered app. A name that matches nothing, or several apps and no name,
+/// is a failure (exit 1), like the Python CLI's `ClickException`.
+fn resolve_app(requested: Option<&str>) -> Result<&'static AppEntry> {
     let apps = registry::apps();
     match requested {
         Some(name) => registry::find_app(name).ok_or_else(|| {
-            Failure::Usage(format!(
+            Error::engine(format!(
                 "no #[cocoindex::app] named `{name}` in this binary; available: {}",
                 app_names(apps)
             ))
         }),
         None => match apps {
             [only] => Ok(only),
-            [] => Err(Failure::Usage(
-                "this binary has no #[cocoindex::app]".to_string(),
-            )),
-            many => Err(Failure::Usage(format!(
+            [] => Err(Error::engine("this binary has no #[cocoindex::app]")),
+            many => Err(Error::engine(format!(
                 "this binary has several apps; pass the name: {}",
                 app_names(many)
             ))),
@@ -366,19 +350,16 @@ fn emit_done(emitter: &mut Emitter<'_>, outcome: Outcome, stats: Option<RunStats
     emitter.emit(&Event::Done { outcome, stats });
 }
 
-fn emit_cancelled(emitter: &mut Emitter<'_>) -> std::result::Result<u8, Failure> {
+fn emit_cancelled(emitter: &mut Emitter<'_>) -> Result<u8> {
     emit_done(emitter, Outcome::Cancelled, None);
     Ok(EXIT_OK)
 }
 
 /// A failed step after Ctrl-C is the cancellation surfacing (the engine
 /// reports a cancelled operation as an error), not a failure.
-fn cancel_or(
-    emitter: &mut Emitter<'_>,
-    outcome: std::result::Result<u8, Failure>,
-) -> std::result::Result<u8, Failure> {
+fn cancel_or(emitter: &mut Emitter<'_>, outcome: Result<u8>) -> Result<u8> {
     match outcome {
-        Err(Failure::Error(_)) if cancelled() => emit_cancelled(emitter),
+        Err(_) if cancelled() => emit_cancelled(emitter),
         other => other,
     }
 }
@@ -410,10 +391,7 @@ async fn confirm(emitter: &mut Emitter<'_>, action: ConfirmAction, app: &str) ->
     }
 }
 
-async fn run_update(
-    emitter: &mut Emitter<'_>,
-    args: &ChildArgs,
-) -> std::result::Result<u8, Failure> {
+async fn run_update(emitter: &mut Emitter<'_>, args: &ChildArgs) -> Result<u8> {
     let entry = resolve_app(args.app.as_deref())?;
     arm_cancellation();
     let Some(env) = until_cancelled(open_environment()).await else {
@@ -434,7 +412,7 @@ async fn update_app(
     args: &ChildArgs,
     entry: &'static AppEntry,
     env: &Environment,
-) -> std::result::Result<u8, Failure> {
+) -> Result<u8> {
     let app = env.app(entry.name).await?;
     if args.reset
         && env
@@ -489,7 +467,7 @@ async fn update_app(
     Ok(EXIT_OK)
 }
 
-async fn run_drop(emitter: &mut Emitter<'_>, args: &ChildArgs) -> std::result::Result<u8, Failure> {
+async fn run_drop(emitter: &mut Emitter<'_>, args: &ChildArgs) -> Result<u8> {
     arm_cancellation();
     let Some(env) = until_cancelled(open_environment()).await else {
         return emit_cancelled(emitter);
@@ -500,11 +478,7 @@ async fn run_drop(emitter: &mut Emitter<'_>, args: &ChildArgs) -> std::result::R
     cancel_or(emitter, outcome)
 }
 
-async fn drop_app(
-    emitter: &mut Emitter<'_>,
-    args: &ChildArgs,
-    env: &Environment,
-) -> std::result::Result<u8, Failure> {
+async fn drop_app(emitter: &mut Emitter<'_>, args: &ChildArgs, env: &Environment) -> Result<u8> {
     let persisted = env.persisted_app_names().await?;
     // A persisted app whose code is gone can still be dropped by name.
     let name: String = match &args.app {

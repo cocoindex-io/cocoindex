@@ -25,7 +25,8 @@ use crate::state::target_state_path::{
 };
 use crate::state_store::{
     AppStore, CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitClaimTargetsPlan,
-    PrecommitReadPlan, PrecommitWritePlan, WriteScope, WriteTxn, reconcile_child_existence,
+    PrecommitReadPlan, PrecommitWritePlan, TrackingInfoWrite, WriteScope, WriteTxn,
+    reconcile_child_existence,
 };
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -92,8 +93,9 @@ pub(crate) struct RestoredComponentMemo<Prof: EngineProfile> {
     pub target_provider_deps: TargetProviderDeps,
     /// Fingerprint of the row bytes this memo was decoded from. A later
     /// refresh of its memo states applies only while the row still has it
-    /// (see `update_component_memo_states`).
-    pub row_fp: Fingerprint,
+    /// (see `update_component_memo_states`). `None` when the memo stores no
+    /// states, so there is nothing to refresh: the row is then not hashed.
+    pub row_fp: Option<Fingerprint>,
     /// See `db_schema::ComponentMemoizationInfo::has_open_descendants`.
     pub has_open_descendants: bool,
     /// See `db_schema::ComponentMemoizationInfo::open_children`.
@@ -110,7 +112,6 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
         let Some(memo_bytes) = app_store.read_component_memo(path).await? else {
             return Ok(None);
         };
-        let row_fp = Fingerprint::from_bytes(&memo_bytes);
         let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&memo_bytes)?;
         if let Some(processor_fp) = processor_fp
             && memo_info.processor_fp == processor_fp
@@ -127,6 +128,10 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
             let ret = Prof::FunctionData::from_bytes(bytes.as_ref());
             match ret {
                 Ok(ret) => {
+                    let has_states = !memo_info.memo_states.is_empty()
+                        || !memo_info.context_memo_states.is_empty()
+                        || !memo_info.data_deps.is_empty();
+                    let row_fp = has_states.then(|| Fingerprint::from_bytes(&memo_bytes));
                     let memo_states = deserialize_memo_values::<Prof>(&memo_info.memo_states)?;
                     let context_memo_states =
                         deserialize_context_memo_states::<Prof>(&memo_info.context_memo_states)?;
@@ -559,6 +564,76 @@ enum ChildExistenceAction {
     Keep,
 }
 
+/// The commit-time form of a tracking record whose precommit, at
+/// `curr_version`, succeeded: drop the states the lifecycle superseded (older
+/// versions, and a current `Deleted`), prune the items left with none, clear
+/// the pending token, take the providers' current schema versions, and, once
+/// every state is at `curr_version`, converge the versions back to 1. Returns
+/// the target-state paths no surviving item uses any more, whose `__target`
+/// owner rows go too.
+///
+/// One function for [`Committer::build_commit_writes`] and for `pre_commit`,
+/// which runs it to see whether a build changes the stored record at all.
+fn finalize_tracking_info<Prof: EngineProfile>(
+    tracking_info: &mut db_schema::StablePathEntryTrackingInfo<'_>,
+    curr_version: u64,
+    target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+) -> HashSet<TargetStatePath> {
+    for item in tracking_info.target_state_items.values_mut() {
+        item.states.retain(|(version, state)| {
+            *version > curr_version || *version == curr_version && !state.is_deleted()
+        });
+    }
+    // Prune entries with empty states and collect their paths for
+    // inverted-tracking cleanup. Component-level
+    // `pending_process_token` is cleared here — pre_commit →
+    // sink_apply → commit is succeeding, so any token written by
+    // pre_commit is no longer "pending".
+    let mut pruned_paths: HashSet<TargetStatePath> = HashSet::new();
+    tracking_info
+        .target_state_items
+        .retain(|path_with_pid, item| {
+            if item.states.is_empty() {
+                pruned_paths.insert(path_with_pid.target_state_path.clone());
+                false
+            } else {
+                true
+            }
+        });
+    tracking_info.pending_process_token = None;
+    // Don't delete inverted tracking if a surviving entry shares the
+    // same target_state_path (provider_id change — old entry pruned,
+    // new entry survives under different provider_id).
+    if !pruned_paths.is_empty() {
+        for path_with_pid in tracking_info.target_state_items.keys() {
+            pruned_paths.remove(&path_with_pid.target_state_path);
+        }
+    }
+    for (path_with_pid, item) in tracking_info.target_state_items.iter_mut() {
+        if let Some(parent_provider) =
+            target_states_providers.get(path_with_pid.target_state_path.provider_path())
+            && let Some(pg) = parent_provider.provider_generation()
+        {
+            item.provider_schema_version = pg.provider_schema_version;
+        }
+    }
+
+    let is_version_converged = tracking_info.target_state_items.iter().all(|(_, item)| {
+        item.states
+            .iter()
+            .all(|(version, _)| *version == curr_version)
+    });
+    if is_version_converged {
+        tracking_info.version = 1;
+        for item in tracking_info.target_state_items.values_mut() {
+            for (version, _) in item.states.iter_mut() {
+                *version = 1;
+            }
+        }
+    }
+    pruned_paths
+}
+
 struct Committer<Prof: EngineProfile> {
     component_ctx: ComponentProcessorContext<Prof>,
     app_store: AppStore,
@@ -588,9 +663,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
         child_existence: ChildExistenceAction,
         fn_memos: FnMemoCache<Prof>,
         user_states: UserStateCache<Prof::FunctionData>,
-        curr_version: Option<u64>,
+        tracking: PrecommittedTracking,
     ) -> Result<()> {
-        self.commit_writes(child_existence, fn_memos, user_states, curr_version)
+        self.commit_writes(child_existence, fn_memos, user_states, tracking)
             .await?;
         self.launch_child_component_gc().await
     }
@@ -607,7 +682,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         child_existence: ChildExistenceAction,
         fn_memos: FnMemoCache<Prof>,
         user_states: UserStateCache<Prof::FunctionData>,
-        curr_version: Option<u64>,
+        tracking: PrecommittedTracking,
     ) -> Result<()> {
         // Consume FnMemoCache once (drains each entry's RwLock to Pending).
         let fn_memo_plan = fn_memos.into_flush_plan()?;
@@ -620,8 +695,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         // converge — produce final bytes the AppStore will write. Per-
         // component exclusivity means no concurrent writer can change
         // `__track` between this standalone read and `app_store.commit`.
-        let (new_tracking_info, target_owners_to_delete) =
-            self.build_commit_writes(curr_version).await?;
+        let (tracking_info, target_owners_to_delete) = self.build_commit_writes(tracking).await?;
 
         // On whole-component deletion, also clear the `Live` user-state
         // keyspace. The regular flush (clear_all_first / writes / deletes)
@@ -633,7 +707,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         let user_state_clear_live = self.component_ctx.mode() == ComponentProcessingMode::Delete;
 
         let plan = CommitPlan {
-            new_tracking_info,
+            tracking_info,
             target_owners_to_upsert: Vec::new(),
             target_owners_to_delete,
             fn_memo_clear_all_first: fn_memo_plan.clear_all_first,
@@ -689,15 +763,17 @@ impl<Prof: EngineProfile> Committer<Prof> {
         })
     }
 
-    /// Engine-side reconcile that produces the `(new_tracking_info,
+    /// Engine-side reconcile that produces the `(tracking_info,
     /// target_owners_to_delete)` portion of [`CommitPlan`]. Delete
-    /// mode short-circuits to `(None, owned_target_paths)`, signalling
+    /// mode short-circuits to `(Delete, owned_target_paths)`, signalling
     /// the session to delete the `__track` row and every `__target`
-    /// owner row this component still holds.
+    /// owner row this component still holds. A build whose precommit found
+    /// nothing to change ([`PrecommittedTracking::Unchanged`]) keeps the row
+    /// as stored.
     async fn build_commit_writes(
         &self,
-        curr_version: Option<u64>,
-    ) -> Result<(Option<Vec<u8>>, Vec<TargetStatePath>)> {
+        tracking: PrecommittedTracking,
+    ) -> Result<(TrackingInfoWrite, Vec<TargetStatePath>)> {
         if self.component_ctx.mode() == ComponentProcessingMode::Delete {
             // Whole-component deletion also drops the inverted `__target`
             // owner index for every path this component still owns. Without
@@ -721,10 +797,19 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 }
                 None => Vec::new(),
             };
-            return Ok((None, owners_to_delete));
+            return Ok((TrackingInfoWrite::Delete, owners_to_delete));
         }
-        let curr_version = curr_version
-            .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
+        let curr_version = match tracking {
+            PrecommittedTracking::Written(version) => version,
+            PrecommittedTracking::Final {
+                bytes,
+                owners_to_delete,
+            } => return Ok((TrackingInfoWrite::Write(bytes), owners_to_delete)),
+            PrecommittedTracking::Unchanged => return Ok((TrackingInfoWrite::Keep, Vec::new())),
+            PrecommittedTracking::None => {
+                internal_bail!("a build commit needs the tracking record its precommit wrote")
+            }
+        };
         let tracking_info_bytes = self
             .app_store
             .read_tracking_info(&self.component_path)
@@ -732,64 +817,14 @@ impl<Prof: EngineProfile> Committer<Prof> {
             .ok_or_else(|| internal_error!("tracking info not found for commit"))?;
         let mut tracking_info: db_schema::StablePathEntryTrackingInfo<'_> =
             from_msgpack_slice(&tracking_info_bytes)?;
-
-        for item in tracking_info.target_state_items.values_mut() {
-            item.states.retain(|(version, state)| {
-                *version > curr_version || *version == curr_version && !state.is_deleted()
-            });
-        }
-        // Prune entries with empty states and collect their paths for
-        // inverted-tracking cleanup. Component-level
-        // `pending_process_token` is cleared here — pre_commit →
-        // sink_apply → commit is succeeding, so any token written by
-        // pre_commit is no longer "pending".
-        let mut pruned_paths: HashSet<TargetStatePath> = HashSet::new();
-        tracking_info
-            .target_state_items
-            .retain(|path_with_pid, item| {
-                if item.states.is_empty() {
-                    pruned_paths.insert(path_with_pid.target_state_path.clone());
-                    false
-                } else {
-                    true
-                }
-            });
-        tracking_info.pending_process_token = None;
-        // Don't delete inverted tracking if a surviving entry shares the
-        // same target_state_path (provider_id change — old entry pruned,
-        // new entry survives under different provider_id).
-        if !pruned_paths.is_empty() {
-            for path_with_pid in tracking_info.target_state_items.keys() {
-                pruned_paths.remove(&path_with_pid.target_state_path);
-            }
-        }
-        for (path_with_pid, item) in tracking_info.target_state_items.iter_mut() {
-            if let Some(parent_provider) = self
-                .target_states_providers
-                .get(path_with_pid.target_state_path.provider_path())
-                && let Some(pg) = parent_provider.provider_generation()
-            {
-                item.provider_schema_version = pg.provider_schema_version;
-            }
-        }
-
-        let is_version_converged = tracking_info.target_state_items.iter().all(|(_, item)| {
-            item.states
-                .iter()
-                .all(|(version, _)| *version == curr_version)
-        });
-        if is_version_converged {
-            tracking_info.version = 1;
-            for item in tracking_info.target_state_items.values_mut() {
-                for (version, _) in item.states.iter_mut() {
-                    *version = 1;
-                }
-            }
-        }
-
+        let pruned_paths = finalize_tracking_info(
+            &mut tracking_info,
+            curr_version,
+            &self.target_states_providers,
+        );
         let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
         let owners_to_delete: Vec<TargetStatePath> = pruned_paths.into_iter().collect();
-        Ok((Some(data_bytes), owners_to_delete))
+        Ok((TrackingInfoWrite::Write(data_bytes), owners_to_delete))
     }
 
     /// Phase 5 GC: snapshot-read tombstones and spawn child delete
@@ -856,6 +891,10 @@ struct SinkInput<Prof: EngineProfile> {
     /// sink for the declaring action. Read back after the sink call; a slot the
     /// sink left unfulfilled is an error.
     pending_children: Vec<(TargetStateProvider<Prof>, ChildTargetSlot<Prof>)>,
+    /// The smallest [`TargetStateProvider::depth`] of the providers whose
+    /// target states sent actions to this sink: sinks apply in this order
+    /// (see [`sinks_in_apply_order`]).
+    provider_depth: usize,
 }
 
 impl<Prof: EngineProfile> Default for SinkInput<Prof> {
@@ -864,18 +903,22 @@ impl<Prof: EngineProfile> Default for SinkInput<Prof> {
             actions: Vec::new(),
             factory_children: Vec::new(),
             pending_children: Vec::new(),
+            provider_depth: usize::MAX,
         }
     }
 }
 
 impl<Prof: EngineProfile> SinkInput<Prof> {
-    /// `child`: the child provider of the action's target state, with how its
-    /// sink provides child handlers.
+    /// `provider`: the provider of the action's target state. `child`: the
+    /// child provider of the action's target state, with how its sink
+    /// provides child handlers.
     fn add_action(
         &mut self,
+        provider: &TargetStateProvider<Prof>,
         action: Prof::TargetAction,
         child: Option<(TargetStateProvider<Prof>, ChildHandling)>,
     ) -> Result<()> {
+        self.provider_depth = self.provider_depth.min(provider.depth());
         let child_slot = match child {
             None => None,
             Some((child_provider, ChildHandling::Factory)) => {
@@ -901,6 +944,23 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
         self.actions.push((action, child_slot));
         Ok(())
     }
+}
+
+/// A component's sinks in the order they apply: those of shallower providers
+/// first, so a container's sink (a table) applies before the sink of the
+/// target states inside it (its rows), and those before the sinks of their
+/// provider's attachments (an index over the rows, which may need the rows
+/// to build). Sinks at one depth keep no particular order.
+#[allow(
+    clippy::mutable_key_type,
+    reason = "`TargetActionSinkKeeper` hashes and compares by `Arc` identity"
+)]
+fn sinks_in_apply_order<Prof: EngineProfile>(
+    actions_by_sinks: HashMap<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>,
+) -> Vec<(TargetActionSinkKeeper<Prof>, SinkInput<Prof>)> {
+    let mut sinks: Vec<_> = actions_by_sinks.into_iter().collect();
+    sinks.sort_by_key(|(_, input)| input.provider_depth);
+    sinks
 }
 
 /// The child handlers of the [`ChildHandling::Factory`] sinks' child-bearing
@@ -958,8 +1018,35 @@ async fn build_factory_children<Prof: EngineProfile>(
     Ok(children)
 }
 
+/// The tracking record a precommit left for its commit.
+///
+/// The precommit writes the record, with its stage marker, only when the
+/// build queued sink actions (or claimed or preempted a target-state path,
+/// or set a provider generation): the marker is what recovers actions in
+/// flight should the process die before the commit. A build with none of
+/// these finalizes the record in the precommit instead and leaves the row
+/// to the commit alone, so it costs one durable write txn rather than two —
+/// and none when the record is unchanged.
+enum PrecommittedTracking {
+    /// No record: a component with nothing to track, or a deletion.
+    None,
+    /// The precommit wrote the record at this version; the commit finalizes
+    /// it (see [`finalize_tracking_info`]).
+    Written(u64),
+    /// The precommit wrote nothing; the commit writes these finalized bytes
+    /// and deletes the `__target` owner rows of the pruned paths.
+    Final {
+        bytes: Vec<u8>,
+        owners_to_delete: Vec<TargetStatePath>,
+    },
+    /// The finalized record equals the stored bytes: neither txn writes the
+    /// row. A warm run of an unchanged component, whose other writes are
+    /// empty too, so commits with no page to sync.
+    Unchanged,
+}
+
 struct PreCommitOutput<Prof: EngineProfile> {
-    curr_version: Option<u64>,
+    tracking: PrecommittedTracking,
     previously_exists: bool,
     actions_by_sinks: HashMap<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>,
     /// Name of the processor to be deleted; caller passes it to `collect_processor_name_name_for_del`.
@@ -1085,6 +1172,8 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     >,
     declared_paths_all: Vec<TargetStatePath>,
     mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo<'tracking>>,
+    existing_tracking_info_bytes: Option<&[u8]>,
+    claims_new_paths: bool,
     prior_owners: BTreeMap<TargetStatePath, Option<StablePath>>,
     preempted_owner_states: BTreeMap<StablePath, OwnerStateForPreempt>,
 ) -> Result<PreCommitOutcome<Prof>> {
@@ -1302,7 +1391,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             // (`target_state_key_bytes`, `recon_output`, `child_provider`).
             // The guard drops at the end of this scope so subsequent awaits
             // in this iteration aren't carrying a `!Send` borrow.
-            let (target_state_key_bytes, recon_output, child_provider) = {
+            let (target_state_key_bytes, recon_output, child_provider, provider) = {
                 let guard = declared_target_states.lock().await;
                 let decl = guard.get(target_state_path).ok_or_else(|| {
                     internal_error!("declared entry vanished mid-pre_commit: {target_state_path}")
@@ -1350,6 +1439,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     decl.item_key_bytes.to_vec(),
                     recon_output,
                     decl.child_provider.clone(),
+                    decl.provider.clone(),
                 )
             };
 
@@ -1408,7 +1498,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 let child = child_provider
                     .map(|child_provider| (child_provider, recon_output.sink.child_handling()));
                 let sink_input = actions_by_sinks.entry(recon_output.sink).or_default();
-                sink_input.add_action(recon_output.action, child)?;
+                sink_input.add_action(&provider, recon_output.action, child)?;
 
                 if let Some(item) = &mut prev_item {
                     // Update existing item.
@@ -1517,7 +1607,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 actions_by_sinks
                     .entry(recon_output.sink)
                     .or_default()
-                    .add_action(recon_output.action, None)?;
+                    .add_action(target_states_provider, recon_output.action, None)?;
                 item.states.push((
                     curr_version,
                     match recon_output
@@ -1554,13 +1644,45 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             Some(process_token)
         };
 
-        let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
+        // A build that queued no action, claims no new target-state path,
+        // preempts none and sets no provider generation changes nothing
+        // outside this record, and has no action for a stage marker to
+        // protect: finalize the record here, as its commit would, and leave
+        // the row to the commit (see `PrecommittedTracking`). Build mode only
+        // (`processor_name`): a deletion's commit removes the row.
+        let finalize_now = processor_name.is_some()
+            && actions_by_sinks.is_empty()
+            && !claims_new_paths
+            && deferred_provider_generations.is_empty()
+            && preempted_owners.values().all(|owner| !owner.modified);
+        let tracking = if finalize_now {
+            let pruned_paths =
+                finalize_tracking_info(&mut tracking_info, curr_version, target_states_providers);
+            let bytes = rmp_serde::to_vec_named(&tracking_info)?;
+            if existing_tracking_info_bytes == Some(bytes.as_slice()) {
+                (PrecommittedTracking::Unchanged, None)
+            } else {
+                (
+                    PrecommittedTracking::Final {
+                        bytes,
+                        owners_to_delete: pruned_paths.into_iter().collect(),
+                    },
+                    None,
+                )
+            }
+        } else {
+            let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
+            (
+                PrecommittedTracking::Written(curr_version),
+                Some(data_bytes),
+            )
+        };
         drop(tracking_info); // Release borrow before further mutation.
-        (Some(curr_version), Some(data_bytes))
+        tracking
     } else {
-        (None, None)
+        (PrecommittedTracking::None, None)
     };
-    let (curr_version, new_tracking_info_bytes) = curr_version;
+    let (tracking, new_tracking_info_bytes) = curr_version;
 
     // Encode each modified preempted owner once into the write plan. The
     // backend writes them alongside the self tracking_info in the same
@@ -1578,7 +1700,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     // `OnceLock::set` "already set" guard.
     Ok(PreCommitOutcome::Done {
         output: PreCommitOutput {
-            curr_version,
+            tracking,
             previously_exists,
             actions_by_sinks,
             processor_name_for_del,
@@ -1762,7 +1884,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                                 wtxn,
                                 PrecommitReadPlan {
                                     self_path: c.stable_path.clone(),
-                                    self_token: process_token,
                                 },
                             )
                             .await?;
@@ -1795,6 +1916,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             .filter(|p| !existing_paths.contains(*p))
                             .cloned()
                             .collect();
+                        let claims_new_paths = !paths_to_claim.is_empty();
 
                         let claim = session
                             .precommit_claim_targets(
@@ -1818,6 +1940,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             Arc::clone(&c.declared_target_states),
                             declared_paths_all,
                             tracking_info,
+                            existing_tracking_info_bytes.as_deref(),
+                            claims_new_paths,
                             claim.prior_owners,
                             claim.preempted_owner_states,
                         )
@@ -1863,7 +1987,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     if let Some(ref name) = pre_commit_out.processor_name_for_del {
         collect_processor_name_name_for_del(name);
     }
-    let curr_version = pre_commit_out.curr_version;
+    let tracking = pre_commit_out.tracking;
     let touched_previous_states = pre_commit_out.previously_exists;
     #[allow(
         clippy::mutable_key_type,
@@ -1915,7 +2039,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             // (where the window also spans the sinks' apply).
             let children = build_factory_children(comp_ctx, &actions_by_sinks).await?;
             Committer::new(comp_ctx, target_states_providers)?
-                .commit_writes(child_existence, fn_memos, user_states, curr_version)
+                .commit_writes(child_existence, fn_memos, user_states, tracking)
                 .await?;
             Ok(children)
         }
@@ -1951,7 +2075,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         // with nothing applied.
         pending_fulfillments.extend(build_factory_children(comp_ctx, &actions_by_sinks).await?);
         let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
-        for (sink, input) in actions_by_sinks {
+        for (sink, input) in sinks_in_apply_order(actions_by_sinks) {
             sink.apply(
                 host_runtime_ctx,
                 Arc::clone(comp_ctx.host_ctx()),
@@ -1981,7 +2105,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // session handoff needed.
     let committer = Committer::new(comp_ctx, target_states_providers)?;
     if let Err(e) = committer
-        .commit(child_existence, fn_memos, user_states, curr_version)
+        .commit(child_existence, fn_memos, user_states, tracking)
         .await
     {
         // The commit txn either committed or rolled back before

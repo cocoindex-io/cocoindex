@@ -1,0 +1,23 @@
+---
+// Every Markdown link in a docs page renders through this (see
+// src/pages/[...slug].astro `components={{ a: LangLink }}`). A source-relative
+// link to another docs page (`./app`, `../connectors/postgres`), which
+// remark-link-checker marks with `data-doc-link`, points into the reader's
+// language tree (/docs/rust/<slug>/ on a Rust page) when the target has a page
+// there, else to the target's counterpart, else to the page in the language it
+// exists in. Root-relative links (`/docs/cli/`) are taken as written: use them
+// to point at one language on purpose.
+import type { HTMLAttributes } from 'astro/types';
+import { DOCS_BASE } from '../consts';
+import { currentLang, pageRegistry } from '../lib/lang';
+
+type Props = HTMLAttributes<'a'> & { 'data-doc-link'?: string };
+const { href, 'data-doc-link': docLink, ...rest } = Astro.props;
+let out = typeof href === 'string' ? href : href?.toString();
+if (docLink && out?.startsWith(`${DOCS_BASE}/`)) {
+  const hash = out.split('#')[1];
+  const hit = (await pageRegistry()).resolve(docLink, currentLang(Astro));
+  if (hit) out = hit.href + (hash ? `#${hash}` : '');
+}
+---
+<a href={out} {...rest}><slot /></a>

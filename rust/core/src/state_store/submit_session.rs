@@ -97,9 +97,6 @@ use crate::state_store::WriteTxn;
 pub struct PrecommitReadPlan {
     /// Self path. Stage marker scope.
     pub self_path: StablePath,
-    /// This process's stage token. Stored in the on-disk tracking-info
-    /// blob's `pending_process_token` field.
-    pub self_token: u128,
 }
 
 /// Output of [`PrecommitSession::precommit_read`]. Pure read — the
@@ -111,13 +108,6 @@ pub struct PrecommitReadResult {
     /// Existing committed tracking-info bytes for `self_path`. `None`
     /// if no row yet.
     pub existing_tracking_info: Option<Vec<u8>>,
-    /// Pending-stage token observed on `self_path` — `self_token` if no
-    /// other writer is in flight, otherwise the other writer's token.
-    /// The engine compares it to `self_token` to detect the "another
-    /// process is in flight on this same component" case. (Intra-process
-    /// is already serialized by the per-component semaphore, so a
-    /// mismatch implies a different process.)
-    pub post_stage_token: u128,
 }
 
 /// Inputs to [`PrecommitSession::precommit_claim_targets`].
@@ -174,7 +164,7 @@ pub struct PrecommitWritePlan {
     /// Self path.
     pub self_path: StablePath,
     /// New tracking-info bytes for this component. `None` skips the
-    /// write (e.g. nothing to track yet).
+    /// write (nothing to track yet, or nothing the build changed).
     pub new_tracking_info: Option<Vec<u8>>,
     /// For each preempted other-owner: their new tracking-info bytes
     /// (with the preempted item removed by the engine).
@@ -236,18 +226,8 @@ impl PrecommitSession {
             .app_store
             .read_tracking_info_in_txn(wtxn, &plan.self_path)
             .await?;
-        let existing_pending = match raw.as_deref() {
-            Some(bytes) => {
-                let info: StablePathEntryTrackingInfo<'_> = from_msgpack_slice(bytes)?;
-                info.pending_process_token
-            }
-            None => None,
-        };
-        let post_stage_token = existing_pending.unwrap_or(plan.self_token);
-
         Ok(PrecommitReadResult {
             existing_tracking_info: raw,
-            post_stage_token,
         })
     }
 
@@ -322,11 +302,22 @@ impl PrecommitSession {
 // Phase 4 — Commit
 // ---------------------------------------------------------------------------
 
+/// What [`AppStore::commit`] does to the component's tracking-info row.
+pub enum TrackingInfoWrite {
+    /// Write these final bytes (`Build` mode).
+    Write(Vec<u8>),
+    /// Delete the row (`Delete` mode).
+    Delete,
+    /// Leave the row as it is: the build queued no action and the bytes it
+    /// would write equal the stored ones, so its precommit wrote nothing
+    /// either (see `pre_commit` in the engine).
+    Keep,
+}
+
 /// Inputs to [`AppStore::commit`].
 pub struct CommitPlan {
-    /// Final tracking-info bytes for self. `None` in `Delete` mode
-    /// (AppStore deletes the row instead).
-    pub new_tracking_info: Option<Vec<u8>>,
+    /// What happens to self's tracking-info row.
+    pub tracking_info: TrackingInfoWrite,
     /// Bulk upserts on `__target`.
     pub target_owners_to_upsert: Vec<(TargetStatePath, StablePath)>,
     /// Bulk deletes from `__target` (pruned-item cleanup).
@@ -487,14 +478,18 @@ impl AppStore {
             let plan = Arc::clone(&plan);
             let existence_reconciler = Arc::clone(&existence_reconciler);
             Box::pin(async move {
-                if let Some(bytes) = plan.new_tracking_info.as_ref() {
-                    app_store
-                        .write_tracking_info_raw(wtxn, &component_path, bytes)
-                        .await?;
-                } else {
-                    app_store
-                        .delete_tracking_info(wtxn, &component_path)
-                        .await?;
+                match &plan.tracking_info {
+                    TrackingInfoWrite::Write(bytes) => {
+                        app_store
+                            .write_tracking_info_raw(wtxn, &component_path, bytes)
+                            .await?;
+                    }
+                    TrackingInfoWrite::Delete => {
+                        app_store
+                            .delete_tracking_info(wtxn, &component_path)
+                            .await?;
+                    }
+                    TrackingInfoWrite::Keep => {}
                 }
                 for (target_path, owner_path) in &plan.target_owners_to_upsert {
                     app_store

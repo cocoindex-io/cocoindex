@@ -12,7 +12,7 @@
 //!
 //! Mirrors the Python `_internal/live_component.py` surface
 //! (`LiveComponent` / `LiveComponentOperator` / `LiveMapFeed` / `LiveMapView` /
-//! `LiveMapSubscriber`) and the `exception_handler` / `ExceptionContext`
+//! `LiveMapSubscriber` / `LiveStream` / `LiveStreamSubscriber`) and the `exception_handler` / `ExceptionContext`
 //! error-routing model from `_internal/component_ctx.py`, adapted to Rust:
 //!
 //! - A `LiveComponent` is a trait with `process` (one full pass) and
@@ -128,13 +128,18 @@ pub type ExceptionHandler =
 /// rewritten) error propagates to the next outer handler, with
 /// [`ExceptionContext::source`] set to [`ExceptionSource::Handler`], and
 /// finally out.
+///
+/// `make_ctx` runs only when `chain` has a handler: with none in scope (the
+/// common case) the context is never built, so a mount pays no path
+/// formatting for an error that may never happen.
 pub(crate) fn build_chained_on_error(
     chain: &[ExceptionHandler],
-    ctx: ExceptionContext,
+    make_ctx: impl FnOnce() -> ExceptionContext,
 ) -> Option<OnError> {
     if chain.is_empty() {
         return None;
     }
+    let ctx = make_ctx();
     let chain: Vec<ExceptionHandler> = chain.to_vec();
     Some(Arc::new(move |err: CoreError| {
         let chain = chain.clone();
@@ -269,18 +274,19 @@ impl LiveComponentOperator {
             format!("{}:process", self.name),
         );
         let on_error =
-            build_chained_on_error(&self.handler_chain, self.exc_ctx(MountKind::UpdateFull));
+            build_chained_on_error(&self.handler_chain, || self.exc_ctx(MountKind::UpdateFull));
         self.controller
             .update_full(processor, on_error)
             .await
             .map_err(engine_err)
     }
 
-    /// Incrementally mount (or replace) a single child under `key`, running
-    /// `f` to declare its state. Same-key rapid calls coalesce. Awaits until the
-    /// child's state has synced. A failure in `f` follows the same routing as
-    /// [`Self::update_full`]: logged, not returned, unless a handler propagates it.
-    pub async fn update<K, F, Fut>(&self, key: K, f: F) -> Result<()>
+    /// [`update`](Self::update) without waiting: the child mount is queued and
+    /// the returned handle's [`ready`](ReadyHandle::ready) awaits its sync, so a
+    /// stream source can keep polling while earlier messages are processed and
+    /// acknowledge each once its handle is ready (the Python
+    /// `LiveMapSubscriber.update` returns such a handle).
+    pub async fn start_update<K, F, Fut>(&self, key: K, f: F) -> Result<ReadyHandle>
     where
         K: Display,
         F: FnOnce(Ctx) -> Fut + Send + 'static,
@@ -305,33 +311,54 @@ impl LiveComponentOperator {
             None,
             format!("{}:update", self.name),
         );
-        let on_error = build_chained_on_error(
-            &self.handler_chain,
-            self.child_exc_ctx(MountKind::Update, &child_path),
-        );
+        let on_error = build_chained_on_error(&self.handler_chain, || {
+            self.child_exc_ctx(MountKind::Update, &child_path)
+        });
         let handle = self
             .controller
             .update(child_path, processor, on_error)
             .await
             .map_err(engine_err)?;
-        handle.ready().await.map_err(engine_err)
+        Ok(ReadyHandle::from_future(async move {
+            handle.ready().await.map_err(engine_err)
+        }))
+    }
+
+    /// Incrementally mount (or replace) a single child under `key`, running
+    /// `f` to declare its state. Same-key rapid calls coalesce. Awaits until the
+    /// child's state has synced. A failure in `f` follows the same routing as
+    /// [`Self::update_full`]: logged, not returned, unless a handler propagates it.
+    pub async fn update<K, F, Fut>(&self, key: K, f: F) -> Result<()>
+    where
+        K: Display,
+        F: FnOnce(Ctx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        self.start_update(key, f).await?.ready().await
+    }
+
+    /// [`delete`](Self::delete) without waiting: the deletion is queued and the
+    /// returned handle's [`ready`](ReadyHandle::ready) awaits its sync.
+    pub async fn start_delete<K: Display>(&self, key: K) -> Result<ReadyHandle> {
+        let child_path = self.child_path(&key);
+        let on_error = build_chained_on_error(&self.handler_chain, || {
+            self.child_exc_ctx(MountKind::Delete, &child_path)
+        });
+        let handle = self
+            .controller
+            .delete(child_path, on_error)
+            .await
+            .map_err(engine_err)?;
+        Ok(ReadyHandle::from_future(async move {
+            handle.ready().await.map_err(engine_err)
+        }))
     }
 
     /// Incrementally remove the child mounted under `key`, cleaning up its
     /// target states. Awaits until the deletion has synced. Failures follow the
     /// same routing as [`Self::update_full`].
     pub async fn delete<K: Display>(&self, key: K) -> Result<()> {
-        let child_path = self.child_path(&key);
-        let on_error = build_chained_on_error(
-            &self.handler_chain,
-            self.child_exc_ctx(MountKind::Delete, &child_path),
-        );
-        let handle = self
-            .controller
-            .delete(child_path, on_error)
-            .await
-            .map_err(engine_err)?;
-        handle.ready().await.map_err(engine_err)
+        self.start_delete(key).await?.ready().await
     }
 
     /// Signal that the initial catch-up is complete. Idempotent. In catch-up
@@ -423,6 +450,102 @@ pub(crate) fn start_process_live(
 }
 
 // ---------------------------------------------------------------------------
+// Live streams: a keyless message stream with acknowledgement
+// ---------------------------------------------------------------------------
+
+/// Awaits the processing of one message a [`LiveStreamSubscriber`] accepted.
+/// The Rust form of the Python `ReadyAwaitable`.
+///
+/// [`immediate`](Self::immediate) means "no work was needed; acknowledge the
+/// message now", as returning `_IMMEDIATE_READY` does in Python; a stream may
+/// check [`is_immediate`](Self::is_immediate) to skip tracking such a message.
+#[must_use = "a message is acknowledged once its handle is ready; drop it and the stream never learns"]
+pub struct ReadyHandle(Option<Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>>);
+
+impl ReadyHandle {
+    /// A handle that is ready at once: the message needs no further work.
+    pub const fn immediate() -> Self {
+        Self(None)
+    }
+
+    /// A handle that is ready once `future` completes (a child mount's sync).
+    pub fn from_future(future: impl Future<Output = Result<()>> + Send + 'static) -> Self {
+        Self(Some(Box::pin(future)))
+    }
+
+    /// Whether this handle was made with [`immediate`](Self::immediate).
+    pub fn is_immediate(&self) -> bool {
+        self.0.is_none()
+    }
+
+    /// Await the message's processing; its error, if the work failed.
+    pub async fn ready(self) -> Result<()> {
+        match self.0 {
+            Some(future) => future.await,
+            None => Ok(()),
+        }
+    }
+}
+
+impl std::fmt::Debug for ReadyHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadyHandle")
+            .field("immediate", &self.is_immediate())
+            .finish()
+    }
+}
+
+/// Receives the messages of a [`LiveStream`]. The Rust form of the Python
+/// `LiveStreamSubscriber` protocol.
+#[async_trait]
+pub trait LiveStreamSubscriber<M>: Send + Sync {
+    /// Accept a message; the returned handle is ready once the message has been
+    /// processed, and the stream acknowledges the message to its source then.
+    /// Return [`ReadyHandle::immediate`] for a message that needs no work.
+    async fn send(&self, message: M) -> Result<ReadyHandle>;
+
+    /// The stream has caught up to the position it had when `watch` started.
+    /// Must return promptly: the stream awaits it inline in its poll loop.
+    async fn mark_ready(&self);
+
+    /// A value the stream committed under `key` on an earlier run (see
+    /// [`write_committed_state`](Self::write_committed_state)), or `None`.
+    /// The default has no store and returns `None`.
+    async fn read_committed_state(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        let _ = key;
+        Ok(None)
+    }
+
+    /// Commit `value` under `key` for a later run of the stream to read back:
+    /// where a stream keeps its own durable cursor (the Rust Kafka source,
+    /// whose client has no broker-side consumer group), as
+    /// [`LiveComponentOperator::write_committed_state`] does for a live
+    /// component. A subscriber backed by a live component forwards it there;
+    /// the default has no store and drops the value, so the stream starts over
+    /// on the next run.
+    async fn write_committed_state(&self, key: &str, value: &[u8]) -> Result<()> {
+        let _ = (key, value);
+        Ok(())
+    }
+}
+
+/// A keyless stream of messages with in-memory processing-watermark tracking:
+/// the stream delivers every message to its subscriber, acknowledges a message
+/// to its source once the subscriber's handle for it (and the handles of the
+/// messages before it) are ready, and signals readiness once it has caught up
+/// to the position it had when the watch started. The Rust form of the Python
+/// `LiveStream` protocol (a Kafka or Iggy topic; the event feed of a live
+/// object-store view).
+///
+/// Single-subscriber: one active `watch` at a time (implementations enforce
+/// this with [`SingleWatcherGuard`]).
+#[async_trait]
+pub trait LiveStream<M: Send + 'static>: Send + Sync + 'static {
+    /// Deliver messages to `subscriber` until cancelled.
+    async fn watch(&self, subscriber: &dyn LiveStreamSubscriber<M>) -> Result<()>;
+}
+
+// ---------------------------------------------------------------------------
 // Live maps: feed / view / subscriber
 // ---------------------------------------------------------------------------
 
@@ -443,15 +566,28 @@ pub struct LiveMapSubscriber<K, V> {
 impl<K: Display, V: Send + 'static> LiveMapSubscriber<K, V> {
     /// Incrementally upsert one entry.
     pub async fn update(&self, key: K, value: V) -> Result<()> {
+        self.start_update(key, value).await?.ready().await
+    }
+
+    /// [`update`](Self::update) without waiting; the handle's
+    /// [`ready`](ReadyHandle::ready) awaits the entry's sync. See
+    /// [`LiveComponentOperator::start_update`].
+    pub async fn start_update(&self, key: K, value: V) -> Result<ReadyHandle> {
         let process_fn = self.process_fn.clone();
         self.operator
-            .update(key, move |ctx| process_fn(ctx, value))
+            .start_update(key, move |ctx| process_fn(ctx, value))
             .await
     }
 
     /// Incrementally remove one entry.
     pub async fn delete(&self, key: K) -> Result<()> {
-        self.operator.delete(key).await
+        self.start_delete(key).await?.ready().await
+    }
+
+    /// [`delete`](Self::delete) without waiting; the handle's
+    /// [`ready`](ReadyHandle::ready) awaits the removal's sync.
+    pub async fn start_delete(&self, key: K) -> Result<ReadyHandle> {
+        self.operator.start_delete(key).await
     }
 
     /// Re-scan all entries (a full pass). Use after a change that can't be

@@ -584,3 +584,72 @@ async fn snowflake_live_upsert_and_delete() -> Result<()> {
         .await;
     result
 }
+
+/// Rows per `MERGE` (bindings / 3 columns) of every `MERGE` the server got.
+async fn merge_row_counts(server: &MockServer) -> Vec<usize> {
+    received_statements(server)
+        .await
+        .iter()
+        .filter(|(sql, _)| sql.starts_with("MERGE"))
+        .map(|(_, bindings)| bindings.as_object().map_or(0, |b| b.len()) / 3)
+        .collect()
+}
+
+/// Rows go in `MERGE` statements of at most 4,000 bindings: 1,333 rows of 3
+/// columns per statement. A statement the server rejects mid-batch fails the
+/// run, and the next run sends every row again, so nothing is lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snowflake_batches_follow_the_binding_limit_and_a_failure_is_retried() -> Result<()> {
+    let items = |n: i64| -> Vec<Item> { (0..n).map(|id| item(id, "x", &[])).collect() };
+    for (n, expected) in [(1, vec![1]), (1333, vec![1333]), (1334, vec![1333, 1])] {
+        let Some(server) = snowflake_server().await else {
+            return Ok(());
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        declare(
+            &connection(&server),
+            &tmp.path().join("db"),
+            items(n),
+            options(),
+        )
+        .await?;
+        let mut counts = merge_row_counts(&server).await;
+        counts.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(counts, expected, "{n} rows");
+    }
+
+    let Some(server) = mock_server().await else {
+        return Ok(());
+    };
+    // The first MERGE fails; everything else succeeds.
+    Mock::given(method("POST"))
+        .and(path("/queries/v1/query-request"))
+        .and(wiremock::matchers::body_string_contains("MERGE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": false,
+            "message": "boom",
+            "code": "100038",
+            "data": null,
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    mount_snowflake(&server).await;
+    let conn = connection(&server);
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("db");
+    let err = declare(&conn, &db, items(3000), options())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("boom"), "{err}");
+    server.reset().await;
+    mount_snowflake(&server).await;
+    declare(&conn, &db, items(3000), options()).await?;
+    let sent: usize = merge_row_counts(&server).await.iter().sum();
+    assert_eq!(
+        sent, 3000,
+        "the next run sends every row of the failed batch"
+    );
+    Ok(())
+}

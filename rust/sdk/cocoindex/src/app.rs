@@ -12,7 +12,7 @@ use cocoindex_core::engine::app::{App as CoreApp, AppOpHandle, AppUpdateOptions}
 use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::environment::{Environment as CoreEnvironment, EnvironmentSettings};
 use cocoindex_core::engine::progress_display::{ProgressDisplayOptions, show_progress};
-use cocoindex_core::engine::stats::{ProcessingStats, TERMINATED_VERSION};
+use cocoindex_core::engine::stats::{ProcessingStats, ProcessingStatsGroup, TERMINATED_VERSION};
 use cocoindex_core::engine::target_state::{
     TargetStateProvider as CoreTargetStateProvider, TargetStateProviderRegistry,
 };
@@ -81,8 +81,14 @@ pub const LMDB_MAX_DBS_ENV: &str = "COCOINDEX_LMDB_MAX_DBS";
 /// none (read by [`Environment::from_registered`]).
 pub const LMDB_MAP_SIZE_ENV: &str = "COCOINDEX_LMDB_MAP_SIZE";
 
+/// Environment variable for the number of components an app runs at once
+/// when the builder sets none, read when the app is created, as in Python.
+pub const MAX_INFLIGHT_COMPONENTS_ENV: &str = "COCOINDEX_MAX_INFLIGHT_COMPONENTS";
+
 /// LMDB maximum number of named databases when nothing sets it.
 pub const DEFAULT_LMDB_MAX_DBS: u32 = 1024;
+/// Components an app runs at once when nothing sets it (Python's default).
+pub const DEFAULT_MAX_INFLIGHT_COMPONENTS: usize = 1024;
 /// LMDB map size in bytes (4 GiB) when nothing sets it.
 pub const DEFAULT_LMDB_MAP_SIZE: usize = 0x1_0000_0000;
 
@@ -166,7 +172,8 @@ impl Environment {
 
     /// Run the `on_shutdown` hooks (most recently registered first), then
     /// close the state db. Hooks run once; a second call only closes.
-    /// Await every running update or drop before calling this.
+    /// Await every running update or drop before calling this. A live update
+    /// never ends on its own, and the SDK cannot stop one yet.
     pub async fn shutdown(&self) {
         // A poisoned lock still holds the hooks; run them anyway.
         let hooks: Vec<ShutdownHook> = std::mem::take(
@@ -189,10 +196,18 @@ impl Environment {
     /// # Errors
     /// Returns an error if the app's state store cannot be created.
     pub async fn app(&self, name: &str) -> Result<App> {
+        // Resolved per app, as Python's `App.__init__` does: the builder's
+        // value, else the environment variable, else the default.
+        let max_inflight_components = match self.inner.max_inflight_components {
+            Some(limit) => limit,
+            None => {
+                env_setting(MAX_INFLIGHT_COMPONENTS_ENV)?.unwrap_or(DEFAULT_MAX_INFLIGHT_COMPONENTS)
+            }
+        };
         let core_app = CoreApp::new(
             name,
             self.inner.core_env.clone(),
-            self.inner.max_inflight_components,
+            Some(max_inflight_components),
         )
         .await
         .map_err(|e| Error::engine(format!("failed to create app: {e}")))?;
@@ -210,14 +225,12 @@ impl Environment {
     }
 
     /// Create an app in this environment (blocking). Convenience for sync
-    /// callers — creates a tokio runtime internally and awaits [`Self::app`].
+    /// callers — awaits [`Self::app`] on the engine's runtime.
     ///
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
     pub fn app_blocking(&self, name: &str) -> Result<App> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.app(name))
+        block_on(self.app(name))
     }
 }
 
@@ -302,6 +315,8 @@ impl EnvironmentBuilder {
     }
 
     /// Limit the number of concurrently processing components (per app).
+    /// Default: the `COCOINDEX_MAX_INFLIGHT_COMPONENTS` environment variable
+    /// when the app is created, else 1024, as in Python.
     pub fn max_inflight_components(mut self, value: usize) -> Self {
         self.max_inflight_components = Some(value);
         self
@@ -394,10 +409,18 @@ impl EnvironmentBuilder {
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
     pub fn build_blocking(self) -> Result<Environment> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.build())
+        block_on(self.build())
     }
+}
+
+/// Run `fut` to completion on the engine's runtime, for the `*_blocking`
+/// wrappers. The runtime is shared by every app in the process (the engine
+/// spawns component tasks on it), so no wrapper builds a runtime of its own.
+///
+/// # Panics
+/// Panics if called from within an async runtime; use the async form there.
+fn block_on<F: Future>(fut: F) -> F::Output {
+    cocoindex_core::engine::runtime::get_runtime().block_on(fut)
 }
 
 /// Read an integer setting from the environment; `Ok(None)` when unset.
@@ -464,9 +487,7 @@ impl AppBuilder {
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
     pub fn build_blocking(self) -> Result<App> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.build())
+        block_on(self.build())
     }
 }
 
@@ -524,7 +545,7 @@ impl App {
     }
 
     /// Convenience: synchronously open an app with a specific DB path. Same
-    /// as [`Self::open`] but blocks on a tokio runtime internally.
+    /// as [`Self::open`] but blocks on the engine's runtime.
     ///
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
@@ -609,6 +630,15 @@ impl App {
     ///
     /// Returns an error if the provided closure returns an error, or if internal engine
     /// orchestration fails.
+    ///
+    /// # Cancellation
+    ///
+    /// The update runs as a task on the engine's runtime. Dropping the
+    /// returned future (or the [`UpdateHandle`] of [`App::start_update`])
+    /// does not stop it: it runs to completion, and a live update runs until
+    /// the process exits. The same holds for [`App::run`],
+    /// [`App::update_with_options`], [`App::preview`] and
+    /// [`App::drop_state`].
     pub async fn update<F, Fut, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(Ctx) -> Fut + Send + 'static,
@@ -685,9 +715,7 @@ impl App {
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.preview(f))
+        block_on(self.preview(f))
     }
 
     /// Start an update and return a handle for progress/stat polling.
@@ -778,22 +806,18 @@ impl App {
     /// [`RunStats`] flattens away).
     pub(crate) fn update_stats_from_processing(processing_stats: &ProcessingStats) -> UpdateStats {
         let snapshot = processing_stats.snapshot();
+        let component_stats = |group: &ProcessingStatsGroup| ComponentStats {
+            num_execution_starts: group.num_execution_starts,
+            num_unchanged: group.num_unchanged,
+            num_adds: group.num_adds,
+            num_deletes: group.num_deletes,
+            num_reprocesses: group.num_reprocesses,
+            num_errors: group.num_errors,
+        };
         let by_component = snapshot
             .stats
             .iter()
-            .map(|(name, group)| {
-                (
-                    name.clone(),
-                    ComponentStats {
-                        num_execution_starts: group.num_execution_starts,
-                        num_unchanged: group.num_unchanged,
-                        num_adds: group.num_adds,
-                        num_deletes: group.num_deletes,
-                        num_reprocesses: group.num_reprocesses,
-                        num_errors: group.num_errors,
-                    },
-                )
-            })
+            .map(|(name, group)| (name.clone(), component_stats(group)))
             .collect();
         let status = if snapshot.ready {
             UpdateStatus::Ready
@@ -803,11 +827,12 @@ impl App {
         UpdateStats {
             by_component,
             status,
+            in_groups: component_stats(&snapshot.in_groups),
         }
     }
 
-    /// Run the pipeline (blocking). Convenience for sync callers — creates a
-    /// tokio runtime internally.
+    /// Run the pipeline (blocking). Convenience for sync callers — runs on
+    /// the engine's runtime.
     ///
     /// # Panics
     /// Panics if called from within an active tokio runtime (use `update`
@@ -818,9 +843,7 @@ impl App {
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.update(f))
+        block_on(self.update(f))
     }
 
     /// Run the pipeline once with explicit update options (blocking).
@@ -833,9 +856,7 @@ impl App {
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.update_with_options(options, f))
+        block_on(self.update_with_options(options, f))
     }
 
     /// Start dropping all persisted app state and return a handle.
@@ -858,9 +879,7 @@ impl App {
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
     pub fn drop_state_blocking(&self) -> Result<()> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.drop_state())
+        block_on(self.drop_state())
     }
 
     /// Get the app name.
@@ -969,7 +988,8 @@ impl std::fmt::Debug for PreviewAction {
     }
 }
 
-/// Handle returned by [`App::start_update`].
+/// Handle returned by [`App::start_update`]. Dropping it does not stop the
+/// update (see the cancellation notes on [`App::update`]).
 pub struct UpdateHandle<T> {
     core: AppOpHandle<Value>,
     preview_collector: Option<Arc<std::sync::Mutex<Vec<Action>>>>,
@@ -1028,7 +1048,8 @@ where
     }
 }
 
-/// Handle returned by [`App::start_drop_state`].
+/// Handle returned by [`App::start_drop_state`]. Dropping it does not stop
+/// the drop (see the cancellation notes on [`App::update`]).
 pub struct DropHandle {
     core: AppOpHandle<()>,
 }

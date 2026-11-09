@@ -364,6 +364,25 @@ before the first GPU function runs. Python's subprocess mode and dedicated GPU
 thread exist for the GIL and CUDA's fork rules, which a Rust body does not
 have, so there is no equivalent.
 
+Any type implementing `cocoindex::Runner` (Python's `Runner` base class) goes
+in `runner = ...`: it receives each body as a future and decides when to run
+it. The value is built on the function's first call and shared by every call.
+
+```rust
+struct AtMostTwo(tokio::sync::Semaphore);
+
+#[async_trait::async_trait]
+impl cocoindex::Runner for AtMostTwo {
+    async fn run(&self, body: cocoindex::RunnerBody<'_>) -> Result<cocoindex::RunnerOutput> {
+        let _permit = self.0.acquire().await.map_err(|e| Error::engine(e.to_string()))?;
+        body.await
+    }
+}
+
+#[cocoindex::function(memo, runner = AtMostTwo(tokio::sync::Semaphore::new(2)))]
+async fn summarize(_ctx: &Ctx, text: String) -> Result<String> { /* ... */ }
+```
+
 ## Embed, transcribe and resolve entities with the built-in ops
 
 The model ops use the two patterns above, so a pipeline calls them per item
@@ -384,6 +403,10 @@ and gets memoization and batching from the engine, as the Python ops do under
 - `LlmPairResolver` memoizes each `(entity, candidates)` decision, and
   `resolve_entities(&ctx, names, &embedder, &resolver, ..)` embeds the names
   through the batched path. Any `Embedder` is an `EntityEmbedder`.
+- `ApiChatClient::extract::<T>(&ctx, &messages)` runs a JSON-mode chat
+  completion, deserializes the answer into `T` and memoizes it by model,
+  endpoint and messages: structured extraction with an LLM, without parsing
+  by hand.
 
 ```rust
 cocoindex::context_key!(static EMBEDDER: ApiEmbedder, detect_change);
@@ -411,9 +434,13 @@ memoizes nothing.
 `SentenceTransformerEmbedder::load(name_or_path)` accepts a `fastembed`
 registry name, a local directory holding a sentence-transformers ONNX export,
 or the Hugging Face repository of such an export, like Python's
-`model_name_or_path`. `fastembed` always normalizes its vectors and has no
-prompt registry or device selection, so Python's `normalize_embeddings`,
-`prompt_name` and `device` have no Rust counterpart.
+`model_name_or_path`. Its batches, like `ImageEmbedder`'s, run under the GPU
+runner, as Python's do under `runner=coco.GPU`: one inference at a time per
+GPU in the pool. `load_with(name, execution_providers)` picks the ONNX Runtime
+execution providers (Python's `device`), such as CUDA when the binary enables
+the `ort` crate's `cuda` feature. `fastembed` always normalizes its vectors
+and has no prompt registry, so Python's `normalize_embeddings` and
+`prompt_name` have no Rust counterpart.
 
 ## Mount processing components
 
@@ -423,15 +450,23 @@ arguments in a component-memo fingerprint:
 ```rust
 let summary = use_mount!(summarize(ctx, document)).await?;
 
-let outputs = mount_each!(files, |file| process_file(ctx, file, target)).await?;
+mount_each!(files, |file| process_file(ctx, file, target)).await?;
+
+let outputs = use_mount_each!(files, |file| summarize_file(ctx, file)).await?;
 ```
 
-`mount_each!` accepts `(key, value)` items, creates one child component per
-key, and runs them concurrently. Without an explicit prefix, the entry
-function's name is used; the prefixed form is
+`mount_each!` accepts `(key, value)` items and mounts one background child
+component per key at `prefix/key`, like `coco.mount_each` in Python: children
+are mounted as the items are read, run on their own tasks under the app's
+`max_inflight_components` limit (1024 by default, or
+`COCOINDEX_MAX_INFLIGHT_COMPONENTS`), and the macro returns one handle whose
+`ready()` waits for all of them. `use_mount_each!` is the foreground form that
+returns each child's value in input order. Without an explicit prefix, the
+entry function's name is used; the prefixed form is
 `mount_each!("documents", files, |file| process_file(ctx, file))`.
 
-Use `ctx.scope(key, body)` or `ctx.mount_each(items, key_fn, body)` only when
+Use `ctx.scope(key, body)`, `ctx.mount_each(items, key_fn, body)` or
+`ctx.use_mount_each(items, key_fn, body)` only when
 the component key and closure are deliberately dynamic and no automatic
 function/argument fingerprint is wanted. These methods always execute their
 closures; they still provide stable child ownership and reconciliation.
@@ -453,10 +488,13 @@ exception handlers in scope.
 
 ### Nested component paths
 
-`ctx.with_subpath(&"process")` returns a context whose child mounts go under
+`ctx.with_subpath("process")` returns a context whose child mounts go under
 `process`, the Rust spelling of a `with coco.component_subpath("process"):`
 block. Chain calls for a multi-part prefix. `use_state` is not available on a
 subpath context, as in Python.
+
+A mount key is a string or any other `IntoStableKey`: an integer, a UUID,
+bytes, or a `StableKey` such as a symbol, as Python's component keys are.
 
 ```rust
 let process = ctx.with_subpath(&"process");
@@ -520,8 +558,10 @@ removed during reconciliation. A subdirectory is a target of its own
 `fs::declare_file` declares one file without a directory target; and a root
 under a `ContextKey<PathBuf>` (`FilePath::under_context_dir`) keeps its target
 keys when the tree moves between runs. `walk_dir(..).live()` follows the
-directory with the platform's native file events, polling where those are
-unavailable.
+directory with the platform's native file events (polling where those are
+unavailable): each event updates or removes that file's component alone, a
+directory that appears is walked, and a periodic `rescan_interval` (an hour by
+default) walks the whole tree as a safety net.
 
 ## Read message streams and sign in to Google Drive
 
@@ -551,9 +591,32 @@ ctx.mount_each_live(&"orders", kafka::topic_as_map(&consumer, "orders"), |ctx, m
 .await?;
 ```
 
+`topic_as_stream` is also a `LiveStream` (the Rust form of Python's
+`LiveStream` protocol): `watch` delivers every record to a
+`LiveStreamSubscriber`, polling the partitions at the same time, acknowledges a
+record once the `ReadyHandle` its `send` returned is ready, and marks the
+subscriber ready once every partition has caught up. `.payloads()` is the
+`LiveStream<Vec<u8>>` view of the values, the input of a live object-store
+view. An Iggy map derives keys and deletions from the whole
+`IggyReceivedMessage`, and a client the caller built is wrapped with
+`KafkaConsumer::from_client` / `IggyConsumer::from_client`.
+
+```rust
+let events = kafka::topic_as_stream(&consumer, ["bucket-events"]).payloads();
+let walker = oci_object_storage::list_objects_live(&client, "ns", "bucket", ListOptions::default(), events);
+```
+
+The OCI live view acknowledges each event to the stream once the object it
+names has synced, so the consumer group's offset never passes an unprocessed
+event. `OciClient::from_instance_principal` runs as the compute instance itself
+(a session token from the identity service, renewed as it expires), and an
+`~/.oci/config` profile with a `pass_phrase` opens its encrypted key.
+
 The Kafka and Iggy targets take their producer as a `ContextKey`, like every
 other connector target: `provide_key(&PRODUCER, producer)` once, name the key
-in `mount_kafka_topic_target(&ctx, &PRODUCER, topic, options)`.
+in `mount_kafka_topic_target(&ctx, &PRODUCER, topic, options)`. `kafka_topic_target` / `iggy_topic_target` build the
+topic's `TargetState` for `mount_target`, and `declare_message_bytes` declares a
+message under a binary key.
 
 A personal Google account signs in once with `UserAccount::sign_in`
 (`client_secret.json` of a Desktop-app OAuth client), to the same token file
@@ -630,6 +693,69 @@ library. `cargo run` and `cargo test` find it; a binary that runs on its own
 needs it on the library path, or a `build.rs` that calls
 `zvec_rust_build::configure()`.
 
+## Declare rows inside the per-file component
+
+The Python examples pass the target into the memoized per-item function, so
+each item's rows are owned by its own component and sync, update and clean up
+with that item. The Rust examples do the same: a target handle is `Clone` but
+not `MemoInput`, so `memo_key(table = skip)` leaves it out of the memo key.
+`Ctx::map` futures may borrow the caller's state, so the per-chunk function
+shares one `IdGenerator` (its `next_id` takes `&self`).
+
+```rust
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_file(ctx: &Ctx, file: &FileEntry, table: &postgres::TableTarget) -> Result<()> {
+    let text = file.read_text().await?;
+    let chunks = RecursiveSplitter::new()?.split(&text, 2000);
+    let filename = file.key();
+    let id_gen = IdGenerator::new();
+    ctx.map(chunks, async |chunk| {
+        process_chunk(ctx, chunk, &text, &filename, &id_gen, &table).await
+    })
+    .await?;
+    Ok(())
+}
+
+// A live directory source: one component per file, kept in sync under `-L`.
+let files = walk_dir(sourcedir).recursive(true).live();
+ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
+    let table = table.clone();
+    async move { process_file(&ctx, &file, &table).await }
+})
+.await?;
+```
+
+`FilePath` mirrors Python's: `parents`, `matches` (pathlib `match` semantics)
+and `is_relative_to`, next to `FilePath::under_context_dir(&ctx, &SOURCE_DIR,
+"docs/a.md")` for a base directory the environment provides under a
+`ContextKey<PathBuf>`. `FileLike::read_text_with(Some("latin1"),
+DecodeErrors::Strict)` is Python's `read_text(encoding=, errors=)`.
+
+## In-memory `LiveMap`
+
+`LiveMap<K, V>` bridges a producing and a consuming part of a live pipeline.
+`K` is any `LiveMapKey` (`String`, `i64`, `u64` or a `StableKey`), as Python's
+`LiveMap[K, V]` takes any stable key.
+
+```rust
+let lm: LiveMap<i64, String> = LiveMap::create(&ctx).await?;
+lm.declare_entry(&ctx, 7, "seven".to_string())?;           // producer side
+ctx.mount_each_live(&"entries", lm.clone(), process_entry).await?; // consumer side
+```
+
+## Structural code matching
+
+`ops::code` (feature `code_match`) parses once and matches by-example
+patterns; `render_match` renders a match with the head lines of its enclosing
+scopes as context, as a `SourceView` of source-grounded segments.
+
+```rust
+let ast = CodeAst::new(source, "python")?;
+let matches = ast.matches(r"return \X")?;
+let view = render_match(&ast, &matches[0]);
+println!("{}", view.text);  // frames + the matched code
+```
+
 ## Derive connector schemas from row types
 
 `SchemaFields` keeps the Rust row and connector schema in one place. A bare
@@ -665,6 +791,10 @@ let schema = sqlite::TableSchema::from_row::<DocEmbedding>(["id"])?
     .with_column_type("text", "VARCHAR(2000)")?;
 ```
 
+BigQuery and Snowflake take a `ColumnDef`, so an override can also write the
+value through `PARSE_JSON`:
+`.with_column_type("payload", bigquery::ColumnDef::new("JSON").parse_json())?`.
+
 To encode a value differently on the way to the store, put
 `#[serde(serialize_with = "…")]` on the field.
 
@@ -674,6 +804,16 @@ SQLite `vec0` tables need the `sqlite-vec` extension in the connection.
 ```rust
 let db = sqlite::Database::connect_with_vec("app.db", "/usr/local/lib/vec0").await?;
 ```
+
+`connect_with_options` sets the lock wait (`busy_timeout`, five seconds by
+default) and the extension together.
+
+Postgres and SQLite targets write a batch of rows in a few statements, not one
+per row: Postgres sends parameterized `unnest` statements of 2,000 rows each,
+run concurrently, and SQLite sends multi-row `VALUES` statements as large as
+its bind limit allows. `postgres::read_table` streams a table's rows from one
+snapshot instead of loading them all; collect them for `mount_each!` with
+`try_collect()`.
 
 Doris has a query builder for vector search over a table CocoIndex maintains:
 

@@ -4,14 +4,38 @@ description: >
   Use `coco.timeout()` to put a time budget around a piece of processing —
   one file, one LLM call — with cooperative checks, deadline-aware retries,
   and clean time-boxing of whole updates.
+rust_description: >
+  Use `Ctx::with_timeout` to put a time budget around a piece of processing —
+  one file, one LLM call — with cooperative checks, deadline-aware retries,
+  and clean time-boxing of whole updates.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
+<Lang only="python">
+
 Use `coco.timeout()` when a piece of CocoIndex work should stop after a time budget.
 
-The timeout is **cooperative**: CocoIndex checks the time at safe points and raises `coco.DeadlineExceededError` when the deadline has passed. Enforcement is best-effort beyond that — CocoIndex may additionally cancel an in-flight `await` where that is known to be safe (the built-in retry helpers do), but your own code inside an `await`, such as an HTTP request or database query, is generally not interrupted. Use that library's own timeout for individual I/O calls.
+</Lang>
+
+<Lang only="rust">
+
+Use `ctx.with_timeout(duration)` when a piece of CocoIndex work should stop after a time budget. The deadline lives on the `Ctx`: `with_timeout` returns a scoped `Ctx`, and the work you call with that `Ctx` sees the deadline.
+
+</Lang>
+
+<RustNote>
+There is no ambient timeout block like Python's `with coco.timeout(...)`: the budget follows the `Ctx` you pass. A call made with the unscoped `Ctx` does not see it.
+</RustNote>
+
+The timeout is **cooperative**: CocoIndex checks the time at safe points and <Lang only="python">raises `coco.DeadlineExceededError`</Lang><Lang only="rust">returns `Error::DeadlineExceeded`</Lang> when the deadline has passed. Enforcement is best-effort beyond that — CocoIndex may additionally cancel an in-flight `await` where that is known to be safe (the built-in retry helpers do), but your own code inside an <Lang only="python">`await`</Lang><Lang only="rust">`.await`</Lang>, such as an HTTP request or database query, is generally not interrupted. Use that library's own timeout for individual I/O calls.
 
 ## Quick start
 
 The most common budget is per item of work inside a processing component — one file, one LLM call. Per-item budgets stay meaningful as your source grows (a whole-run limit does not), and they apply no matter how the app runs, including via the `cocoindex update` CLI:
+
+{/* Rust: rust/sdk/cocoindex/tests/deadline.rs, rust/sdk/cocoindex/src/ctx.rs (with_timeout) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from datetime import timedelta
@@ -27,9 +51,33 @@ async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
     target.declare_file(filename=out_name(file), content=summary)
 ```
 
-If the budget runs out, the component fails with `coco.DeadlineExceededError` like any other processor error: nothing external is written for it, nothing is memoized, and the next update retries it cleanly.
+</Fragment>
+<Fragment slot="rust">
 
-Nested timeout blocks use the shorter remaining budget:
+```rust
+use std::time::Duration;
+
+#[cocoindex::function(memo, memo_key(target = skip))]
+async fn process_file(ctx: &Ctx, file: FileEntry, target: DirTarget) -> Result<()> {
+    // This file gets 30 seconds: every call made with `scoped` sees the deadline.
+    let scoped = ctx.with_timeout(Duration::from_secs(30));
+    let summary = summarize_with_llm(&scoped, &file.content_str()?).await?;
+    target.declare_file(ctx, &out_name(&file), summary.as_bytes())
+}
+```
+
+`with_timeout` returns a new `Ctx`; the original is unchanged. Pass the scoped `Ctx` to the calls that belong to the budget.
+
+</Fragment>
+</LangTabs>
+
+If the budget runs out, the component fails with <Lang only="python">`coco.DeadlineExceededError`</Lang><Lang only="rust">`Error::DeadlineExceeded`</Lang> like any other processor error: nothing external is written for it, nothing is memoized, and the next update retries it cleanly.
+
+Nested timeouts use the shorter remaining budget:
+
+{/* Rust: rust/sdk/cocoindex/tests/deadline.rs (rust_sdk_deadline_conformance_subset) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 with coco.timeout(timedelta(minutes=5)):
@@ -44,9 +92,29 @@ with coco.timeout(timedelta(minutes=5)):
     # Back to the outer timeout.
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let outer = ctx.with_timeout(Duration::from_secs(10));
+assert_eq!(outer.remaining_deadline(), Some(Duration::from_secs(10)));
+
+// Still bounded by the outer deadline: the earlier one wins.
+let wider = outer.with_timeout(Duration::from_secs(20));
+// Narrowed to one second.
+let narrower = outer.with_timeout(Duration::from_secs(1));
+
+// `outer` itself keeps its own deadline.
+```
+
+</Fragment>
+</LangTabs>
+
 ## The rule
 
 A timeout follows work the caller is directly waiting for. It does not follow background work or shared work.
+
+<Lang only="python">
 
 | Code shape | What happens |
 | --- | --- |
@@ -59,9 +127,30 @@ A timeout follows work the caller is directly waiting for. It does not follow ba
 | Target writes and connector sink calls | Do not inherit the processor timeout. Once processing has succeeded, CocoIndex lets target synchronization finish consistently. |
 | Long loop inside a processor | Add `coco.check_cancellation()` where you want the loop to stop promptly. |
 
+</Lang>
+
+<Lang only="rust">
+
+| Code shape | What happens |
+| --- | --- |
+| `UpdateOptions { timeout: Some(..), .. }` on `app.update_with_options(..)` | The root processor's `Ctx` carries the timeout (see [Time-boxing a whole update](#time-boxing-a-whole-update-programmatic-callers)). |
+| A `#[cocoindex::function]` called with a scoped `Ctx` | Sees the scoped deadline. A call made with the unscoped `Ctx` does not. |
+| `scoped.scope(..)` / `use_mount!` / `scoped.use_mount_each(..)` / `use_mount_each!` | The child inherits the deadline because the parent waits for the child's result. |
+| `scoped.mount(..)` / `mount!` / `scoped.mount_each(..)` / `mount_each!` / `auto_refresh` / `mount_live` | The child's `Ctx` carries no deadline. The caller's own wait on `handle.ready()` is bounded by the caller's deadline. |
+| `scoped.map(items, ..)` | Item tasks see the deadline. Already-started items run to completion before the error is returned. |
+| Batched function body | A physical batch does not inherit any individual caller's deadline, because a batch can contain work from multiple callers. A batched body that needs a bound carries its own — `ApiEmbedder`, for example, bounds each request with its own timeout (`with_timeout`). |
+| Target writes and connector sink calls | Do not inherit the processor deadline. Once processing has succeeded, CocoIndex lets target synchronization finish consistently. |
+| Long loop inside a processor | Add `ctx.check_cancellation()?` where you want the loop to stop promptly. |
+
+</Lang>
+
 ## Foreground child work
 
-Use `use_mount()` when the parent depends on the child's value. The timeout applies to both parent and child:
+Use <Lang only="python">`use_mount()`</Lang><Lang only="rust">`ctx.scope(..)` or `use_mount!`</Lang> when the parent depends on the child's value. The timeout applies to both parent and child:
+
+{/* Rust: rust/sdk/cocoindex/tests/deadline.rs (sdk_deadline_use_mount_inherit) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn
@@ -85,11 +174,51 @@ with coco.timeout(timedelta(seconds=30)):
     app.update_blocking()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function]
+async fn parse_file(ctx: &Ctx, file: FileEntry) -> Result<ParsedDoc> {
+    let text = file.content_str()?;
+    ctx.check_cancellation()?;
+    Ok(parse(&text))
+}
+
+app.update(move |ctx| async move {
+    let scoped = ctx.with_timeout(Duration::from_secs(30));
+    // A foreground child mounted through `scope` receives the caller's deadline.
+    let parsed = scoped
+        .scope(&"parse", move |child| async move { parse_file(&child, file).await })
+        .await?;
+    index(parsed);
+    Ok(())
+})
+.await?;
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 If the deadline passes while `parse_file()` is in `file.read_text()`, CocoIndex does not interrupt that await. The timeout is observed when control reaches the next CocoIndex check, such as `coco.check_cancellation()` or the function return.
+
+</Lang>
+
+<Lang only="rust">
+
+If the deadline passes while `parse_file` is inside an `.await`, CocoIndex does not interrupt it. The timeout is observed when control reaches the next CocoIndex check, such as `ctx.check_cancellation()?`.
+
+</Lang>
 
 ## Background child work
 
-Use `mount()` or `mount_each()` when the child is independent background work. The parent's timeout can stop the parent from waiting forever, but it does not become the child's timeout:
+Use <Lang only="python">`mount()` or `mount_each()`</Lang><Lang only="rust">`ctx.mount(..)` or `ctx.mount_each(..)`</Lang> when the child is independent background work. The parent's timeout can stop the parent from waiting forever, but it does not become the child's timeout:
+
+{/* Rust: rust/sdk/cocoindex/src/ctx.rs (Ctx::mount, ComponentMountHandle::ready), rust/sdk/cocoindex/tests/mount.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn
@@ -112,25 +241,60 @@ async def main(files: list[FileLike]) -> None:
         await handle.ready()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let scoped = ctx.with_timeout(Duration::from_secs(30));
+let handle = scoped
+    .mount(&"first-file", |child| async move {
+        // `child` carries no deadline: the parent's budget does not reach it.
+        process_file(&child, first).await
+    })
+    .await?;
+
+// This wait is bounded by the parent's deadline.
+// The child processor itself remains independent.
+handle.ready().await?;
+```
+
+</Fragment>
+</LangTabs>
+
 If the parent times out while waiting for `handle.ready()`, the timeout belongs to the parent wait. It does not retroactively cancel the child processor.
 
 ## What happens on timeout
 
 The timing contract is deliberately loose:
 
+<Lang only="python">
+
 - Any CocoIndex-managed call **may** raise `coco.DeadlineExceededError` if the deadline passes before it returns.
 - CocoIndex checkpoints — `coco.check_cancellation()`, calling a `@coco.fn`, engine calls such as `coco.use_mount()` — **guarantee** to raise if the deadline has already passed when they are called.
 
-Don't rely on the exact point where the error is raised. It can move between versions, and enforcement can get tighter where cancelling is safe (the built-in retry helpers already cancel an in-flight attempt at the deadline).
+</Lang>
+
+<Lang only="rust">
+
+- Any CocoIndex-managed call **may** return `Error::DeadlineExceeded` if the deadline passes before it returns; `err.is_deadline_exceeded()` tests for it.
+- CocoIndex checkpoints — `ctx.check_cancellation()`, a memoized `#[cocoindex::function]` call, engine calls such as `ctx.scope(..)` and `ctx.mount(..)` — **guarantee** to return it if the deadline has already passed when they are called.
+
+</Lang>
+
+Don't rely on the exact point where the error is <Lang only="python">raised</Lang><Lang only="rust">returned</Lang>. It can move between versions, and enforcement can get tighter where cancelling is safe (the built-in retry helpers already cancel an in-flight attempt at the deadline).
 
 What you can rely on is the outcome:
 
 - A processor run that times out applies no target writes and memoizes nothing; the next update retries it cleanly.
-- Completed work stays completed: committed components, finished `coco.map()` items, and in-progress target synchronization are never rolled back or interrupted by a timeout.
+- Completed work stays completed: committed components, finished <Lang only="python">`coco.map()`</Lang><Lang only="rust">`ctx.map(..)`</Lang> items, and in-progress target synchronization are never rolled back or interrupted by a timeout.
 
 ## Add checks in long processors
 
 CocoIndex already checks common boundaries, but a long processor loop should add explicit checks:
+
+{/* Rust: rust/sdk/cocoindex/src/ctx.rs (check_cancellation), rust/sdk/cocoindex/tests/deadline.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn
@@ -140,9 +304,28 @@ async def import_rows(rows: list[Row]) -> None:
         coco.check_cancellation()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function]
+async fn import_rows(ctx: &Ctx, rows: Vec<Row>, table: &TableTarget) -> Result<()> {
+    for row in rows {
+        table.declare_row(ctx, &transform(row))?;
+        ctx.check_cancellation()?;
+    }
+    Ok(())
+}
+```
+
+</Fragment>
+</LangTabs>
+
 This makes the loop stop near the deadline instead of waiting until the whole function returns.
 
 ## Long I/O still needs its own timeout
+
+<Lang only="python">
 
 `coco.timeout()` does not replace client-level timeouts:
 
@@ -162,9 +345,26 @@ Think of the two budgets as complementary:
 - client timeouts bound one external call
 - `coco.timeout()` bounds CocoIndex work between safe checks
 
+</Lang>
+
+<Lang only="rust">
+
+`ctx.with_timeout(..)` does not replace client-level timeouts: an `.await` on an HTTP client or a database driver is not interrupted. Give that client its own timeout, and call `ctx.check_cancellation()?` after it returns.
+
+Think of the two budgets as complementary:
+
+- client timeouts bound one external call
+- the `Ctx` deadline bounds CocoIndex work between safe checks
+
+</Lang>
+
 ## Time-boxing a whole update (programmatic callers)
 
-When you call `app.update()` yourself and the surrounding environment has its own clock (a CI job, a serverless handler, a shared cron window), you can put the budget around the whole update:
+When you run an update yourself and the surrounding environment has its own clock (a CI job, a serverless handler, a shared cron window), you can put the budget around the whole update:
+
+{/* Rust: rust/sdk/cocoindex/tests/deadline.rs (update_with_options), rust/sdk/cocoindex/src/app.rs (UpdateOptions) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 try:
@@ -182,9 +382,39 @@ with coco.timeout(timedelta(minutes=10)):
     await handle.result()
 ```
 
-Because components commit independently and the engine rolls forward, a whole-update timeout never wastes completed work: everything that finished is committed and stays committed; the timeout only stops new progress, and the **next update resumes where this one left off**. `with coco.timeout(timedelta(minutes=10)): app.update()` means "index as much as possible in ten minutes, cleanly."
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let result = app
+    .update_with_options(
+        UpdateOptions {
+            timeout: Some(Duration::from_secs(10 * 60)),
+            ..UpdateOptions::default()
+        },
+        |ctx| async move {
+            // ...
+            Ok(())
+        },
+    )
+    .await;
+if let Err(err) = &result {
+    if err.is_deadline_exceeded() {
+        println!("stopped after the 10-minute budget");
+    }
+}
+```
+
+`update_blocking_with_options` and `start_update_with_options` take the same `UpdateOptions`. The root processor's `Ctx` carries the timeout.
+
+</Fragment>
+</LangTabs>
+
+Because components commit independently and the engine rolls forward, a whole-update timeout never wastes completed work: everything that finished is committed and stays committed; the timeout only stops new progress, and the **next update resumes where this one left off**. <Lang only="python">`with coco.timeout(timedelta(minutes=10)): app.update()`</Lang><Lang only="rust">An update with `timeout: Some(Duration::from_secs(10 * 60))`</Lang> means "index as much as possible in ten minutes, cleanly."
 
 ## Retries
+
+<Lang only="python">
 
 Retry helpers distinguish two kinds of limit:
 
@@ -193,7 +423,23 @@ Retry helpers distinguish two kinds of limit:
 
 Adding a timeout therefore never increases retry effort, and removing one never decreases it. No retry attempt starts past any limit, no result is accepted past the deadline, and backoff sleeps never exceed the remaining time. Built-in operations (`LlmPairResolver`, LiteLLM embedding retries) share one helper with these semantics.
 
+</Lang>
+
+<Lang only="rust">
+
+The built-in API operations (`ApiEmbedder`, `ApiTranscriber`, `ApiChatClient` and the `LlmPairResolver` built on it) retry transient failures inside one bound per request: the op's own `timeout` (10 minutes by default, set with `with_timeout`), shortened to the `Ctx`'s remaining deadline when that is earlier. A `Ctx` deadline can only shorten the bound, never extend it.
+
+Fast failures (HTTP 408, 409, 425, 429, 5xx, a refused or reset connection) are retried with exponential backoff. A request that times out is not retried, and no backoff sleep runs past the bound. When the `Ctx` deadline is what ran out, the op returns `Error::DeadlineExceeded`; when the op's own timeout ran out, it returns an error that names the request.
+
+The SDK has no public retry helper for your own calls. Bound them with the client's timeout and `ctx.remaining_deadline()`.
+
+</Lang>
+
 ## API
+
+{/* Rust: rust/sdk/cocoindex/src/ctx.rs (with_timeout, with_timeout_scope, check_cancellation, has_deadline, remaining_deadline), rust/sdk/cocoindex/src/error.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 with coco.timeout(datetime.timedelta(seconds=30)):
@@ -214,3 +460,37 @@ class coco.DeadlineExceededError(TimeoutError):
 ```
 
 Raised when a CocoIndex timeout is exceeded.
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let scoped = ctx.with_timeout(Duration::from_secs(30));
+```
+
+Returns a clone of the `Ctx` with the timeout applied. An earlier deadline on the current `Ctx` wins.
+
+```rust
+ctx.with_timeout_scope(Duration::from_secs(30), |ctx| async move {
+    // Calls in this body use the scoped deadline.
+    Ok(())
+})
+.await?;
+```
+
+Runs a closure with a scoped `Ctx`. Name the closure argument `ctx` to shadow the outer context.
+
+```rust
+ctx.check_cancellation()?;
+```
+
+Returns `Error::DeadlineExceeded` if the current deadline has passed.
+
+```rust
+ctx.has_deadline();        // bool
+ctx.remaining_deadline();  // Option<Duration>
+err.is_deadline_exceeded() // bool, on a cocoindex::Error
+```
+
+</Fragment>
+</LangTabs>

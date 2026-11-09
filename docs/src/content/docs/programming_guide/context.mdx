@@ -4,12 +4,22 @@ description: >
   Use ContextKey, builder.provide(), and use_context() to share connections,
   models, and config across processing components. Covers change detection on
   context values and accessing context outside mount boundaries.
+rust_description: >
+  Use context_key!, EnvironmentBuilder::provide_key() and ctx.get_key() to share
+  connections, models, and config across processing components. Covers change
+  detection on context values and the query path outside an update.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 CocoIndex provides a **context** mechanism for sharing resources across your pipeline. This is useful for database connections, API clients, configuration objects, or any resource that multiple processing components need to access.
 
 ## ContextKey
 
-A `ContextKey[T]` is a typed key that identifies a resource. Define keys at module level:
+A <Lang only="python">`ContextKey[T]`</Lang><Lang only="rust">`ContextKey<T>`</Lang> is a typed key that identifies a resource. Define keys at module level:
+
+{/* Rust: examples/rust/text_embedding/src/main.rs; `key = "..."` form from rust/sdk/SHOWCASE.md "Declare typed context resources", verified against `context_key!` in rust/sdk/cocoindex/src/ctx.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import asyncpg
@@ -23,16 +33,79 @@ PG_DB = coco.ContextKey[asyncpg.Pool]("text_embedding_db")
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::postgres;
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+
+// Database connection — no change detection
+cocoindex::context_key!(static DB: postgres::Database);
+
+// Embedding model — with change detection
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
+);
+
+// An explicit persisted name, when it must differ from the identifier
+cocoindex::context_key!(
+    static LEGACY_DB: postgres::Database,
+    key = "app_database"
+);
+```
+
+`context_key!` declares a `static` `ContextKey<T>`. The Rust identifier is the key's name unless you pass `key = "..."`. When both options are present, write `key = "..."` before `detect_change`.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 The type parameter (`asyncpg.Pool`, `SentenceTransformerEmbedder`) enables type checking — when you retrieve the value, your editor knows its type.
 
+</Lang>
+
+<Lang only="rust">
+
+The type parameter (`postgres::Database`, `SentenceTransformerEmbedder`) is the type of the value: providing a value of another type does not compile, and retrieving the value returns a `&T`.
+
+</Lang>
+
 ### Change detection
+
+<Lang only="python">
 
 By default, context keys have **change detection disabled** — changing the provided value between runs does not automatically invalidate memoized functions that consumed it via `use_context()`. To opt in to change detection, pass `detect_change=True`. When enabled, [context changes](./function#change-detection) are their own category — tracked by `use_context()` at the call site, independent of `@coco.fn`. When a fingerprint changes, any memoized function whose execution involved a `use_context()` call on that key is invalidated.
 
 Use `detect_change=True` for resources that affect computation results — models, configuration objects, etc. This ensures memoized functions re-execute when those values change. Resources that don't affect computation results (database connections, loggers, debug flags, monitoring clients) can use the default (`detect_change=False`).
 
+</Lang>
+
+<Lang only="rust">
+
+By default, context keys have **change detection disabled** — changing the provided value between runs does not invalidate memoized functions that read it with `ctx.get_key()`. To opt in to change detection, add `detect_change` to the `context_key!` declaration. When enabled, [context changes](./function#change-detection) are their own category — tracked by `ctx.get_key()` at the call site, independent of `#[cocoindex::function]`. When a fingerprint changes, any memoized function whose execution read that key with `ctx.get_key()` is invalidated.
+
+Use `detect_change` for resources that affect computation results — models, configuration objects, etc. This ensures memoized functions re-execute when those values change. Resources that don't affect computation results (database connections, loggers, debug flags, monitoring clients) can use the default, without `detect_change`.
+
+A `detect_change` key fingerprints its value through the `MemoInput` trait. Derive `MemoInput` for your own configuration types; each field is handled recursively, so the type needs no `Serialize`:
+
+{/* Rust: rust/sdk/SHOWCASE.md "Declare typed context resources", verified against `derive(MemoInput)` in rust/sdk/cocoindex_macros/src/lib.rs */}
+```rust
+#[derive(cocoindex::MemoInput)]
+struct AppConfig {
+    model: String,
+    debug: bool,
+}
+
+cocoindex::context_key!(static CONFIG: AppConfig, detect_change);
+```
+
+</Lang>
+
 :::tip
-Change detection is transitive: if function `foo` (memoized) calls function `bar`, and `bar` calls `use_context(key)` on a change-detected key, then `foo`'s memo is also invalidated when the context value changes.
+Change detection is transitive: if function `foo` (memoized) calls function `bar`, and `bar` reads a change-detected key<Lang only="python"> with `use_context(key)`</Lang><Lang only="rust"> with `ctx.get_key(&KEY)`</Lang>, then `foo`'s memo is also invalidated when the context value changes.
 :::
 
 ## ContextKey as stable identity
@@ -51,12 +124,22 @@ This has two consequences:
 Pick a `ContextKey` name that reflects the *logical* role of the resource, not its current address. The name is what CocoIndex persists.
 
 - **Applications**: use any descriptive name — e.g., `"text_embedding_db"`, `"docs_root"`.
-- **Libraries**: prefix with your package name and a `/` to avoid collisions with application keys or other libraries — e.g., `"my_library/db"`, `"cocoindex.connectors.postgres/pool"`.
+- **Libraries**: prefix with your package name and a `/` to avoid collisions with application keys or other libraries — e.g., <Lang only="python">`"my_library/db"`, `"cocoindex.connectors.postgres/pool"`</Lang><Lang only="rust">`"my_crate/db"`</Lang>.
 :::
+
+<Lang only="rust">
+
+The persisted name is the identifier of the `context_key!` static by default, so a rename of the static is a rename of the key. Pass `key = "..."` to keep the old name, or to give a library key its prefix. A key name is unique within a process: constructing a second key with the same name panics.
+
+</Lang>
 
 ## Providing values
 
-In your [lifespan function](./app#defining-a-lifespan), use `builder.provide()` to make resources available:
+In your [lifespan function](./app#defining-a-lifespan), use <Lang only="python">`builder.provide()`</Lang><Lang only="rust">`builder.provide_key()`</Lang> to make resources available:
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from typing import AsyncIterator
@@ -70,11 +153,37 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
         yield
 ```
 
-The resource is available for the lifetime of the environment. When the lifespan exits (after `yield`), cleanup happens automatically if you use a context manager pattern.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    let db = postgres::Database::connect(&database_url()).await?;
+    let pool = db.pool().clone();
+    let embedder = load_embedder().await?;
+    Ok(builder
+        .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&DB, db)
+        .provide_key(&EMBEDDER, embedder)
+        .on_shutdown(move || async move { pool.close().await }))
+}
+```
+
+`EnvironmentBuilder::provide_key(&KEY, value)` provides a value under a key; `on_shutdown` registers its cleanup. The same calls work on `Environment::builder()` when your own code builds the environment.
+
+</Fragment>
+</LangTabs>
+
+The resource is available for the lifetime of the environment. <Lang only="python">When the lifespan exits (after `yield`), cleanup happens automatically if you use a context manager pattern.</Lang><Lang only="rust">When the environment shuts down (`Environment::shutdown`), it runs the `on_shutdown` hooks, the most recently registered first, and then closes its state database.</Lang>
 
 ## Retrieving values
 
-In processing components, use `coco.use_context()` to retrieve provided resources:
+In processing components, use <Lang only="python">`coco.use_context()`</Lang><Lang only="rust">`ctx.get_key()`</Lang> to retrieve provided resources:
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn
@@ -84,7 +193,57 @@ async def process_chunk(chunk: Chunk, table: postgres.TableTarget[DocEmbedding])
     table.declare_row(row=DocEmbedding(text=chunk.text, embedding=embedding, ...))
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function]
+async fn process_chunk(
+    ctx: &Ctx,
+    chunk: Chunk,
+    text: &str,
+    filename: &str,
+    id_gen: &IdGenerator,
+    table: &postgres::TableTarget,
+) -> Result<()> {
+    let chunk_text = chunk.text(text);
+    let id = i64::try_from(id_gen.next_id(ctx, chunk_text).await?)
+        .map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
+    table.declare_row(
+        ctx,
+        &DocEmbedding {
+            id,
+            filename: filename.to_string(),
+            chunk_start: chunk.start.char_offset as i32,
+            chunk_end: chunk.end.char_offset as i32,
+            text: chunk_text.to_string(),
+            // Retrieve the embedder from context
+            embedding: ctx.get_key(&EMBEDDER)?.embed(ctx, chunk_text).await?,
+        },
+    )
+}
+```
+
+`ctx.get_key(&KEY)?` returns a reference to the value, or an error when the key was not provided.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 Some connectors also accept `ContextKey`s directly as a convenience — for example, `postgres.mount_table_target()` takes a `ContextKey[asyncpg.Pool]` and resolves the connection internally:
+
+</Lang>
+
+<Lang only="rust">
+
+Connectors also accept `ContextKey`s directly — for example, `postgres::mount_table_target()` takes a `&ContextKey<postgres::Database>` and resolves the connection internally:
+
+</Lang>
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn
@@ -98,9 +257,39 @@ async def app_main(sourcedir: pathlib.Path) -> None:
     # ... mount processing components ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
+    // DB is resolved internally by the connector
+    let target_table = postgres::mount_table_target(
+        &ctx,
+        &DB,
+        TABLE,
+        postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+            .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+            .await?,
+        Some(PG_SCHEMA),
+    )
+    .await?;
+    // ... mount processing components ...
+    Ok(())
+}
+```
+
+Every connector target takes its connection as a `&ContextKey<T>`, so the key is the target's stable identity.
+
+</Fragment>
+</LangTabs>
+
 ## Complete example
 
 Here's a complete pipeline that uses context to share a database connection and an embedding model across processing components:
+
+{/* Rust: examples/rust/text_embedding/src/main.rs (trimmed; the query path and `main` are in the example) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from __future__ import annotations
@@ -202,7 +391,154 @@ app = coco.App(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::path::PathBuf;
+use std::time::Duration;
+
+use cocoindex::connectors::postgres;
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
+use cocoindex::prelude::*;
+
+const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
+const PG_SCHEMA: &str = "coco_examples";
+const TABLE: &str = "doc_embeddings";
+const CHUNK_SIZE: usize = 2000;
+const CHUNK_OVERLAP: usize = 500;
+
+// 1. Define context keys at module level
+cocoindex::context_key!(static DB: postgres::Database);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
+);
+
+// 3. Derive the table schema from the row type; the vector dimension comes from EMBEDDER
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct DocEmbedding {
+    id: i64,
+    filename: String,
+    chunk_start: i32,
+    chunk_end: i32,
+    text: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+// 4. Retrieve values in processing functions
+#[cocoindex::function]
+async fn process_chunk(
+    ctx: &Ctx,
+    chunk: Chunk,
+    text: &str,
+    filename: &str,
+    id_gen: &IdGenerator,
+    table: &postgres::TableTarget,
+) -> Result<()> {
+    let chunk_text = chunk.text(text);
+    let id = i64::try_from(id_gen.next_id(ctx, chunk_text).await?)
+        .map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
+    table.declare_row(
+        ctx,
+        &DocEmbedding {
+            id,
+            filename: filename.to_string(),
+            chunk_start: chunk.start.char_offset as i32,
+            chunk_end: chunk.end.char_offset as i32,
+            text: chunk_text.to_string(),
+            embedding: ctx.get_key(&EMBEDDER)?.embed(ctx, chunk_text).await?,
+        },
+    )
+}
+
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_file(ctx: &Ctx, file: &FileEntry, table: &postgres::TableTarget) -> Result<()> {
+    let text = file.read_text().await?;
+    let chunks = RecursiveSplitter::new()?.split_with(
+        &text,
+        RecursiveChunkConfig {
+            chunk_size: CHUNK_SIZE,
+            min_chunk_size: None,
+            chunk_overlap: Some(CHUNK_OVERLAP),
+            language: Some("markdown".to_string()),
+        },
+    );
+    let filename = file.key();
+    let id_gen = IdGenerator::new();
+    ctx.map(chunks, async |chunk| {
+        process_chunk(ctx, chunk, &text, &filename, &id_gen, &table).await
+    })
+    .await?;
+    Ok(())
+}
+
+// 2. Provide values in the lifespan
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    let db = postgres::Database::connect(&database_url()).await?;
+    let pool = db.pool().clone();
+    let embedder = load_embedder().await?;
+    Ok(builder
+        .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&DB, db)
+        .provide_key(&EMBEDDER, embedder)
+        .on_shutdown(move || async move { pool.close().await }))
+}
+
+// 5. DB used directly by the connector (resolved internally)
+#[cocoindex::app(name = "TextEmbeddingRust")]
+async fn app_main(ctx: Ctx) -> Result<()> {
+    index(ctx, source_dir()).await
+}
+
+async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
+    let target_table = postgres::mount_table_target(
+        &ctx,
+        &DB,
+        TABLE,
+        postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+            .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+            .await?,
+        Some(PG_SCHEMA),
+    )
+    .await?;
+    let files = walk_dir(sourcedir)
+        .recursive(true)
+        .path_matcher(PatternFilePathMatcher::include(["**/*.md"])?)
+        .live()
+        .poll_interval(Duration::from_secs(1));
+    ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
+        let target_table = target_table.clone();
+        async move { process_file(&ctx, &file, &target_table).await }
+    })
+    .await
+}
+
+fn database_url() -> String {
+    std::env::var("POSTGRES_URL")
+        .unwrap_or_else(|_| "postgres://cocoindex:cocoindex@localhost/cocoindex".to_string())
+}
+
+fn source_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("markdown_files")
+}
+
+async fn load_embedder() -> Result<SentenceTransformerEmbedder> {
+    SentenceTransformerEmbedder::load(EMBED_MODEL).await
+}
+```
+
+The full program, with `main` and a pgvector query path, is `examples/rust/text_embedding/src/main.rs`.
+
+</Fragment>
+</LangTabs>
+
 ## Accessing context outside processing components
+
+<Lang only="python">
 
 If you need to access context values outside of CocoIndex processing components (for example, in query/serving logic that shares resources with your indexing pipeline) use `env.get_context()`:
 
@@ -218,3 +554,11 @@ This is useful when your application runs both indexing and serving in the same 
 :::note
 `default_env()` starts the environment if it hasn't been started yet, which runs the lifespan function. If you're using an explicit environment, call `get_context()` directly on that environment instance.
 :::
+
+</Lang>
+
+<Lang only="rust">
+
+Context values are read through a `Ctx`, and a `Ctx` exists only inside an update. `Environment` has no method that returns a provided value. For query or serving logic that runs outside an update, keep the resource yourself: the `query` branch of `examples/rust/text_embedding/src/main.rs` connects its own pool and loads its own embedder.
+
+</Lang>

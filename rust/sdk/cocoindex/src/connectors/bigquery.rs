@@ -131,6 +131,15 @@ pub struct BigQueryConnection {
     inner: Arc<ConnectionInner>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for BigQueryConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BigQueryConnection")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl BigQueryConnection {
     /// Resolve credentials (see the module docs) and build a connection. No
     /// request is made until the first query.
@@ -285,7 +294,8 @@ impl BigQueryConnection {
             .map_err(|e| Error::engine(format!("bigquery: parse token response: {e}")))?;
         *guard = Some(CachedToken {
             token: token.access_token.clone(),
-            expires_at: Instant::now() + Duration::from_secs(token.expires_in.max(60)),
+            // Clamped above too: a huge `expires_in` would overflow `Instant`.
+            expires_at: Instant::now() + Duration::from_secs(token.expires_in.clamp(60, 86_400)),
         });
         Ok(token.access_token)
     }
@@ -392,7 +402,7 @@ impl BigQueryConnection {
                         .and_then(JsonValue::as_str)
                         .map(str::to_string)
                 })
-                .unwrap_or_else(|| truncate(&text, 500));
+                .unwrap_or_else(|| super::truncate_for_error(&text, 500));
             return Err(Error::engine(format!("bigquery: HTTP {status}: {message}")));
         }
         serde_json::from_str(&text)
@@ -450,14 +460,6 @@ fn decode_cell(ty: &str, raw: JsonValue) -> JsonValue {
             _ => raw,
         },
         _ => raw,
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
     }
 }
 
@@ -715,6 +717,21 @@ impl TableSchema {
             .into_iter()
             .map(|f| (f.name.clone(), bigquery_column_def(&f)));
         Self::new(columns, primary_key)
+    }
+
+    /// Replace the type of one column of a schema derived from a row with
+    /// `column`'s type and its [`ColumnDef::parse_json`] flag (Python's
+    /// `column_overrides={"col": BigQueryType("JSON", use_parse_json=True)}`), keeping the column's derived
+    /// nullability.
+    pub fn with_column_type(mut self, field_name: &str, column: ColumnDef) -> Result<Self> {
+        validate_sql_type(&column.bigquery_type)?;
+        let def = self
+            .columns
+            .get_mut(field_name)
+            .ok_or_else(|| crate::row_schema::unknown_column_error("BigQuery", field_name))?;
+        def.bigquery_type = column.bigquery_type;
+        def.use_parse_json = column.use_parse_json;
+        Ok(self)
     }
 
     /// Columns in DDL order: primary-key columns first (in key order), then the
@@ -1945,6 +1962,35 @@ mod tests {
                 &BTreeMap::new()
             )
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn column_type_override_changes_type_and_parse_json() {
+        #[derive(crate::SchemaFields)]
+        #[allow(dead_code)]
+        struct Row {
+            id: i64,
+            payload: Option<String>,
+        }
+        let schema = TableSchema::from_row::<Row>(["id"])
+            .unwrap()
+            .with_column_type("payload", ColumnDef::new("JSON").parse_json())
+            .unwrap();
+        // The derived nullability stays.
+        assert_eq!(
+            schema.columns()["payload"],
+            ColumnDef::new("JSON").parse_json()
+        );
+        let row = json!({"id": 1, "payload": "{\"a\":1}"});
+        let (sql, _) =
+            merge_statement("`t`", &schema, &[row.as_object().unwrap().clone()]).unwrap();
+        assert!(sql.contains("PARSE_JSON(@p1) AS `payload`"), "{sql}");
+        assert!(
+            TableSchema::from_row::<Row>(["id"])
+                .unwrap()
+                .with_column_type("missing", ColumnDef::new("JSON"))
+                .is_err()
         );
     }
 

@@ -494,9 +494,9 @@ pub(crate) struct StatsGroup<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> StatsGroup<Prof> {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(parent: &ProcessingStats) -> Self {
         Self {
-            stats: ProcessingStats::new(),
+            stats: ProcessingStats::new_in(parent),
             readiness: ComponentBgChildReadiness::default(),
             active_members: parking_lot::Mutex::new(Vec::new()),
         }
@@ -558,7 +558,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         report_to_stdout: bool,
         refresh_interval_secs: Option<f64>,
     ) -> (ComponentProcessorContext<Prof>, ProcessingStats) {
-        let group = Arc::new(StatsGroup::new());
+        let group = Arc::new(StatsGroup::new(self.processing_stats()));
         let group_stats = group.stats().clone();
 
         // The group counts as one pending child of the enclosing readiness, so
@@ -589,7 +589,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         });
 
         if report_to_stdout {
-            crate::engine::progress_display::spawn_group_plain_report(
+            crate::engine::progress_display::report_group_stats(
                 group_stats.clone(),
                 title,
                 live,
@@ -840,6 +840,9 @@ async fn lookup_component_memo<Prof: EngineProfile>(
         states_changed: true,
     }) = &own_validation
     {
+        let row_fp = row_fp.ok_or_else(|| {
+            internal_error!("memo states changed for a memo row that stores none")
+        })?;
         update_component_memo_states(comp_ctx.app_store(), comp_ctx.stable_path(), states, row_fp)
             .await?;
     }
@@ -1191,7 +1194,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                             Err(propagated) => Err(SharedError::from(propagated)),
                         }
                     } else {
-                        error!("component build failed:\n{err:?}");
+                        error!("component build failed at {}:\n{err:?}", self.stable_path());
                         Ok(())
                     };
                     (ComponentRunOutcome::exception(), task_result)
@@ -1256,7 +1259,10 @@ impl<Prof: EngineProfile> Component<Prof> {
                                 Err(propagated) => Err(SharedError::from(propagated)),
                             }
                         } else {
-                            error!("component delete failed:\n{err:?}");
+                            error!(
+                                "component delete failed at {}:\n{err:?}",
+                                self.stable_path()
+                            );
                             Ok(())
                         };
                         (ComponentRunOutcome::exception(), task_result)
@@ -1635,6 +1641,13 @@ impl<Prof: EngineProfile> Component<Prof> {
                 Ok((children_outcome, build_output))
             }
             Err(err) => {
+                if !err.is_cancelled() {
+                    processing_stats.record_failure(crate::engine::stats::FailureRecord {
+                        processor: final_processor_name.to_string(),
+                        component: self.stable_path().clone(),
+                        message: crate::engine::stats::failure_message(&err),
+                    });
+                }
                 processing_stats.update(final_processor_name, |stats| {
                     if reported_processor_name.is_none() {
                         stats.num_execution_starts += 1;
@@ -1863,7 +1876,7 @@ mod tests {
         let (app, _dir) = test_app("stats_group_members").await;
         let root = Component::new(app.app_ctx().clone(), StablePath::root(), None);
         let member = root.get_child(key_path(&root, "member"));
-        let group = StatsGroup::<TestProfile>::new();
+        let group = StatsGroup::<TestProfile>::new(&ProcessingStats::new());
 
         let activity = ActivityGuard::new(member.clone());
         group.push_member(&member);
@@ -1920,6 +1933,7 @@ mod tests {
                 reconcile_calls: child_reconcile_calls.clone(),
                 sink: TargetActionSinkKeeper::new(NoopSink::default()),
                 reject: false,
+                change_only: false,
             }
         }
     }
@@ -1963,6 +1977,10 @@ mod tests {
         reconcile_calls: Arc<AtomicUsize>,
         sink: TargetActionSinkKeeper<TestProfile>,
         reject: bool,
+        /// Plan an action only for a change, as a real connector does:
+        /// nothing for a desired target state the stored records already
+        /// hold, and a deletion for one no longer declared.
+        change_only: bool,
     }
 
     impl TargetHandler<TestProfile> for CountingHandler {
@@ -1970,12 +1988,26 @@ mod tests {
             &self,
             key: StableKey,
             desired_target_state: Option<&()>,
-            _prev_possible_records: &[TestData],
-            _prev_may_be_missing: bool,
+            prev_possible_records: &[TestData],
+            prev_may_be_missing: bool,
         ) -> crate::prelude::Result<Option<TargetReconcileOutput<TestProfile>>> {
             self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
             if self.reject && desired_target_state.is_some() {
                 cocoindex_utils::client_bail!("target state {key:?} rejected");
+            }
+            if self.change_only {
+                if desired_target_state.is_some()
+                    && !prev_may_be_missing
+                    && !prev_possible_records.is_empty()
+                {
+                    return Ok(None);
+                }
+                return Ok(Some(TargetReconcileOutput {
+                    action: (),
+                    sink: self.sink.clone(),
+                    tracking_record: desired_target_state.map(|_| TestData(Vec::new())),
+                    child_invalidation: None,
+                }));
             }
             Ok(desired_target_state.map(|_| TargetReconcileOutput {
                 action: (),
@@ -2048,6 +2080,9 @@ mod tests {
         memo_states_reusable: bool,
         /// What the memo state handler reports as `states_changed`.
         memo_states_changed: bool,
+        /// Whether the processor has a memo key (`memo_fp`); a processor
+        /// without one re-runs every time and stores no component memo.
+        memoized: bool,
         on_process: Option<ProcessHook>,
     }
 
@@ -2065,8 +2100,15 @@ mod tests {
                 advance_clock_in_state_handler,
                 memo_states_reusable: false,
                 memo_states_changed: false,
+                memoized: true,
                 on_process: None,
             }
+        }
+
+        /// No memo key: the component re-runs on every update.
+        fn without_memo(mut self) -> Self {
+            self.memoized = false;
+            self
         }
 
         fn with_reusable_memo_states(mut self) -> Self {
@@ -2111,7 +2153,7 @@ mod tests {
         }
 
         fn memo_key_fingerprint(&self) -> Option<Fingerprint> {
-            Some(self.memo_fp)
+            self.memoized.then_some(self.memo_fp)
         }
 
         fn processor_info(&self) -> &ComponentProcessorInfo {
@@ -2907,6 +2949,7 @@ mod tests {
                                 reconcile_calls: Arc::new(AtomicUsize::new(0)),
                                 sink: container_sink,
                                 reject: false,
+                                change_only: false,
                             },
                         )?;
                         *child_provider.lock().unwrap() = Some(declare_target_state_with_child(
@@ -3158,6 +3201,7 @@ mod tests {
                 reconcile_calls: Arc::new(AtomicUsize::new(0)),
                 sink: TargetActionSinkKeeper::new(NoopSink::default()),
                 reject: false,
+                change_only: false,
             },
         )
         .unwrap();
@@ -3334,6 +3378,108 @@ mod tests {
         );
     }
 
+    /// A re-run of an unmemoized component that declares the same target
+    /// states, which its handler finds unchanged, writes nothing: neither its
+    /// precommit nor its commit has a page to write, so no write txn commits
+    /// and the store keeps every byte. A changed declaration still writes,
+    /// and the run after it is again write-free.
+    #[tokio::test]
+    async fn an_unchanged_rerun_commits_no_write_txn() {
+        let (app, _dir) = test_app("unchanged_rerun").await;
+        let apply_calls = Arc::new(AtomicUsize::new(0));
+        let root = |keys: Vec<i64>| {
+            let apply_calls = apply_calls.clone();
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&"unchanged_rerun").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .without_memo()
+            .with_on_process(Arc::new(move |ctx| {
+                let keys = keys.clone();
+                let sink = TargetActionSinkKeeper::new(NoopSink {
+                    apply_calls: apply_calls.clone(),
+                    children: None,
+                });
+                Box::pin(async move {
+                    let provider = register_root_target_state_provider(
+                        &ctx,
+                        "target".to_string(),
+                        CountingHandler {
+                            reconcile_calls: Arc::new(AtomicUsize::new(0)),
+                            sink,
+                            reject: false,
+                            change_only: true,
+                        },
+                    )?;
+                    for key in keys {
+                        declare_target_state(
+                            &ctx,
+                            &FnCallContext::default(),
+                            provider.clone(),
+                            StableKey::Int(key),
+                            (),
+                        )?;
+                    }
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            }))
+        };
+        let run = |keys: Vec<i64>, full_reprocess: bool| {
+            let options = AppUpdateOptions {
+                full_reprocess,
+                ..AppUpdateOptions::default()
+            };
+            let (handle, _) = app.update(root(keys), options, Arc::new(()), None).unwrap();
+            async move { handle.result().await.unwrap() }
+        };
+        let last_txn_id = || {
+            app.app_ctx()
+                .persisting_app_store()
+                .env()
+                .info()
+                .last_txn_id
+        };
+
+        run(vec![0, 1], false).await;
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 1);
+        let (txn_before, contents_before) = (last_txn_id(), app_store_contents(&app).await);
+        run(vec![0, 1], false).await;
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 1, "nothing to apply");
+        assert_eq!(
+            last_txn_id(),
+            txn_before,
+            "an unchanged re-run commits no write txn"
+        );
+        assert!(app_store_contents(&app).await == contents_before);
+
+        // A dropped declaration applies its deletion and commits.
+        run(vec![0], false).await;
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 2);
+        assert_ne!(last_txn_id(), txn_before);
+        let (txn_dropped, contents_dropped) = (last_txn_id(), app_store_contents(&app).await);
+        assert!(contents_dropped != contents_before);
+        run(vec![0], false).await;
+        assert_eq!(last_txn_id(), txn_dropped);
+        assert!(app_store_contents(&app).await == contents_dropped);
+
+        // Declaring it again applies its creation and commits.
+        let applied = apply_calls.load(Ordering::SeqCst);
+        run(vec![0, 1], false).await;
+        assert_eq!(apply_calls.load(Ordering::SeqCst), applied + 1);
+        assert_ne!(last_txn_id(), txn_dropped);
+
+        // `full_reprocess` re-applies every target state, and the next
+        // ordinary run is write-free again.
+        run(vec![0, 1], true).await;
+        assert_eq!(apply_calls.load(Ordering::SeqCst), applied + 2);
+        let txn_reprocessed = last_txn_id();
+        run(vec![0, 1], false).await;
+        assert_eq!(apply_calls.load(Ordering::SeqCst), applied + 2);
+        assert_eq!(last_txn_id(), txn_reprocessed);
+    }
+
     /// A deprecated slot-fulfilling sink still works for a real update, but
     /// fails a preview with an error naming the unsupported case.
     #[tokio::test]
@@ -3431,6 +3577,7 @@ mod tests {
                     reconcile_calls: reconcile_calls.clone(),
                     sink: TargetActionSinkKeeper::new(NoopSink::default()),
                     reject,
+                    change_only: false,
                 },
             )
             .unwrap();

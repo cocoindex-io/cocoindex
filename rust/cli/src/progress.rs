@@ -1,24 +1,29 @@
-//! Progress display for `update`: per-component lines and a status line,
-//! redrawn on stderr when it is a terminal, using the engine's own line
-//! formats (`cocoindex_core::engine::progress_display`).
+//! Progress display for `update`: a status line and one row per component,
+//! redrawn on stderr when it is a terminal, in the engine's own format
+//! (`cocoindex_core::engine::progress_display::render_block`).
 
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
 
 use cocoindex::cli::protocol::ComponentStatsWire;
-use cocoindex_core::engine::progress_display::{format_component_line, format_status_line};
-use cocoindex_core::engine::stats::ProcessingStatsGroup;
+use cocoindex_core::engine::progress_display::{
+    BlockRequest, render_block, terminal_width_from_fd,
+};
+use cocoindex_core::engine::stats::{ProcessingStatsGroup, VersionedProcessingStats};
 
 const MIN_REDRAW: Duration = Duration::from_millis(100);
+
+const STDERR_FD: i32 = 2;
 
 pub struct Renderer {
     enabled: bool,
     tty: bool,
     live: bool,
     started: Instant,
-    ready_after: Option<Duration>,
+    ready_at: Option<Instant>,
     components: BTreeMap<String, ComponentStatsWire>,
+    in_groups: ComponentStatsWire,
     drawn_lines: usize,
     last_draw: Option<Instant>,
     spinner: usize,
@@ -42,8 +47,9 @@ impl Renderer {
             tty: std::io::stderr().is_terminal(),
             live,
             started: Instant::now(),
-            ready_after: None,
+            ready_at: None,
             components: BTreeMap::new(),
+            in_groups: ComponentStatsWire::default(),
             drawn_lines: 0,
             last_draw: None,
             spinner: 0,
@@ -61,12 +67,28 @@ impl Renderer {
         self.draw();
     }
 
-    pub fn progress(&mut self, ready: bool, components: BTreeMap<String, ComponentStatsWire>) {
-        let became_ready = ready && self.ready_after.is_none();
+    /// The same for a line of the child's stderr, the stream the block draws on.
+    pub fn error_text(&mut self, text: &str) {
+        self.clear();
+        let mut err = std::io::stderr().lock();
+        let _ = writeln!(err, "{text}");
+        let _ = err.flush();
+        drop(err);
+        self.draw();
+    }
+
+    pub fn progress(
+        &mut self,
+        ready: bool,
+        components: BTreeMap<String, ComponentStatsWire>,
+        in_groups: ComponentStatsWire,
+    ) {
+        let became_ready = ready && self.ready_at.is_none();
         if became_ready {
-            self.ready_after = Some(self.started.elapsed());
+            self.ready_at = Some(Instant::now());
         }
         self.components = components;
+        self.in_groups = in_groups;
         let due = self.last_draw.is_none_or(|t| t.elapsed() >= MIN_REDRAW);
         if due || became_ready {
             self.clear();
@@ -78,10 +100,42 @@ impl Renderer {
     pub fn clear(&mut self) {
         if self.drawn_lines > 0 {
             let mut err = std::io::stderr().lock();
-            let _ = write!(err, "\x1b[{}A\x1b[J", self.drawn_lines);
+            // `\r` first: the terminal's `^C` echo can leave the cursor mid-line,
+            // and clearing from there would keep the start of the status line.
+            let _ = write!(err, "\r\x1b[{}A\x1b[J", self.drawn_lines);
             let _ = err.flush();
             self.drawn_lines = 0;
         }
+    }
+
+    fn snapshot(&self) -> VersionedProcessingStats {
+        VersionedProcessingStats {
+            stats: self
+                .components
+                .iter()
+                .map(|(name, stats)| (name.clone(), group(stats)))
+                .collect(),
+            ready: self.ready_at.is_some(),
+            in_groups: group(&self.in_groups),
+            ..Default::default()
+        }
+    }
+
+    fn lines(
+        &self,
+        finished: bool,
+        spinner_idx: Option<usize>,
+        terminal_width: Option<usize>,
+    ) -> Vec<String> {
+        render_block(&BlockRequest {
+            snapshot: &self.snapshot(),
+            live: self.live,
+            finished,
+            start_time: self.started,
+            ready_time: self.ready_at,
+            spinner_idx,
+            terminal_width,
+        })
     }
 
     fn draw(&mut self) {
@@ -89,17 +143,11 @@ impl Renderer {
             return;
         }
         self.spinner = self.spinner.wrapping_add(1);
-        let mut lines: Vec<String> = self
-            .components
-            .iter()
-            .map(|(name, stats)| format_component_line(name, &group(stats), self.spinner))
-            .collect();
-        lines.push(format_status_line(
-            self.live,
-            self.ready_after.is_some(),
-            self.started.elapsed(),
-            self.ready_after,
-        ));
+        let lines = self.lines(
+            false,
+            Some(self.spinner),
+            Some(terminal_width_from_fd(STDERR_FD)),
+        );
         let mut err = std::io::stderr().lock();
         for line in &lines {
             let _ = writeln!(err, "\x1b[2K{line}");
@@ -109,11 +157,11 @@ impl Renderer {
         self.last_draw = Some(Instant::now());
     }
 
-    /// The final per-component lines, for stdout.
+    /// The final block, for stdout: fit and colored when stdout is a terminal.
     pub fn final_lines(&self) -> Vec<String> {
-        self.components
-            .iter()
-            .map(|(name, stats)| format_component_line(name, &group(stats), 0))
-            .collect()
+        let width = std::io::stdout()
+            .is_terminal()
+            .then(|| terminal_width_from_fd(1));
+        self.lines(true, None, width)
     }
 }

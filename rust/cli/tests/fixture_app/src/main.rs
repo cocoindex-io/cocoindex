@@ -34,11 +34,22 @@ async fn fixture_app(ctx: Ctx) -> Result<()> {
     let target = mount_dir_target(&ctx, env_path("FIXTURE_OUT")?)?;
     let files = walk_items(env_path("FIXTURE_SRC")?, &["*.txt"])?;
     let count = files.len();
-    let outputs = mount_each!(files, |file| upper(ctx, file)).await?;
+    let outputs = use_mount_each!(files, |file| upper(ctx, file)).await?;
     for (name, text) in &outputs {
         target.declare_file(&ctx, name, text.as_bytes())?;
     }
     println!("fixture: processed {count}");
+    // `FIXTURE_FAIL_IN_GROUP` fails a background component inside a stats group:
+    // the run itself still succeeds.
+    if std::env::var_os("FIXTURE_FAIL_IN_GROUP").is_some() {
+        ctx.stats_group("Failing", |group_ctx, _handle| async move {
+            group_ctx
+                .mount("boom", |_ctx| async { Err(Error::engine("fixture: boom")) })
+                .await?;
+            Ok::<_, Error>(())
+        })
+        .await?;
+    }
     Ok(())
 }
 

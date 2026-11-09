@@ -56,6 +56,7 @@ const sources = [
   { slug: 'connectors/amazon_s3', label: 'Amazon S3' },
   { slug: 'connectors/azure_blob', label: 'Azure Blob' },
   { slug: 'connectors/oci_object_storage', label: 'OCI Object Storage' },
+  { slug: 'connectors/discord', label: 'Discord' },
   { slug: 'connectors/kafka', label: 'Kafka' },
   { slug: 'connectors/iggy', label: 'Iggy' },
 ];
@@ -102,7 +103,7 @@ app.update_blocking()`;
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="en" data-docs-lang="python">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -117,10 +118,10 @@ app.update_blocking()`;
   <body class="docs-home">
     <a class="skip-link" href="#main-content">Skip to content</a>
     <Topbar mobileSheetId="mobileSheet" />
-    <MobileSheet sidebarItems={sidebar} />
+    <MobileSheet lang="python" />
 
     <div class="layout dh-layout">
-      <Sidebar currentSlug="" />
+      <Sidebar currentSlug="" lang="python" />
 
       <main class="content dh-main" id="main-content" tabindex="-1">
         <section class="dh-hero" aria-labelledby="dh-title">

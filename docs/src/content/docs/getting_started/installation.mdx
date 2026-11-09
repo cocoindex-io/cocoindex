@@ -3,9 +3,12 @@ title: CocoIndex *installation*
 description: >
   Install CocoIndex with pip, uv, or Poetry, and check system requirements —
   Python 3.11 to 3.13 on macOS, Linux, or Windows.
-meta:
-  language: Python 3.11+
+rust_description: >
+  Add the CocoIndex Rust SDK to a Cargo project, choose its feature flags, and
+  install the cocoindex CLI for Rust projects.
 ---
+<Lang only="python">
+
 ## Install Python and pip
 
 You'll need:
@@ -47,3 +50,106 @@ CocoIndex is supported on the following operating systems:
 - **macOS**: 10.12+ on x86_64, 11.0+ on arm64
 - **Linux**: x86_64 or arm64, glibc 2.28+ (e.g., Debian 10+, Ubuntu 18.10+, Fedora 29+, CentOS/RHEL 8+)
 - **Windows**: 10+ on x86_64
+
+</Lang>
+
+<Lang only="rust">
+
+## Install Rust
+
+Install Rust with [rustup](https://rustup.rs/). The SDK needs Rust 1.91.1 or later (edition 2024).
+
+## Add the SDK to your crate
+
+The `cocoindex` crate is not on crates.io yet. Depend on it from the GitHub repository:
+
+{/* Source: rust/cli/src/init.rs (`sdk_dependency`), getting_started/rust_quickstart.mdx */}
+```toml title="Cargo.toml"
+[dependencies]
+cocoindex = { git = "https://github.com/cocoindex-io/cocoindex" }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+```
+
+To work against a local checkout of the repository instead, use a path dependency on `rust/sdk/cocoindex`:
+
+```toml title="Cargo.toml"
+[dependencies]
+cocoindex = { path = "../cocoindex/rust/sdk/cocoindex" }
+```
+
+The crate builds the CocoIndex engine from source, so the first build takes a few minutes.
+
+## Feature flags
+
+The default build has the core API: apps, functions, memoization, mounting, context, and the LocalFS source and target. Connectors and operations are behind Cargo features, so a crate builds only what it uses. Turn on the ones you need:
+
+```toml title="Cargo.toml"
+[dependencies]
+cocoindex = { git = "https://github.com/cocoindex-io/cocoindex", features = [
+    "postgres",
+    "text",
+    "fastembed",
+    "fs_live",
+] }
+```
+
+{/* Source: rust/sdk/cocoindex/Cargo.toml [features] */}
+| Feature | What it adds |
+|---|---|
+| `fs_live` | Live LocalFS directory watching (`fs::DirWalker::live`) |
+| `text` | Text splitting and language detection (`ops::text`) |
+| `code_match` | Structural code matching over tree-sitter ASTs (`ops::code`) |
+| `fastembed` | Local sentence-transformer text embeddings (`ops::sentence_transformers`) and CLIP image embeddings (`ops::image`); pulls in the ONNX runtime |
+| `embed_api` | Remote embeddings and transcription over an OpenAI-compatible HTTP API (`ops::api`) |
+| `chrono`, `rust_decimal` | Memoization keys for `chrono` and `rust_decimal` values; connector features turn these on as needed |
+| `postgres` | PostgreSQL source and target |
+| `sqlite` | SQLite target |
+| `doris` | Apache Doris target |
+| `surrealdb` | SurrealDB target |
+| `surrealdb_mem` | SurrealDB's embedded in-memory engine (`mem://`), for tests |
+| `neo4j` | Neo4j target |
+| `falkordb` | FalkorDB target |
+| `lancedb` | LanceDB target (the build needs `protoc`) |
+| `qdrant` | Qdrant target (the build needs `protoc`) |
+| `turbopuffer` | Turbopuffer target |
+| `valkey` | Valkey / Redis vector-search target |
+| `zvec` | Zvec target (the build downloads the prebuilt zvec C library) |
+| `bigquery` | Google BigQuery target |
+| `snowflake` | Snowflake target |
+| `kafka` | Kafka source and target |
+| `iggy` | Apache Iggy source and target |
+| `amazon_s3` | Amazon S3 (and S3-compatible) source |
+| `azure_blob` | Azure Blob Storage source |
+| `google_drive` | Google Drive source |
+| `oci_object_storage` | OCI Object Storage source |
+
+Each [connector page](../connectors/) names the feature it needs.
+
+## Install the CLI
+
+The `cocoindex` CLI for Rust projects builds your crate and runs its apps: `ls`, `show`, `update`, `drop` and `init`. It is not on crates.io yet. Build it from a checkout of the repository:
+
+```sh
+git clone https://github.com/cocoindex-io/cocoindex
+cd cocoindex
+cargo install --path rust/cli
+```
+
+The package is `cocoindex_cli`; the binary it installs is `cocoindex`. Start a new project with it:
+
+```sh
+cocoindex init my_project
+```
+
+The scaffold depends on the SDK through its git repository. See the [CLI reference](../cli) for every command.
+
+## System requirements
+
+The Rust SDK is built and tested on:
+
+- **macOS**: arm64
+- **Linux**: x86_64 or arm64
+- **Windows**: x86_64
+
+</Lang>

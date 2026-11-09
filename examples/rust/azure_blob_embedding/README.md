@@ -11,7 +11,7 @@ similarity search.
 | Concern          | Python                                   | Rust (this example)                                           |
 | ---------------- | ---------------------------------------- | ------------------------------------------------------------- |
 | Source           | `azure_blob.list_blobs` (Azure SDK)      | `cocoindex::connectors::azure_blob::list_blobs` (REST API)    |
-| Authentication   | `DefaultAzureCredential`                 | account key, SAS token or Microsoft Entra ID access token     |
+| Authentication   | `DefaultAzureCredential`                 | account key, SAS token, Entra ID access token, or `TokenCredential::Default` (the `DefaultAzureCredential` sources) |
 | Per-file compute | `@coco.fn(memo=True) process_file`       | `#[cocoindex::function(memo)] process_file`                   |
 | Chunking         | `RecursiveSplitter` (markdown, 2000/500) | `RecursiveSplitter` (markdown, 2000/500)                      |
 | Embeddings       | `sentence-transformers/all-MiniLM-L6-v2` | `SentenceTransformerEmbedder` (same model, 384-dim)           |
@@ -31,7 +31,9 @@ export AZURE_STORAGE_ACCOUNT=myaccount
 export AZURE_STORAGE_CONTAINER=docs
 export AZURE_BLOB_PREFIX=                          # optional folder inside the container
 
-# One of:
+# One of, or none to get an Entra ID token as DefaultAzureCredential does
+# (AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET, a managed
+# identity, or the `az login` account):
 export AZURE_STORAGE_KEY=<account-key>
 export AZURE_STORAGE_SAS_TOKEN='<sas-token>'       # needs the read and list permissions
 export AZURE_STORAGE_ACCESS_TOKEN=$(az account get-access-token \

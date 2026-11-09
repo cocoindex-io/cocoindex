@@ -171,7 +171,7 @@ impl DriveFile {
         DriveFilePath::new(self.path(), self.file_id.clone())
     }
 
-    pub async fn read(&self) -> Result<Vec<u8>> {
+    pub async fn read(&self) -> Result<bytes::Bytes> {
         <Self as FileLike>::read(self).await
     }
 
@@ -244,6 +244,109 @@ impl crate::memo::MemoInput for DriveFile {
         previous: Option<&crate::memo::MemoStateValue>,
     ) -> Result<Option<crate::memo::MemoStateDecision>> {
         crate::memo::file_memo_state(self, previous).await.map(Some)
+    }
+}
+
+/// Attempts after the first for every Drive API request, as Python's
+/// `googleapiclient` makes them (`num_retries`): a 5xx, a 429, a 403 whose
+/// reason is a rate limit, or a transport failure is tried again after a
+/// random wait of up to `2^n` × [`RETRY_BACKOFF_UNIT`]; Drive's usage-limits
+/// guide asks clients to do exactly that.
+const RETRIES: u32 = 5;
+/// The longest an access token is cached, whatever `expires_in` says: a huge
+/// value would overflow `Instant`, and refreshing early is harmless.
+const MAX_TOKEN_TTL_SECS: u64 = 86_400;
+const RETRY_BACKOFF_UNIT: Duration = Duration::from_secs(1);
+
+/// A random fraction in `[0, 1)`, for the retry jitter.
+fn random_fraction() -> f64 {
+    let bytes = uuid::Uuid::new_v4().into_bytes();
+    f64::from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])) / f64::from(u32::MAX)
+}
+
+/// Whether a `403` is Drive's rate limit, read from its error body.
+fn is_rate_limit_403(body: &[u8]) -> bool {
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    json.get("error")
+        .and_then(|e| e.get("errors"))
+        .and_then(|errors| errors.as_array())
+        .is_some_and(|errors| {
+            errors.iter().any(|e| {
+                matches!(
+                    e.get("reason").and_then(|r| r.as_str()),
+                    Some("userRateLimitExceeded" | "rateLimitExceeded")
+                )
+            })
+        })
+}
+
+/// How one attempt of a Drive request failed.
+enum Attempt {
+    /// A failure another attempt may not repeat.
+    Retry(String),
+    /// A failure to report as it is.
+    Final(Error),
+}
+
+async fn send_once(
+    request: reqwest::RequestBuilder,
+    what: &str,
+) -> std::result::Result<reqwest::Response, Attempt> {
+    let resp = request
+        .send()
+        .await
+        .map_err(|e| Attempt::Retry(format!("{what}: {e}")))?;
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let retry = status.is_server_error()
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (status == reqwest::StatusCode::FORBIDDEN
+            && is_rate_limit_403(&resp.bytes().await.unwrap_or_default()));
+    if retry {
+        Err(Attempt::Retry(format!("{what} failed: {status}")))
+    } else {
+        Err(Attempt::Final(Error::engine(format!(
+            "{what} failed: {status}"
+        ))))
+    }
+}
+
+/// Send a Drive API request, retrying as [`RETRIES`] says; the successful
+/// response, or the last failure as an error naming `what`.
+async fn send_with_retry(
+    request: reqwest::RequestBuilder,
+    what: &str,
+) -> Result<reqwest::Response> {
+    let mut retries = 0u32;
+    loop {
+        // A request with a streaming body cannot be cloned; Drive reads have
+        // none. The last attempt takes the request itself.
+        let this_try = match request.try_clone() {
+            Some(cloned) if retries < RETRIES => cloned,
+            _ => {
+                return send_once(request, what).await.map_err(|a| match a {
+                    Attempt::Retry(failure) => {
+                        Error::engine(format!("{failure} (after {retries} retries)"))
+                    }
+                    Attempt::Final(e) => e,
+                });
+            }
+        };
+        match send_once(this_try, what).await {
+            Ok(resp) => return Ok(resp),
+            Err(Attempt::Final(e)) => return Err(e),
+            Err(Attempt::Retry(failure)) => {
+                retries += 1;
+                let wait =
+                    RETRY_BACKOFF_UNIT.mul_f64(random_fraction() * f64::from(1u32 << retries));
+                tracing::debug!("{failure}; retrying in {wait:?}");
+                tokio::time::sleep(wait).await;
+            }
+        }
     }
 }
 
@@ -431,6 +534,15 @@ pub struct GoogleDriveClient {
     inner: Arc<ClientInner>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for GoogleDriveClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GoogleDriveClient")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl GoogleDriveClient {
     /// Build a client from a service-account JSON key file (the standard
     /// `type: service_account` key downloaded from Google Cloud).
@@ -562,7 +674,8 @@ impl GoogleDriveClient {
                     .json()
                     .await
                     .map_err(|e| Error::engine(format!("parse token response: {e}")))?;
-                let ttl = token.expires_in.max(60);
+                // Clamped above too: a huge `expires_in` would overflow `Instant`.
+                let ttl = token.expires_in.clamp(60, MAX_TOKEN_TTL_SECS);
                 *guard = Some(CachedToken {
                     token: token.access_token.clone(),
                     expires_at: Instant::now() + Duration::from_secs(ttl),
@@ -573,7 +686,7 @@ impl GoogleDriveClient {
     }
 
     /// List the direct children of a folder (one page at a time, following
-    /// `nextPageToken`).
+    /// `nextPageToken`). Drive lists them in no set order.
     async fn list_children(&self, folder_id: &str) -> Result<Vec<DriveFile>> {
         validate_folder_id(folder_id)?;
         let token = self.token().await?;
@@ -592,12 +705,7 @@ impl GoogleDriveClient {
             if let Some(t) = &page_token {
                 req = req.query(&[("pageToken", t.as_str())]);
             }
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| Error::engine(format!("drive list: {e}")))?
-                .error_for_status()
-                .map_err(|e| Error::engine(format!("drive list failed: {e}")))?;
+            let resp = send_with_retry(req, "drive list").await?;
             let json: serde_json::Value = resp
                 .json()
                 .await
@@ -632,13 +740,7 @@ impl GoogleDriveClient {
                 .get(format!("{}/files/{}", self.inner.base_url, file.file_id))
                 .query(&[("alt", "media")]),
         };
-        let resp = req
-            .bearer_auth(&token)
-            .send()
-            .await
-            .map_err(|e| Error::engine(format!("drive download: {e}")))?
-            .error_for_status()
-            .map_err(|e| Error::engine(format!("drive download failed: {e}")))?;
+        let resp = send_with_retry(req.bearer_auth(&token), "drive download").await?;
         let bytes = resp
             .bytes()
             .await
@@ -709,6 +811,74 @@ const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
 /// How to create an OAuth client of one's own.
 const OWN_CLIENT_DOCS: &str =
     "https://cocoindex.io/docs/connectors/google_drive#setting-up-the-oauth-client";
+
+/// CocoIndex's own Desktop-app OAuth client, so that a sign-in needs no
+/// client file: built into the crate when `COCOINDEX_GOOGLE_OAUTH_CLIENT_ID`
+/// and `COCOINDEX_GOOGLE_OAUTH_CLIENT_SECRET` were set when it compiled (a
+/// release build sets them from the repository's secrets, as the Python
+/// wheel's `_builtin_client.json` is written at release time). A build from
+/// source has none: its sign-in takes the user's own client.
+const BUILTIN_CLIENT: Option<(&str, &str)> = match (
+    option_env!("COCOINDEX_GOOGLE_OAUTH_CLIENT_ID"),
+    option_env!("COCOINDEX_GOOGLE_OAUTH_CLIENT_SECRET"),
+) {
+    (Some(client_id), Some(client_secret)) => Some((client_id, client_secret)),
+    _ => None,
+};
+
+/// A sign-in, sign-out or token refresh failed; the message says what to do.
+/// The Python SDK's `SignInError` and `SignInRequiredError`. It reaches the
+/// caller as [`Error::User`]; [`SignInError::of`] recovers it from an [`Error`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignInError {
+    /// A run needs a signed-in account and has none that works: no sign-in is
+    /// stored, or Google refuses the stored one (the consent expired or was
+    /// revoked, or the OAuth client was deleted, disabled or given a new
+    /// secret). Sign in again.
+    SignInRequired(String),
+    /// The sign-in, sign-out or refresh failed for another reason: an unusable
+    /// client file, a cancelled consent, a token file another user can read, …
+    Failed(String),
+}
+
+impl SignInError {
+    /// The message, without the variant.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::SignInRequired(message) | Self::Failed(message) => message,
+        }
+    }
+
+    /// The sign-in error behind `error`, if it is one.
+    pub fn of(error: &Error) -> Option<&SignInError> {
+        match error {
+            Error::User(inner) => inner.downcast_ref::<SignInError>(),
+            _ => None,
+        }
+    }
+
+    fn required(message: impl Into<String>) -> Error {
+        Error::User(Box::new(Self::SignInRequired(message.into())))
+    }
+
+    fn failed(message: impl Into<String>) -> Error {
+        Error::User(Box::new(Self::Failed(message.into())))
+    }
+}
+
+impl std::fmt::Display for SignInError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for SignInError {}
+
+impl From<SignInError> for Error {
+    fn from(e: SignInError) -> Self {
+        Error::User(Box::new(e))
+    }
+}
 
 /// Google's OAuth and Drive endpoints. The default is Google; a test points
 /// them at a mock server with [`UserAccount::with_endpoints`].
@@ -788,40 +958,62 @@ struct TokenFile {
 struct OAuthClient {
     client_id: String,
     client_secret: String,
+    /// CocoIndex's own client ([`BUILTIN_CLIENT`]), not one the user created.
+    builtin: bool,
+}
+
+/// The client a sign-in uses: the file at `path`, or the built-in one for
+/// `None`.
+fn resolve_client(path: Option<&std::path::Path>) -> Result<OAuthClient> {
+    if let Some(path) = path {
+        return load_client(path);
+    }
+    let Some((client_id, client_secret)) = BUILTIN_CLIENT else {
+        return Err(SignInError::failed(format!(
+            "This build of CocoIndex has no built-in OAuth client. Sign in with a Desktop \
+             app OAuth client of your own: pass the JSON file you downloaded for it (see \
+             {OWN_CLIENT_DOCS})."
+        )));
+    };
+    Ok(OAuthClient {
+        client_id: client_id.to_string(),
+        client_secret: client_secret.to_string(),
+        builtin: true,
+    })
 }
 
 /// Read the client JSON the Google Cloud console downloads for a Desktop app.
 fn load_client(path: &std::path::Path) -> Result<OAuthClient> {
     let raw = std::fs::read_to_string(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
-            Error::engine(format!("No OAuth client file at {}.", path.display()))
+            SignInError::failed(format!("No OAuth client file at {}.", path.display()))
         }
-        _ => Error::engine(format!(
+        _ => SignInError::failed(format!(
             "Cannot read the OAuth client file {}: {e}",
             path.display()
         )),
     })?;
     let document: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-        Error::engine(format!(
+        SignInError::failed(format!(
             "Cannot read the OAuth client file {}: {e}",
             path.display()
         ))
     })?;
     let Some(document) = document.as_object() else {
-        return Err(Error::engine(format!(
+        return Err(SignInError::failed(format!(
             "{} is not an OAuth client file.",
             path.display()
         )));
     };
     if document.contains_key("web") && !document.contains_key("installed") {
-        return Err(Error::engine(format!(
+        return Err(SignInError::failed(format!(
             "{} describes a Web application client; the sign-in needs a Desktop app \
              client (create one under APIs & Services > Credentials).",
             path.display()
         )));
     }
     let Some(installed) = document.get("installed").and_then(|v| v.as_object()) else {
-        return Err(Error::engine(format!(
+        return Err(SignInError::failed(format!(
             "{} is not the JSON of a Desktop app OAuth client (it has no 'installed' section).",
             path.display()
         )));
@@ -833,8 +1025,9 @@ fn load_client(path: &std::path::Path) -> Result<OAuthClient> {
         (Some(client_id), Some(client_secret)) => Ok(OAuthClient {
             client_id: client_id.to_string(),
             client_secret: client_secret.to_string(),
+            builtin: false,
         }),
-        _ => Err(Error::engine(format!(
+        _ => Err(SignInError::failed(format!(
             "{} has no client_id and client_secret.",
             path.display()
         ))),
@@ -886,7 +1079,7 @@ fn check_private(path: &std::path::Path) -> Result<()> {
             .mode()
             & 0o777;
         if mode & 0o077 != 0 {
-            return Err(Error::engine(format!(
+            return Err(SignInError::failed(format!(
                 "The token file {} is accessible to other users (mode {mode:04o}); run \
                  `chmod 600` on it, or delete it and sign in again.",
                 path.display()
@@ -904,13 +1097,13 @@ fn load_tokens(path: &std::path::Path) -> Result<Option<Tokens>> {
     }
     check_private(path)?;
     let raw = std::fs::read_to_string(path).map_err(|e| {
-        Error::engine(format!(
+        SignInError::failed(format!(
             "Cannot read the token file {}: {e}",
             path.display()
         ))
     })?;
     let document: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-        Error::engine(format!(
+        SignInError::failed(format!(
             "Cannot read the token file {}: {e}",
             path.display()
         ))
@@ -1012,7 +1205,7 @@ enum TokenRequestError {
 impl From<TokenRequestError> for Error {
     fn from(e: TokenRequestError) -> Self {
         match e {
-            TokenRequestError::Refused(r) => Error::engine(format!(
+            TokenRequestError::Refused(r) => SignInError::failed(format!(
                 "Google refused the request: {}{}.",
                 r.code,
                 r.detail()
@@ -1101,7 +1294,7 @@ async fn refresh_tokens(
     {
         Ok(payload) => payload,
         Err(TokenRequestError::Refused(r)) if r.code == "invalid_grant" => {
-            return Err(Error::engine(format!(
+            return Err(SignInError::required(format!(
                 "Google refused the stored sign-in: invalid_grant{}. The consent may have \
                  expired (seven days for a client in Testing status), or the access was \
                  revoked. Sign in again.",
@@ -1109,7 +1302,7 @@ async fn refresh_tokens(
             )));
         }
         Err(TokenRequestError::Refused(r)) if is_client_refusal(&r.code) => {
-            return Err(Error::engine(format!(
+            return Err(SignInError::required(format!(
                 "Google no longer accepts the OAuth client this sign-in used: {}{}. It was \
                  deleted or disabled, or its secret changed. Sign in again with a working \
                  Desktop app client of your own.",
@@ -1256,12 +1449,18 @@ fn url_decode(value: &str) -> String {
     while i < bytes.len() {
         match bytes[i] {
             b'+' => out.push(b' '),
-            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&value[i + 1..i + 3], 16) {
-                Ok(b) => {
+            // Byte-wise: slicing the `str` could cut a multi-byte character
+            // (`%aé`), and `from_str_radix` alone would take a sign (`%+1`).
+            b'%' => match bytes
+                .get(i + 1..i + 3)
+                .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+                .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok())
+            {
+                Some(b) => {
                     out.push(b);
                     i += 2;
                 }
-                Err(_) => out.push(b'%'),
+                None => out.push(b'%'),
             },
             b => out.push(b),
         }
@@ -1430,7 +1629,7 @@ fn random_urlsafe(bytes: usize) -> String {
 /// Compare two strings in time independent of where they differ.
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
-    let mut diff = (a.len() ^ b.len()) as u8;
+    let mut diff = u8::from(a.len() != b.len());
     for i in 0..a.len().max(b.len()) {
         diff |= a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0);
     }
@@ -1483,11 +1682,11 @@ async fn run_consent(
 
     if let Some(error) = params.get("error") {
         if error == "access_denied" {
-            return Err(Error::engine(
+            return Err(SignInError::failed(
                 "The sign-in was cancelled on the consent screen.",
             ));
         }
-        return Err(Error::engine(format!(
+        return Err(SignInError::failed(format!(
             "Google refused the sign-in: {error}."
         )));
     }
@@ -1495,14 +1694,14 @@ async fn run_consent(
         params.get("state").map(String::as_str).unwrap_or(""),
         &state,
     ) {
-        return Err(Error::engine(
+        return Err(SignInError::failed(
             "The redirect does not belong to this sign-in (its state does not match); \
              nothing was stored. Start the sign-in again.",
         ));
     }
     let code = params.get("code").map(String::as_str).unwrap_or("");
     if code.is_empty() {
-        return Err(Error::engine(
+        return Err(SignInError::failed(
             "Google's redirect carried no authorization code.",
         ));
     }
@@ -1522,12 +1721,21 @@ async fn run_consent(
     {
         Ok(payload) => Ok(payload),
         Err(TokenRequestError::Refused(r)) if is_client_refusal(&r.code) => {
-            Err(Error::engine(format!(
-                "Google refused the OAuth client in the client file: {}. Download the \
-                 current JSON of the Desktop app client (its secret may have been reset) \
-                 and sign in again (see {OWN_CLIENT_DOCS}).",
-                r.code
-            )))
+            Err(SignInError::failed(if client_cfg.builtin {
+                format!(
+                    "Google refused CocoIndex's built-in OAuth client: {}. Upgrade CocoIndex \
+                     and sign in again, or sign in with a Desktop app OAuth client of your \
+                     own (see {OWN_CLIENT_DOCS}).",
+                    r.code
+                )
+            } else {
+                format!(
+                    "Google refused the OAuth client in the client file: {}. Download the \
+                     current JSON of the Desktop app client (its secret may have been reset) \
+                     and sign in again.",
+                    r.code
+                )
+            }))
         }
         Err(e) => Err(e.into()),
     }
@@ -1539,8 +1747,8 @@ async fn run_consent(
 /// Python SDK reads and writes too.
 ///
 /// Experimental. [`sign_in`](Self::sign_in) is the interactive step; run it once,
-/// outside any CocoIndex run (`cocoindex google-drive sign-in` in the Python
-/// CLI does the same from the shell). A run then builds a
+/// outside any CocoIndex run (`cocoindex auth sign-in google-drive`, in the Rust
+/// CLI or the Python one, does the same from the shell). A run then builds a
 /// [`GoogleDriveClient::from_user_account`], which reads the file and errors
 /// when it holds no usable sign-in.
 #[derive(Clone, Debug)]
@@ -1576,13 +1784,12 @@ impl UserAccount {
 
     /// Sign in interactively with a Desktop-app OAuth client; the account's
     /// address. `client_secrets_path` is the JSON downloaded for a client of
-    /// your own (see the docs linked from the error when it is unusable).
-    /// Opens the consent page in the browser, or prints the link when this
-    /// host has none, and stores the tokens readable by this user only.
-    pub async fn sign_in(
-        &self,
-        client_secrets_path: impl AsRef<std::path::Path>,
-    ) -> Result<String> {
+    /// your own (see the docs linked from the error when it is unusable);
+    /// `None` takes the client built into this release, and fails as a
+    /// [`SignInError`] when the build has none. Opens the consent page in the
+    /// browser, or prints the link when this host has none, and stores the
+    /// tokens readable by this user only.
+    pub async fn sign_in(&self, client_secrets_path: Option<&std::path::Path>) -> Result<String> {
         self.sign_in_with(client_secrets_path, SignInOptions::default())
             .await
     }
@@ -1591,15 +1798,15 @@ impl UserAccount {
     /// [`SignInOptions`], so a test can drive the flow against fake endpoints.
     pub async fn sign_in_with(
         &self,
-        client_secrets_path: impl AsRef<std::path::Path>,
+        client_secrets_path: Option<&std::path::Path>,
         options: SignInOptions,
     ) -> Result<String> {
-        let client_cfg = load_client(client_secrets_path.as_ref())?;
+        let client_cfg = resolve_client(client_secrets_path)?;
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
             .build()
-            .map_err(|e| Error::engine(format!("http client: {e}")))?;
+            .map_err(|e| SignInError::failed(format!("http client: {e}")))?;
         let payload = run_consent(&client_cfg, &self.endpoints, &http, &options).await?;
         let granted: Vec<&str> = payload
             .get("scope")
@@ -1608,7 +1815,7 @@ impl UserAccount {
             .split_whitespace()
             .collect();
         if !granted.is_empty() && !granted.contains(&DRIVE_READONLY_SCOPE) {
-            return Err(Error::engine(
+            return Err(SignInError::failed(
                 "The consent did not grant read access to Google Drive; sign in again and \
                  keep the Drive permission selected.",
             ));
@@ -1618,7 +1825,7 @@ impl UserAccount {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
         else {
-            return Err(Error::engine(
+            return Err(SignInError::failed(
                 "Google returned no refresh token, so the sign-in could not be kept. Remove \
                  the app at https://myaccount.google.com/permissions and sign in again.",
             ));
@@ -1676,10 +1883,9 @@ impl UserAccount {
 
     fn tokens(&self) -> Result<Tokens> {
         load_tokens(&self.token_path)?.ok_or_else(|| {
-            Error::engine(format!(
+            SignInError::required(format!(
                 "No usable Google sign-in is stored at {}. Sign in once with \
-                 `UserAccount::sign_in(client_secret.json)` or \
-                 `cocoindex google-drive sign-in <client_secret.json>`.",
+                 `cocoindex auth sign-in google-drive` or `UserAccount::sign_in(..)`.",
                 self.token_path.display()
             ))
         })
@@ -1757,7 +1963,11 @@ impl GoogleDriveSource {
             if !seen_folders.insert(folder_id.clone()) {
                 continue; // guard against cycles / shortcuts
             }
-            for mut file in self.client.list_children(&folder_id).await? {
+            // Sorting the children makes the path kept for a file with several
+            // parents (the first one seen) the same every run.
+            let mut children = self.client.list_children(&folder_id).await?;
+            children.sort_by(|a, b| (&a.name, &a.file_id).cmp(&(&b.name, &b.file_id)));
+            for mut file in children {
                 let path = if prefix.is_empty() {
                     file.name.clone()
                 } else {
@@ -1795,6 +2005,26 @@ impl GoogleDriveSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_decode_handles_malformed_escapes() {
+        assert_eq!(url_decode("a%20b+c"), "a b c");
+        // A `%` before a multi-byte character must not slice inside it.
+        assert_eq!(url_decode("%a\u{e9}"), "%a\u{e9}");
+        assert_eq!(url_decode("%\u{e9}"), "%\u{e9}");
+        assert_eq!(url_decode("%+1"), "% 1"); // a sign is no hex digit; `+` is a space
+        assert_eq!(url_decode("%4"), "%4");
+        assert_eq!(url_decode("%"), "%");
+    }
+
+    #[test]
+    fn constant_time_eq_compares_lengths_exactly() {
+        assert!(constant_time_eq("state", "state"));
+        assert!(!constant_time_eq("state", "stat"));
+        // Lengths that differ by 256 with NUL padding were once equal.
+        let padded = format!("state{}", "\0".repeat(256));
+        assert!(!constant_time_eq("state", &padded));
+    }
 
     #[test]
     fn export_mime_mapping() {

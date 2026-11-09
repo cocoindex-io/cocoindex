@@ -4,8 +4,20 @@ description: >
   A tour of the CocoIndex Python SDK — package layout (core, connectors,
   resources, ops), common types like StableKey, and how async orchestration
   composes with sync leaf functions.
+rust_title: Rust *SDK overview*
+rust_description: >
+  A tour of the CocoIndex Rust SDK — crate layout (core, prelude, connectors,
+  ops, resources), feature flags, common types like StableKey, and its
+  async-only API.
 ---
+
+<Lang only="python">
+
 The CocoIndex Python SDK combines async orchestration APIs with sync or async processing functions.
+
+:::note[Rust SDK]
+CocoIndex also has a Rust SDK on the same engine: an async-only crate. See the [Rust SDK overview](/docs/rust/programming_guide/sdk_overview/).
+:::
 
 ## Package organization
 
@@ -35,9 +47,60 @@ from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
 ```
 
+</Lang>
+
+<Lang only="rust">
+
+The CocoIndex Rust SDK is the `cocoindex` crate under `rust/sdk/cocoindex`. Its API is async and runs on Tokio, and your processing functions are `async fn`s.
+
+:::note[Python SDK]
+The Rust SDK calls the same core engine as the Python SDK, and the two write one state database format. See the [Python SDK overview](/docs/programming_guide/sdk_overview/).
+:::
+
+Until the crate is published, depend on it from GitHub, as [Installation](../getting_started/installation) shows:
+
+```toml title="Cargo.toml"
+[dependencies]
+cocoindex = { git = "https://github.com/cocoindex-io/cocoindex", features = [
+    "postgres",
+    "text",
+    "fastembed",
+    "fs_live",
+] }
+```
+
+## Crate organization
+
+| Path | Description |
+|------|-------------|
+| `cocoindex` | The core API at the crate root: `App`, `Environment`, `Ctx`, `ContextKey`, `Error`, `Result`, the `#[cocoindex::function]`, `#[app]`, `#[lifespan]` and `#[main]` attributes, the `mount!`, `use_mount!` and `mount_each!` macros, `context_key!`, and the `MemoInput` and `SchemaFields` derives. The resource types (`FileEntry`, `DirTarget`, `walk_dir`, `Chunk`, `IdGenerator`, `LiveMap`, `StableKey`, ...) are re-exported here too |
+| `cocoindex::prelude` | `use cocoindex::prelude::*;` imports the core API, the resource types, the macros, and `serde::{Serialize, Deserialize}` |
+| `cocoindex::connectors::*` | One module per connector, each behind a feature flag of the same name: `postgres`, `sqlite`, `doris`, `lancedb`, `qdrant`, `turbopuffer`, `valkey`, `zvec`, `neo4j`, `falkordb`, `surrealdb`, `bigquery`, `snowflake`, `kafka`, `iggy`, `amazon_s3`, `azure_blob`, `oci_object_storage`, and `gdrive` (feature `google_drive`) |
+| `cocoindex::ops::*` | Built-in operations: `text` (feature `text`), `sentence_transformers` and `image` (feature `fastembed`), `api` (feature `embed_api`), `code` (feature `code_match`) |
+| `cocoindex::resources::*` | The resource modules behind the root re-exports: `file`, `fs`, `chunk`, `id`, `live_map`, `rate_limit`, `schema`, `view`, `embedder` |
+| `cocoindex::inspect` | Reads an app's stored state: stable paths, their details, and tracked target states |
+
+Import connectors and ops by their module; take the rest from the prelude:
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+```rust
+use cocoindex::connectors::postgres;
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
+use cocoindex::prelude::*;
+```
+
+## Feature flags
+
+Every connector and op is optional, so a pipeline compiles only the clients it uses. The other features are `fs_live` (live directory watching through `walk_dir(..).live()`), `chrono` and `rust_decimal` (`MemoInput` for those leaf types; a connector feature enables the ones it needs), and `embed_api` (remote embeddings and transcription over an OpenAI-compatible HTTP API). [Installation](/docs/rust/getting_started/installation/#feature-flags) lists them all.
+
+</Lang>
+
 ## Common types
 
 ### StableKey
+
+<Lang only="python">
 
 `StableKey` is a type alias defining what values can be used when creating component paths via `coco.component_subpath()`:
 
@@ -49,6 +112,20 @@ Common examples include strings (like `"setup"` or `"table"`), integers, and UUI
 `Symbol` provides predefined names that will never conflict with strings (which typically come from runtime data).
 
 Each processing component must be mounted at a unique path. See [Processing Component](./processing_component) for how the component path tree affects target states and ownership.
+
+</Lang>
+
+<Lang only="rust">
+
+`StableKey` is the enum of values that identify a processing component in the component path, and a target state within its target. Its variants are `Null`, `Bool`, `Int`, `Str`, `Bytes`, `Uuid`, `Symbol`, `Array` (a composite key) and `Fingerprint`.
+
+APIs that take a key accept any `IntoStableKey` value: `&str`, `String`, `bool`, the integer types, `uuid::Uuid`, byte strings (`Vec<u8>`, `&[u8]`, `bytes::Bytes`), `()` (for `Null`), or a `StableKey` itself. Common examples include strings (like `"setup"` or `"table"`), integers, and UUIDs. `Symbol` provides predefined names that never conflict with strings (which typically come from runtime data).
+
+Each processing component must be mounted at a unique path. See [Processing Component](./processing_component) for how the component path tree affects target states and ownership.
+
+</Lang>
+
+<Lang only="python">
 
 ## Async vs sync APIs
 
@@ -142,3 +219,40 @@ asyncio.run(main())
 # Sync entry point (scripts, CLI)
 app.update_blocking(report_to_stdout=True)
 ```
+
+</Lang>
+
+<Lang only="rust">
+
+## Async only
+
+The Rust API is async and runs on Tokio. There are no sync variants of the orchestration APIs: `ctx.mount`, `ctx.scope`, `ctx.mount_each`, `ctx.map` and the mount macros are all `async`, and a `#[cocoindex::function]` body is an `async fn`. The entry points have `_blocking` forms for code that owns no runtime: `App::open_blocking`, `app.update_blocking`, `app.drop_state_blocking`, `EnvironmentBuilder::build_blocking`. They build a runtime of their own and panic inside one, so use the async forms inside `#[tokio::main]` or `#[cocoindex::main]`:
+
+{/* Rust: rust/sdk/SHOWCASE.md "Open and run an app" (verified against rust/sdk/cocoindex/src/app.rs), rust/sdk/cocoindex/tests/pipeline.rs */}
+```rust
+use cocoindex::prelude::*;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let app = App::open("my_app", ".cocoindex_db").await?;
+    let stats = app
+        .run(|ctx| async move {
+            // Declare the desired target state using ctx.
+            Ok(())
+        })
+        .await?;
+
+    println!("{stats}");
+    Ok(())
+}
+```
+
+```rust
+// Sync entry point, outside a runtime
+let app = App::builder("my_app").db_path(".cocoindex_db").build_blocking()?;
+app.update_blocking(|_ctx| async move { Ok(()) })?;
+```
+
+Rust has no ambient context: every API takes the component's `Ctx` explicitly, and a processing function takes `&Ctx` as its first argument. See [Function](./function) and [Processing Component](./processing_component).
+
+</Lang>

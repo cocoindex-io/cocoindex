@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cocoindex::prelude::*;
+use cocoindex::testing::TestEnv;
 use cocoindex::{Environment, ExceptionSource};
 use tokio::sync::Notify;
 
@@ -44,33 +45,23 @@ fn key_str(key: &StableKey) -> String {
     }
 }
 
-async fn temp_app(name: &str) -> (App, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let app = App::builder(name)
-        .db_path(dir.path().join(".cocoindex_db"))
-        .build()
-        .await
-        .unwrap();
-    (app, dir)
+async fn temp_app(name: &str) -> (App, TestEnv) {
+    let env = TestEnv::new().await.unwrap();
+    let app = env.app(name).await.unwrap();
+    (app, env)
 }
 
 /// An app whose environment installs `handler` as the global exception
 /// handler, the way a Python lifespan's `builder.set_exception_handler` does.
-async fn temp_app_with_handler<H>(name: &str, handler: H) -> (App, tempfile::TempDir)
+async fn temp_app_with_handler<H>(name: &str, handler: H) -> (App, TestEnv)
 where
     H: Fn(&Error, &ExceptionContext) -> Result<()> + Send + Sync + 'static,
 {
-    let dir = tempfile::tempdir().unwrap();
-    let app = Environment::builder()
-        .db_path(dir.path().join(".cocoindex_db"))
-        .exception_handler(handler)
-        .build()
-        .await
-        .unwrap()
-        .app(name)
+    let env = TestEnv::from_builder(Environment::builder().exception_handler(handler))
         .await
         .unwrap();
-    (app, dir)
+    let app = env.app(name).await.unwrap();
+    (app, env)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -197,7 +188,7 @@ impl std::error::Error for DeadLetter {}
 /// states to sync.
 #[tokio::test]
 async fn mount_returns_before_child_finishes_and_ready_waits_for_sync() {
-    let (app, _dir) = temp_app("mount_background").await;
+    let (app, _env) = temp_app("mount_background").await;
     let log = new_log();
     let sink = recording_sink(log.clone());
     let release = Arc::new(Notify::new());
@@ -243,7 +234,7 @@ async fn mount_returns_before_child_finishes_and_ready_waits_for_sync() {
 /// nobody awaits their handles; a child no longer mounted is cleaned up.
 #[tokio::test]
 async fn mount_children_sync_before_update_completes_and_are_garbage_collected() {
-    let (app, _dir) = temp_app("mount_gc").await;
+    let (app, _env) = temp_app("mount_gc").await;
     let log = new_log();
 
     async fn run(app: &App, log: &Log, keys: Vec<&'static str>) {
@@ -276,7 +267,7 @@ async fn mount_children_sync_before_update_completes_and_are_garbage_collected()
 /// the parent, its siblings and `ready()` all succeed (the Python default).
 #[tokio::test]
 async fn mount_failure_without_handler_is_logged_not_propagated() {
-    let (app, _dir) = temp_app("mount_no_handler").await;
+    let (app, _env) = temp_app("mount_no_handler").await;
     let log = new_log();
     let sink = recording_sink(log.clone());
 
@@ -311,7 +302,7 @@ async fn mount_failure_without_handler_is_logged_not_propagated() {
 #[tokio::test]
 async fn global_exception_handler_invoked_for_background_mount() {
     let seen: Arc<Mutex<Vec<SeenFailure>>> = Arc::new(Mutex::new(Vec::new()));
-    let (app, _dir) = temp_app_with_handler("mount_global_handler", {
+    let (app, _env) = temp_app_with_handler("mount_global_handler", {
         let seen = seen.clone();
         move |err, exc| {
             seen.lock().unwrap().push((
@@ -350,7 +341,7 @@ async fn global_exception_handler_invoked_for_background_mount() {
 #[tokio::test]
 async fn scoped_handler_overrides_global_and_falls_back_on_handler_error() {
     let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let (app, _dir) = temp_app_with_handler("mount_scoped_handler", {
+    let (app, _env) = temp_app_with_handler("mount_scoped_handler", {
         let calls = calls.clone();
         move |err, exc| {
             calls
@@ -398,7 +389,7 @@ async fn scoped_handler_overrides_global_and_falls_back_on_handler_error() {
 #[tokio::test]
 async fn scoped_handler_applies_only_to_mounts_from_the_scoped_ctx() {
     let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let (app, _dir) = temp_app_with_handler("mount_scoped_only", {
+    let (app, _env) = temp_app_with_handler("mount_scoped_only", {
         let calls = calls.clone();
         move |_err, exc| {
             calls
@@ -449,7 +440,7 @@ async fn scoped_handler_applies_only_to_mounts_from_the_scoped_ctx() {
 /// match on its type.
 #[tokio::test]
 async fn handler_error_propagates_through_ready_with_its_type() {
-    let (app, _dir) = temp_app_with_handler("mount_handler_propagates", |err, _exc| {
+    let (app, _env) = temp_app_with_handler("mount_handler_propagates", |err, _exc| {
         Err(Error::user(DeadLetter(err.to_string())))
     })
     .await;
@@ -489,7 +480,7 @@ async fn fail_under_subpath(_ctx: &Ctx, _name: String) -> Result<()> {
 #[tokio::test]
 async fn with_subpath_nests_child_paths() {
     let seen: Arc<Mutex<Vec<SeenPaths>>> = Arc::new(Mutex::new(Vec::new()));
-    let (app, _dir) = temp_app_with_handler("mount_subpath", {
+    let (app, _env) = temp_app_with_handler("mount_subpath", {
         let seen = seen.clone();
         move |_err, exc| {
             seen.lock()
@@ -501,13 +492,13 @@ async fn with_subpath_nests_child_paths() {
     .await;
 
     app.update(|ctx| async move {
-        let process = ctx.with_subpath(&"process");
+        let process = ctx.with_subpath("process");
         process
             .mount(&"a.md", |_child| async move { Err(Error::engine("boom")) })
             .await?
             .ready()
             .await?;
-        let ctx = &process.with_subpath(&"nested");
+        let ctx = &process.with_subpath("nested");
         cocoindex::mount!("b.md", fail_under_subpath(ctx, "b".to_string()))
             .await?
             .ready()
@@ -537,13 +528,13 @@ async fn with_subpath_nests_child_paths() {
 /// scope at the prefix, finds its state unchanged instead of recreating it.
 #[tokio::test]
 async fn with_subpath_is_the_same_component_as_the_direct_path() {
-    let (app, _dir) = temp_app("mount_subpath_identity").await;
+    let (app, _env) = temp_app("mount_subpath_identity").await;
     let log = new_log();
 
     let sink = recording_sink(log.clone());
     app.update(move |ctx| async move {
         let provider = root_provider(&ctx, sink)?;
-        ctx.with_subpath(&"process")
+        ctx.with_subpath("process")
             .mount(&"x", move |child| async move {
                 declare_target_state(&child, provider.target_state("x", "v1".to_string()))
             })
@@ -558,7 +549,7 @@ async fn with_subpath_is_the_same_component_as_the_direct_path() {
     let sink = recording_sink(log.clone());
     app.update(move |ctx| async move {
         let provider = root_provider(&ctx, sink)?;
-        ctx.with_subpath(&"process")
+        ctx.with_subpath("process")
             .mount(&"x", move |child| async move {
                 declare_target_state(&child, provider.target_state("x", "v1".to_string()))
             })
@@ -593,12 +584,12 @@ async fn with_subpath_is_the_same_component_as_the_direct_path() {
 /// because the state belongs to the component, not to the subpath.
 #[tokio::test]
 async fn use_state_is_rejected_on_a_subpath_ctx() {
-    let (app, _dir) = temp_app("mount_subpath_use_state").await;
+    let (app, _env) = temp_app("mount_subpath_use_state").await;
 
     let message = app
         .update(|ctx| async move {
             let err = ctx
-                .with_subpath(&"process")
+                .with_subpath("process")
                 .use_state("counter", 0u32)
                 .err()
                 .expect("use_state on a subpath ctx must fail");
@@ -627,7 +618,7 @@ async fn bg_count(_ctx: &Ctx, _n: u32) -> Result<()> {
 /// component is skipped on the next run, and a changed argument re-runs it.
 #[tokio::test]
 async fn mount_macro_skips_unchanged_component_across_runs() {
-    let (app, _dir) = temp_app("mount_macro_skip").await;
+    let (app, _env) = temp_app("mount_macro_skip").await;
 
     async fn run(app: &App, n: u32) {
         app.update(move |ctx| async move {

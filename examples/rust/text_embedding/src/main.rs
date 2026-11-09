@@ -10,8 +10,9 @@
 //! Parallels the Python example:
 //!   - environment       : `#[cocoindex::lifespan]` (cf. `@coco.lifespan`)
 //!   - app               : `#[cocoindex::app]` (cf. `coco.App(...)`)
-//!   - source            : `walk_dir(..).live()` + `ctx.mount_each_live` (cf. `localfs.walk_dir(live=True)`)
-//!   - per-file compute  : `#[cocoindex::function(memo)]` (cf. `@coco.fn(memo=True)`)
+//!   - source            : `walk_dir(..).live()` + `ctx.mount_each_live` (cf. `localfs.walk_dir(live=True)` + `coco.mount_each`)
+//!   - per-file compute  : `#[cocoindex::function(memo)]` declaring its rows (cf. `@coco.fn(memo=True)`)
+//!   - per-chunk compute : `#[cocoindex::function]` under `ctx.map` (cf. `@coco.fn` under `coco.map`)
 //!   - chunking          : `cocoindex::ops::text::RecursiveSplitter` (cf. `RecursiveSplitter`)
 //!   - embeddings        : `cocoindex::ops::sentence_transformers` all-MiniLM-L6-v2
 //!   - target            : `postgres::TableTarget` + pgvector index
@@ -53,15 +54,39 @@ struct DocEmbedding {
     embedding: Vec<f32>,
 }
 
-/// Chunk and embed one file. Memoized on the file, so an unchanged file
-/// returns its rows without re-chunking.
-#[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<DocEmbedding>> {
-    let filename = file.key();
-    let text = file.content_str()?;
+/// Embed one chunk and declare its row (cf. Python `process_chunk`).
+#[cocoindex::function]
+async fn process_chunk(
+    ctx: &Ctx,
+    chunk: Chunk,
+    text: &str,
+    filename: &str,
+    id_gen: &IdGenerator,
+    table: &postgres::TableTarget,
+) -> Result<()> {
+    let chunk_text = chunk.text(text);
+    let id = i64::try_from(id_gen.next_id(ctx, chunk_text).await?)
+        .map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
+    table.declare_row(
+        ctx,
+        &DocEmbedding {
+            id,
+            filename: filename.to_string(),
+            chunk_start: chunk.start.char_offset as i32,
+            chunk_end: chunk.end.char_offset as i32,
+            text: chunk_text.to_string(),
+            embedding: ctx.get_key(&EMBEDDER)?.embed(ctx, chunk_text).await?,
+        },
+    )
+}
 
-    let splitter = RecursiveSplitter::new()?;
-    let chunks = splitter.split_with(
+/// Chunk and embed one file, declaring its rows (cf. Python `process_file`).
+/// Memoized on the file: an unchanged file keeps its rows without re-running.
+/// The table target is one per app, so it is not part of the memo key.
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_file(ctx: &Ctx, file: &FileEntry, table: &postgres::TableTarget) -> Result<()> {
+    let text = file.read_text().await?;
+    let chunks = RecursiveSplitter::new()?.split_with(
         &text,
         RecursiveChunkConfig {
             chunk_size: CHUNK_SIZE,
@@ -70,37 +95,13 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<DocEmbedding>> 
             language: Some("markdown".to_string()),
         },
     );
-    if chunks.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
-    let embedder = ctx.get_key(&EMBEDDER)?.clone();
-    let embedding_ctx = ctx.clone();
-    let embeddings = ctx
-        .map(texts.clone(), move |chunk_text| {
-            let embedder = embedder.clone();
-            let ctx = embedding_ctx.clone();
-            async move { embedder.embed(&ctx, chunk_text).await }
-        })
-        .await?;
-
-    let mut id_gen = IdGenerator::new();
-    let mut rows = Vec::with_capacity(texts.len());
-    for ((chunk, chunk_text), embedding) in chunks.iter().zip(texts).zip(embeddings) {
-        let id = id_gen.next_id(&ctx, &chunk_text).await?;
-        let id =
-            i64::try_from(id).map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
-        rows.push(DocEmbedding {
-            id,
-            filename: filename.clone(),
-            chunk_start: chunk.start.char_offset as i32,
-            chunk_end: chunk.end.char_offset as i32,
-            text: chunk_text,
-            embedding,
-        });
-    }
-    Ok(rows)
+    let filename = file.key();
+    let id_gen = IdGenerator::new();
+    ctx.map(chunks, async |chunk| {
+        process_chunk(ctx, chunk, &text, &filename, &id_gen, &table).await
+    })
+    .await?;
+    Ok(())
 }
 
 /// Environment setup, shared by `cocoindex` and `cargo run -- index`
@@ -124,7 +125,7 @@ async fn app_main(ctx: Ctx) -> Result<()> {
 
 async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     // The embedder reports the dimension of the `embedding` column.
-    let table = postgres::mount_table_target(
+    let target_table = postgres::mount_table_target(
         &ctx,
         &DB,
         TABLE,
@@ -134,7 +135,7 @@ async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         Some(PG_SCHEMA),
     )
     .await?;
-    table.declare_vector_index(
+    target_table.declare_vector_index(
         &ctx,
         "embedding",
         postgres::VectorIndexOptions {
@@ -143,24 +144,17 @@ async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         },
     )?;
 
-    // One component per markdown file; each declares its own rows. In live
-    // mode (`cocoindex update -L`) the walker keeps watching the directory.
+    // The source supports live watch; pass `-L` to `cocoindex update` to run live.
     let files = walk_dir(sourcedir)
         .recursive(true)
-        .path_matcher(PatternFilePathMatcher::new(
-            ["**/*.md"],
-            std::iter::empty::<&str>(),
-        )?)
+        .path_matcher(PatternFilePathMatcher::include(["**/*.md"])?)
         .live()
         .poll_interval(Duration::from_secs(1));
-    ctx.mount_each_live(&"files", files, move |ctx, file: FileEntry| {
-        let table = table.clone();
-        async move {
-            for row in process_file(&ctx, &file).await? {
-                table.declare_row(&ctx, &row)?;
-            }
-            Ok(())
-        }
+    // One processing component per file: each file's rows sync and clean up
+    // with that file (cf. Python `coco.mount_each(process_file, files.items(), target_table)`).
+    ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
+        let target_table = target_table.clone();
+        async move { process_file(&ctx, &file, &target_table).await }
     })
     .await
 }

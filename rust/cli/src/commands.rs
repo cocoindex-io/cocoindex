@@ -1,9 +1,11 @@
-//! `ls`, `show`, `update` and `drop`.
+//! `ls`, `show`, `update`, `drop`, and `auth sign-in` / `auth sign-out` for
+//! Google Drive.
 
 use std::path::{Path, PathBuf};
 
 use cocoindex::app::DB_PATH_ENV;
 use cocoindex::cli::protocol::{AppInfo, Event, Outcome};
+use cocoindex::connectors::gdrive;
 
 use crate::build::{self, BuildOpts};
 use crate::child::{self, Interrupt, Output};
@@ -25,6 +27,7 @@ async fn query_apps(exe: &Path) -> CliResult<(Vec<AppInfo>, String)> {
     let mut found = None;
     let outcome = child::run(exe, "ls", &[], Interrupt::Default, |output| match output {
         Output::Text(text) => println!("{text}"),
+        Output::ErrorText(text) => eprintln!("{text}"),
         Output::Event(Event::Apps { apps, db_path }) => found = Some((apps, db_path)),
         Output::Event(_) => {}
     })
@@ -46,7 +49,7 @@ fn pick_app(requested: Option<&str>, apps: &[AppInfo]) -> CliResult<AppInfo> {
             .find(|a| a.name == name)
             .cloned()
             .ok_or_else(|| {
-                CliError::usage(format!(
+                CliError::failure(format!(
                     "No app named '{name}'. Available apps: {}",
                     app_names(apps.iter().filter(usable))
                 ))
@@ -55,10 +58,10 @@ fn pick_app(requested: Option<&str>, apps: &[AppInfo]) -> CliResult<AppInfo> {
             let registered: Vec<&AppInfo> = apps.iter().filter(|a| a.registered).collect();
             match registered.as_slice() {
                 [one] => Ok((*one).clone()),
-                [] => Err(CliError::usage(
+                [] => Err(CliError::failure(
                     "No apps found in the target binary. Make sure it has a #[cocoindex::app] function.",
                 )),
-                many => Err(CliError::usage(format!(
+                many => Err(CliError::failure(format!(
                     "Multiple apps found: {}. Please specify which app to use with ':app_name' syntax.",
                     app_names(many.iter().copied())
                 ))),
@@ -114,7 +117,7 @@ pub async fn ls(target: Option<String>, db: Option<PathBuf>, build: BuildOpts) -
         (None, None) => match std::env::var_os(DB_PATH_ENV) {
             Some(db) => Some(PathBuf::from(db)),
             None => {
-                return Err(CliError::usage(
+                return Err(CliError::failure(
                     "Please specify either APP_TARGET or --db option (or set COCOINDEX_DB environment variable).\n  \
                      cocoindex ls ./my_crate      # List apps of a crate\n  \
                      cocoindex ls --db ./my.db    # List apps from database",
@@ -130,7 +133,7 @@ pub async fn ls(target: Option<String>, db: Option<PathBuf>, build: BuildOpts) -
         if names.is_empty() {
             println!("No persisted apps found in the database.");
         } else {
-            println!("{}:", db.display());
+            println!("{}:", format_db_path(&db.display().to_string()));
             for name in names {
                 println!("  {name}");
             }
@@ -204,20 +207,20 @@ pub async fn show(args: ShowArgs) -> CliResult<()> {
         second.clone()
     };
     if (mode.recursive || mode.parents) && stable_path.is_none() {
-        return Err(CliError::usage(
+        return Err(CliError::failure(
             "-r/--recursive and -p/--parents require a stable_path argument.",
         ));
     }
     if mode.target_states && (stable_path.is_some() || mode.long || mode.recursive || mode.parents)
     {
-        return Err(CliError::usage(
+        return Err(CliError::failure(
             "--target-states cannot be combined with stable_path, -l, -r or -p.",
         ));
     }
 
     let (db_path, app) = if db_mode {
         let (Some(db), Some(app)) = (db, app_name) else {
-            return Err(CliError::usage(
+            return Err(CliError::failure(
                 "Both --db and --app-name are required when APP_TARGET is not specified.",
             ));
         };
@@ -307,6 +310,7 @@ pub async fn update(args: UpdateArgs) -> CliResult<()> {
         Interrupt::Cancel { quiet },
         |output| match output {
             Output::Text(text) => renderer.text(text),
+            Output::ErrorText(text) => renderer.error_text(text),
             Output::Event(Event::Start { app, db_path }) => {
                 if !quiet {
                     renderer.text(&format!(
@@ -318,8 +322,9 @@ pub async fn update(args: UpdateArgs) -> CliResult<()> {
             Output::Event(Event::Progress {
                 ready,
                 by_component,
+                in_groups,
                 ..
-            }) => renderer.progress(ready, by_component),
+            }) => renderer.progress(ready, by_component, in_groups),
             Output::Event(Event::Preview { kind, value }) => previews.push((kind, value)),
             Output::Event(_) => {}
         },
@@ -401,6 +406,7 @@ pub async fn drop_app(args: DropArgs) -> CliResult<()> {
         Interrupt::Cancel { quiet },
         |output| match output {
             Output::Text(text) => println!("{text}"),
+            Output::ErrorText(text) => eprintln!("{text}"),
             Output::Event(Event::Start { app, db_path }) => {
                 if !quiet {
                     println!(
@@ -434,6 +440,54 @@ pub async fn drop_app(args: DropArgs) -> CliResult<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// auth sign-in google-drive / auth sign-out google-drive
+// ---------------------------------------------------------------------------
+
+/// The account at `token_path`, or at the connector's default token file.
+fn google_account(token_path: Option<PathBuf>) -> CliResult<gdrive::UserAccount> {
+    match token_path {
+        Some(path) => Ok(gdrive::UserAccount::with_token_path(path)),
+        None => gdrive::UserAccount::new().map_err(|e| CliError::failure(e.to_string())),
+    }
+}
+
+pub async fn google_drive_sign_in(
+    client_secrets: Option<PathBuf>,
+    token_path: Option<PathBuf>,
+) -> CliResult<()> {
+    if let Some(path) = &client_secrets
+        && !path.is_file()
+    {
+        return Err(CliError::usage(format!(
+            "Invalid value for 'CLIENT_SECRETS': File '{}' does not exist.",
+            path.display()
+        )));
+    }
+    let email = google_account(token_path)?
+        .sign_in(client_secrets.as_deref())
+        .await
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    println!("Signed in as {email}.");
+    Ok(())
+}
+
+pub async fn google_drive_sign_out(token_path: Option<PathBuf>) -> CliResult<()> {
+    let existed = google_account(token_path)?
+        .sign_out()
+        .await
+        .map_err(|e| CliError::failure(e.to_string()))?;
+    println!(
+        "{}",
+        if existed {
+            "Signed out."
+        } else {
+            "No sign-in was stored."
+        }
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,7 +517,7 @@ mod tests {
     fn several_apps_need_a_name() {
         let apps = vec![app("A", true, false), app("B", true, true)];
         let err = pick_app(None, &apps).unwrap_err();
-        assert_eq!(err.code, 2);
+        assert_eq!(err.code, 1);
         assert!(err.message.contains("Multiple apps found: A, B"));
         let err = pick_app(None, &[]).unwrap_err();
         assert!(err.message.contains("No apps found"));

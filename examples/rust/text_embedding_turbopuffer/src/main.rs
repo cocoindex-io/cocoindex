@@ -11,6 +11,11 @@
 //! `cocoindex::connectors::turbopuffer` namespace connector (built on the public
 //! target-state facade). Parallels `cocoindex.connectors.turbopuffer`.
 //!
+//! Parallels the Python example:
+//!   - source            : `walk_dir(..).live()` + `ctx.mount_each_live` (cf. `localfs.walk_dir(live=True)` + `coco.mount_each`)
+//!   - per-file compute  : `#[cocoindex::function(memo)]` declaring its rows (cf. `@coco.fn(memo=True)`)
+//!   - per-chunk compute : `#[cocoindex::function]` under `ctx.map` (cf. `@coco.fn` under `coco.map`)
+//!
 //! Config (env, e.g. via `.env`):
 //!   TURBOPUFFER_API_KEY   required
 //!   TURBOPUFFER_REGION    default `gcp-us-central1`
@@ -48,13 +53,42 @@ struct RowData {
     text: String,
 }
 
+/// Embed one chunk and declare its row (cf. Python `process_chunk`).
 #[cocoindex::function]
-async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<RowData>> {
-    let filename = file.key();
-    let text = file.content_str()?;
+async fn process_chunk(
+    ctx: &Ctx,
+    chunk: Chunk,
+    text: &str,
+    filename: &str,
+    id_gen: &IdGenerator,
+    target: &turbopuffer::NamespaceTarget,
+) -> Result<()> {
+    let chunk_text = chunk.text(text);
+    let id = id_gen.next_id(ctx, chunk_text).await?;
+    let vector = ctx.get_key(&EMBEDDER)?.embed(ctx, chunk_text).await?;
+    let attributes = json!({
+        "filename": filename,
+        "chunk_start": chunk.start.char_offset,
+        "chunk_end": chunk.end.char_offset,
+        "text": chunk_text,
+    });
+    let serde_json::Value::Object(attributes) = attributes else {
+        return Err(Error::engine("row attributes are not a JSON object"));
+    };
+    target.declare_named_row(ctx, id.to_string(), [("vector", vector)], attributes)
+}
 
-    let splitter = RecursiveSplitter::new()?;
-    let chunks = splitter.split_with(
+/// Chunk and embed one file, declaring its rows (cf. Python `process_file`).
+/// Memoized on the file: an unchanged file keeps its rows without re-running.
+/// The namespace target is one per app, so it is not part of the memo key.
+#[cocoindex::function(memo, memo_key(target = skip))]
+async fn process_file(
+    ctx: &Ctx,
+    file: &FileEntry,
+    target: &turbopuffer::NamespaceTarget,
+) -> Result<()> {
+    let text = file.read_text().await?;
+    let chunks = RecursiveSplitter::new()?.split_with(
         &text,
         RecursiveChunkConfig {
             chunk_size: CHUNK_SIZE,
@@ -63,35 +97,13 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<RowData>> {
             language: Some("markdown".to_string()),
         },
     );
-    if chunks.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
-    let embedder = ctx.get_key(&EMBEDDER)?.clone();
-    let embedding_ctx = ctx.clone();
-    let embeddings = ctx
-        .map(texts.clone(), move |chunk_text| {
-            let embedder = embedder.clone();
-            let ctx = embedding_ctx.clone();
-            async move { embedder.embed(&ctx, chunk_text).await }
-        })
-        .await?;
-
-    let mut id_gen = IdGenerator::new();
-    let mut rows = Vec::with_capacity(texts.len());
-    for ((chunk, chunk_text), vector) in chunks.iter().zip(texts).zip(embeddings) {
-        let id = id_gen.next_id(&ctx, &chunk_text).await?;
-        rows.push(RowData {
-            id: id.to_string(),
-            vector,
-            filename: filename.clone(),
-            chunk_start: chunk.start.char_offset as i64,
-            chunk_end: chunk.end.char_offset as i64,
-            text: chunk_text,
-        });
-    }
-    Ok(rows)
+    let filename = file.key();
+    let id_gen = IdGenerator::new();
+    ctx.map(chunks, async |chunk| {
+        process_chunk(ctx, chunk, &text, &filename, &id_gen, &target).await
+    })
+    .await?;
+    Ok(())
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf, namespace: String) -> Result<()> {
@@ -105,38 +117,18 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf, namespace: String) -> Result<()>
     )
     .await?;
 
-    let files = walk_items(&sourcedir, &["**/*.md"])?;
-    println!(
-        "indexing {} markdown file(s) from {}",
-        files.len(),
-        sourcedir.display()
-    );
-
-    let rows_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
-
-    let mut count = 0usize;
-    for rows in &rows_by_file {
-        count += rows.len();
-        for r in rows {
-            let attributes = json!({
-                "filename": r.filename,
-                "chunk_start": r.chunk_start,
-                "chunk_end": r.chunk_end,
-                "text": r.text,
-            })
-            .as_object()
-            .unwrap()
-            .clone();
-            target.declare_named_row(
-                &ctx,
-                r.id.clone(),
-                [("vector", r.vector.clone())],
-                attributes,
-            )?;
-        }
-    }
-    println!("indexed {count} chunk(s) total");
-    Ok(())
+    // The source supports live watch (cf. Python `localfs.walk_dir(live=True)`).
+    let files = walk_dir(sourcedir)
+        .recursive(true)
+        .path_matcher(PatternFilePathMatcher::include(["**/*.md"])?)
+        .live();
+    // One processing component per file: each file's rows sync and clean up
+    // with that file (cf. Python `coco.mount_each(process_file, files.items(), target_namespace)`).
+    ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
+        let target = target.clone();
+        async move { process_file(&ctx, &file, &target).await }
+    })
+    .await
 }
 
 async fn query_once(

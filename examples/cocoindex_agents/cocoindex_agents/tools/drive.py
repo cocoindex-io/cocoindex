@@ -12,8 +12,8 @@ made it. What differs is where the records point and how they validate:
   ``read`` and a worker's ``read_input`` return. A PDF stored in Drive is a
   document the model reads natively, as a local one is (``documents.py``).
 - The **account** is whoever signed in on this machine
-  (``cocoindex google-drive sign-in``): the model names the folder and never
-  a credential. The account's address, not its tokens, is in the source's
+  (``cocoindex auth sign-in google-drive``): the model names the folder and
+  never a credential. The account's address, not its tokens, is in the source's
   memo key and in every record, so a refreshed token changes nothing and a
   different account re-runs what was read.
 - An observation validates by walking the folder again through the Drive

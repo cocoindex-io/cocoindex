@@ -4,13 +4,28 @@ description: >
   Customize how CocoIndex fingerprints memoized inputs via __coco_memo_key__ or
   registered functions, and layer state validation (e.g. mtime, then content hash)
   on top — plus NotMemoKeyable to opt out for stateful types.
+rust_description: >
+  Customize how CocoIndex fingerprints memoized inputs through the MemoInput
+  trait, layer state validation (e.g. mtime, then content hash) on top with
+  memo_state, and declare dependencies beyond the arguments with deps,
+  LogicDep and DataDep.
 ---
-CocoIndex detects [logic, input, and context changes](../programming_guide/function#change-detection) to decide whether it can reuse a memo. It fingerprints function arguments, [`deps`](../programming_guide/function#deps) values, and [context values](../programming_guide/context#change-detection) with `detect_change=True` through the same pipeline. Most types work automatically. You can customize fingerprinting and validation with:
+import LangTabs from '../../../components/LangTabs.astro';
+
+CocoIndex detects [logic, input, and context changes](../programming_guide/function#change-detection) to decide whether it can reuse a memo. It fingerprints function arguments, [`deps`](../programming_guide/function#deps) values, and [context values](../programming_guide/context#change-detection) with <Lang only="python">`detect_change=True`</Lang><Lang only="rust">`detect_change`</Lang> through the same pipeline. Most types work automatically. You can customize fingerprinting and validation with:
 
 - **Memoization keys** — how to control what CocoIndex uses as the fingerprint for your objects.
 - **Memo states** — how to add post-fingerprint validation to check freshness beyond simple equality.
 
+<Lang only="rust">
+
+Both go through one trait, `MemoInput`, which keeps **identity** and **freshness** apart: its `write_memo_key` method is the key; its optional `memo_state` method is the state. The arguments of a `#[cocoindex::function(memo)]` function must implement `MemoInput`, unless `memo_key(..)` transforms or skips them. A `context_key!` value takes part only when the key is declared with `detect_change`.
+
+</Lang>
+
 ## How data fingerprinting works
+
+<Lang only="python">
 
 For each data value (function argument, `deps` value, or context value), CocoIndex derives a canonical form with this precedence:
 
@@ -27,13 +42,60 @@ The following types are handled automatically (no custom key needed):
 - **Class objects** (`type`): identified by module and qualified name
 - **Other picklable objects**: used as a fallback via `pickle`
 
+</Lang>
+
+<Lang only="rust">
+
+For each data value (function argument, `deps` value, or context value), CocoIndex writes a canonical form through its `MemoInput` implementation. A type is a memo input when it implements `MemoInput`. The SDK implements it for the primitives (`bool`, the integer and float types, `char`, `String`, `str`), `PathBuf` / `Path`, `Duration`, `SystemTime`, `uuid::Uuid`, `Fingerprint`, `bytes::Bytes` and `serde_json::Value`; for Chrono date and time values with the `chrono` feature and for `rust_decimal::Decimal` with the `rust_decimal` feature (a connector feature turns these on). `Option`, arrays, slices, `Vec`, tuples, maps, sets, `Box` and `Arc` compose their children's `MemoInput`. For your own structs and enums, derive it:
+
+{/* Rust: examples/rust/conversation_to_knowledge/src/models.rs */}
+```rust
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::MemoInput)]
+pub struct Utterance {
+    pub speaker: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::MemoInput)]
+pub struct SessionTranscript {
+    pub utterances: Vec<Utterance>,
+    pub yt_channel: String,
+    pub yt_title: String,
+    pub yt_description: Option<String>,
+}
+```
+
+The derive visits every field recursively, in order; the type itself does not need `Serialize`. Moving or renaming a derived type, or renaming one of its named fields, changes its identity and causes a one-time cache miss. A `Vec<u8>` is hashed element by element like any `Vec<T>`: for a large byte buffer, use `bytes::Bytes` for bulk hashing, or pass a precomputed `Fingerprint` (`cocoindex::Fingerprint`) when the content is already hashed.
+
+</Lang>
+
+<RustNote>
+There is no fallback like Python's `pickle`: a type that does not implement `MemoInput` cannot be a memo input, and the compiler says so.
+</RustNote>
+
 The canonical forms are combined into a deterministic fingerprint. If the fingerprint matches a cached entry, the cached result is reused — unless **memo states** indicate it's stale (see [Memo state validation](#memo-state-validation) below).
 
 ## Customizing the memoization key
 
+<Lang only="python">
+
 ### Define `__coco_memo_key__` (when you control the type)
 
 Implement a method on your class that returns a stable, deterministic value:
+
+</Lang>
+
+<Lang only="rust">
+
+### Implement `MemoInput` (when you control the type)
+
+Implement `write_memo_key` on your type and write a stable, deterministic value:
+
+</Lang>
+
+{/* Rust: examples/rust/conversation_to_knowledge/src/clients.rs (impl MemoInput for LlmClient) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class MyType:
@@ -42,12 +104,33 @@ class MyType:
         return (...)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl MemoInput for LlmClient {
+    fn write_memo_key(&self, writer: &mut cocoindex::memo::MemoKeyWriter<'_>) -> Result<()> {
+        // Write small serializable values: here, the model name.
+        writer.write(&self.model)
+    }
+}
+```
+
+`writer.write(&value)` takes any `Serialize` value; `writer.write_input(&value)` nests another `MemoInput`. Add `#[cocoindex::async_trait]` to the impl when it also defines the async `memo_state` method.
+
+</Fragment>
+</LangTabs>
+
 Return something that uniquely identifies the **semantic content** your function depends on:
 
 - **Good**: small tuples of primitives, e.g. `(stable_id, version)`
-- **Bad**: memory addresses, unstable UUIDs, open file handles, `datetime.now()`, or large raw payloads
+- **Bad**: memory addresses, unstable UUIDs, open file handles, <Lang only="python">`datetime.now()`</Lang><Lang only="rust">`SystemTime::now()`</Lang>, or large raw payloads
 
 **Example — DB row:**
+
+{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (impl MemoInput for Resource, write_memo_key) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class UserRow:
@@ -58,6 +141,30 @@ class UserRow:
     def __coco_memo_key__(self) -> object:
         return ("users", self.user_id, self.updated_at)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+struct UserRow {
+    user_id: i64,
+    updated_at: i64,
+}
+
+impl cocoindex::MemoInput for UserRow {
+    fn write_memo_key(
+        &self,
+        writer: &mut cocoindex::memo::MemoKeyWriter<'_>,
+    ) -> cocoindex::Result<()> {
+        writer.write(&("users", self.user_id, self.updated_at))
+    }
+}
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 ### Register a key function (when you don't control the type)
 
@@ -78,15 +185,83 @@ register_memo_key_function(Path, path_key)
 - Registration is **MRO-aware**: if you register both a base class and a subclass, the **most specific** match wins.
 - Your key function must return the same kinds of stable objects as `__coco_memo_key__` (small primitives/tuples).
 
+</Lang>
+
+<Lang only="rust">
+
+### Wrap it in a newtype (when you don't control the type)
+
+Rust's orphan rules stop a crate from implementing `MemoInput` for a type it does not own, so wrap a third-party type in a local newtype and implement the trait on that, or transform the argument at the call site with `memo_key(..)` (next section):
+
+{/* Rust: shape of examples/rust/conversation_to_knowledge/src/clients.rs (impl MemoInput), rust/sdk/cocoindex/src/memo.rs module docs */}
+```rust
+struct ForeignId(third_party::Id);
+
+impl cocoindex::MemoInput for ForeignId {
+    fn write_memo_key(
+        &self,
+        writer: &mut cocoindex::memo::MemoKeyWriter<'_>,
+    ) -> cocoindex::Result<()> {
+        writer.write(&self.0.to_string())
+    }
+}
+```
+
+</Lang>
+
+<RustNote>
+There is no `register_memo_key_function` registry: a newtype or a call-site `memo_key(..)` takes its place.
+</RustNote>
+
+<Lang only="python">
+
 ### Override at the call site with `memo_key=`
 
 The two approaches above are **type-level**: every memoized function sees the same fingerprint for a given object. To customize fingerprinting **only for a specific function**, pass `memo_key=` to `@coco.fn` (or `@coco.fn.as_async`). It maps parameter names to either a callable (transform the value before fingerprinting) or `None` (exclude the parameter entirely).
+
+</Lang>
+
+<Lang only="rust">
+
+### Override at the call site with `memo_key(..)`
+
+{/* Keeps the anchor that the Rust copy of programming_guide/function links to. */}
+<span id="override-at-the-call-site-with-memo_key"></span>
+
+The two approaches above are **type-level**: every memoized function sees the same fingerprint for a given value. To customize fingerprinting **only for a specific function**, add `memo_key(..)` to `#[cocoindex::function(memo)]`. It maps parameter names to either a transform function (transform the value before fingerprinting) or `skip` (exclude the parameter entirely).
+
+</Lang>
+
+{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (memo_key_transform_and_skip_for_function_macro) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn(memo=True, memo_key={"entry": lambda e: (e.name, e.version), "extra": None})
 def transform(entry: SourceDataEntry, extra: str) -> str:
     ...
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+fn entry_name_version(entry: &Entry) -> (String, u32) {
+    (entry.name.clone(), entry.version)
+}
+
+#[cocoindex::function(memo, memo_key(entry = entry_name_version, extra = skip))]
+async fn transform_entry(ctx: &Ctx, entry: &Entry, extra: &String) -> Result<String> {
+    Ok(format!("{}:{extra}", entry.content))
+}
+```
+
+`memo_key(..)` lists parameters by name: `name = transform_fn` fingerprints the function's return value in place of the argument, `name = skip` leaves the argument out. A skipped parameter needs only `Clone`, not `MemoInput`. The attribute requires `memo`.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 Each entry in `memo_key`:
 
@@ -103,11 +278,49 @@ It works for every parameter kind:
 
 `memo_key` is validated at decoration time: unknown parameter names raise `ValueError`, and values that are neither callable nor `None` raise `TypeError`.
 
+</Lang>
+
+<Lang only="rust">
+
+Each entry in `memo_key(..)`:
+
+- **`name = transform_fn`** — the transform's return value is fingerprinted in place of the argument. Semantically the same as the type's own `write_memo_key`, but scoped to this one function.
+- **`name = skip`** — the parameter is excluded from the memo key. Changing its value never invalidates the cache. Useful for arguments that don't affect the result (logger handles, debug flags, target handles).
+- **Not listed** — the parameter is fingerprinted normally, through its `MemoInput`.
+
+The macro checks the names at compile time. A transform also suppresses the argument type's `memo_state` validation; use a newtype when the freshness check must stay.
+
+**Target handles.** A target handle is where output goes, not an input of the computation, so it is not `MemoInput`. `DirTarget`, the Postgres, SQLite, Doris, SurrealDB, LanceDB, Neo4j and FalkorDB table and relation targets, the Qdrant collection, the Valkey index and the Turbopuffer namespace targets are `Serialize` instead: as an argument of a memoized function or of `mount!`, `use_mount!` or `mount_each!`, one is keyed by its stable key. The other connectors' handles are only `Clone`. Skip those in the memo key; you can skip any handle the same way:
+
+{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (target_state_of_nested_memo_survives_outer_memo_hit) */}
+```rust
+#[cocoindex::function(memo, memo_key(target = skip))]
+async fn declare_nested(ctx: &Ctx, target: DirTarget, content: String) -> Result<()> {
+    target.declare_file(ctx, "nested.txt", content.as_bytes())
+}
+```
+
+</Lang>
+
+<Lang only="python">
+
 :::tip[Picking the right tool]
 - You control the type and the fingerprint is the same wherever it's used → **`__coco_memo_key__`**.
 - You don't control the type but want a global handler → **`register_memo_key_function`**.
 - Only *this* function should treat an argument specially (transform or skip it) → **`memo_key=`**.
 :::
+
+</Lang>
+
+<Lang only="rust">
+
+:::tip[Picking the right tool]
+- You control the type and the fingerprint is the same wherever it's used → **implement or derive `MemoInput`**.
+- You don't control the type → **a newtype that implements `MemoInput`**.
+- Only *this* function should treat an argument specially (transform or skip it) → **`memo_key(..)`**.
+:::
+
+</Lang>
 
 ## Memo state validation
 
@@ -120,6 +333,8 @@ Sometimes fingerprint matching alone isn't enough to decide whether a cached res
 Memo state validation addresses these by letting you attach a **state function** to your objects. It runs *after* a fingerprint match, giving you a chance to check freshness before the cached result is reused.
 
 ### How it works
+
+<Lang only="python">
 
 When CocoIndex finds a fingerprint match, it calls each state function with the stored state from the previous run:
 
@@ -137,13 +352,53 @@ This decouples "has the state changed?" from "can we reuse the memo?":
 - `MemoStateOutcome(state=same_state, memo_valid=True)` → nothing changed, cached result reused, no state update needed.
 - `MemoStateOutcome(state=new_state, memo_valid=True)` → state changed but cached result is still valid (e.g. mtime changed but content hash unchanged). The new state is persisted so the next run uses the updated state.
 
+</Lang>
+
+<Lang only="rust">
+
+When CocoIndex finds a fingerprint match, it calls each value's `memo_state` with the stored state from the previous run:
+
+1. **First run** (no previous state): `previous` is `None`.
+2. **Subsequent runs**: `previous` is the state you stored last time; `previous.deserialize::<T>()` reads it back.
+
+`memo_state` returns `Ok(Some(MemoStateDecision::new(&state, memo_valid)?))`:
+
+- **`state`** — the current state value. CocoIndex stores it for the next run.
+- **`memo_valid`** — whether the cached result is still valid.
+
+This decouples "has the state changed?" from "can we reuse the memo?":
+
+- `MemoStateDecision::new(&new_state, false)` → cache is invalid. Function re-executes, new state is stored. On the first run (no previous cache), return the initial state with `false`.
+- `MemoStateDecision::new(&same_state, true)` → nothing changed, cached result reused.
+- `MemoStateDecision::new(&new_state, true)` → state changed but cached result is still valid (e.g. mtime changed but content hash unchanged). The new state is persisted so the next run uses the updated state.
+
+`Ok(None)` (the default) means the value needs no state validation.
+
+</Lang>
+
+<Lang only="python">
+
 ### Define `__coco_memo_state__` (when you control the type)
 
 :::info[Type annotations]
 Annotate the `prev_state` parameter with its expected type (matching what you return in `MemoStateOutcome(state=...)`) so CocoIndex can properly reconstruct stored state values. See [Serialization](../programming_guide/serialization) for details on supported types.
 :::
 
-Add a `__coco_memo_state__` method alongside `__coco_memo_key__`:
+Add a `__coco_memo_state__` method alongside `__coco_memo_key__`.
+
+</Lang>
+
+<Lang only="rust">
+
+### Implement `memo_state` (when you control the type)
+
+Implement the async `memo_state` method of `MemoInput` beside `write_memo_key`, with `#[cocoindex::async_trait]` on the impl. The example uses a version number as the state.
+
+</Lang>
+
+{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (type_owned_context_memo_state_invalidates_cached_function) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import os
@@ -173,9 +428,49 @@ class LocalFile:
             # mtime unchanged — definitely reusable, no content read needed
             return coco.MemoStateOutcome(state=prev_state, memo_valid=True)
         # mtime changed — read content and check hash
-        content_hash = coco.connectorkits.fingerprint_bytes(self.path.read_bytes())
+        content_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()
         return coco.MemoStateOutcome(state=(new_mtime, content_hash), memo_valid=content_hash == prev_hash)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+struct Resource {
+    id: &'static str,
+    version: u64,
+}
+
+#[cocoindex::async_trait]
+impl cocoindex::MemoInput for Resource {
+    fn write_memo_key(
+        &self,
+        writer: &mut cocoindex::memo::MemoKeyWriter<'_>,
+    ) -> cocoindex::Result<()> {
+        // Identity only: which resource is it?
+        writer.write(&self.id)
+    }
+
+    async fn memo_state(
+        &self,
+        previous: Option<&cocoindex::memo::MemoStateValue>,
+    ) -> cocoindex::Result<Option<cocoindex::memo::MemoStateDecision>> {
+        // `previous` is `None` on the first run.
+        let previous_version = previous.and_then(|state| state.deserialize::<u64>().ok());
+        Ok(Some(cocoindex::memo::MemoStateDecision::new(
+            &self.version,
+            previous_version == Some(self.version),
+        )?))
+    }
+}
+```
+
+`memo_state` runs after an identity match. A stored state that no longer deserializes counts as a cache miss, not an error.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 :::tip[Keys vs states for files]
 Without state validation, you'd include `mtime` and `size` directly in the memo key:
@@ -206,6 +501,18 @@ def path_state(p: Path, prev_state: tuple[int, int] | coco.NonExistenceType) -> 
 
 register_memo_key_function(Path, path_key, state_fn=path_state)
 ```
+
+</Lang>
+
+<Lang only="rust">
+
+### State for a type you don't control
+
+The newtype that carries `write_memo_key` for a foreign type carries `memo_state` too.
+
+</Lang>
+
+<Lang only="python">
 
 ### State that depends on what the function did
 
@@ -238,7 +545,15 @@ The flag is only read when the cached result is not reused. It applies to memoiz
 
 When the state is the set of things the function *read* that are not among its arguments, record each read with [`coco.use_data_dep`](../programming_guide/function#data-dependencies-datadep-and-use_data_dep) (experimental) instead: it works for components too, and validates each read on its own.
 
+</Lang>
+
+<RustNote>
+`MemoStateDecision` has no `recollect_after_run`: the state stored after a re-run is the one `memo_state` returned before the body ran. For reads decided while the body runs, record each read with `ctx.use_data_dep` (see [`DataDep`](#datadep-data-the-body-reads-while-it-runs-experimental) below).
+</RustNote>
+
 ### Async state methods
+
+<Lang only="python">
 
 A state method can return an `Awaitable`. CocoIndex handles this automatically:
 
@@ -265,130 +580,130 @@ class S3Object:
         ...  # boto3 / aioboto3 HEAD call
 ```
 
-## Rust SDK
+</Lang>
 
-The Rust SDK follows the same split between **identity** and **freshness**, but
-expresses type-level behavior with the `MemoInput` trait. Arguments of a
-`#[cocoindex::function(memo)]` function use `MemoInput` automatically. A
-`context_key!` value participates only when the declaration includes
-`detect_change`; plain context keys do not invalidate memoized work, matching
-Python's default `detect_change=False`.
+<Lang only="rust">
 
-### Derive structural keys
+`memo_state` is always `async`, so a freshness check can send a network request (an S3 `HEAD`, an HTTP `If-Modified-Since`), and the state checks of nested values run concurrently. CocoIndex stores their results as one opaque state per top-level function argument or context dependency.
 
-Derive `MemoInput` for ordinary structs and enums. The derive visits fields
-recursively and does not require the containing type to implement `Serialize`:
+</Lang>
 
+<Lang only="rust">
+
+## Dependencies beyond the arguments
+
+A function's memo key covers its arguments and the context values it reads. Three more ways declare what else a result depends on: [`deps`](../programming_guide/function#deps), [`LogicDep` / `use_logic_dep`](../programming_guide/function#per-call-dependencies-logicdep-and-use_logic_dep) and [`DataDep` / `use_data_dep`](../programming_guide/function#data-dependencies-datadep-and-use_data_dep).
+
+### `version` and `deps` on the attribute
+
+`version = N` replaces the body hash as the function's logic: bump it to invalidate every memo of the function, for example when a helper the macro cannot see has changed. `deps = <expr>` folds a value into the logic fingerprint, so every call of the function depends on it. The expression is evaluated and fingerprinted once per process, through `MemoInput`.
+
+{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (version docs), rust/sdk/cocoindex/tests/memo_deps.rs (with_deps) */}
 ```rust
-use std::sync::Arc;
+#[cocoindex::function(memo, version = 2)]
+async fn my_fn(ctx: &Ctx, arg: &String) -> Result<String> { /* ... */ }
 
-#[derive(cocoindex::MemoInput)]
-struct Batch {
-    model: String,
-    documents: Vec<Arc<Document>>,
-}
+const PROMPT: &str = "summarize";
 
-#[derive(cocoindex::MemoInput)]
-struct Document {
-    id: uuid::Uuid,
-    tags: std::collections::BTreeSet<String>,
+#[cocoindex::function(memo, deps = (PROMPT, DEPS_VALUE.load(Ordering::SeqCst)))]
+async fn with_deps(_ctx: &Ctx, test: &str, x: &i64) -> Result<i64> {
+    Ok(x * 2)
 }
 ```
 
-`Option`, arrays, slices, `Vec`, tuples, maps, sets, `Box`, and `Arc` all
-compose their children's `MemoInput` behavior. Ordered containers preserve
-order; maps and sets use a deterministic order. If a nested resource defines
-freshness validation, that validation is retained through every enclosing
-container and derived type.
+### `LogicDep`: a dependency decided per call
 
-The SDK always provides a UUID leaf implementation. Enable the standalone
-`serde_json`, `chrono`, or `rust_decimal` feature for JSON values, Chrono
-date/time values, or `rust_decimal::Decimal`; connector features enable the
-corresponding leaf features automatically. Rust's orphan rules prevent an
-application from implementing `MemoInput` directly for an unrelated
-third-party type, so wrap any other foreign leaf in a local newtype:
+Some dependencies are known only per call: a tree walk's `visit_file` depends on the parser of *that file's* language, and a new parser release should re-run only the files it parsed. `LogicDep::new(&value)` declares such a dependency; `ctx.use_logic_dep(&dep)?` records it as part of the current call's logic. It travels like the function's own fingerprint: into a memoized caller's entry, and onward through `"full"` callers.
 
+Construct a `LogicDep` before any component runs, never per call: a memo entry is validated against the dependencies registered at that moment, and one that is dropped at the end of a call evicts every entry that recorded it. A `static` behind `LazyLock`, forced in `main` or a lifespan, is the usual form.
+
+{/* Rust: rust/sdk/cocoindex/tests/memo_deps.rs (release, leaf); static form from rust/sdk/SHOWCASE.md, verified against src/deps.rs */}
 ```rust
-struct ForeignId(third_party::Id);
+use std::sync::LazyLock;
 
-#[cocoindex::async_trait]
-impl cocoindex::MemoInput for ForeignId {
-    fn write_memo_key(
-        &self,
-        writer: &mut cocoindex::memo::MemoKeyWriter<'_>,
-    ) -> cocoindex::Result<()> {
-        writer.write(&self.0.to_string())
-    }
+static RUST_PARSER: LazyLock<LogicDep> =
+    LazyLock::new(|| LogicDep::new(&("rust-parser", 2)).unwrap());
+
+#[cocoindex::function(memo)]
+async fn leaf(ctx: &Ctx, value: &str) -> Result<String> {
+    ctx.use_logic_dep(&RUST_PARSER)?;
+    Ok(format!("leaf: {value}"))
 }
 ```
 
-Moving or renaming a derived type, or renaming one of its named fields, changes
-its structural identity and causes a one-time cache miss. It does not rename
-context keys: those use the identifier passed to `context_key!`, or an explicit
-`key = "..."` override.
+A `LogicDep` is itself a `MemoInput`, keyed by its fingerprint, so it can also be passed as an argument.
 
-### Add freshness validation to resource types
+### `DataDep`: data the body reads while it runs (experimental)
 
-A resource implementation can keep stable identity in `write_memo_key` and
-perform async validation in `memo_state`. The previous opaque state is supplied
-after an identity match:
+`DataDep` is experimental: its API and semantics may change in a later release.
 
+Logic, arguments and context values are known before a body runs. Some bodies read things decided only while they run: an agent session opens the files the model chose. `DataDep::new(name, validate)` declares such a *kind* of read with a validator; `ctx.use_data_dep(&kind, &key, &state)?` records one read as a key and the state observed. The next probe validates each record from the stored key and state alone, through the validator, so the entry can be reused even though nothing in its arguments covers the read. Construct a `DataDep` before any component runs, as with `LogicDep`; renaming a kind invalidates every entry that recorded it.
+
+{/* Rust: rust/sdk/cocoindex/tests/memo_deps.rs (file_kind, read) */}
 ```rust
-#[cocoindex::async_trait]
-impl cocoindex::MemoInput for RemoteObject {
-    fn write_memo_key(
-        &self,
-        writer: &mut cocoindex::memo::MemoKeyWriter<'_>,
-    ) -> cocoindex::Result<()> {
-        writer.write(&(self.bucket(), self.key()))
-    }
+use cocoindex::Fingerprint;
 
-    async fn memo_state(
-        &self,
-        previous: Option<&cocoindex::memo::MemoStateValue>,
-    ) -> cocoindex::Result<Option<cocoindex::memo::MemoStateDecision>> {
-        let etag = self.head_etag().await?;
-        let unchanged = previous
-            .and_then(|state| state.deserialize::<String>().ok())
-            .is_some_and(|old| old == etag);
-        Ok(Some(cocoindex::memo::MemoStateDecision::new(
-            &etag,
-            unchanged,
-        )?))
-    }
+type FileState = (u64, Fingerprint);
+
+fn file_kind() -> DataDep<String, FileState> {
+    DataDep::new("test-file", move |key: String, prev: FileState| async move {
+        let path = PathBuf::from(&key);
+        if !path.exists() {
+            return MemoStateDecision::new(&prev, false);
+        }
+        let mtime = modified_nanos(&path);
+        if mtime == prev.0 {
+            return MemoStateDecision::new(&prev, true);
+        }
+        let digest = Fingerprint::from_bytes(&std::fs::read(&path)?);
+        MemoStateDecision::new(&(mtime, digest), digest == prev.1)
+    })
+    .unwrap()
+}
+
+/// Read a file and record the read: stat *before* reading, so the recorded
+/// mtime is never newer than the bytes it is paired with.
+fn read(ctx: &Ctx, kind: &DataDep<String, FileState>, path: &Path) -> Result<Vec<u8>> {
+    let mtime = modified_nanos(path);
+    let data = std::fs::read(path)?;
+    ctx.use_data_dep(
+        kind,
+        &path.to_string_lossy().into_owned(),
+        &(mtime, Fingerprint::from_bytes(&data)),
+    )?;
+    Ok(data)
 }
 ```
 
-Nested state checks run concurrently. CocoIndex stores their results as one
-opaque state per top-level function argument or context dependency, so this
-composition does not change the engine's memo-state storage schema. A malformed
-or older nested state is treated as a cache miss rather than an application
-error.
+Recording the same kind and key with two different states in one run stores no entry: the function re-runs next time.
 
-### Override a function argument at the call site
+### Memo blocks with `ctx.memo`
 
-Use a projection when one function needs different identity semantics, or when
-an unwrapped foreign value appears directly in its arguments:
+`ctx.memo(&key, |ctx| async move { .. })` memoizes one block inside a function. The key is any `Serialize` value; the result must be `Serialize + Deserialize`. The closure body is not logic-tracked: when the block must invalidate after its enclosing `#[cocoindex::function]` changes, include that function's generated `__COCO_FN_HASH_<NAME>` constant in the key.
 
+{/* Rust: rust/sdk/cocoindex/src/ctx.rs (Ctx::memo doc comment) */}
 ```rust
-#[cocoindex::function(memo, memo_key(client = |c: &Client| c.endpoint()))]
-async fn fetch(ctx: &cocoindex::Ctx, client: &Client) -> cocoindex::Result<Data> {
-    // ...
-}
+let processed = ctx.memo(&fingerprint, |ctx| async move {
+    // ... expensive computation, using `ctx` for `get_key` ...
+    Ok("result".to_string())
+}).await?;
 ```
 
-As in Python, a projection **replaces** the original value before
-fingerprinting. In Rust it also suppresses that value type's `memo_state`
-validation. Use a newtype instead when freshness validation must be preserved
-or the behavior should be reusable.
+Prefer `#[cocoindex::function(memo)]` for a whole function: it builds the key from the arguments and tracks the body's logic for you.
 
-`Vec<u8>` intentionally follows the normal recursive `Vec<T>` representation.
-For large byte buffers, use `bytes::Bytes` for bulk hashing or pass a precomputed
-`Fingerprint` when the content has already been hashed.
+</Lang>
 
 ## Preventing memoization
 
 Some types maintain internal state that makes memoization semantically incorrect. For example, a generator that tracks call counts would produce wrong results if memoized.
+
+<Lang only="rust">
+
+A type that does not implement `MemoInput` cannot be an argument of a memoized function: the compiler rejects it with a note that names the three ways out (derive, implement, or a `memo_key` override). Leave the trait unimplemented for a stateful type, and use `memo_key(arg = skip)` where it must be passed through.
+
+</Lang>
+
+<Lang only="python">
 
 ### Inherit from `NotMemoKeyable` (when you control the type)
 
@@ -415,10 +730,12 @@ coco.register_not_memo_keyable(StatefulGenerator)
 
 In either case, attempting to use the type as a memo key raises a clear error.
 
+</Lang>
+
 ## Choosing keys and states
 
-- **Keep keys small and deterministic**: use identifiers and versions, not full payloads. No `id(obj)`, pointer addresses, or random values.
+- **Keep keys small and deterministic**: use identifiers and versions, not full payloads. No <Lang only="python">`id(obj)`, </Lang>pointer addresses, or random values.
 - **Separate identity from freshness**: put stable identifiers (file path, URL, primary key) in the key. Put freshness checks (mtime, ETag, version) in the state.
 - **Use state validation for expensive checks**: if freshness validation is costly (content hashing, network calls), a state function lets you do it only when the fingerprint matches, and only when a cheap pre-check (mtime) fails.
-- **Use `MemoStateOutcome(state=new_state, memo_valid=True)` for cheap state updates**: when a cheap property changes (mtime) but the expensive check (content hash) confirms nothing meaningful changed, return `memo_valid=True` while updating the state. This avoids re-executing the function and avoids re-checking the expensive property next time.
-- **Mark stateful types as `NotMemoKeyable`**: prevent subtle bugs from incorrect memoization of types with side effects.
+- **Use <Lang only="python">`MemoStateOutcome(state=new_state, memo_valid=True)`</Lang><Lang only="rust">`MemoStateDecision::new(&new_state, true)`</Lang> for cheap state updates**: when a cheap property changes (mtime) but the expensive check (content hash) confirms nothing meaningful changed, mark the memo valid while updating the state. This avoids re-executing the function and avoids re-checking the expensive property next time.
+- **<Lang only="python">Mark stateful types as `NotMemoKeyable`</Lang><Lang only="rust">Leave `MemoInput` unimplemented for stateful types</Lang>**: prevent subtle bugs from incorrect memoization of types with side effects.

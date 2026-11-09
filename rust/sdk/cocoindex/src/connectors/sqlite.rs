@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
@@ -39,44 +40,90 @@ use crate::target_state::{
 // Connection
 // ---------------------------------------------------------------------------
 
+/// How long a connection waits for a lock held by another connection or
+/// process before failing (Python's `connect(timeout=5.0)` default).
+pub const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Options for [`Database::connect_with_options`] (Python's `connect(database,
+/// timeout=…, load_vec=…)`).
+#[derive(Clone, Debug)]
+pub struct ConnectOptions {
+    /// How long to wait for a lock held by another connection or process.
+    pub busy_timeout: Duration,
+    /// The `sqlite-vec` extension to load so [`Vec0TableDef`] tables work:
+    /// the loadable library as SQLite's extension loader takes it, a path with
+    /// or without the platform suffix, or a bare name such as `"vec0"` to
+    /// search the system library path. Connecting fails when it cannot be
+    /// loaded. Python finds the library inside its `sqlite-vec` package; a
+    /// Rust build has no such package, so the caller names the library.
+    pub vec_extension: Option<String>,
+}
+
+impl Default for ConnectOptions {
+    fn default() -> Self {
+        Self {
+            busy_timeout: DEFAULT_BUSY_TIMEOUT,
+            vec_extension: None,
+        }
+    }
+}
+
 /// A SQLite connection pool. Clone-cheap (the underlying pool is shared).
+///
+/// SQLite is a single-writer engine, so the pool holds one connection and
+/// serializes the statements run on it, as Python's `ManagedConnection` lock
+/// does. For your own SQL on the same database, `pool().begin()` gives a
+/// transaction (Python's `transaction()`), and `pool()` runs a read directly
+/// (Python's `readonly()`).
 #[derive(Clone)]
 pub struct Database {
     pool: SqlitePool,
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for Database {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Database")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Database {
-    /// Open (creating if missing) a SQLite database at `path`. SQLite is a
-    /// single-writer engine, so the pool is capped at one connection.
+    /// Open (creating if missing) a SQLite database at `path` with the default
+    /// [`ConnectOptions`].
     pub async fn connect(path: &str) -> Result<Self> {
-        Self::connect_with(path, Self::connect_options(path)).await
+        Self::connect_with_options(path, ConnectOptions::default()).await
     }
 
-    /// [`connect`](Self::connect), loading the `sqlite-vec` extension into the
-    /// connection so [`Vec0TableDef`] tables work (Python's
-    /// `connect(database, load_vec=True)`). `vec_extension` is the loadable
-    /// library, as SQLite's extension loader takes it: a path with or without
-    /// the platform suffix, or a bare name such as `"vec0"` to search the
-    /// system library path. Fails when the library cannot be loaded.
-    ///
-    /// Python finds the library inside its `sqlite-vec` package; a Rust build
-    /// has no such package, so the caller names the library.
+    /// [`connect`](Self::connect), loading the `sqlite-vec` extension named by
+    /// `vec_extension` (see [`ConnectOptions::vec_extension`]; Python's
+    /// `connect(database, load_vec=True)`).
     pub async fn connect_with_vec(path: &str, vec_extension: &str) -> Result<Self> {
-        let options = Self::connect_options(path).extension(vec_extension.to_string());
-        Self::connect_with(path, options).await
+        Self::connect_with_options(
+            path,
+            ConnectOptions {
+                vec_extension: Some(vec_extension.to_string()),
+                ..ConnectOptions::default()
+            },
+        )
+        .await
     }
 
-    fn connect_options(path: &str) -> SqliteConnectOptions {
-        SqliteConnectOptions::new()
+    /// Open (creating if missing) a SQLite database at `path` with explicit
+    /// [`ConnectOptions`].
+    pub async fn connect_with_options(path: &str, options: ConnectOptions) -> Result<Self> {
+        let mut connect_options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
-    }
-
-    async fn connect_with(path: &str, options: SqliteConnectOptions) -> Result<Self> {
+            .busy_timeout(options.busy_timeout);
+        if let Some(extension) = options.vec_extension {
+            connect_options = connect_options.extension(extension);
+        }
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect_with(options)
+            .connect_with(connect_options)
             .await
             .map_err(sqlite_err)?;
         Ok(Self {
@@ -439,6 +486,16 @@ impl TableTarget {
         &self.table_name
     }
 
+    /// Declare a row. `row` serializes to an object whose entries are the
+    /// table's columns (extra entries are ignored, missing ones are NULL); a
+    /// value is bound by its column's declared type.
+    ///
+    /// Python's `ColumnDef.encoder` converts a field's value before it is
+    /// bound (a `Decimal` or `UUID` to text, a `datetime` to ISO 8601, a
+    /// collection to JSON). Here the row's `Serialize` impl does that: the
+    /// defaults of `uuid`, `chrono` and `rust_decimal` serialize to the text
+    /// these columns take, a collection serializes to JSON text, and a field
+    /// needing another form uses `#[serde(serialize_with = "…")]`.
     pub fn declare_row<R: Serialize>(&self, ctx: &Ctx, row: &R) -> Result<()> {
         let fields = row_state(row, &self.table_schema)?;
         let key = pk_stable_key(&fields, self.table_schema.primary_key())?;
@@ -833,11 +890,15 @@ impl TargetHandler<RowState> for RowHandler {
 impl RowHandler {
     fn row_sink(&self) -> TargetActionSink<RowAction> {
         let db_key = self.db_key.clone();
-        let spec = self.spec.clone();
+        let spec = Arc::new(self.spec.clone());
+        let statements = Arc::new(RowStatements::new(&self.spec));
+        let table_created = Arc::new(tokio::sync::OnceCell::new());
         TargetActionSink::from_async_fn_with_ctx(
             move |host_ctx, actions: Vec<TargetAction<RowAction>>| {
                 let db_key = db_key.clone();
                 let spec = spec.clone();
+                let statements = statements.clone();
+                let table_created = table_created.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
                     let mut mutations = Vec::with_capacity(actions.len());
@@ -849,7 +910,19 @@ impl RowHandler {
                         };
                         mutations.push((row.pk, row.state));
                     }
-                    apply_rows(&db, &spec, mutations).await
+                    if mutations.is_empty() {
+                        return Ok(());
+                    }
+                    // Ensure the table exists before this sink's first row
+                    // mutation (once per sink, not per batch). This keeps a
+                    // delete-only reconciliation idempotent after a crash or
+                    // an external table cleanup.
+                    if spec.managed_by.is_system() {
+                        table_created
+                            .get_or_try_init(|| create_table(&db, &spec))
+                            .await?;
+                    }
+                    apply_rows(&db, &statements, mutations).await
                 }
             },
         )
@@ -976,31 +1049,85 @@ async fn add_column(db: &Database, table: &str, col_ident: &str, sqlite_type: &s
     }
 }
 
+/// SQLite's default `SQLITE_MAX_VARIABLE_NUMBER` since 3.32 (the build `sqlx`
+/// bundles); a statement binds at most this many parameters.
+const BIND_LIMIT: usize = 32766;
+
+/// Apply a batch of row mutations in one transaction: upserts through
+/// multi-row `VALUES` statements of as many rows as the bind limit allows (one
+/// `DELETE` + `INSERT` per row for a `vec0` table, which has no UPSERT), then
+/// deletes through `IN` lists of keys (one `DELETE` per row for a `vec0`
+/// table).
 async fn apply_rows(
     db: &Database,
-    spec: &TableSpec,
+    statements: &RowStatements,
     mutations: Vec<(Vec<JsonValue>, Option<RowState>)>,
 ) -> Result<()> {
-    if mutations.is_empty() {
-        return Ok(());
-    }
-    if spec.managed_by.is_system() {
-        create_table(db, spec).await?;
+    let mut upserts = Vec::new();
+    let mut deletes = Vec::new();
+    for (pk, state) in mutations {
+        match state {
+            Some(state) => upserts.push(state.fields),
+            None => deletes.push(pk),
+        }
     }
     let mut tx = db.pool().begin().await.map_err(sqlite_err)?;
-    for (pk, state) in mutations {
-        let stmts = match state {
-            Some(state) => upsert_sql(spec, &state.fields)?,
-            None => vec![delete_sql(spec, &pk)?],
-        };
-        for sql in stmts {
-            sqlx::query(&sql)
-                .execute(&mut *tx)
-                .await
-                .map_err(sqlite_err)?;
+    if statements.virtual_table {
+        for row in &upserts {
+            let key = statements.row_key(row)?;
+            execute_with_values(&mut tx, &statements.delete_sql(1), key).await?;
+            execute_with_values(
+                &mut tx,
+                &statements.upsert_sql(1),
+                statements.row_values(row)?,
+            )
+            .await?;
+        }
+        for key in &deletes {
+            execute_with_values(
+                &mut tx,
+                &statements.delete_sql(1),
+                statements.key_values(key)?,
+            )
+            .await?;
+        }
+    } else {
+        for chunk in upserts.chunks(statements.upsert_rows_per_statement()) {
+            let mut values = Vec::with_capacity(chunk.len() * statements.columns.len());
+            for row in chunk {
+                values.extend(statements.row_values(row)?);
+            }
+            execute_with_values(&mut tx, &statements.upsert_sql(chunk.len()), values).await?;
+        }
+        for chunk in deletes.chunks(statements.delete_rows_per_statement()) {
+            let mut values = Vec::with_capacity(chunk.len() * statements.pk_columns.len());
+            for key in chunk {
+                values.extend(statements.key_values(key)?);
+            }
+            execute_with_values(&mut tx, &statements.delete_sql(chunk.len()), values).await?;
         }
     }
     tx.commit().await.map_err(sqlite_err)?;
+    Ok(())
+}
+
+/// Run `sql` with `values` bound to its `?` placeholders, in order.
+async fn execute_with_values(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    sql: &str,
+    values: Vec<SqliteValue>,
+) -> Result<()> {
+    let mut query = sqlx::query(sql);
+    for value in values {
+        query = match value {
+            SqliteValue::Null => query.bind(None::<i64>),
+            SqliteValue::Integer(i) => query.bind(i),
+            SqliteValue::Real(r) => query.bind(r),
+            SqliteValue::Text(t) => query.bind(t),
+            SqliteValue::Blob(b) => query.bind(b),
+        };
+    }
+    query.execute(&mut **tx).await.map_err(sqlite_err)?;
     Ok(())
 }
 
@@ -1066,101 +1193,154 @@ fn create_vec0_sql(spec: &TableSpec, def: &Vec0TableDef) -> String {
     )
 }
 
-/// Build the statement(s) that upsert one row. Regular tables get a single
-/// `INSERT … ON CONFLICT` statement; vec0 virtual tables (which don't support
-/// UPSERT) get two statements — a `DELETE` then an `INSERT` — that the caller
-/// must execute separately (a single `sqlx::query` only runs the first).
-fn upsert_sql(spec: &TableSpec, fields: &Map<String, JsonValue>) -> Result<Vec<String>> {
-    let cols: Vec<&String> = spec.table_schema.columns().keys().collect();
-    let col_sql = cols
-        .iter()
-        .map(|name| quote_ident(name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let values = cols
-        .iter()
-        .map(|name| {
-            let col = spec
-                .table_schema
-                .columns()
-                .get(*name)
-                .expect("schema column");
-            let value = fields.get(*name).unwrap_or(&JsonValue::Null);
-            sql_literal(value, col)
-        })
-        .collect::<Result<Vec<_>>>()?
-        .join(", ");
-    // vec0 virtual tables do not support UPSERT; delete-then-insert per row, as
-    // two separate statements (one `sqlx::query` only executes the first).
-    if spec.virtual_table_def.is_some() {
+/// The row statements of one table, built once per row sink. Values are bound
+/// as `?` parameters, one per value, so a statement's row count is bounded by
+/// [`BIND_LIMIT`].
+struct RowStatements {
+    table: String,
+    /// Whether the table is a `vec0` virtual table (no UPSERT: one `DELETE` +
+    /// `INSERT` per row).
+    virtual_table: bool,
+    /// Every column, in statement order.
+    columns: Vec<(String, ColumnDef)>,
+    /// The primary-key columns, in key order.
+    pk_columns: Vec<(String, ColumnDef)>,
+    /// `INSERT INTO <table> (<columns>) VALUES `
+    insert_prefix: String,
+    /// `(?, ?, …)` for one row.
+    row_placeholders: String,
+    /// `ON CONFLICT (<pk>) DO UPDATE SET …` (empty for a `vec0` table).
+    conflict_clause: String,
+}
+
+impl RowStatements {
+    fn new(spec: &TableSpec) -> Self {
+        let schema = &spec.table_schema;
+        let columns: Vec<(String, ColumnDef)> = schema
+            .columns()
+            .iter()
+            .map(|(name, col)| (name.clone(), col.clone()))
+            .collect();
+        let pk_columns: Vec<(String, ColumnDef)> = schema
+            .primary_key()
+            .iter()
+            .map(|name| (name.clone(), schema.columns()[name].clone()))
+            .collect();
         let table = quote_ident(&spec.table_name);
-        let pk_predicate = pk_predicate(spec, fields)?;
-        return Ok(vec![
-            format!("DELETE FROM {table} WHERE {pk_predicate}"),
-            format!("INSERT INTO {table} ({col_sql}) VALUES ({values})"),
-        ]);
+        let col_list = ident_list(&columns);
+        let pk_list = ident_list(&pk_columns);
+        let virtual_table = spec.virtual_table_def.is_some();
+        let conflict_clause = if virtual_table {
+            String::new()
+        } else {
+            let non_pk: Vec<String> = columns
+                .iter()
+                .filter(|(name, _)| !schema.primary_key().contains(name))
+                .map(|(name, _)| format!("{0} = excluded.{0}", quote_ident(name)))
+                .collect();
+            if non_pk.is_empty() {
+                format!(" ON CONFLICT ({pk_list}) DO NOTHING")
+            } else {
+                format!(
+                    " ON CONFLICT ({pk_list}) DO UPDATE SET {}",
+                    non_pk.join(", ")
+                )
+            }
+        };
+        Self {
+            insert_prefix: format!("INSERT INTO {table} ({col_list}) VALUES "),
+            row_placeholders: format!("({})", placeholders(columns.len())),
+            conflict_clause,
+            table,
+            virtual_table,
+            columns,
+            pk_columns,
+        }
     }
-    let pk_sql = spec
-        .table_schema
-        .primary_key()
+
+    fn upsert_rows_per_statement(&self) -> usize {
+        (BIND_LIMIT / self.columns.len().max(1)).max(1)
+    }
+
+    fn delete_rows_per_statement(&self) -> usize {
+        (BIND_LIMIT / self.pk_columns.len().max(1)).max(1)
+    }
+
+    /// `INSERT INTO t (…) VALUES (?, …), (?, …) ON CONFLICT …` for `rows` rows.
+    fn upsert_sql(&self, rows: usize) -> String {
+        let mut sql = self.insert_prefix.clone();
+        for i in 0..rows {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push_str(&self.row_placeholders);
+        }
+        sql.push_str(&self.conflict_clause);
+        sql
+    }
+
+    /// `DELETE FROM t WHERE pk IN (?, …)` for `keys` keys; a composite key
+    /// compares as a row value: `WHERE (a, b) IN (VALUES (?, ?), …)`.
+    fn delete_sql(&self, keys: usize) -> String {
+        let table = &self.table;
+        if self.pk_columns.len() == 1 {
+            let pk = quote_ident(&self.pk_columns[0].0);
+            format!("DELETE FROM {table} WHERE {pk} IN ({})", placeholders(keys))
+        } else {
+            let pk_list = ident_list(&self.pk_columns);
+            let row = format!("({})", placeholders(self.pk_columns.len()));
+            let rows = std::iter::repeat_n(row.as_str(), keys)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("DELETE FROM {table} WHERE ({pk_list}) IN (VALUES {rows})")
+        }
+    }
+
+    /// A row's values in column order, for [`Self::upsert_sql`].
+    fn row_values(&self, row: &Map<String, JsonValue>) -> Result<Vec<SqliteValue>> {
+        self.columns
+            .iter()
+            .map(|(name, col)| sqlite_value(row.get(name).unwrap_or(&JsonValue::Null), col))
+            .collect()
+    }
+
+    /// A row's primary-key values in key order, for [`Self::delete_sql`].
+    fn row_key(&self, row: &Map<String, JsonValue>) -> Result<Vec<SqliteValue>> {
+        self.pk_columns
+            .iter()
+            .map(|(name, col)| sqlite_value(row.get(name).unwrap_or(&JsonValue::Null), col))
+            .collect()
+    }
+
+    /// A stored key's values in key order, for [`Self::delete_sql`].
+    fn key_values(&self, key: &[JsonValue]) -> Result<Vec<SqliteValue>> {
+        if key.len() != self.pk_columns.len() {
+            return Err(Error::engine(
+                "SQLite row target primary key length mismatch",
+            ));
+        }
+        self.pk_columns
+            .iter()
+            .zip(key)
+            .map(|((_, col), part)| sqlite_value(&key_part_value(part, col), col))
+            .collect()
+    }
+}
+
+/// `"a", "b", …`
+fn ident_list(columns: &[(String, ColumnDef)]) -> String {
+    columns
         .iter()
-        .map(|name| quote_ident(name))
+        .map(|(name, _)| quote_ident(name))
         .collect::<Vec<_>>()
-        .join(", ");
-    let non_pk = cols
-        .iter()
-        .filter(|name| !spec.table_schema.primary_key().contains(name))
-        .map(|name| format!("{} = excluded.{}", quote_ident(name), quote_ident(name)))
-        .collect::<Vec<_>>();
-    let conflict = if non_pk.is_empty() {
-        format!("ON CONFLICT ({pk_sql}) DO NOTHING")
-    } else {
-        format!("ON CONFLICT ({pk_sql}) DO UPDATE SET {}", non_pk.join(", "))
-    };
-    Ok(vec![format!(
-        "INSERT INTO {} ({col_sql}) VALUES ({values}) {conflict}",
-        quote_ident(&spec.table_name)
-    )])
+        .join(", ")
 }
 
-fn delete_sql(spec: &TableSpec, pk: &[JsonValue]) -> Result<String> {
-    if pk.len() != spec.table_schema.primary_key().len() {
-        return Err(Error::engine(
-            "SQLite row target primary key length mismatch",
-        ));
-    }
-    let mut predicates = Vec::with_capacity(pk.len());
-    for (idx, name) in spec.table_schema.primary_key().iter().enumerate() {
-        let col = spec.table_schema.columns().get(name).ok_or_else(|| {
-            Error::engine(format!(
-                "primary key column {name:?} is not in the table schema"
-            ))
-        })?;
-        predicates.push(format!(
-            "{} = {}",
-            quote_ident(name),
-            sql_literal(&key_part_value(&pk[idx], col), col)?
-        ));
-    }
-    Ok(format!(
-        "DELETE FROM {} WHERE {}",
-        quote_ident(&spec.table_name),
-        predicates.join(" AND ")
-    ))
-}
-
-fn pk_predicate(spec: &TableSpec, fields: &Map<String, JsonValue>) -> Result<String> {
-    let mut predicates = Vec::new();
-    for name in spec.table_schema.primary_key() {
-        let col = spec.table_schema.columns().get(name).expect("pk column");
-        let value = fields.get(name).unwrap_or(&JsonValue::Null);
-        predicates.push(format!(
-            "{} = {}",
-            quote_ident(name),
-            sql_literal(value, col)?
-        ));
-    }
-    Ok(predicates.join(" AND "))
+/// `?, ?, …`
+fn placeholders(count: usize) -> String {
+    std::iter::repeat_n("?", count)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 // ---------------------------------------------------------------------------
@@ -1248,10 +1428,21 @@ fn json_scalar_to_stable_key(value: &JsonValue) -> Result<StableKey> {
     }
 }
 
-fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
+/// A value bound to a statement parameter.
+#[derive(Clone, Debug, PartialEq)]
+enum SqliteValue {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Blob(Vec<u8>),
+}
+
+/// A column value as bound for its declared type.
+fn sqlite_value(value: &JsonValue, col: &ColumnDef) -> Result<SqliteValue> {
     if value.is_null() {
         return if col.nullable {
-            Ok("NULL".to_string())
+            Ok(SqliteValue::Null)
         } else {
             Err(Error::engine(format!(
                 "non-nullable SQLite column of type {} got null",
@@ -1262,49 +1453,55 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
     let t = col.sqlite_type.to_ascii_lowercase();
     if t.starts_with("float[") {
         // sqlite-vec accepts a JSON array string for vector columns.
-        return vector_literal(value);
+        return vector_text(value).map(SqliteValue::Text);
     }
     if is_integer_type(&t) {
-        return match value {
-            JsonValue::Number(n) if n.is_i64() || n.is_u64() => Ok(n.to_string()),
-            JsonValue::Bool(b) => Ok(if *b { "1" } else { "0" }.to_string()),
-            // A fractional number (e.g. 1.5) must NOT be silently stored — SQLite
-            // affinity would keep it as a REAL in an INTEGER column, violating the
-            // declared schema. Reject it instead.
-            _ => Err(Error::engine(format!(
-                "integer column {} requires an integer value",
-                col.sqlite_type
-            ))),
-        };
+        if let Some(i) = value.as_i64() {
+            return Ok(SqliteValue::Integer(i));
+        }
+        if let Some(b) = value.as_bool() {
+            return Ok(SqliteValue::Integer(i64::from(b)));
+        }
+        // A fractional number (e.g. 1.5), or one past i64, must NOT be
+        // silently stored — SQLite affinity would keep it as a REAL in an
+        // INTEGER column, violating the declared schema. Reject it instead.
+        return Err(Error::engine(format!(
+            "integer column {} requires an integer value",
+            col.sqlite_type
+        )));
     }
     if is_real_type(&t) {
         if let Some((secs, nanos)) = crate::row_schema::serialized_duration_parts(value) {
-            return Ok(format!("{secs}.{nanos:09}"));
+            return Ok(SqliteValue::Real(secs as f64 + f64::from(nanos) / 1e9));
         }
-        return match value {
-            JsonValue::Number(n) => Ok(n.to_string()),
-            _ => Err(Error::engine(format!(
+        return match value.as_f64() {
+            Some(n) => Ok(SqliteValue::Real(n)),
+            None => Err(Error::engine(format!(
                 "real column {} requires a number",
                 col.sqlite_type
             ))),
         };
     }
     if is_text_type(&t) {
-        return Ok(quote_string(value_to_string(value)));
+        return Ok(SqliteValue::Text(value_to_string(value)));
     }
     if is_blob_type(&t) {
-        return blob_literal(value);
+        return blob_value(value);
     }
-    // Fallback (BLOB / unknown): store scalars directly, complex as JSON text.
-    match value {
-        JsonValue::String(s) => Ok(quote_string(s)),
-        JsonValue::Number(n) => Ok(n.to_string()),
-        JsonValue::Bool(b) => Ok(if *b { "1" } else { "0" }.to_string()),
-        other => Ok(quote_string(other.to_string())),
-    }
+    // Fallback (unknown affinity): store scalars directly, complex as JSON text.
+    Ok(match value {
+        JsonValue::String(s) => SqliteValue::Text(s.clone()),
+        JsonValue::Number(n) => match (n.as_i64(), n.as_f64()) {
+            (Some(i), _) => SqliteValue::Integer(i),
+            (None, Some(f)) => SqliteValue::Real(f),
+            (None, None) => SqliteValue::Text(n.to_string()),
+        },
+        JsonValue::Bool(b) => SqliteValue::Integer(i64::from(*b)),
+        other => SqliteValue::Text(other.to_string()),
+    })
 }
 
-fn blob_literal(value: &JsonValue) -> Result<String> {
+fn blob_value(value: &JsonValue) -> Result<SqliteValue> {
     let bytes: Vec<u8> = match value {
         JsonValue::Array(items) => items
             .iter()
@@ -1322,13 +1519,7 @@ fn blob_literal(value: &JsonValue) -> Result<String> {
             ));
         }
     };
-    let mut literal = String::with_capacity(3 + bytes.len() * 2);
-    literal.push_str("X'");
-    for byte in bytes {
-        literal.push_str(&format!("{byte:02x}"));
-    }
-    literal.push('\'');
-    Ok(literal)
+    Ok(SqliteValue::Blob(bytes))
 }
 
 fn value_to_string(value: &JsonValue) -> String {
@@ -1338,7 +1529,8 @@ fn value_to_string(value: &JsonValue) -> String {
     }
 }
 
-fn vector_literal(value: &JsonValue) -> Result<String> {
+/// A JSON number array as sqlite-vec text input: `[1,2,3]`.
+fn vector_text(value: &JsonValue) -> Result<String> {
     let arr = value
         .as_array()
         .ok_or_else(|| Error::engine("vector column requires a JSON array"))?;
@@ -1352,12 +1544,7 @@ fn vector_literal(value: &JsonValue) -> Result<String> {
         }
         parts.push(n.to_string());
     }
-    Ok(quote_string(format!("[{}]", parts.join(","))))
-}
-
-fn quote_string(value: impl AsRef<str>) -> String {
-    let value = value.as_ref().replace('\0', "").replace('\'', "''");
-    format!("'{value}'")
+    Ok(format!("[{}]", parts.join(",")))
 }
 
 fn quote_ident(value: &str) -> String {
@@ -1470,41 +1657,45 @@ mod tests {
     }
 
     #[test]
-    fn upsert_sql_uses_on_conflict_with_typed_literals() {
+    fn upsert_statement_binds_rows_as_parameters() {
         let mut fields = Map::new();
         fields.insert("id".into(), JsonValue::from(7));
         fields.insert("name".into(), JsonValue::from("a'b"));
         fields.insert("score".into(), JsonValue::from(1.5));
-        let stmts = upsert_sql(&spec(schema()), &fields).unwrap();
-        // Regular tables: a single ON CONFLICT upsert statement.
-        assert_eq!(stmts.len(), 1);
+        let statements = RowStatements::new(&spec(schema()));
+        // Regular tables: one multi-row ON CONFLICT upsert statement.
         assert_eq!(
-            stmts[0],
-            "INSERT INTO \"items\" (\"id\", \"name\", \"score\") VALUES (7, 'a''b', 1.5) \
+            statements.upsert_sql(2),
+            "INSERT INTO \"items\" (\"id\", \"name\", \"score\") VALUES (?, ?, ?), (?, ?, ?) \
              ON CONFLICT (\"id\") DO UPDATE SET \"name\" = excluded.\"name\", \"score\" = excluded.\"score\""
         );
+        assert_eq!(
+            statements.row_values(&fields).unwrap(),
+            vec![
+                SqliteValue::Integer(7),
+                SqliteValue::Text("a'b".to_string()),
+                SqliteValue::Real(1.5),
+            ]
+        );
+        // 3 columns: 10,922 rows fit the bind limit.
+        assert_eq!(statements.upsert_rows_per_statement(), BIND_LIMIT / 3);
     }
 
     #[test]
-    fn vec0_upsert_emits_separate_delete_and_insert() {
-        // Regression: vec0 has no UPSERT, so it must produce a DELETE then an
-        // INSERT as two statements (a single `sqlx::query` runs only the first,
-        // which silently dropped the INSERT → lost rows).
+    fn vec0_statements_have_no_upsert_clause() {
+        // vec0 has no UPSERT: a row is a DELETE by key then an INSERT.
         let mut spec = spec(schema());
         spec.virtual_table_def = Some(Vec0TableDef::default());
-        let mut fields = Map::new();
-        fields.insert("id".into(), JsonValue::from(7));
-        fields.insert("name".into(), JsonValue::from("a"));
-        fields.insert("score".into(), JsonValue::from(1.5));
-        let stmts = upsert_sql(&spec, &fields).unwrap();
-        assert_eq!(stmts.len(), 2, "vec0 upsert must be two statements");
-        assert!(
-            stmts[0].starts_with("DELETE FROM \"items\" WHERE"),
-            "{stmts:?}"
+        let statements = RowStatements::new(&spec);
+        assert!(statements.virtual_table);
+        assert_eq!(
+            statements.delete_sql(1),
+            "DELETE FROM \"items\" WHERE \"id\" IN (?)"
         );
-        assert!(stmts[1].starts_with("INSERT INTO \"items\""), "{stmts:?}");
-        // Neither statement contains a `;` separator (so each runs on its own).
-        assert!(stmts.iter().all(|s| !s.contains(';')), "{stmts:?}");
+        assert_eq!(
+            statements.upsert_sql(1),
+            "INSERT INTO \"items\" (\"id\", \"name\", \"score\") VALUES (?, ?, ?)"
+        );
     }
 
     #[test]
@@ -1521,43 +1712,74 @@ mod tests {
             json_scalar_to_stable_key(&JsonValue::from("true")).unwrap(),
             json_scalar_to_stable_key(&JsonValue::Bool(true)).unwrap(),
         ]));
-        let sql = delete_sql(&spec(schema), &stable_key_to_pk(&key).unwrap()).unwrap();
+        let statements = RowStatements::new(&spec(schema));
+        // A composite key compares as a row value.
         assert_eq!(
-            sql,
-            "DELETE FROM \"items\" WHERE \"tenant\" = 'true' AND \"active\" = 1"
+            statements.delete_sql(2),
+            "DELETE FROM \"items\" WHERE (\"tenant\", \"active\") IN (VALUES (?, ?), (?, ?))"
+        );
+        // A text key part spelled "true" stays text; the boolean key part is
+        // bound as the integer it is stored as.
+        assert_eq!(
+            statements
+                .key_values(&stable_key_to_pk(&key).unwrap())
+                .unwrap(),
+            vec![
+                SqliteValue::Text("true".to_string()),
+                SqliteValue::Integer(1)
+            ]
         );
     }
 
     #[test]
-    fn delete_sql_uses_primary_key_literal() {
-        let sql = delete_sql(&spec(schema()), &[JsonValue::from(9)]).unwrap();
-        assert_eq!(sql, "DELETE FROM \"items\" WHERE \"id\" = 9");
+    fn delete_statement_lists_keys() {
+        let statements = RowStatements::new(&spec(schema()));
+        assert_eq!(
+            statements.delete_sql(3),
+            "DELETE FROM \"items\" WHERE \"id\" IN (?, ?, ?)"
+        );
+        assert_eq!(
+            statements.key_values(&[JsonValue::from(9)]).unwrap(),
+            vec![SqliteValue::Integer(9)]
+        );
+        assert!(statements.key_values(&[]).is_err());
     }
 
     #[test]
     fn integer_column_rejects_fractional_number() {
         let col = ColumnDef::new("INTEGER");
         // Integer values (and bools) are fine.
-        assert_eq!(sql_literal(&JsonValue::from(7), &col).unwrap(), "7");
-        assert_eq!(sql_literal(&JsonValue::from(true), &col).unwrap(), "1");
+        assert_eq!(
+            sqlite_value(&JsonValue::from(7), &col).unwrap(),
+            SqliteValue::Integer(7)
+        );
+        assert_eq!(
+            sqlite_value(&JsonValue::from(true), &col).unwrap(),
+            SqliteValue::Integer(1)
+        );
         // A fractional number must be rejected, not stored as REAL in an INTEGER column.
-        assert!(sql_literal(&JsonValue::from(1.5), &col).is_err());
+        assert!(sqlite_value(&JsonValue::from(1.5), &col).is_err());
     }
 
     #[test]
-    fn blob_literal_rejects_out_of_range_bytes() {
+    fn blob_value_rejects_out_of_range_bytes() {
         let col = ColumnDef::new("BLOB");
-        assert!(sql_literal(&serde_json::json!([256]), &col).is_err());
+        assert!(sqlite_value(&serde_json::json!([256]), &col).is_err());
+        assert_eq!(
+            sqlite_value(&serde_json::json!([104, 105]), &col).unwrap(),
+            SqliteValue::Blob(b"hi".to_vec())
+        );
     }
 
     #[test]
     fn single_column_table_upsert_does_nothing_on_conflict() {
         let schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], ["id"]).unwrap();
-        let mut fields = Map::new();
-        fields.insert("id".into(), JsonValue::from(1));
-        let stmts = upsert_sql(&spec(schema), &fields).unwrap();
-        assert_eq!(stmts.len(), 1);
-        assert!(stmts[0].ends_with("ON CONFLICT (\"id\") DO NOTHING"));
+        let statements = RowStatements::new(&spec(schema));
+        assert!(
+            statements
+                .upsert_sql(1)
+                .ends_with("ON CONFLICT (\"id\") DO NOTHING")
+        );
     }
 
     #[test]

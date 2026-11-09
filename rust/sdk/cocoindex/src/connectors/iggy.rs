@@ -1,4 +1,6 @@
-//! Apache Iggy topic target connector.
+//! Apache Iggy connector: a topic target and topic sources.
+//!
+//! # Target
 //!
 //! Streams and topics are user-managed: CocoIndex never creates or drops them
 //! during target reconciliation. Messages declared with
@@ -13,14 +15,26 @@
 //! requires a `deletion_value_fn`; deleting a declared message without one is an
 //! error (mirroring the Python `iggy` connector).
 //!
-//! Use [`declare_iggy_topic_target`] / [`mount_iggy_topic_target`] to get a handle
-//! for declaring messages.
+//! [`iggy_topic_target`] builds the topic's [`TargetState`] for `mount_target` /
+//! `declare_target_state_with_child`; [`declare_iggy_topic_target`] /
+//! [`mount_iggy_topic_target`] wrap those and return a handle for declaring
+//! messages.
 //!
-//! This is the Rust analogue of Python's `cocoindex.connectors.iggy` target,
-//! plus a keyed-map source over one topic partition.
+//! # Sources
+//!
+//! [`topic_as_stream`] reads a topic as a [`LiveStream`] of every message
+//! ([`IggyTopicStream`]; [`payloads`](IggyTopicStream::payloads) is the
+//! `LiveStream<Vec<u8>>` view) and [`topic_as_map`] reads one partition as a
+//! keyed map, the key and deletions derived from each [`IggyReceivedMessage`]
+//! by the caller's functions, as Iggy messages have no key or tombstone. Both
+//! are also [`LiveMapView`]s for [`Ctx::mount_each_live`](crate::Ctx::mount_each_live).
+//! The consumer group's offsets are stored on the server once a polled batch
+//! has been processed, and a later live run resumes from them.
+//!
+//! This is the Rust analogue of Python's `cocoindex.connectors.iggy`.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -37,14 +51,17 @@ use serde::{Deserialize, Serialize};
 /// `cocoindex::connectors::iggy::prelude::{StreamClient, TopicClient}`.
 pub use ::iggy::prelude;
 
+use crate::connectors::partition_tail::{PartitionSource, PartitionTail, watch_partitions};
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
 use crate::live_component::{
-    LiveComponentOperator, LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard,
+    LiveComponentOperator, LiveMapFeed, LiveMapSubscriber, LiveMapView, LiveStream,
+    LiveStreamSubscriber, ReadyHandle, SingleWatcherGuard,
 };
 use crate::target_state::{
-    SinkCache, StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
-    TargetStateProvider, declare_target_state, register_root_target_states_provider,
+    ChildTargetDef, STATIC_ROOT_PROVIDERS, SinkCache, StableKey, StaticRootProvider, TargetAction,
+    TargetActionSink, TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider,
+    declare_target_state, declare_target_state_with_child, mount_target,
 };
 
 // ---------------------------------------------------------------------------
@@ -58,6 +75,15 @@ use crate::target_state::{
 pub struct IggyProducer {
     client: Arc<IggyClient>,
     state_id: Arc<str>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for IggyProducer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IggyProducer")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl IggyProducer {
@@ -75,6 +101,16 @@ impl IggyProducer {
             client: Arc::new(client),
             state_id: Arc::from(sanitize_state_id(connection_string)),
         })
+    }
+
+    /// Wrap a connected `IggyClient` the caller built, as the Python target
+    /// takes the caller's client. `state_id` is the stable identity of the
+    /// server (its address), never a credential.
+    pub fn from_client(client: IggyClient, state_id: impl Into<String>) -> Self {
+        Self {
+            client: Arc::new(client),
+            state_id: Arc::from(state_id.into()),
+        }
     }
 
     /// Stable identity (the server address, with any embedded credentials
@@ -108,9 +144,10 @@ fn sanitize_state_id(connection_string: &str) -> String {
 // Public API: options + target + the constructor/declaration/mount split
 // ---------------------------------------------------------------------------
 
-/// Callback producing the deletion value for a given message key. Iggy has no
-/// tombstone, so this is required to delete a previously-declared message.
-pub type DeletionValueFn = Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync>;
+/// Callback producing the deletion value for a message key (a `&str` key is
+/// its UTF-8 bytes). Iggy has no tombstone, so this is required to delete a
+/// previously-declared message.
+pub type DeletionValueFn = Arc<dyn Fn(&[u8]) -> Vec<u8> + Send + Sync>;
 
 /// Options for the Iggy topic target.
 #[derive(Clone, Default)]
@@ -119,6 +156,10 @@ pub struct IggyTopicOptions {
     pub partition: u32,
     /// Value to send when a previously-declared message is removed. Iggy has no
     /// tombstone, so deleting a declared message without this is an error.
+    ///
+    /// The callback lives in this process: a run that declares the topic target
+    /// (or drops the app from a process that did) applies it; `App::drop_state`
+    /// from a process that never declared the topic target cannot delete.
     pub deletion_value_fn: Option<DeletionValueFn>,
 }
 
@@ -131,23 +172,37 @@ pub struct IggyTopicTarget {
     topic: Arc<str>,
 }
 
-/// Declare an Iggy topic target and return a ready same-component handle.
-/// No external setup is needed, so this uses the same immediate provider path as
-/// [`mount_iggy_topic_target`].
-pub fn declare_iggy_topic_target(
+/// Build the composable [`TargetState`] of an Iggy topic partition (the spec
+/// constructor), for `mount_target` / `declare_target_state_with_child`.
+/// `producer` names the [`IggyProducer`] provided in the environment; it is
+/// resolved when the messages are sent.
+pub fn iggy_topic_target(
     ctx: &Ctx,
     producer: &ContextKey<IggyProducer>,
     stream: impl Into<String>,
     topic: impl Into<String>,
     options: IggyTopicOptions,
-) -> Result<IggyTopicTarget> {
-    mount_iggy_topic_target(ctx, producer, stream, topic, options)
+) -> Result<TargetState<TopicSpec>> {
+    let stream = stream.into();
+    let topic = topic.into();
+    if stream.is_empty() || topic.is_empty() {
+        return Err(Error::engine("iggy stream and topic must be non-empty"));
+    }
+    let key = TopicKey {
+        producer_key: producer.name().to_string(),
+        stream,
+        topic,
+        partition: options.partition,
+    };
+    set_deletion_value_fn(&key, options.deletion_value_fn);
+    let provider = TOPIC_PROVIDER.get(ctx)?;
+    Ok(provider.target_state(key.stable_key(), TopicSpec {}))
 }
 
-/// Declare an Iggy topic target in the current component and return a handle for
-/// declaring messages. `producer` names the [`IggyProducer`] provided in the
-/// environment; it is resolved when the messages are sent.
-pub fn mount_iggy_topic_target(
+/// Declare an Iggy topic target in the current component and return a handle
+/// for declaring messages (the message provider resolves at this component's
+/// commit).
+pub fn declare_iggy_topic_target(
     ctx: &Ctx,
     producer: &ContextKey<IggyProducer>,
     stream: impl Into<String>,
@@ -156,25 +211,28 @@ pub fn mount_iggy_topic_target(
 ) -> Result<IggyTopicTarget> {
     let stream = stream.into();
     let topic = topic.into();
-    let messages = register_root_target_states_provider(
-        ctx,
-        // Stable connection identity = the ContextKey's name; the client is
-        // resolved at apply time from the host context, as the other targets do.
-        format!(
-            "cocoindex/iggy/topic/{}/{}/{}/{}",
-            producer.name(),
-            stream,
-            topic,
-            options.partition
-        ),
-        MessageHandler::new(
-            producer.name().to_string(),
-            stream.clone(),
-            topic.clone(),
-            options.partition,
-            options.deletion_value_fn,
-        ),
-    )?;
+    let ts = iggy_topic_target(ctx, producer, stream.clone(), topic.clone(), options)?;
+    let messages = declare_target_state_with_child::<TopicSpec, Vec<u8>>(ctx, ts)?;
+    Ok(IggyTopicTarget {
+        messages,
+        stream: Arc::from(stream),
+        topic: Arc::from(topic),
+    })
+}
+
+/// Mount an Iggy topic target **foreground** (messages can be declared at once)
+/// and return a handle for declaring messages.
+pub async fn mount_iggy_topic_target(
+    ctx: &Ctx,
+    producer: &ContextKey<IggyProducer>,
+    stream: impl Into<String>,
+    topic: impl Into<String>,
+    options: IggyTopicOptions,
+) -> Result<IggyTopicTarget> {
+    let stream = stream.into();
+    let topic = topic.into();
+    let ts = iggy_topic_target(ctx, producer, stream.clone(), topic.clone(), options)?;
+    let messages = mount_target::<TopicSpec, Vec<u8>>(ctx, ts).await?;
     Ok(IggyTopicTarget {
         messages,
         stream: Arc::from(stream),
@@ -207,11 +265,178 @@ impl IggyTopicTarget {
             self.messages.target_state(key, value.as_ref().to_vec()),
         )
     }
+
+    /// [`declare_message`](Self::declare_message) with a binary key. A `&str`
+    /// key and its UTF-8 bytes are distinct target states.
+    pub fn declare_message_bytes(
+        &self,
+        ctx: &Ctx,
+        key: &[u8],
+        value: impl AsRef<[u8]>,
+    ) -> Result<()> {
+        if key.is_empty() {
+            return Err(Error::engine(
+                "iggy declare_message_bytes: key must be non-empty",
+            ));
+        }
+        declare_target_state(
+            ctx,
+            self.messages
+                .target_state(StableKey::Bytes(Arc::from(key)), value.as_ref().to_vec()),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Message handler (root)
+// Topic handler (root, static) and its message child handler
 // ---------------------------------------------------------------------------
+
+/// Spec of an Iggy topic target (the declared container value). Streams and
+/// topics are user-managed, so the spec carries nothing: the target's identity
+/// is in its key.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopicSpec {}
+
+#[linkme::distributed_slice(STATIC_ROOT_PROVIDERS)]
+static TOPIC_PROVIDER: StaticRootProvider =
+    StaticRootProvider::new::<TopicSpec, TopicHandler>("cocoindex/iggy/topic");
+
+/// A topic target state's key: the producer's `ContextKey` name, the stream,
+/// the topic and the partition. Mirrors Python's `_TopicKey`.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TopicKey {
+    producer_key: String,
+    stream: String,
+    topic: String,
+    partition: u32,
+}
+
+impl TopicKey {
+    fn stable_key(self) -> StableKey {
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(self.producer_key)),
+            StableKey::Str(Arc::from(self.stream)),
+            StableKey::Str(Arc::from(self.topic)),
+            StableKey::Int(i64::from(self.partition)),
+        ]))
+    }
+
+    fn from_stable_key(key: &StableKey) -> Result<Self> {
+        if let StableKey::Array(parts) = key
+            && let [
+                StableKey::Str(producer_key),
+                StableKey::Str(stream),
+                StableKey::Str(topic),
+                StableKey::Int(partition),
+            ] = &parts[..]
+            && let Ok(partition) = u32::try_from(*partition)
+        {
+            return Ok(Self {
+                producer_key: producer_key.to_string(),
+                stream: stream.to_string(),
+                topic: topic.to_string(),
+                partition,
+            });
+        }
+        Err(Error::engine(format!("unexpected iggy topic key: {key:?}")))
+    }
+}
+
+/// The deletion-value callbacks of the topic targets this process declared,
+/// looked up when a topic's message handler is built (the spec is persisted,
+/// a closure cannot be).
+static DELETION_VALUE_FNS: Mutex<Option<std::collections::HashMap<TopicKey, DeletionValueFn>>> =
+    Mutex::new(None);
+
+fn set_deletion_value_fn(key: &TopicKey, f: Option<DeletionValueFn>) {
+    let mut guard = DELETION_VALUE_FNS.lock().unwrap_or_else(|e| e.into_inner());
+    let fns = guard.get_or_insert_with(Default::default);
+    match f {
+        Some(f) => {
+            fns.insert(key.clone(), f);
+        }
+        None => {
+            fns.remove(key);
+        }
+    }
+}
+
+fn deletion_value_fn(key: &TopicKey) -> Option<DeletionValueFn> {
+    DELETION_VALUE_FNS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|fns| fns.get(key).cloned())
+}
+
+/// The topic-level action: nothing to apply (topics are user-managed); it
+/// carries the key the message child handler is built from.
+#[derive(Serialize, Deserialize)]
+struct TopicAction {
+    producer_key: String,
+    stream: String,
+    topic: String,
+    partition: u32,
+}
+
+#[derive(Default)]
+struct TopicHandler {
+    sink: SinkCache<TopicAction>,
+}
+
+impl TargetHandler<TopicSpec> for TopicHandler {
+    type TrackingRecord = ();
+    type Action = TopicAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<TopicSpec>,
+        _prev: Vec<()>,
+        _prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<TopicAction, ()>>> {
+        let topic_key = TopicKey::from_stable_key(&key)?;
+        let action = TopicAction {
+            producer_key: topic_key.producer_key,
+            stream: topic_key.stream,
+            topic: topic_key.topic,
+            partition: topic_key.partition,
+        };
+        // Always emit when declared, so the sink builds the message child.
+        Ok(Some(TargetReconcileOutput {
+            action: match desired {
+                Some(_) => TargetAction::Update(action),
+                None => TargetAction::Delete(action),
+            },
+            sink: self.sink.get(topic_sink),
+            tracking_record: desired.map(|_| ()),
+            child_invalidation: None,
+        }))
+    }
+}
+
+fn topic_sink() -> TargetActionSink<TopicAction> {
+    TargetActionSink::from_async_fn_with_child_handler(
+        // Topics are not created or deleted, so there is nothing to apply.
+        |_actions| async { Ok(()) },
+        |action: &TopicAction| {
+            let key = TopicKey {
+                producer_key: action.producer_key.clone(),
+                stream: action.stream.clone(),
+                topic: action.topic.clone(),
+                partition: action.partition,
+            };
+            let deletion_value_fn = deletion_value_fn(&key);
+            Ok(ChildTargetDef::new::<Vec<u8>, _>(MessageHandler::new(
+                key.producer_key,
+                key.stream,
+                key.topic,
+                key.partition,
+                deletion_value_fn,
+            )))
+        },
+    )
+}
 
 /// What the sink should send for one message: a record with this value.
 #[derive(Serialize, Deserialize)]
@@ -248,6 +473,17 @@ impl MessageHandler {
     }
 }
 
+/// The bytes of a message target state's key: a `Str` key is its UTF-8 bytes.
+fn message_key_bytes(key: &StableKey) -> Result<Vec<u8>> {
+    match key {
+        StableKey::Str(s) => Ok(s.as_bytes().to_vec()),
+        StableKey::Bytes(b) => Ok(b.to_vec()),
+        other => Err(Error::engine(format!(
+            "unexpected iggy message key: {other:?}"
+        ))),
+    }
+}
+
 impl TargetHandler<Vec<u8>> for MessageHandler {
     type TrackingRecord = Fingerprint;
     type Action = MessageAction;
@@ -259,13 +495,7 @@ impl TargetHandler<Vec<u8>> for MessageHandler {
         prev: Vec<Fingerprint>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<MessageAction, Fingerprint>>> {
-        let StableKey::Str(key) = &key else {
-            return Err(Error::engine(format!(
-                "unexpected iggy message key: {key:?}"
-            )));
-        };
-        let key = key.to_string();
-
+        let key = message_key_bytes(&key)?;
         let Some(decision) = decide_message(
             &key,
             desired.as_deref(),
@@ -317,10 +547,7 @@ impl MessageHandler {
                         return Ok(());
                     }
                     let client = resolve_producer(&host_ctx, &producer_key)?.client.clone();
-                    let stream_id = Identifier::from_str_value(&stream)
-                        .map_err(|e| Error::engine(format!("iggy stream id {stream:?}: {e}")))?;
-                    let topic_id = Identifier::from_str_value(&topic)
-                        .map_err(|e| Error::engine(format!("iggy topic id {topic:?}: {e}")))?;
+                    let (stream_id, topic_id) = topic_ids(&stream, &topic)?;
                     let partitioning = Partitioning::partition_id(partition);
 
                     let mut messages = Vec::with_capacity(actions.len());
@@ -370,7 +597,7 @@ struct MessageDecision {
 /// * other deletes send `deletion_value_fn(key)`, or error if none is set
 ///   (Iggy has no tombstone).
 fn decide_message(
-    key: &str,
+    key: &[u8],
     desired_value: Option<&[u8]>,
     prev_fps: &[Fingerprint],
     prev_may_be_missing: bool,
@@ -378,7 +605,7 @@ fn decide_message(
 ) -> Result<Option<MessageDecision>> {
     // Upsert path.
     if let Some(value) = desired_value {
-        let fp = Fingerprint::from(&value.to_vec()).map_err(Error::from)?;
+        let fp = Fingerprint::from_bytes(value);
         if !prev_may_be_missing && !prev_fps.is_empty() && prev_fps.iter().all(|p| *p == fp) {
             return Ok(None);
         }
@@ -394,8 +621,9 @@ fn decide_message(
     }
     let Some(deletion_value_fn) = deletion_value_fn else {
         return Err(Error::engine(format!(
-            "iggy: cannot delete message {key:?} — Iggy has no tombstone; \
-             set IggyTopicOptions::deletion_value_fn or encode deletes in the payload"
+            "iggy: cannot delete message {:?} — Iggy has no tombstone; \
+             set IggyTopicOptions::deletion_value_fn or encode deletes in the payload",
+            String::from_utf8_lossy(key)
         )));
     };
     Ok(Some(MessageDecision {
@@ -416,6 +644,15 @@ pub struct IggyConsumer {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for IggyConsumer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IggyConsumer")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl IggyConsumer {
     /// Connect to an Iggy server from a connection string, e.g.
     /// `iggy://iggy:iggy@localhost:8090`.
@@ -432,19 +669,61 @@ impl IggyConsumer {
         })
     }
 
+    /// Wrap a connected `IggyClient` the caller built, as the Python sources
+    /// take the caller's client. `state_id` is the stable identity of the
+    /// server (its address), never a credential.
+    pub fn from_client(client: IggyClient, state_id: impl Into<String>) -> Self {
+        Self {
+            client: Arc::new(client),
+            state_id: Arc::from(state_id.into()),
+        }
+    }
+
     /// Stable identity (the server address, credentials stripped).
     pub fn state_id(&self) -> &str {
         &self.state_id
     }
 }
 
-/// Extracts a map key from a message payload. Iggy messages have no native key,
-/// so a key function is required (returning `None` skips the message).
-pub type IggyKeyFn = Arc<dyn Fn(&[u8]) -> Option<String> + Send + Sync>;
+/// A polled Iggy message, as the sources yield it: the Rust analogue of the
+/// Python SDK's `ReceiveMessage`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IggyReceivedMessage {
+    pub partition: u32,
+    pub offset: u64,
+    /// The message id the producer set (`0` when none).
+    pub id: u128,
+    /// The server's receive time, in microseconds since the Unix epoch.
+    pub timestamp: u64,
+    pub checksum: u64,
+    pub payload: Vec<u8>,
+}
 
-/// Decides whether a message payload represents a *deletion* of its key
-/// (defaults to "never" — Iggy has no tombstone).
-pub type IggyIsDeletionFn = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
+impl IggyReceivedMessage {
+    fn from_message(partition: u32, message: &IggyMessage) -> Self {
+        Self {
+            partition,
+            offset: message.header.offset,
+            id: message.header.id,
+            timestamp: message.header.timestamp,
+            checksum: message.header.checksum,
+            payload: message.payload.to_vec(),
+        }
+    }
+
+    /// The payload as text (lossy on invalid UTF-8).
+    pub fn payload_str(&self) -> String {
+        String::from_utf8_lossy(&self.payload).into_owned()
+    }
+}
+
+/// Extracts a map key from a message. Iggy messages have no native key, so a
+/// key function is required (returning `None` skips the message).
+pub type IggyKeyFn = Arc<dyn Fn(&IggyReceivedMessage) -> Option<String> + Send + Sync>;
+
+/// Decides whether a message represents a *deletion* of its key (defaults to
+/// "never" — Iggy has no tombstone).
+pub type IggyIsDeletionFn = Arc<dyn Fn(&IggyReceivedMessage) -> bool + Send + Sync>;
 
 /// How the sources poll a topic; the same knobs as the Python connector's
 /// `topic_as_stream` / `topic_as_map`.
@@ -489,7 +768,7 @@ pub struct IggySourceOptions {
     /// Partition to consume (default `0`).
     pub partition: u32,
     pub poll: IggyPollOptions,
-    /// Custom deletion predicate over the payload (default: never delete).
+    /// Custom deletion predicate over the message (default: never delete).
     pub is_deletion: Option<IggyIsDeletionFn>,
 }
 
@@ -590,6 +869,30 @@ impl TopicPoller {
         }
         ids.sort_unstable();
         Ok(ids)
+    }
+
+    /// Each partition's end (the offset its next message gets), from the topic
+    /// details: the initial high watermark readiness is measured against.
+    async fn high_watermarks(&self, partitions: &[u32]) -> Result<BTreeMap<u32, u64>> {
+        let details = self.topic_details().await?;
+        Ok(partitions
+            .iter()
+            .map(|&pid| {
+                let end = details
+                    .partitions
+                    .iter()
+                    .find(|p| p.id == pid)
+                    .map(|p| {
+                        if p.messages_count == 0 {
+                            0
+                        } else {
+                            p.current_offset + 1
+                        }
+                    })
+                    .unwrap_or(0);
+                (pid, end)
+            })
+            .collect())
     }
 
     /// Create the consumer group when it does not exist, and join it, so its
@@ -695,8 +998,8 @@ impl TopicPoller {
     }
 
     /// Read `partitions` from offset 0 to their current end, passing each
-    /// `(partition, message)` to `f`, and record where each ended for `watch`.
-    async fn scan(&self, partitions: &[u32], mut f: impl FnMut(u32, &IggyMessage)) -> Result<()> {
+    /// message to `f`, and record where each ended for `watch`.
+    async fn scan(&self, partitions: &[u32], mut f: impl FnMut(IggyReceivedMessage)) -> Result<()> {
         let mut ends: BTreeMap<u32, u64> = BTreeMap::new();
         for &pid in partitions {
             let mut offset = 0u64;
@@ -708,7 +1011,7 @@ impl TopicPoller {
                 let hwm = polled.current_offset;
                 for m in &polled.messages {
                     offset = m.header.offset + 1;
-                    f(pid, m);
+                    f(IggyReceivedMessage::from_message(pid, m));
                 }
                 if offset > hwm {
                     break;
@@ -735,67 +1038,117 @@ impl TopicPoller {
         Ok(true)
     }
 
-    /// Tail `partitions` from `watch_start`, delivering each message through
-    /// `deliver`; after each delivered batch the partition's last offset is
-    /// stored for the consumer group.
+    /// Tail `partitions` from `watch_start`, delivering each message to
+    /// `subscriber`; after each polled batch has been processed the
+    /// partition's last offset is stored for the consumer group.
     async fn watch(
         &self,
         partitions: &[u32],
-        deliver: &dyn Deliver,
-        subscriber: &LiveMapSubscriber<String, Vec<u8>>,
+        subscriber: &dyn LiveStreamSubscriber<IggyReceivedMessage>,
     ) -> Result<()> {
         let _watch_token = self.watch_guard.enter()?;
         self.ensure_group().await?;
-        let mut offsets = self.watch_start.lock().await.clone();
+        let starts = self.watch_start.lock().await.clone();
+        let high_watermarks = self.high_watermarks(partitions).await?;
+        let mut tails = Vec::new();
         for &pid in partitions {
-            let next = *offsets.entry(pid).or_insert(0);
+            let start = starts.get(&pid).copied().unwrap_or(0);
+            let source = IggyPartition {
+                poller: self,
+                partition: pid,
+            };
             // The scan's end is the position the next run resumes from if
             // nothing new arrives.
-            if next > 0 {
-                self.store_offset(pid, next - 1).await?;
-            }
+            source.commit(start as i64).await?;
+            tails.push(PartitionTail {
+                source,
+                start: start as i64,
+                high_watermark: high_watermarks.get(&pid).copied().unwrap_or(0) as i64,
+            });
         }
-        loop {
-            let mut got_any = false;
-            for &pid in partitions {
-                let offset = *offsets.get(&pid).unwrap_or(&0);
-                let polled = self.poll(pid, offset).await?;
-                if polled.messages.is_empty() {
-                    continue;
-                }
-                got_any = true;
-                let mut last = offset;
-                for m in &polled.messages {
-                    last = m.header.offset;
-                    deliver.deliver(pid, m, subscriber).await?;
-                }
-                offsets.insert(pid, last + 1);
-                self.store_offset(pid, last).await?;
-            }
-            if !got_any {
-                tokio::time::sleep(self.options.poll_interval).await;
-            }
-        }
+        watch_partitions(tails, subscriber).await
     }
 }
 
-/// How a source delivers one polled message to its subscriber.
-#[crate::async_trait]
-trait Deliver: Send + Sync {
-    async fn deliver(
-        &self,
-        partition: u32,
-        message: &IggyMessage,
-        subscriber: &LiveMapSubscriber<String, Vec<u8>>,
-    ) -> Result<()>;
+/// One partition of a watch, polled through its poller; the consumer group's
+/// offset is stored on the server.
+struct IggyPartition<'a> {
+    poller: &'a TopicPoller,
+    partition: u32,
 }
 
-/// A keyed change feed over an Iggy topic partition: the latest payload per key
+#[crate::async_trait]
+impl PartitionSource<IggyReceivedMessage> for IggyPartition<'_> {
+    async fn fetch(&self, offset: i64) -> Result<Vec<(i64, IggyReceivedMessage)>> {
+        let polled = self.poller.poll(self.partition, offset as u64).await?;
+        if polled.messages.is_empty() {
+            // Iggy answers an empty poll at once; pace the loop as Python's
+            // `poll_interval` does.
+            tokio::time::sleep(self.poller.options.poll_interval).await;
+        }
+        Ok(polled
+            .messages
+            .iter()
+            .map(|m| {
+                (
+                    m.header.offset as i64,
+                    IggyReceivedMessage::from_message(self.partition, m),
+                )
+            })
+            .collect())
+    }
+
+    async fn commit(&self, next: i64) -> Result<()> {
+        // Iggy stores the last consumed offset, not the next one to read.
+        if next > 0 {
+            self.poller
+                .store_offset(self.partition, (next - 1) as u64)
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+/// Delivers a stream's messages to a [`LiveMapSubscriber`]: each message is
+/// keyed by `key_of`, mounted as a child (`Some(value)`) or deleted (`None`),
+/// and skipped when `key_of` yields nothing.
+struct StreamToMap<'a, F> {
+    map: &'a LiveMapSubscriber<String, IggyReceivedMessage>,
+    key_of: F,
+}
+
+#[crate::async_trait]
+impl<F> LiveStreamSubscriber<IggyReceivedMessage> for StreamToMap<'_, F>
+where
+    F: Fn(IggyReceivedMessage) -> Option<(String, Option<IggyReceivedMessage>)> + Send + Sync,
+{
+    async fn send(&self, message: IggyReceivedMessage) -> Result<ReadyHandle> {
+        match (self.key_of)(message) {
+            None => Ok(ReadyHandle::immediate()),
+            Some((key, Some(value))) => self.map.start_update(key, value).await,
+            Some((key, None)) => self.map.start_delete(key).await,
+        }
+    }
+
+    async fn mark_ready(&self) {
+        self.map.mark_ready().await;
+    }
+
+    async fn read_committed_state(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.map.read_committed_state(key).await
+    }
+
+    async fn write_committed_state(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.map.write_committed_state(key, &value.to_vec()).await
+    }
+}
+
+/// A keyed change feed over an Iggy topic partition: the latest message per key
 /// (as derived by the key function), with [`IggySourceOptions::is_deletion`]
 /// removing keys. The Rust analogue of Python's `topic_as_map`.
 ///
 /// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads the partition log up
-/// to its current offset (compacted to the latest payload per key) and
+/// to its current offset (compacted to the latest message per key) and
 /// [`watch`](LiveMapFeed::watch) tails new messages from there. The consumer
 /// group's offset is stored on the server once a polled batch's children have
 /// synced, and a later live run resumes from it instead of scanning. Feed it to
@@ -851,50 +1204,36 @@ pub fn topic_as_map_with_options(
     }
 }
 
+/// Classify a message into `(key, Some(message))` upsert or `(key, None)`
+/// delete; `None` when `key_fn` yields no key (message skipped).
+fn classify_message(
+    key_fn: &IggyKeyFn,
+    is_deletion: Option<&IggyIsDeletionFn>,
+    message: IggyReceivedMessage,
+) -> Option<(String, Option<IggyReceivedMessage>)> {
+    let key = key_fn(&message)?;
+    let is_delete = is_deletion.is_some_and(|f| f(&message));
+    Some((key, if is_delete { None } else { Some(message) }))
+}
+
 impl IggyTopicMap {
-    /// Classify a payload into `(key, Some(value))` upsert or `(key, None)`
-    /// delete; `None` when `key_fn` yields no key (message skipped).
-    fn classify(&self, payload: &[u8]) -> Option<(String, Option<Vec<u8>>)> {
-        let key = (self.key_fn)(payload)?;
-        let is_delete = self.is_deletion.as_ref().is_some_and(|f| f(payload));
-        Some((
-            key,
-            if is_delete {
-                None
-            } else {
-                Some(payload.to_vec())
-            },
-        ))
-    }
-}
-
-#[crate::async_trait]
-impl Deliver for IggyTopicMap {
-    async fn deliver(
+    fn classify(
         &self,
-        _partition: u32,
-        message: &IggyMessage,
-        subscriber: &LiveMapSubscriber<String, Vec<u8>>,
-    ) -> Result<()> {
-        let Some((key, value)) = self.classify(message.payload.as_ref()) else {
-            return Ok(());
-        };
-        match value {
-            Some(v) => subscriber.update(key, v).await,
-            None => subscriber.delete(key).await,
-        }
+        message: IggyReceivedMessage,
+    ) -> Option<(String, Option<IggyReceivedMessage>)> {
+        classify_message(&self.key_fn, self.is_deletion.as_ref(), message)
     }
 }
 
 #[crate::async_trait]
-impl LiveMapView<String, Vec<u8>> for IggyTopicMap {
-    async fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
+impl LiveMapView<String, IggyReceivedMessage> for IggyTopicMap {
+    async fn scan(&self) -> Result<Vec<(String, IggyReceivedMessage)>> {
         // The partition must exist; `topic_details` also applies the init retries.
         self.poller.topic_details().await?;
-        let mut latest: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut latest: BTreeMap<String, IggyReceivedMessage> = BTreeMap::new();
         self.poller
-            .scan(&[self.partition], |_pid, m| {
-                if let Some((key, value)) = self.classify(m.payload.as_ref()) {
+            .scan(&[self.partition], |m| {
+                if let Some((key, value)) = self.classify(m) {
                     match value {
                         Some(v) => {
                             latest.insert(key, v);
@@ -911,34 +1250,44 @@ impl LiveMapView<String, Vec<u8>> for IggyTopicMap {
 }
 
 #[crate::async_trait]
-impl LiveMapFeed<String, Vec<u8>> for IggyTopicMap {
+impl LiveMapFeed<String, IggyReceivedMessage> for IggyTopicMap {
     async fn skip_initial_scan(&self, _operator: &LiveComponentOperator) -> Result<bool> {
         self.poller.topic_details().await?;
         self.poller.skip_initial_scan(&[self.partition]).await
     }
 
-    async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
+    async fn watch(
+        &self,
+        subscriber: LiveMapSubscriber<String, IggyReceivedMessage>,
+    ) -> Result<()> {
         self.poller
-            .watch(&[self.partition], self, &subscriber)
+            .watch(
+                &[self.partition],
+                &StreamToMap {
+                    map: &subscriber,
+                    key_of: |message| self.classify(message),
+                },
+            )
             .await
     }
 }
 
-/// A **keyless, append-only** payload feed over **all partitions** of an Iggy
-/// topic — the Rust analogue of Python's `topic_as_stream(...).payloads()`,
-/// extended to read every partition (like the Rust Kafka stream) instead of one.
+/// A **keyless, append-only** [`LiveStream`] of every message of an Iggy
+/// topic, across **all partitions** — the Rust analogue of Python's
+/// `topic_as_stream`, extended to read every partition instead of one.
+/// [`payloads`](Self::payloads) is the `LiveStream<Vec<u8>>` view.
 ///
-/// Unlike [`IggyTopicMap`] (which is keyed and per-partition), no key function or
-/// deletion predicate is needed and nothing is compacted: every message is
-/// delivered exactly once, keyed by its `"{partition}:{offset}"` position, so
-/// each becomes a distinct child under
-/// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live).
+/// [`watch`](LiveStream::watch) delivers each message to the subscriber,
+/// stores a partition's offset for the consumer group once the messages up to
+/// it are processed, and marks the subscriber ready once every partition has
+/// caught up to the end it had when the watch started.
 ///
-/// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads every partition up to
-/// its current offset (so readiness reflects all partitions being caught up) and
-/// [`watch`](LiveMapFeed::watch) round-robins new messages across partitions,
-/// storing each partition's offset for the consumer group as it goes. Re-running
-/// is idempotent: the `partition:offset` keys are stable.
+/// It is also a [`LiveMapView`] for
+/// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live): each message becomes
+/// a distinct child keyed by its `"{partition}:{offset}"` position;
+/// [`scan`](LiveMapView::scan) reads every partition up to its current offset
+/// and the feed's `watch` tails new messages from there. Re-running is
+/// idempotent: the position keys are stable.
 pub struct IggyTopicStream {
     poller: TopicPoller,
 }
@@ -980,49 +1329,102 @@ pub fn topic_as_stream_with_options(
     }
 }
 
+impl IggyTopicStream {
+    /// The `LiveStream<Vec<u8>>` view of this stream: each message's payload.
+    /// Python's `TopicStream.payloads()`.
+    pub fn payloads(self) -> IggyPayloadStream {
+        IggyPayloadStream { stream: self }
+    }
+}
+
 /// The stream's child key for a message: its position.
-fn position_key(partition: u32, message: &IggyMessage) -> String {
-    format!("{partition}:{}", message.header.offset)
+fn position_key(message: &IggyReceivedMessage) -> String {
+    format!("{}:{}", message.partition, message.offset)
 }
 
 #[crate::async_trait]
-impl Deliver for IggyTopicStream {
-    async fn deliver(
+impl LiveStream<IggyReceivedMessage> for IggyTopicStream {
+    async fn watch(
         &self,
-        partition: u32,
-        message: &IggyMessage,
-        subscriber: &LiveMapSubscriber<String, Vec<u8>>,
+        subscriber: &dyn LiveStreamSubscriber<IggyReceivedMessage>,
     ) -> Result<()> {
-        subscriber
-            .update(position_key(partition, message), message.payload.to_vec())
-            .await
+        let ids = self.poller.partition_ids().await?;
+        self.poller.watch(&ids, subscriber).await
     }
 }
 
 #[crate::async_trait]
-impl LiveMapView<String, Vec<u8>> for IggyTopicStream {
-    async fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
+impl LiveMapView<String, IggyReceivedMessage> for IggyTopicStream {
+    async fn scan(&self) -> Result<Vec<(String, IggyReceivedMessage)>> {
         let ids = self.poller.partition_ids().await?;
-        let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut out: Vec<(String, IggyReceivedMessage)> = Vec::new();
         self.poller
-            .scan(&ids, |pid, m| {
-                out.push((position_key(pid, m), m.payload.to_vec()));
-            })
+            .scan(&ids, |m| out.push((position_key(&m), m)))
             .await?;
         Ok(out)
     }
 }
 
 #[crate::async_trait]
-impl LiveMapFeed<String, Vec<u8>> for IggyTopicStream {
+impl LiveMapFeed<String, IggyReceivedMessage> for IggyTopicStream {
     async fn skip_initial_scan(&self, _operator: &LiveComponentOperator) -> Result<bool> {
         let ids = self.poller.partition_ids().await?;
         self.poller.skip_initial_scan(&ids).await
     }
 
-    async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
+    async fn watch(
+        &self,
+        subscriber: LiveMapSubscriber<String, IggyReceivedMessage>,
+    ) -> Result<()> {
         let ids = self.poller.partition_ids().await?;
-        self.poller.watch(&ids, self, &subscriber).await
+        self.poller
+            .watch(
+                &ids,
+                &StreamToMap {
+                    map: &subscriber,
+                    key_of: |message| Some((position_key(&message), Some(message))),
+                },
+            )
+            .await
+    }
+}
+
+/// The `LiveStream<Vec<u8>>` view of an [`IggyTopicStream`]: each message's
+/// payload. From [`IggyTopicStream::payloads`].
+pub struct IggyPayloadStream {
+    stream: IggyTopicStream,
+}
+
+/// Adapts a payload subscriber to the message-level stream.
+struct PayloadsAdapter<'a>(&'a dyn LiveStreamSubscriber<Vec<u8>>);
+
+#[crate::async_trait]
+impl LiveStreamSubscriber<IggyReceivedMessage> for PayloadsAdapter<'_> {
+    async fn send(&self, message: IggyReceivedMessage) -> Result<ReadyHandle> {
+        self.0.send(message.payload).await
+    }
+
+    async fn mark_ready(&self) {
+        self.0.mark_ready().await;
+    }
+
+    async fn read_committed_state(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        self.0.read_committed_state(key).await
+    }
+
+    async fn write_committed_state(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.0.write_committed_state(key, value).await
+    }
+}
+
+#[crate::async_trait]
+impl LiveStream<Vec<u8>> for IggyPayloadStream {
+    async fn watch(&self, subscriber: &dyn LiveStreamSubscriber<Vec<u8>>) -> Result<()> {
+        let ids = self.stream.poller.partition_ids().await?;
+        self.stream
+            .poller
+            .watch(&ids, &PayloadsAdapter(subscriber))
+            .await
     }
 }
 
@@ -1031,13 +1433,13 @@ mod tests {
     use super::*;
 
     fn fp(bytes: &[u8]) -> Fingerprint {
-        Fingerprint::from(&bytes.to_vec()).unwrap()
+        Fingerprint::from_bytes(bytes)
     }
 
     // Upsert new state (no previous record, prev_may_be_missing).
     #[test]
     fn upsert_new_state() {
-        let d = decide_message("k1", Some(b"v1"), &[], true, None)
+        let d = decide_message(b"k1", Some(b"v1"), &[], true, None)
             .unwrap()
             .expect("should send");
         assert_eq!(d.value, b"v1");
@@ -1047,14 +1449,14 @@ mod tests {
     // Unchanged value with a matching previous fingerprint → skip.
     #[test]
     fn upsert_unchanged_skips() {
-        let d = decide_message("k1", Some(b"v1"), &[fp(b"v1")], false, None).unwrap();
+        let d = decide_message(b"k1", Some(b"v1"), &[fp(b"v1")], false, None).unwrap();
         assert_eq!(d, None);
     }
 
     // Changed value → send the new value.
     #[test]
     fn upsert_changed_value() {
-        let d = decide_message("k1", Some(b"v2"), &[fp(b"v1")], false, None)
+        let d = decide_message(b"k1", Some(b"v2"), &[fp(b"v1")], false, None)
             .unwrap()
             .expect("should send");
         assert_eq!(d.value, b"v2");
@@ -1064,22 +1466,23 @@ mod tests {
     // prev_may_be_missing forces a send even when the fingerprint matches.
     #[test]
     fn upsert_prev_may_be_missing_forces_send() {
-        let d = decide_message("k1", Some(b"v1"), &[fp(b"v1")], true, None).unwrap();
+        let d = decide_message(b"k1", Some(b"v1"), &[fp(b"v1")], true, None).unwrap();
         assert!(d.is_some());
     }
 
     // Delete without a deletion_value_fn → error (Iggy has no tombstone).
     #[test]
     fn delete_without_callback_errors() {
-        let err = decide_message("k1", None, &[fp(b"v1")], false, None).unwrap_err();
+        let err = decide_message(b"k1", None, &[fp(b"v1")], false, None).unwrap_err();
         assert!(err.to_string().contains("tombstone"));
     }
 
     // Delete with a deletion_value_fn → send that value, no tracking record.
     #[test]
     fn delete_with_callback_uses_value() {
-        let f: DeletionValueFn = Arc::new(|k: &str| format!("deleted:{k}").into_bytes());
-        let d = decide_message("k1", None, &[fp(b"v1")], false, Some(&f))
+        let f: DeletionValueFn =
+            Arc::new(|k: &[u8]| format!("deleted:{}", String::from_utf8_lossy(k)).into_bytes());
+        let d = decide_message(b"k1", None, &[fp(b"v1")], false, Some(&f))
             .unwrap()
             .expect("should send deletion value");
         assert_eq!(d.value, b"deleted:k1");
@@ -1089,8 +1492,70 @@ mod tests {
     // Delete with no previous record and prev known-present → skip.
     #[test]
     fn delete_no_prev_skips() {
-        let d = decide_message("k1", None, &[], false, None).unwrap();
+        let d = decide_message(b"k1", None, &[], false, None).unwrap();
         assert_eq!(d, None);
+    }
+
+    // The tracking record is the raw-bytes fingerprint, as Python's
+    // `fingerprint_bytes` computes it, not a serde encoding of the bytes.
+    #[test]
+    fn tracking_record_is_the_raw_bytes_fingerprint() {
+        let d = decide_message(b"k", Some(b"v1"), &[], true, None)
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            d.tracking,
+            Some(Fingerprint::from(&b"v1".to_vec()).unwrap())
+        );
+    }
+
+    #[test]
+    fn topic_key_round_trips_through_the_stable_key() {
+        let key = TopicKey {
+            producer_key: "p".into(),
+            stream: "s".into(),
+            topic: "t".into(),
+            partition: 3,
+        };
+        let back = TopicKey::from_stable_key(&key.clone().stable_key()).unwrap();
+        assert!(back == key);
+        assert!(TopicKey::from_stable_key(&StableKey::Int(1)).is_err());
+    }
+
+    fn message(offset: u64, payload: &str) -> IggyReceivedMessage {
+        IggyReceivedMessage {
+            partition: 2,
+            offset,
+            id: 0,
+            timestamp: 0,
+            checksum: 0,
+            payload: payload.as_bytes().to_vec(),
+        }
+    }
+
+    // The key and deletion functions see the whole message, not only its
+    // payload; a message without a key is skipped.
+    #[test]
+    fn map_keys_and_deletes_from_the_whole_message() {
+        let key_fn: IggyKeyFn = Arc::new(|m| {
+            m.payload_str()
+                .split_once('=')
+                .map(|(k, _)| format!("{}:{k}", m.partition))
+        });
+        let is_deletion: IggyIsDeletionFn = Arc::new(|m| m.payload_str().ends_with("=DEL"));
+        assert_eq!(
+            classify_message(&key_fn, Some(&is_deletion), message(1, "k=DEL")),
+            Some(("2:k".into(), None))
+        );
+        let kept = classify_message(&key_fn, Some(&is_deletion), message(1, "k=v")).unwrap();
+        assert_eq!(kept.0, "2:k");
+        assert_eq!(kept.1.unwrap().payload_str(), "k=v");
+        assert_eq!(classify_message(&key_fn, None, message(1, "nokey")), None);
+    }
+
+    #[test]
+    fn stream_position_key_names_partition_and_offset() {
+        assert_eq!(position_key(&message(7, "")), "2:7");
     }
 
     #[test]

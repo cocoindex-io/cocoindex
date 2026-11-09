@@ -288,7 +288,7 @@ async fn id_generator_returns_distinct_ids_for_repeated_dep() {
 
     let ids = app
         .update(|ctx| async move {
-            let mut id_gen = IdGenerator::new();
+            let id_gen = IdGenerator::new();
             let mut ids = Vec::new();
             for _ in 0..5 {
                 ids.push(id_gen.next_id(&ctx, &"same").await?);
@@ -313,7 +313,7 @@ async fn id_generator_is_stable_across_runs() {
         app.update(|ctx| async move {
             let mut results = Vec::new();
             for dep in ["A", "B"] {
-                let mut id_gen = IdGenerator::new();
+                let id_gen = IdGenerator::new();
                 let mut ids = Vec::new();
                 for _ in 0..3 {
                     ids.push(id_gen.next_id(&ctx, &dep).await?);
@@ -342,7 +342,7 @@ async fn id_generator_constructor_deps_split_sequences() {
         app.update(|ctx| async move {
             let mut results = Vec::new();
             for dep in ["A", "B"] {
-                let mut id_gen = IdGenerator::with_deps(&dep)?;
+                let id_gen = IdGenerator::with_deps(&dep)?;
                 let mut ids = Vec::new();
                 for _ in 0..3 {
                     ids.push(id_gen.next_id_default(&ctx).await?);
@@ -367,7 +367,7 @@ async fn uuid_generator_returns_distinct_uuids_for_repeated_dep() {
 
     let uuids = app
         .update(|ctx| async move {
-            let mut uuid_gen = UuidGenerator::new();
+            let uuid_gen = UuidGenerator::new();
             let mut uuids = Vec::new();
             for _ in 0..5 {
                 uuids.push(uuid_gen.next_uuid(&ctx, &"same").await?);
@@ -392,7 +392,7 @@ async fn uuid_generator_is_stable_across_runs() {
         app.update(|ctx| async move {
             let mut results = Vec::new();
             for dep in ["A", "B"] {
-                let mut uuid_gen = UuidGenerator::new();
+                let uuid_gen = UuidGenerator::new();
                 let mut uuids = Vec::new();
                 for _ in 0..3 {
                     uuids.push(uuid_gen.next_uuid(&ctx, &dep).await?);
@@ -419,7 +419,7 @@ async fn uuid_generator_constructor_deps_split_sequences() {
         app.update(|ctx| async move {
             let mut results = Vec::new();
             for dep in ["A", "B"] {
-                let mut uuid_gen = UuidGenerator::with_deps(&dep)?;
+                let uuid_gen = UuidGenerator::with_deps(&dep)?;
                 let mut uuids = Vec::new();
                 for _ in 0..3 {
                     uuids.push(uuid_gen.next_uuid_default(&ctx).await?);
@@ -754,7 +754,7 @@ async fn type_owned_context_memo_state_invalidates_cached_function() {
                 Vec::new(),
             )?;
             ctx.__use_mount_fp(
-                "stateful_child".to_string(),
+                cocoindex::IntoStableKey::into_stable_key("stateful_child"),
                 Some(memo),
                 move |child_ctx| async move {
                     component_calls.fetch_add(1, Ordering::SeqCst);
@@ -1796,7 +1796,10 @@ mod batched_test {
             DEADLINE_BLOCKER_RELEASE.notify_one();
             let blocked = blocker.await.unwrap();
 
-            assert_eq!(expired?, 1);
+            // The body ran without the expired caller's deadline, but that
+            // caller checks its own once the result is back, like Python's
+            // batched runner.
+            assert!(expired.unwrap_err().is_deadline_exceeded());
             assert_eq!(ordinary?, 2);
             assert_eq!(blocked?, 0);
             Ok(())
@@ -2046,7 +2049,7 @@ mod memo_test_borrowed_slice {
     #[cocoindex::function(memo)]
     async fn memo_total(ctx: &cocoindex::Ctx, values: &[i64]) -> cocoindex::Result<i64> {
         CALLS.fetch_add(1, Ordering::SeqCst);
-        total(ctx, &values).await
+        total(ctx, values).await
     }
 
     #[tokio::test]
@@ -2556,7 +2559,7 @@ async fn ctx_mount_each() {
     app.update(|ctx| async move {
         let items = vec![("alpha", 1), ("beta", 2), ("gamma", 3)];
         let results: Vec<Output> = ctx
-            .mount_each(
+            .use_mount_each(
                 items,
                 |&(name, _)| name.to_string(),
                 |_child_ctx, (name, value)| async move {
@@ -2594,7 +2597,7 @@ async fn ctx_mount_each_independent_memo() {
     app.update(|ctx| async move {
         let items = vec!["child_a", "child_b"];
         let results: Vec<i32> = ctx
-            .mount_each(items, |name| name.to_string(), {
+            .use_mount_each(items, |name| name.to_string(), {
                 let count = count.clone();
                 move |child_ctx, name| {
                     let count = count.clone();
@@ -2625,7 +2628,7 @@ async fn ctx_mount_each_independent_memo() {
     app.update(|ctx| async move {
         let items = vec!["child_a", "child_b"];
         let results: Vec<i32> = ctx
-            .mount_each(items, |name| name.to_string(), {
+            .use_mount_each(items, |name| name.to_string(), {
                 let count = count.clone();
                 move |child_ctx, name| {
                     let count = count.clone();
@@ -2658,7 +2661,7 @@ async fn ctx_mount_each_preserves_input_order_under_concurrency() {
     app.update(|ctx| async move {
         let items = vec![("slow", 30_u64), ("fast", 0_u64), ("mid", 10_u64)];
         let results: Vec<String> = ctx
-            .mount_each(
+            .use_mount_each(
                 items.clone(),
                 |&(name, _)| name.to_string(),
                 |_child_ctx, (name, delay)| async move {
@@ -2882,7 +2885,7 @@ async fn ctx_stats_group_reports_scoped_child_stats() {
         let (sum, handle) = ctx
             .stats_group("Indexing docs", |group_ctx, _handle| async move {
                 let values = group_ctx
-                    .mount_each(
+                    .use_mount_each(
                         vec![1, 2],
                         |item| *item,
                         |child, item| async move {
@@ -2935,7 +2938,7 @@ async fn ctx_stats_group_with_options_reports_scoped_child_stats() {
                 options,
                 |group_ctx, _h| async move {
                     let values = group_ctx
-                        .mount_each(
+                        .use_mount_each(
                             vec![1, 2, 3],
                             |item| *item,
                             |child, item| async move {
@@ -3305,7 +3308,7 @@ async fn ctx_mount_each_rejects_duplicate_keys() {
             // "alpha" is duplicated
             let items = vec![("alpha", 1), ("beta", 2), ("alpha", 3)];
             let _: Vec<i32> = ctx
-                .mount_each(
+                .use_mount_each(
                     items,
                     |&(name, _)| name.to_string(), // duplicate 'alpha' keys
                     |_child_ctx, (_, value)| async move { Ok(value) },
@@ -3481,7 +3484,7 @@ mod mount_macros {
 
     async fn run_each(app: &cocoindex::App, items: Vec<(String, u32)>) -> Vec<u32> {
         app.update(move |ctx| async move {
-            let out = cocoindex::mount_each!(items, |n| each_double(ctx, n)).await?;
+            let out = cocoindex::use_mount_each!(items, |n| each_double(ctx, n)).await?;
             Ok(out)
         })
         .await
@@ -3518,7 +3521,7 @@ mod mount_macros {
 
         async fn run(app: &cocoindex::App, items: Vec<(String, u32)>) {
             app.update(move |ctx| async move {
-                cocoindex::mount_each!(items, |n| sel_double(ctx, n)).await?;
+                cocoindex::use_mount_each!(items, |n| sel_double(ctx, n)).await?;
                 Ok(())
             })
             .await
@@ -3578,7 +3581,7 @@ mod mount_macros {
                 // `#[rustfmt::skip]` keeps the block braces so this test keeps
                 // exercising the block-form closure body the macro must accept.
                 #[rustfmt::skip]
-                let out = cocoindex::mount_each!(items, |n| { block_id(ctx, n) }).await?;
+                let out = cocoindex::use_mount_each!(items, |n| { block_id(ctx, n) }).await?;
                 Ok(out)
             })
             .await
@@ -3840,4 +3843,60 @@ mod mount_macros_file_state {
         assert_eq!(CALLS.load(Ordering::SeqCst), 2);
         assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"two");
     }
+}
+
+/// Ids from `generate_id` and a shared `IdGenerator` stay unique when many
+/// components allocate them concurrently, and each `(component, dep)` keeps
+/// its id on the next run.
+#[tokio::test]
+async fn ids_are_unique_under_concurrency_and_stable_across_runs() {
+    let (app, _dir) = temp_app("ids_concurrent").await;
+
+    async fn allocate(app: &App) -> Vec<(u32, u32, u64, u64, uuid::Uuid)> {
+        app.update(|ctx| async move {
+            let per_component = (0..40u32).map(|component| {
+                let ctx = ctx.clone();
+                async move {
+                    ctx.scope(&format!("c{component}"), move |ctx| async move {
+                        let id_gen = IdGenerator::new();
+                        let id_gen = &id_gen;
+                        ctx.map(0..25u32, |dep| {
+                            let ctx = &ctx;
+                            async move {
+                                let id = generate_id(ctx, &dep).await?;
+                                // A per-dep dependency keeps the ordinal of
+                                // each call independent of arrival order.
+                                let from_gen = id_gen.next_id(ctx, &dep).await?;
+                                let uuid = generate_uuid(ctx, &dep).await?;
+                                Ok((component, dep, id, from_gen, uuid))
+                            }
+                        })
+                        .await
+                    })
+                    .await
+                }
+            });
+            let nested = futures::future::try_join_all(per_component).await?;
+            Ok(nested.into_iter().flatten().collect::<Vec<_>>())
+        })
+        .await
+        .unwrap()
+    }
+
+    let first = allocate(&app).await;
+    assert_eq!(first.len(), 40 * 25);
+    let ids: std::collections::HashSet<u64> = first
+        .iter()
+        .flat_map(|(_, _, id, from_gen, _)| [*id, *from_gen])
+        .collect();
+    assert_eq!(ids.len(), 2 * 40 * 25, "every id is distinct");
+    let uuids: std::collections::HashSet<uuid::Uuid> =
+        first.iter().map(|(_, _, _, _, uuid)| *uuid).collect();
+    assert_eq!(uuids.len(), 40 * 25, "every uuid is distinct");
+
+    let mut second = allocate(&app).await;
+    let mut first = first;
+    first.sort();
+    second.sort();
+    assert_eq!(first, second, "ids are stable across runs");
 }

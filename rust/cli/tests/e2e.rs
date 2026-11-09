@@ -148,7 +148,12 @@ fn update_preview_ls_show_drop() {
     let text = stdout(&update);
     assert!(text.contains("Running app 'FixtureApp'"), "{text}");
     assert!(text.contains("fixture: processed 2"), "{text}");
-    assert!(text.contains("✅ mount:upper: 2 total | 2 added"), "{text}");
+    assert!(text.contains("✓ Done in "), "{text}");
+    assert!(
+        text.lines()
+            .any(|l| l.trim_start().starts_with("✓ mount:upper") && l.ends_with("  2 added")),
+        "{text}"
+    );
     assert!(
         text.contains("[Stats] processed 3, wrote 3, skipped 0, deleted 0"),
         "{text}"
@@ -195,14 +200,15 @@ fn update_preview_ls_show_drop() {
 
     let ls_db = sb.cli(&["ls", "--db", &sb.db()]);
     assert_ok(&ls_db);
-    assert_eq!(stdout(&ls_db), format!("{}:\n  FixtureApp\n", sb.db()));
+    // Inside the working directory, the path shows relative, as in Python.
+    assert_eq!(stdout(&ls_db), "./db:\n  FixtureApp\n");
 
     // show, straight from the db.
     let show = sb.cli(&["show", "--db", &sb.db(), "--app-name", "FixtureApp"]);
     assert_ok(&show);
     assert_eq!(
         stdout(&show),
-        "Stable paths:\n  /\n  /\"upper/a.txt\"\n  /\"upper/b.txt\"\n"
+        "Stable paths:\n  /\n  /\"upper\"\n  /\"upper\"/\"a.txt\"\n  /\"upper\"/\"b.txt\"\n"
     );
     let tree = sb.cli(&[
         "show",
@@ -213,7 +219,7 @@ fn update_preview_ls_show_drop() {
         "--tree",
     ]);
     assert!(
-        stdout(&tree).contains("- upper/a.txt [component]"),
+        stdout(&tree).contains("- upper\n  - a.txt [component]"),
         "{}",
         stdout(&tree)
     );
@@ -247,9 +253,11 @@ fn update_preview_ls_show_drop() {
              states:1:Existing schema_version:0 generation:None\n      \
              - path:/@cocoindex/localfs/file/[\"{out_dir}\",\"{second}\"]\n        \
              states:1:Existing schema_version:0 generation:None\n\n  \
-             /\"upper/a.txt\"\n    type:component version:1 processor:mount:upper\n    \
+             /\"upper\"\n    type:directory version:0 processor:-\n    \
+             has_memoization:false target_state_count:0\n\n  \
+             /\"upper\"/\"a.txt\"\n    type:component version:1 processor:mount:upper\n    \
              has_memoization:true target_state_count:0\n\n  \
-             /\"upper/b.txt\"\n    type:component version:1 processor:mount:upper\n    \
+             /\"upper\"/\"b.txt\"\n    type:component version:1 processor:mount:upper\n    \
              has_memoization:true target_state_count:0\n\n"
         )
     });
@@ -260,7 +268,7 @@ fn update_preview_ls_show_drop() {
         "--app-name",
         "FixtureApp",
         "-p",
-        "/upper%2Fa.txt",
+        "/upper/a.txt",
     ]);
     assert_ok(&one);
     let states = sb.cli(&[
@@ -395,17 +403,19 @@ fn usage_errors() {
     assert_eq!(no_db.status.code(), Some(1));
     assert!(stderr(&no_db).contains("Database path does not exist"));
 
+    // Checks after parsing, and an app that is not found, are failures (exit
+    // 1), as the Python CLI's `click.ClickException`s are.
     let recursive = sb.cli(&["show", "-r", "--db", "x", "--app-name", "y"]);
-    assert_eq!(recursive.status.code(), Some(2));
+    assert_eq!(recursive.status.code(), Some(1));
     assert!(stderr(&recursive).contains("require a stable_path"));
 
     let half = sb.cli(&["show", "--db", "x"]);
-    assert_eq!(half.status.code(), Some(2));
+    assert_eq!(half.status.code(), Some(1));
     assert!(stderr(&half).contains("Both --db and --app-name are required"));
 
     // Two apps and no name.
     let ambiguous = sb.cli(&["update", FIXTURE]);
-    assert_eq!(ambiguous.status.code(), Some(2));
+    assert_eq!(ambiguous.status.code(), Some(1));
     assert!(
         stderr(&ambiguous).contains("FixtureApp, never_run"),
         "{}",
@@ -413,7 +423,7 @@ fn usage_errors() {
     );
 
     let unknown = sb.cli(&["update", &exe_target("Nope")]);
-    assert_eq!(unknown.status.code(), Some(2));
+    assert_eq!(unknown.status.code(), Some(1));
     assert!(stderr(&unknown).contains("Nope"));
 }
 
@@ -521,6 +531,28 @@ fn interrupt_slow_lifespan(verb: &[&str]) {
     );
 }
 
+/// A failure inside a stats group reaches the final status, though the group's
+/// rows stay out of the report, and its engine log comes through on stderr.
+#[test]
+fn a_failure_in_a_stats_group_fails_the_final_status() {
+    let sb = Sandbox::new(&[("a.txt", "alpha")]);
+    let output = Command::new(env!("CARGO_BIN_EXE_cocoindex"))
+        .args(["update", &exe_target("FixtureApp")])
+        .current_dir(sb.dir.path())
+        .env("COCOINDEX_DB", sb.path("db"))
+        .env("FIXTURE_SRC", sb.path("src"))
+        .env("FIXTURE_OUT", sb.path("out"))
+        .env("FIXTURE_FAIL_IN_GROUP", "1")
+        .env_remove("RUST_LOG")
+        .output()
+        .unwrap();
+    assert_ok(&output);
+    let text = stdout(&output);
+    assert!(text.contains("✗ Done in"), "{text}");
+    assert!(text.contains("1 failed"), "{text}");
+    assert!(stderr(&output).contains("fixture: boom"));
+}
+
 /// The binary's own `main` still runs, and its error (a `Debug`-only type, as
 /// a plain `main` allows) becomes exit status 1.
 #[test]
@@ -587,4 +619,148 @@ fn init_scaffold_builds_and_runs() {
         project.join(".cocoindex_db").is_dir(),
         "the lifespan's db path"
     );
+}
+
+/// `auth sign-in --help` and `auth sign-out --help` list the providers.
+/// `auth sign-out google-drive` without a stored sign-in says so;
+/// `auth sign-in google-drive` with a missing client file is a usage error,
+/// and without one this build (which has no built-in OAuth client) says how
+/// to sign in. No browser opens: both fail before the consent.
+#[test]
+fn google_drive_sign_in_and_sign_out() {
+    let sb = Sandbox::new(&[]);
+    let token = sb.path("google_drive_token.json");
+    let token_arg = token.display().to_string();
+
+    for action in ["sign-in", "sign-out"] {
+        let help = sb.cli(&["auth", action, "--help"]);
+        assert_ok(&help);
+        assert!(stdout(&help).contains("google-drive"), "{}", stdout(&help));
+    }
+
+    let out = sb.cli(&[
+        "auth",
+        "sign-out",
+        "google-drive",
+        "--token-path",
+        &token_arg,
+    ]);
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains("No sign-in was stored."),
+        "{}",
+        stdout(&out)
+    );
+
+    let missing = sb.cli(&[
+        "auth",
+        "sign-in",
+        "google-drive",
+        "/definitely/not/here.json",
+        "--token-path",
+        &token_arg,
+    ]);
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(
+        stderr(&missing).contains("does not exist"),
+        "{}",
+        stderr(&missing)
+    );
+
+    let no_builtin = sb.cli(&[
+        "auth",
+        "sign-in",
+        "google-drive",
+        "--token-path",
+        &token_arg,
+    ]);
+    assert_eq!(no_builtin.status.code(), Some(1));
+    assert!(
+        stderr(&no_builtin).contains("no built-in OAuth client"),
+        "{}",
+        stderr(&no_builtin)
+    );
+    assert!(!token.exists());
+
+    // A stored sign-in is deleted even though Google cannot be reached at the
+    // address in the file: the sign-out never leaves tokens behind.
+    std::fs::write(
+        &token,
+        r#"{"version":1,"client_id":"c","client_secret":"s","refresh_token":"r","access_token":"a","expires_at":0.0,"email":"me@example.com"}"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let out = sb.cli(&[
+        "auth",
+        "sign-out",
+        "google-drive",
+        "--token-path",
+        &token_arg,
+    ]);
+    assert_ok(&out);
+    assert!(stdout(&out).contains("Signed out."), "{}", stdout(&out));
+    assert!(!token.exists());
+}
+
+/// `--full-reprocess` bypasses the memo, `--fingerprints` shows stored
+/// target-state paths raw, and `--preview` refuses `--live`.
+#[test]
+fn full_reprocess_fingerprints_and_preview_live() {
+    let sb = Sandbox::new(&[("a.txt", "alpha"), ("b.txt", "beta")]);
+    assert_ok(&sb.cli(&["update", &exe_target("FixtureApp")]));
+    let again = sb.cli(&["update", &exe_target("FixtureApp")]);
+    assert!(stdout(&again).contains("2 unchanged"), "{}", stdout(&again));
+
+    let full = sb.cli(&["update", "--full-reprocess", &exe_target("FixtureApp")]);
+    assert_ok(&full);
+    assert!(
+        !stdout(&full).contains("unchanged"),
+        "a full reprocess skips nothing: {}",
+        stdout(&full)
+    );
+    assert_eq!(sb.out_files(), ["a.txt", "b.txt"]);
+
+    let raw = sb.cli(&[
+        "show",
+        "--db",
+        &sb.db(),
+        "--app-name",
+        "FixtureApp",
+        "--target-states",
+        "--fingerprints",
+    ]);
+    assert_ok(&raw);
+    let text = stdout(&raw);
+    assert!(text.starts_with("Target states:\n"), "{text}");
+    assert!(
+        !text.contains("localfs/file/["),
+        "raw paths, not readable keys: {text}"
+    );
+    assert_eq!(text.matches("owner:/").count(), 2, "{text}");
+
+    let both = sb.cli(&["update", "--preview", "-L", &exe_target("FixtureApp")]);
+    assert_eq!(both.status.code(), Some(2));
+    assert!(stderr(&both).contains("--preview and --live cannot be used together."));
+}
+
+/// A crate that does not compile fails with exit 1 (as the Python CLI does
+/// for a module that does not import), with cargo's diagnostics on stderr.
+#[test]
+fn a_crate_that_does_not_build_fails() {
+    let sb = Sandbox::new(&[("main.rs", "fn main() { let x: u32 = \"not a number\"; }\n")]);
+    std::fs::write(
+        sb.path("Cargo.toml"),
+        "[package]\nname = \"broken_crate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    )
+    .unwrap();
+    let crate_dir = sb.path("").display().to_string();
+    let output = sb.cli(&["update", &crate_dir]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(err.contains("mismatched types"), "{err}");
+    assert!(err.contains("failed"), "{err}");
 }

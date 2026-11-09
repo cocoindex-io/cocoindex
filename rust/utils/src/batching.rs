@@ -90,6 +90,11 @@ impl<R: Runner + 'static> BatchQueueState<R> {
             let Some(entry) = self.pop_next_pending() else {
                 break;
             };
+            if entry.batch.is_abandoned() {
+                // Every caller went away while the batch waited: running it
+                // would deliver to no one.
+                continue;
+            }
             if let Some(batcher_data) = entry.batcher_data.upgrade() {
                 // Batcher still alive - execute this batch
                 self.ongoing_count += 1;
@@ -250,11 +255,14 @@ impl<R: Runner + 'static> BatcherData<R> {
 
         let mut num_cancelled_rx = batch.num_cancelled_rx;
         let outputs = tokio::select! {
-            outputs = self.runner.run(batch.inputs) => {
-                outputs
-            }
+            // Cancellation first: a batch whose callers all left before it
+            // started must not begin its body.
+            biased;
             _ = num_cancelled_rx.wait_for(|v| *v == num_inputs) => {
                 return;
+            }
+            outputs = self.runner.run(batch.inputs) => {
+                outputs
             }
         };
 

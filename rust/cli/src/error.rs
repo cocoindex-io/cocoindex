@@ -1,5 +1,9 @@
 //! CLI errors carry the process exit code: 1 for failures, 2 for usage and
 //! protocol errors (the same codes as the Python CLI and the protocol child).
+//! As in the Python CLI, a usage error is a malformed command line (options
+//! that cannot go together, a TARGET that does not exist); an app that is not
+//! found, or a combination of arguments checked after parsing, is a failure,
+//! like Python's `click.ClickException`.
 
 use std::fmt::Display;
 

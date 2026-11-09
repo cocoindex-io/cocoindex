@@ -4,12 +4,56 @@ description: >
   Deduplicate entity names via FAISS embedding similarity and a pluggable LLM
   pair-resolver that confirms matches and chooses canonical forms — with
   PINNED / PREFERRED policies for existing canonicals and resolution callbacks.
+rust_description: >
+  Deduplicate entity names via embedding similarity and a pluggable LLM
+  pair-resolver that confirms matches and chooses canonical forms — with
+  Pinned / Preferred policies for existing canonicals and resolution callbacks.
 ---
+
+<Lang only="python">
+
 The `cocoindex.ops.entity_resolution` package resolves a set of raw entity names into a deduplicated canonical map. It finds near-duplicate names via embedding similarity (FAISS), then asks a pair-resolver (typically an LLM) to confirm matches and pick the better canonical name.
+
+</Lang>
+
+<Lang only="rust">
+
+The `cocoindex::entity_resolution` module resolves a set of raw entity names into a deduplicated canonical map. It finds near-duplicate names via embedding similarity, then asks a pair-resolver (typically an LLM) to confirm matches and pick the better canonical name.
+
+</Lang>
+
+{/* Rust: examples/rust/conversation_to_knowledge/src/pipeline.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.entity_resolution import resolve_entities
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::entity_resolution;
+use cocoindex::ops::api::LlmPairResolver;
+```
+
+</Fragment>
+</LangTabs>
+
+<RustNote>
+The candidate search is an in-process cosine scan over the entities' unit vectors, not a FAISS index, so there is nothing extra to install.
+</RustNote>
+
+<Lang only="rust">
+
+:::note[Cargo features]
+`cocoindex::entity_resolution` is behind no Cargo feature, and its types are in `cocoindex::prelude`. The built-in [`LlmPairResolver`](#llmpairresolver) is in `cocoindex::ops::api`, behind the `embed_api` feature; the local [`SentenceTransformerEmbedder`](./sentence_transformers) is behind the `fastembed` feature.
+:::
+
+</Lang>
+
+<Lang only="python">
 
 :::note[Dependencies]
 This module requires additional dependencies. Install with:
@@ -24,7 +68,13 @@ pip install cocoindex[entity_resolution]
 
 :::
 
+</Lang>
+
 ## Basic usage
+
+{/* Rust: examples/rust/conversation_to_knowledge/src/pipeline.rs (resolve_entities), src/clients.rs (context keys) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import cocoindex as coco
@@ -45,9 +95,61 @@ async def resolve_my_entities(raw_entities: set[str]) -> dict[str, str | None]:
     return result.to_dict()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::collections::HashMap;
+
+use cocoindex::entity_resolution;
+use cocoindex::ops::api::{ApiChatClient, LlmPairResolver};
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+use cocoindex::prelude::*;
+
+// LLM used to confirm entity-resolution pairs. Each decision's memo key holds
+// the model, so no change detection on the key is needed.
+cocoindex::context_key!(pub static RESOLVER_LLM: ApiChatClient);
+
+// Local embedder for entity-resolution similarity.
+cocoindex::context_key!(
+    pub static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
+);
+
+#[cocoindex::function(memo)]
+pub async fn resolve_entities(
+    ctx: &Ctx,
+    kind: &String,
+    names: &Vec<String>,
+) -> Result<HashMap<String, Option<String>>> {
+    let embedder = ctx.get_key(&EMBEDDER)?;
+    let resolver = LlmPairResolver::with_client(ctx.get_key(&RESOLVER_LLM)?.clone())
+        .with_entity_type(kind.as_str());
+    let resolved = entity_resolution::resolve_entities(
+        ctx,
+        names,
+        embedder,
+        &resolver,
+        None,
+        entity_resolution::ResolveOptions::default(),
+    )
+    .await?;
+    Ok(resolved.to_map().into_iter().collect())
+}
+```
+
+`resolve_entities(&ctx, entities, &embedder, &resolve_pair, is_existing_canonical, options)` takes every argument positionally: the entities (any iterable of strings), an `EntityEmbedder`, a `PairResolver`, an optional existing-canonical predicate, and a `ResolveOptions`. The `Ctx` is passed through to the embedder and the resolver, so both memoize and batch through the engine.
+
+</Fragment>
+</LangTabs>
+
 ## `ResolvedEntities`
 
 `resolve_entities` returns a `ResolvedEntities` object — a read-only wrapper around the dedup map with safe chain-walking:
+
+{/* Rust: rust/sdk/cocoindex/src/entity_resolution.rs (ResolvedEntities), rust/sdk/cocoindex/tests/entity_resolution.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 result = await resolve_entities(...)
@@ -59,6 +161,24 @@ result.groups()                         # -> {"Microsoft": {"Microsoft", "Micros
 result.to_dict()                        # -> {"Microsoft": None, "Microsoft Corp.": "Microsoft", ...}
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let result = entity_resolution::resolve_entities(/* ... */).await?;
+
+result.canonical_of("Microsoft Corp.")?; // -> "Microsoft"
+result.canonical_of("Microsoft")?;       // -> "Microsoft" (self-canonical)
+result.canonicals();                     // -> BTreeSet<&str>
+result.groups()?;                        // -> BTreeMap<String, BTreeSet<String>>
+result.to_map();                         // -> BTreeMap<String, Option<String>>
+```
+
+`canonical_of` and `groups` return a `Result`: an unknown name is an error. `to_map` returns the whole map: each name to its canonical, or `None` for a canonical name.
+
+</Fragment>
+</LangTabs>
+
 ## Existing-canonical handling
 
 If some entity names are already established as canonical (e.g., they have on-disk files or database records), you can pass `is_existing_canonical` to influence how matches involving those names are resolved.
@@ -66,6 +186,10 @@ If some entity names are already established as canonical (e.g., they have on-di
 ### Without `is_existing_canonical` (default)
 
 The resolver decides which side becomes canonical on every match. No special treatment for any name.
+
+{/* Rust: examples/rust/conversation_to_knowledge/src/pipeline.rs (resolve_entities) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 result = await resolve_entities(
@@ -75,13 +199,47 @@ result = await resolve_entities(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let result = entity_resolution::resolve_entities(
+    &ctx,
+    raw_entities,
+    &embedder,
+    &resolver,
+    None,
+    ResolveOptions::default(),
+)
+.await?;
+```
+
+</Fragment>
+</LangTabs>
+
 ### With `is_existing_canonical`
+
+<Lang only="python">
 
 Pass a sync predicate that returns `True` for names you consider already-established canonicals. The `existing_policy` parameter controls how strongly that status is enforced:
 
 #### `PINNED` (default)
 
+</Lang>
+
+<Lang only="rust">
+
+Pass a predicate that returns `true` for names you consider already-established canonicals. The `existing_policy` field of `ResolveOptions` controls how strongly that status is enforced:
+
+#### `Pinned` (default)
+
+</Lang>
+
 Existing canonicals are immutable. They are seeded directly as canonicals without consulting the resolver. Two existings never merge. Non-existing entities are resolved in a second pass; if they match an existing canonical, the existing always wins.
+
+{/* Rust: rust/sdk/cocoindex/tests/entity_resolution.rs (resolve helper) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 result = await resolve_entities(
@@ -93,9 +251,42 @@ result = await resolve_entities(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let is_existing = |name: &str| existing_files.contains(name);
+let result = entity_resolution::resolve_entities(
+    &ctx,
+    raw_entities,
+    &embedder,
+    &resolver,
+    Some(&is_existing as &(dyn Fn(&str) -> bool + Sync)),
+    ResolveOptions::default(), // existing_policy defaults to Pinned
+)
+.await?;
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 #### `PREFERRED`
 
+</Lang>
+
+<Lang only="rust">
+
+#### `Preferred`
+
+</Lang>
+
 A softer policy: existing-canonical status breaks ties, but the resolver is always consulted. When exactly one side of a match is existing-canonical, that side wins regardless of the resolver's verdict. When both or neither are existing, the resolver decides.
+
+{/* Rust: rust/sdk/cocoindex/tests/entity_resolution.rs (preferred_existing_can_repoint_non_existing_candidate) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.entity_resolution import ExistingCanonicalPolicy
@@ -109,9 +300,45 @@ result = await resolve_entities(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let options = ResolveOptions {
+    existing_policy: ExistingCanonicalPolicy::Preferred,
+    ..ResolveOptions::default()
+};
+let result = entity_resolution::resolve_entities(
+    &ctx,
+    raw_entities,
+    &embedder,
+    &resolver,
+    Some(&is_existing as &(dyn Fn(&str) -> bool + Sync)),
+    options,
+)
+.await?;
+```
+
+</Fragment>
+</LangTabs>
+
 ## Events
 
+<Lang only="python">
+
 Pass `on_resolution` to receive a `ResolutionEvent` for each entity. Events are delivered once resolution finishes, in the same order the sequential implementation would have emitted them (PREFERRED: sorted by entity; PINNED: pass-1 existings first then pass-2 non-existings):
+
+</Lang>
+
+<Lang only="rust">
+
+Call `resolve_entities_with_events` with an `on_resolution` callback to receive a `ResolutionEvent` for each entity. Events are delivered once resolution finishes, in the same order the sequential implementation would have emitted them (`Preferred`: sorted by entity; `Pinned`: pass-1 existings first then pass-2 non-existings):
+
+</Lang>
+
+{/* Rust: rust/sdk/cocoindex/tests/entity_resolution.rs (on_resolution_delivers_one_event_per_entity_in_order) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.entity_resolution import ResolutionEvent
@@ -128,14 +355,38 @@ result = await resolve_entities(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let cb = |event: &ResolutionEvent| collected.lock().unwrap().push(event.clone());
+let result = entity_resolution::resolve_entities_with_events(
+    &ctx,
+    ["C", "B", "A"],
+    &embedder,
+    &resolver,
+    None,
+    ResolveOptions::default(),
+    Some(&cb),
+)
+.await?;
+```
+
+The callback is the last argument of `resolve_entities_with_events`; `resolve_entities` is the same call without it.
+
+</Fragment>
+</LangTabs>
+
 Each event includes:
 - `entity` / `canonical` — the entity and its resolved canonical
 - `candidates` — what was passed to the resolver (empty if no resolver call)
 - `decision` — the resolver's raw verdict (compare with `canonical` to detect policy overrides)
 - `repointed` — if a prior canonical was demoted, its name
-- `seeded` — `True` for pinned existing-canonical entities seeded without resolver
+- `seeded` — <Lang only="python">`True`</Lang><Lang only="rust">`true`</Lang> for pinned existing-canonical entities seeded without resolver
 
 ## `resolve_entities` parameters
+
+<Lang only="python">
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -148,13 +399,51 @@ Each event includes:
 | `max_distance` | `float` | `0.3` | Cosine distance threshold (similarity >= 0.7). |
 | `top_n` | `int` | `5` | Max candidates surfaced per entity. |
 
+</Lang>
+
+<Lang only="rust">
+
+The parameters, in order:
+
+| Parameter | Type | Default |
+|-----------|------|---------|
+| `ctx` | `&Ctx` | *(required)* |
+| `entities` | `impl IntoIterator<Item = impl AsRef<str>>` | *(required)*; duplicates collapsed, iterated in sorted order |
+| `embedder` | `&impl EntityEmbedder` (any [`Embedder`](../common_resources/data_types#embedder)) | *(required)* |
+| `resolve_pair` | `&impl PairResolver` | *(required)* |
+| `is_existing_canonical` | `Option<&(dyn Fn(&str) -> bool + Sync)>` | `None` |
+| `options` | `ResolveOptions { existing_policy, max_distance, top_n }` | `ResolveOptions::default()`: `Pinned`, `0.3`, `5` |
+| `on_resolution` (`resolve_entities_with_events` only) | `Option<&(dyn Fn(&ResolutionEvent) + Sync)>` | `None` |
+
+`max_distance` is the cosine distance threshold (similarity >= 0.7 at the default `0.3`), and `top_n` is the maximum number of candidates surfaced per entity. `existing_policy` is ignored when `is_existing_canonical` is `None`.
+
+</Lang>
+
 ---
 
 ## `LlmPairResolver`
 
+<Lang only="python">
+
 `cocoindex.ops.entity_resolution.llm_resolver` provides `LlmPairResolver`, a built-in resolver that uses an LLM (via [litellm](https://docs.litellm.ai/)) to decide pair matches. It sends each `(entity, candidates)` pair to the model and returns a structured decision — with automatic validation and retry when the model hallucinates a name not in the candidate list.
 
+</Lang>
+
+<Lang only="rust">
+
+`cocoindex::ops::api` provides `LlmPairResolver`, a built-in resolver that uses an LLM to decide pair matches. It sends each `(entity, candidates)` pair to the model and returns a structured decision — with automatic validation and retry when the model hallucinates a name not in the candidate list. It calls an OpenAI-compatible `/chat/completions` endpoint through [`ApiChatClient`](/docs/rust/ops/model_apis/#chat-and-structured-extraction), in JSON mode.
+
+</Lang>
+
+<RustNote>
+The resolver does not use litellm or `instructor`: it asks the endpoint for a JSON-object response and parses it. The prompt, the validation and the retry behavior are the same as in Python.
+</RustNote>
+
 ### Usage
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (LlmPairResolver builders), examples/rust/conversation_to_knowledge/src/pipeline.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.entity_resolution import resolve_entities
@@ -169,6 +458,39 @@ result = await resolve_entities(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::entity_resolution;
+use cocoindex::ops::api::LlmPairResolver;
+
+// Defaults to the OpenAI base URL and the OPENAI_API_KEY environment variable.
+let resolver = LlmPairResolver::new("gpt-4o-mini");
+
+// Or against another OpenAI-compatible endpoint:
+let resolver = LlmPairResolver::new("gpt-4o-mini")
+    .with_base_url(base_url)
+    .with_api_key("k");
+
+let result = entity_resolution::resolve_entities(
+    &ctx,
+    ["Barack Obama", "Barack H. Obama", "OpenAI"],
+    &embedder,
+    &resolver,
+    None,
+    ResolveOptions::default(),
+)
+.await?;
+```
+
+`LlmPairResolver::with_client(client)` builds a resolver on a pre-configured `ApiChatClient`, for example one held in a context key.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 ### Model strings
 
 Uses the same litellm model-string format as [`LiteLLMEmbedder`](./litellm):
@@ -182,20 +504,49 @@ Uses the same litellm model-string format as [`LiteLLMEmbedder`](./litellm):
 
 See the [LiteLLM docs](https://docs.litellm.ai/docs/providers) for the full list of 100+ supported providers.
 
+</Lang>
+
+<Lang only="rust">
+
+### Model names
+
+The resolver takes the bare model name the endpoint expects (`gpt-4o-mini`), with `with_base_url` for a provider other than OpenAI. See [Model APIs](/docs/rust/ops/model_apis/).
+
+</Lang>
+
 ### Entity type hints
 
-Pass `entity_type` to tailor the prompt for specific entity categories:
+Pass <Lang only="python">`entity_type`</Lang><Lang only="rust">`with_entity_type`</Lang> to tailor the prompt for specific entity categories:
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (with_entity_type) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 person_resolver = LlmPairResolver(model="openai/gpt-4o-mini", entity_type="person")
 tech_resolver = LlmPairResolver(model="openai/gpt-4o-mini", entity_type="technology")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let person_resolver = LlmPairResolver::new("gpt-4o-mini").with_entity_type("person");
+let tech_resolver = LlmPairResolver::new("gpt-4o-mini").with_entity_type("technology");
+```
+
+</Fragment>
+</LangTabs>
+
 This adds context to the system prompt, helping the model make better judgments (e.g., being more conservative with personal names).
 
 ### Extra guidance
 
-Append domain-specific rules to the default prompt via `extra_guidance`:
+Append domain-specific rules to the default prompt via <Lang only="python">`extra_guidance`</Lang><Lang only="rust">`with_extra_guidance`</Lang>:
+
+{/* Rust: with_extra_guidance from rust/sdk/cocoindex/src/ops/api.rs (signature) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 resolver = LlmPairResolver(
@@ -208,7 +559,22 @@ resolver = LlmPairResolver(
 )
 ```
 
-`extra_guidance` is for **domain rules only** — do not include output-format instructions.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let resolver = LlmPairResolver::new("gpt-4o-mini")
+    .with_entity_type("organization")
+    .with_extra_guidance(
+        "A parent organization and its subsidiary/division are DISTINCT things. \
+         'Amazon' is not the same as 'AWS'. 'Google' is not the same as 'YouTube'.",
+    );
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">`extra_guidance`</Lang><Lang only="rust">The guidance</Lang> is for **domain rules only** — do not include output-format instructions.
 
 ### Validation and retry
 
@@ -219,16 +585,43 @@ After each LLM call, the response is validated:
 
 The default retry budget is 2. If exhausted, no match is returned.
 
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (with_retries) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 resolver = LlmPairResolver(model="openai/gpt-4o-mini", retries=3)  # more retries
 resolver = LlmPairResolver(model="openai/gpt-4o-mini", retries=1)  # fewer retries
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let resolver = LlmPairResolver::new("gpt-4o-mini").with_retries(3); // more retries
+let resolver = LlmPairResolver::new("gpt-4o-mini").with_retries(1); // fewer retries
+```
+
+</Fragment>
+</LangTabs>
+
 ### Memoization
+
+<Lang only="python">
 
 Each unique `(entity, candidates)` pair's decision is persisted across runs via [`@coco.fn(memo=True)`](../programming_guide/function). Changing the model or prompt invalidates the cache. No additional memoization wrapper is needed.
 
+</Lang>
+
+<Lang only="rust">
+
+Each unique `(entity, candidates)` pair's decision is [memoized](../programming_guide/function) through the `ctx` the resolver receives, and persists across runs. The memo key holds the model, base URL, entity type and extra guidance, so changing the model or prompt invalidates the cache; `retries` is absent, since it cannot change a valid decision. No additional memoization wrapper is needed.
+
+</Lang>
+
 ### Parameters
+
+<Lang only="python">
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -237,11 +630,31 @@ Each unique `(entity, candidates)` pair's decision is persisted across runs via 
 | `extra_guidance` | `str \| None` | `None` | Domain rules appended to the default prompt. |
 | `retries` | `int` | `2` | Max retries on invalid `matched` output. |
 
+</Lang>
+
+<Lang only="rust">
+
+| Builder | Default | Description |
+|---------|---------|-------------|
+| `LlmPairResolver::new(model)` | *(required)* | The model name the endpoint expects (e.g. `"gpt-4o-mini"`); builds its own `ApiChatClient`. |
+| `LlmPairResolver::with_client(client)` | | Builds on a pre-configured `ApiChatClient` instead of `new`. |
+| `with_base_url(url)` | OpenAI's | The endpoint's base URL. |
+| `with_api_key(key)` | `OPENAI_API_KEY` | The bearer API key. |
+| `with_entity_type(t)` | none | Entity type hint woven into the prompt. |
+| `with_extra_guidance(text)` | none | Domain rules appended to the default prompt. |
+| `with_retries(n)` | `2` | Max retries on invalid `matched` output. |
+
+</Lang>
+
 ---
 
 ## Custom resolvers
 
-For cases where the built-in `LlmPairResolver` doesn't fit (rule-based matching, different LLM framework, etc.), implement the `PairResolver` protocol:
+For cases where the built-in `LlmPairResolver` doesn't fit (rule-based matching, different LLM framework, etc.), implement the `PairResolver` <Lang only="python">protocol</Lang><Lang only="rust">trait</Lang>:
+
+{/* Rust: rust/sdk/cocoindex/tests/entity_resolution.rs (ScriptedResolver), PairDecision constructors from rust/sdk/cocoindex/src/entity_resolution.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.entity_resolution import PairResolver, PairDecision, CanonicalSide
@@ -261,4 +674,46 @@ class MyResolver:
         return PairDecision(matched="Microsoft Corp.", canonical=CanonicalSide.NEW)
 ```
 
-Any async callable with the signature `(entity: str, candidates: list[str]) -> PairDecision` works — no subclassing required. `PairDecision.canonical` is advisory: the `existing_policy` may override it (see [Existing-canonical handling](#existing-canonical-handling)).
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::{CanonicalSide, Ctx, PairDecision, PairResolver, async_trait};
+
+struct MyResolver;
+
+#[async_trait]
+impl PairResolver for MyResolver {
+    async fn resolve_pair(
+        &self,
+        _ctx: &Ctx,
+        entity: &str,
+        candidates: &[String],
+    ) -> cocoindex::Result<PairDecision> {
+        // `candidates` is a non-empty, de-duplicated list of canonical names
+        // with cosine similarity to `entity` above the threshold.
+
+        // No match:
+        Ok(PairDecision::no_match())
+
+        // Match — existing candidate stays canonical (default):
+        // Ok(PairDecision::matched("Microsoft"))
+
+        // Match — new entity is the better canonical name:
+        // Ok(PairDecision::matched_with("Microsoft Corp.", CanonicalSide::New))
+    }
+}
+```
+
+`resolve_pair` also receives the `Ctx`, so a resolver can memoize through the engine as `LlmPairResolver` does. It may run concurrently across components.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
+Any async callable with the signature `(entity: str, candidates: list[str]) -> PairDecision` works — no subclassing required.
+
+</Lang>
+
+`PairDecision.canonical` is advisory: the `existing_policy` may override it (see [Existing-canonical handling](#existing-canonical-handling)).

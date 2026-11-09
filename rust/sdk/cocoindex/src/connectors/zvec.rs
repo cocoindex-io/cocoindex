@@ -122,6 +122,15 @@ pub struct ManagedConnection {
     inner: Arc<ConnectionInner>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for ManagedConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManagedConnection")
+            .field("base_path", &self.inner.base_path)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Create a [`ManagedConnection`] rooted at `base_path`. The directory is
 /// created if missing.
 pub fn connect(base_path: impl AsRef<Path>, options: ConnectOptions) -> Result<ManagedConnection> {
@@ -173,6 +182,36 @@ impl ManagedConnection {
         run_blocking(move || conn.open_existing_blocking(&name)).await
     }
 
+    /// Open the collection `name`, creating it from `schema` if it does not
+    /// exist, and return its handle (cached like [`open_existing`]'s). The
+    /// system-managed collection target does this itself; call it to set up a
+    /// user-managed collection, which CocoIndex only writes documents to.
+    ///
+    /// [`open_existing`]: Self::open_existing
+    pub async fn open_or_create(
+        &self,
+        name: &str,
+        schema: &CollectionSchema,
+    ) -> Result<Arc<Collection>> {
+        validate_collection_name(name)?;
+        schema.validate()?;
+        let conn = self.clone();
+        let name = name.to_string();
+        let schema = schema.clone();
+        run_blocking(move || conn.open_or_create_blocking(&name, &schema)).await
+    }
+
+    /// Permanently delete the collection `name` from disk, closing its cached
+    /// handle first. A missing collection is not an error. Fails while a handle
+    /// from [`open_existing`](Self::open_existing) or
+    /// [`open_or_create`](Self::open_or_create) is still alive.
+    pub async fn destroy(&self, name: &str) -> Result<()> {
+        validate_collection_name(name)?;
+        let conn = self.clone();
+        let name = name.to_string();
+        run_blocking(move || conn.destroy_blocking(&name)).await
+    }
+
     /// Release all cached collection handles (dropping their write locks).
     pub async fn close(&self) -> Result<()> {
         let conn = self.clone();
@@ -218,10 +257,14 @@ impl ManagedConnection {
     }
 
     /// Open the collection, creating it from `schema` if it does not exist.
-    fn open_or_create_blocking(&self, name: &str, schema: &CollectionSchema) -> Result<()> {
+    fn open_or_create_blocking(
+        &self,
+        name: &str,
+        schema: &CollectionSchema,
+    ) -> Result<Arc<Collection>> {
         let mut open = self.lock_open();
-        if open.contains_key(name) {
-            return Ok(());
+        if let Some(collection) = open.get(name) {
+            return Ok(collection.clone());
         }
         let path = self.collection_path(name);
         let collection = if path.exists() {
@@ -234,8 +277,9 @@ impl ManagedConnection {
             )
             .map_err(|e| zvec_err(format_args!("create collection {name:?}"), e))?
         };
-        open.insert(name.to_string(), Arc::new(collection));
-        Ok(())
+        let collection = Arc::new(collection);
+        open.insert(name.to_string(), collection.clone());
+        Ok(collection)
     }
 
     /// Permanently delete a collection from disk.
@@ -300,6 +344,16 @@ pub enum ScalarType {
     Float,
     Double,
     String,
+    /// An array of booleans (`ARRAY_BOOL`), for a `Vec<bool>` field.
+    ArrayBool,
+    ArrayInt32,
+    /// An array of 64-bit integers (`ARRAY_INT64`), for a `Vec<i64>` field.
+    ArrayInt64,
+    ArrayUint32,
+    ArrayUint64,
+    ArrayFloat,
+    /// An array of 64-bit floats (`ARRAY_DOUBLE`), for a `Vec<f64>` field.
+    ArrayDouble,
 }
 
 impl ScalarType {
@@ -313,6 +367,13 @@ impl ScalarType {
             ScalarType::Float => DataType::Float,
             ScalarType::Double => DataType::Double,
             ScalarType::String => DataType::String,
+            ScalarType::ArrayBool => DataType::ArrayBool,
+            ScalarType::ArrayInt32 => DataType::ArrayInt32,
+            ScalarType::ArrayInt64 => DataType::ArrayInt64,
+            ScalarType::ArrayUint32 => DataType::ArrayUint32,
+            ScalarType::ArrayUint64 => DataType::ArrayUint64,
+            ScalarType::ArrayFloat => DataType::ArrayFloat,
+            ScalarType::ArrayDouble => DataType::ArrayDouble,
         }
     }
 
@@ -327,6 +388,13 @@ impl ScalarType {
             "float" => ScalarType::Float,
             "double" => ScalarType::Double,
             "string" => ScalarType::String,
+            "array_bool" => ScalarType::ArrayBool,
+            "array_int32" => ScalarType::ArrayInt32,
+            "array_int64" => ScalarType::ArrayInt64,
+            "array_uint32" => ScalarType::ArrayUint32,
+            "array_uint64" => ScalarType::ArrayUint64,
+            "array_float" => ScalarType::ArrayFloat,
+            "array_double" => ScalarType::ArrayDouble,
             _ => return None,
         })
     }
@@ -494,7 +562,8 @@ fn column_from_field(field: SchemaField) -> Result<Column> {
             let data_type = ScalarType::from_name(name).ok_or_else(|| {
                 Error::engine(format!(
                     "zvec field {:?} has unsupported type {name:?}; expected one of bool, int32, \
-                     int64, uint32, uint64, float, double, string",
+                     int64, uint32, uint64, float, double, string, or array_<type> for all but \
+                     string",
                     field.name
                 ))
             })?;
@@ -776,6 +845,25 @@ enum FieldValue {
     Double(f64),
     String(String),
     Vector(Vec<f32>),
+    ArrayBool(Vec<bool>),
+    ArrayInt32(Vec<i32>),
+    ArrayInt64(Vec<i64>),
+    ArrayUint32(Vec<u32>),
+    ArrayUint64(Vec<u64>),
+    ArrayFloat(Vec<f32>),
+    ArrayDouble(Vec<f64>),
+}
+
+/// The elements of a JSON array converted one by one, or `None` when the value
+/// is not an array or an element does not convert.
+fn json_array<T>(value: &JsonValue, convert: impl Fn(&JsonValue) -> Option<T>) -> Option<Vec<T>> {
+    value.as_array()?.iter().map(convert).collect()
+}
+
+/// `value` as an `f32`, or `None` when it is beyond the `f32` range: the cast
+/// would store an infinity.
+fn f32_value(value: f64) -> Option<f32> {
+    Some(value as f32).filter(|v| v.is_finite())
 }
 
 /// A declared document: its id and its non-null fields.
@@ -852,9 +940,28 @@ fn scalar_value(
             .and_then(|v| u32::try_from(v).ok())
             .map(FieldValue::Uint32),
         ScalarType::Uint64 => value.as_u64().map(FieldValue::Uint64),
-        ScalarType::Float => value.as_f64().map(|v| FieldValue::Float(v as f32)),
+        ScalarType::Float => value.as_f64().and_then(f32_value).map(FieldValue::Float),
         ScalarType::Double => value.as_f64().map(FieldValue::Double),
         ScalarType::String => value.as_str().map(|s| FieldValue::String(s.to_string())),
+        ScalarType::ArrayBool => json_array(value, JsonValue::as_bool).map(FieldValue::ArrayBool),
+        ScalarType::ArrayInt32 => {
+            json_array(value, |v| v.as_i64().and_then(|v| i32::try_from(v).ok()))
+                .map(FieldValue::ArrayInt32)
+        }
+        ScalarType::ArrayInt64 => json_array(value, JsonValue::as_i64).map(FieldValue::ArrayInt64),
+        ScalarType::ArrayUint32 => {
+            json_array(value, |v| v.as_u64().and_then(|v| u32::try_from(v).ok()))
+                .map(FieldValue::ArrayUint32)
+        }
+        ScalarType::ArrayUint64 => {
+            json_array(value, JsonValue::as_u64).map(FieldValue::ArrayUint64)
+        }
+        ScalarType::ArrayFloat => {
+            json_array(value, |v| v.as_f64().and_then(f32_value)).map(FieldValue::ArrayFloat)
+        }
+        ScalarType::ArrayDouble => {
+            json_array(value, JsonValue::as_f64).map(FieldValue::ArrayDouble)
+        }
     };
     converted.ok_or_else(|| value_mismatch(col, &format!("{data_type:?}"), value))
 }
@@ -871,16 +978,17 @@ fn field_value(col: &Column, value: &JsonValue) -> Result<FieldValue> {
             .map(|s| FieldValue::String(s.to_string()))
             .ok_or_else(|| value_mismatch(col, "a string", value)),
         ColumnKind::Dense { dimension, .. } => {
-            // A non-finite element serializes as null, so it fails here.
+            // A non-finite element serializes as null, so it fails here, and
+            // so does an element beyond the `f32` range.
             let vector = value
                 .as_array()
                 .and_then(|items| {
                     items
                         .iter()
-                        .map(|x| x.as_f64().map(|x| x as f32))
+                        .map(|x| x.as_f64().and_then(f32_value))
                         .collect::<Option<Vec<f32>>>()
                 })
-                .ok_or_else(|| value_mismatch(col, "a vector of finite numbers", value))?;
+                .ok_or_else(|| value_mismatch(col, "a vector of finite 32-bit floats", value))?;
             if vector.len() != *dimension as usize {
                 return Err(Error::engine(format!(
                     "zvec vector column {:?} expects dimension {dimension}, got {}",
@@ -953,6 +1061,13 @@ fn build_doc(state: &DocState) -> Result<Doc> {
             FieldValue::Double(v) => doc.add_f64(name, *v),
             FieldValue::String(v) => doc.add_string(name, v),
             FieldValue::Vector(v) => doc.add_vector_f32(name, v),
+            FieldValue::ArrayBool(v) => doc.add_array_bool(name, v),
+            FieldValue::ArrayInt32(v) => doc.add_array_i32(name, v),
+            FieldValue::ArrayInt64(v) => doc.add_array_i64(name, v),
+            FieldValue::ArrayUint32(v) => doc.add_array_u32(name, v),
+            FieldValue::ArrayUint64(v) => doc.add_array_u64(name, v),
+            FieldValue::ArrayFloat(v) => doc.add_array_f32(name, v),
+            FieldValue::ArrayDouble(v) => doc.add_array_f64(name, v),
         }
         .map_err(|e| {
             zvec_err(
@@ -964,21 +1079,32 @@ fn build_doc(state: &DocState) -> Result<Doc> {
     Ok(doc)
 }
 
-/// Fail if any document of a write was rejected.
-fn check_write(operation: &str, result: &zvec_rust::WriteResult) -> Result<()> {
+/// Fail if any document of a write was rejected. A delete of a document that
+/// is not there succeeds: the document may never have been written (its write
+/// failed in an earlier run) or may have been removed behind CocoIndex's back.
+fn check_write(operation: WriteOperation, result: &zvec_rust::WriteResult) -> Result<()> {
     if result.error_count == 0 {
         return Ok(());
     }
-    let first = result
-        .results
-        .iter()
-        .find(|r| !r.is_success())
-        .map(|r| format!(": code={:?} message={}", r.code, r.message))
-        .unwrap_or_default();
+    let mut failures = result.results.iter().filter(|r| {
+        !r.is_success()
+            && !(operation == WriteOperation::Delete && r.code == zvec_rust::ErrorCode::NotFound)
+    });
+    let Some(first) = failures.next() else {
+        return Ok(());
+    };
     Err(Error::engine(format!(
-        "zvec {operation} failed for {} document(s){first}",
-        result.error_count
+        "zvec {operation:?} failed for {} document(s): code={:?} message={}",
+        1 + failures.count(),
+        first.code,
+        first.message
     )))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WriteOperation {
+    Upsert,
+    Delete,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1022,6 +1148,10 @@ impl DocHandler {
     }
 }
 
+/// The most documents one zvec write takes: zvec refuses a larger upsert or
+/// delete ("Too many docs: N exceeds max write batch size of 1024").
+const MAX_WRITE_BATCH: usize = 1024;
+
 fn apply_docs(
     conn: &ManagedConnection,
     collection_name: &str,
@@ -1039,19 +1169,19 @@ fn apply_docs(
         }
     }
 
-    if !upserts.is_empty() {
-        let docs: Vec<&Doc> = upserts.iter().collect();
+    for chunk in upserts.chunks(MAX_WRITE_BATCH) {
+        let docs: Vec<&Doc> = chunk.iter().collect();
         let result = collection
             .upsert(&docs)
             .map_err(|e| zvec_err(format_args!("upsert into {collection_name:?}"), e))?;
-        check_write("upsert", &result)?;
+        check_write(WriteOperation::Upsert, &result)?;
     }
-    if !deletes.is_empty() {
-        let ids: Vec<&str> = deletes.iter().map(String::as_str).collect();
+    for chunk in deletes.chunks(MAX_WRITE_BATCH) {
+        let ids: Vec<&str> = chunk.iter().map(String::as_str).collect();
         let result = collection
             .delete(&ids)
             .map_err(|e| zvec_err(format_args!("delete from {collection_name:?}"), e))?;
-        check_write("delete", &result)?;
+        check_write(WriteOperation::Delete, &result)?;
     }
     collection
         .optimize()
@@ -1302,10 +1432,16 @@ fn collection_sink() -> TargetActionSink<CollectionAction> {
 // User-facing API
 // ---------------------------------------------------------------------------
 
-/// A target for writing documents to a zvec collection.
-#[derive(Clone)]
+/// A target for writing documents to a zvec collection. It serializes to the
+/// connection's `ContextKey` name and the collection name, so it can be an
+/// argument of a memoized function or of a mounted component.
+#[derive(Clone, Serialize)]
 pub struct CollectionTarget {
+    db_key: Arc<str>,
+    collection_name: Arc<str>,
+    #[serde(skip)]
     schema: CollectionSchema,
+    #[serde(skip)]
     docs: TargetStateProvider<DocState>,
 }
 
@@ -1396,10 +1532,17 @@ pub fn declare_collection_target_with_options(
     schema: CollectionSchema,
     options: ManagedTargetOptions,
 ) -> Result<CollectionTarget> {
-    let target_state = collection_target_with_options(ctx, db, collection_name, schema, options)?;
+    let collection_name: Arc<str> = Arc::from(collection_name.into());
+    let target_state =
+        collection_target_with_options(ctx, db, collection_name.to_string(), schema, options)?;
     let schema = target_state.value().schema.clone();
     let docs = declare_target_state_with_child::<CollectionSpec, DocState>(ctx, target_state)?;
-    Ok(CollectionTarget { schema, docs })
+    Ok(CollectionTarget {
+        db_key: Arc::from(db.name()),
+        collection_name,
+        schema,
+        docs,
+    })
 }
 
 /// Mount a zvec collection target and return a ready-to-use
@@ -1429,10 +1572,17 @@ pub async fn mount_collection_target_with_options(
     schema: CollectionSchema,
     options: ManagedTargetOptions,
 ) -> Result<CollectionTarget> {
-    let target_state = collection_target_with_options(ctx, db, collection_name, schema, options)?;
+    let collection_name: Arc<str> = Arc::from(collection_name.into());
+    let target_state =
+        collection_target_with_options(ctx, db, collection_name.to_string(), schema, options)?;
     let schema = target_state.value().schema.clone();
     let docs = mount_target::<CollectionSpec, DocState>(ctx, target_state).await?;
-    Ok(CollectionTarget { schema, docs })
+    Ok(CollectionTarget {
+        db_key: Arc::from(db.name()),
+        collection_name,
+        schema,
+        docs,
+    })
 }
 
 #[cfg(test)]
@@ -1527,5 +1677,24 @@ mod tests {
         // A NaN element reaches the connector as null.
         let err = field_value(&vector, &serde_json::json!([1.0, null, 2.0])).unwrap_err();
         assert!(err.to_string().contains("finite"), "{err}");
+        // A finite `f64` beyond the `f32` range is an error, not an infinity.
+        let err = field_value(&vector, &serde_json::json!([1.0, 1e39, 2.0])).unwrap_err();
+        assert!(err.to_string().contains("finite 32-bit floats"), "{err}");
+        for data_type in [ScalarType::Float, ScalarType::ArrayFloat] {
+            let float = column(
+                "f",
+                ColumnKind::Scalar {
+                    data_type,
+                    encoding: ValueEncoding::Native,
+                    indexed: true,
+                },
+            );
+            let value = match data_type {
+                ScalarType::Float => serde_json::json!(-1e39),
+                _ => serde_json::json!([0.5, -1e39]),
+            };
+            let err = field_value(&float, &value).unwrap_err();
+            assert!(err.to_string().contains("\"f\""), "{data_type:?}: {err}");
+        }
     }
 }

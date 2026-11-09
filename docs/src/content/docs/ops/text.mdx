@@ -5,11 +5,39 @@ description: >
   and syntax-aware RecursiveSplitter that returns position-tracked Chunks with
   optional custom domain-specific splitting rules.
 ---
-The `cocoindex.ops.text` module provides operations for text processing.
+
+The <Lang only="python">`cocoindex.ops.text`</Lang><Lang only="rust">`cocoindex::ops::text`</Lang> module provides operations for text processing.
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_text.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.text import RecursiveSplitter, SeparatorSplitter
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter, SeparatorSplitter};
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="rust">
+
+:::note[Cargo feature]
+The module is behind the `text` feature of the `cocoindex` crate:
+
+```toml
+cocoindex = { version = "...", features = ["text"] }
+```
+
+:::
+
+</Lang>
 
 Features include:
 
@@ -25,6 +53,10 @@ Detect the programming language from a filename.
 
 **Usage:**
 
+{/* Rust: rust/sdk/cocoindex/src/ops/text.rs (doctest), rust/sdk/cocoindex/tests/ops_text.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 from cocoindex.ops.text import detect_code_language
 
@@ -38,11 +70,31 @@ language = detect_code_language(filename="unknown.xyz")
 print(language)  # None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::ops::text::detect_code_language;
+
+assert_eq!(detect_code_language("main.py").as_deref(), Some("python"));
+assert_eq!(detect_code_language("app.rs").as_deref(), Some("rust"));
+assert_eq!(detect_code_language("file.xyz"), None);
+```
+
+It returns `Option<String>`: `None` when the extension is not recognized.
+
+</Fragment>
+</LangTabs>
+
 ### `SeparatorSplitter`
 
 Split text by regex separators.
 
 **Usage:**
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_text.rs (separator_splitter_basic, separator_splitter_keep_separator_left) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.text import SeparatorSplitter
@@ -55,6 +107,33 @@ chunks = splitter.split(text)
 for chunk in chunks:
     print(chunk.text)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::ops::text::{KeepSeparator, SeparatorSplitConfig, SeparatorSplitter};
+
+// Separators only.
+let splitter = SeparatorSplitter::new([r"\n\n+"])?;
+let text = "Para1\n\nPara2\n\nPara3";
+let chunks = splitter.split(text);
+for chunk in &chunks {
+    println!("{}", chunk.text(text));
+}
+
+// Keep the separator on the left of the split.
+let splitter = SeparatorSplitter::with_config(SeparatorSplitConfig {
+    separators_regex: vec![r"\.".to_string()],
+    keep_separator: Some(KeepSeparator::Left),
+    ..Default::default()
+})?;
+```
+
+`SeparatorSplitter::new(separators)` takes the regex list; the other options (`keep_separator`, `trim`) go through `SeparatorSplitConfig` and `with_config`. A `Chunk` does not hold its text: call `chunk.text(text)` with the string you split.
+
+</Fragment>
+</LangTabs>
 
 Use `RecursiveSplitter` below to configure chunk size and overlap.
 
@@ -69,6 +148,10 @@ Advanced text chunking with language awareness and syntax-aware splitting for co
 - Returns [`Chunk`](../common_resources/data_types#chunk) objects with start/end positions (line, column, byte/char offsets)
 
 **Usage:**
+
+{/* Rust: examples/rust/text_embedding/src/main.rs, rust/sdk/cocoindex/tests/ops_text.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.text import RecursiveSplitter
@@ -90,7 +173,46 @@ for chunk in chunks:
     print(f"End: line {chunk.end.line}, char {chunk.end.char_offset}")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
+
+let splitter = RecursiveSplitter::new()?;
+
+// Split markdown text
+let text = "# Title\n\nParagraph 1.\n\nParagraph 2.";
+let chunks = splitter.split_with(
+    text,
+    RecursiveChunkConfig {
+        chunk_size: 2000,
+        min_chunk_size: None,
+        chunk_overlap: Some(500),
+        language: Some("markdown".to_string()),
+    },
+);
+
+for chunk in &chunks {
+    println!("Chunk: {}", chunk.text(text));
+    println!("Start: line {}, char {}", chunk.start.line, chunk.start.char_offset);
+    println!("End: line {}, char {}", chunk.end.line, chunk.end.char_offset);
+}
+
+// With only a chunk size: default minimum, no overlap, no language hint.
+let chunks = splitter.split("Short text.", 100);
+```
+
+`RecursiveSplitter::new()` returns a `Result`. `split(text, chunk_size)` uses the defaults; `split_with(text, config)` takes a `RecursiveChunkConfig` with `chunk_size`, `min_chunk_size` (a soft floor, default `chunk_size / 2`), `chunk_overlap` and `language`. Sizes are in bytes.
+
+</Fragment>
+</LangTabs>
+
 **Language-aware code splitting:**
+
+{/* Rust: examples/rust/code_embedding/src/main.rs, rust/sdk/cocoindex/tests/ops_text.rs (recursive_splitter_with_languages) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Split Python code
@@ -111,11 +233,36 @@ chunks = splitter.split(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Split Python code
+let python_code = "def foo():\n    pass\n\ndef bar():\n    pass";
+
+let chunks = splitter.split_with(
+    python_code,
+    RecursiveChunkConfig {
+        chunk_size: 1000,
+        min_chunk_size: Some(300),
+        chunk_overlap: Some(300),
+        language: Some("python".to_string()),
+    },
+);
+```
+
+</Fragment>
+</LangTabs>
+
 **Reusing one parse across APIs:**
 
 When the same code is passed to several parse-consuming APIs (e.g. splitting *and*
 structural pattern matching), wrap it in a `CodeSource` so it is parsed at most once.
-The `CodeSource` carries its own language, so the `language=` argument must be omitted:
+The `CodeSource` carries its own language, so <Lang only="python">the `language=` argument must be omitted</Lang><Lang only="rust">`config.language` is ignored</Lang>:
+
+{/* Rust: CodeSource::with_language and RecursiveSplitter::split_source from rust/sdk/cocoindex/src/ops/text.rs (signatures); CodePattern::compile from rust/sdk/cocoindex/tests/code.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.code import CodePattern, CodeSource
@@ -125,13 +272,36 @@ chunks = splitter.split(src, chunk_size=1000)          # parses once
 defs = CodePattern(r"def \NAME(\(A*\)):", language="python").match_source(src)  # reuses the parse
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::ops::text::{CodeSource, RecursiveChunkConfig, RecursiveSplitter};
+
+let src = CodeSource::with_language(python_code, "python");
+let chunks = splitter.split_source(
+    &src,
+    RecursiveChunkConfig {
+        chunk_size: 1000,
+        min_chunk_size: None,
+        chunk_overlap: None,
+        language: None, // the source carries its own language
+    },
+);
+```
+
+`RecursiveSplitter::split_source(&source, config)` reuses the parse cached in a `CodeSource`; the source's language wins, so `config.language` is ignored. The structural matcher lives in `cocoindex::ops::code` (feature `code_match`): `CodeAst::new(code, "python")?` parses once and offers `matches(pattern)`, `matches_with(&CodePattern::compile(pattern, "python")?)` and `split(chunk_size, min_chunk_size, chunk_overlap)` over that one parse. `render_match(&ast, &matches[0])` renders a match as a `SourceView`: the head lines of its enclosing scopes as `SegmentKind::Frame` segments, an elision cue, then the matched code verbatim, with `view.text` ready to embed or display and `view.segments` mapping each piece back to its source range.
+
+</Fragment>
+</LangTabs>
+
 **Supported languages:**
 
-`language=` accepts a language name, an alternate name, or a file extension — `"python"`, `"py"` and `".py"` all select Python. Matching is case-insensitive. Use [`detect_code_language()`](#detect_code_language) to infer the value from a filename.
+<Lang only="python">`language=`</Lang><Lang only="rust">`language`</Lang> accepts a language name, an alternate name, or a file extension — `"python"`, `"py"` and `".py"` all select Python. Matching is case-insensitive. Use [`detect_code_language()`](#detect_code_language) to infer the value from a filename.
 
 Languages with syntax-aware (tree-sitter) splitting — splits at logical boundaries like functions, classes, and blocks:
 
-| Language | `language=` value | Extensions |
+| Language | `language` value | Extensions |
 |---|---|---|
 | Astro | `"astro"` | `.astro` |
 | Bash | `"bash"` | `.sh`, `.bash` |
@@ -173,15 +343,19 @@ Languages with syntax-aware (tree-sitter) splitting — splits at logical bounda
 | XML | `"xml"` | `.xml` |
 | YAML | `"yaml"` | `.yaml`, `.yml` |
 
-Note that `.h` maps to C++, not C — the C++ grammar also parses C headers. Pass `language="c"` explicitly to force the C grammar.
+Note that `.h` maps to C++, not C — the C++ grammar also parses C headers. Pass <Lang only="python">`language="c"`</Lang><Lang only="rust">`language: Some("c".to_string())`</Lang> explicitly to force the C grammar.
 
-110 additional languages use separator-based splitting (e.g. `"elixir"`, `"erlang"`, `"haskell"`, `"nix"`, `"perl"`, `"powershell"`, `"proto"`, `"zig"`, and more). A `language=` value that matches no known language also falls back to separator-based splitting rather than raising.
+110 additional languages use separator-based splitting (e.g. `"elixir"`, `"erlang"`, `"haskell"`, `"nix"`, `"perl"`, `"powershell"`, `"proto"`, `"zig"`, and more). A <Lang only="python">`language=`</Lang><Lang only="rust">`language`</Lang> value that matches no known language also falls back to separator-based splitting rather than <Lang only="python">raising</Lang><Lang only="rust">failing</Lang>.
 
 ### `CustomLanguageConfig`
 
 Define custom language splitting rules.
 
 **Usage:**
+
+{/* Rust: rust/sdk/cocoindex/tests/ops_text.rs (custom_language_config_and_alias) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.text import CustomLanguageConfig, RecursiveSplitter
@@ -207,7 +381,39 @@ chunks = splitter.split(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::ops::text::{CustomLanguageConfig, RecursiveChunkConfig, RecursiveSplitter};
+
+let config = CustomLanguageConfig {
+    language_name: "myformat".to_string(),
+    aliases: vec!["mf".to_string()],
+    separators_regex: vec![r"---".to_string()],
+};
+let splitter = RecursiveSplitter::with_custom_languages(vec![config])?;
+
+let text = "Part1---Part2---Part3";
+let chunks = splitter.split_with(
+    text,
+    RecursiveChunkConfig {
+        chunk_size: 10,
+        min_chunk_size: Some(3),
+        chunk_overlap: None,
+        language: Some("myformat".to_string()),
+    },
+);
+```
+
+`CustomLanguageConfig` has the three fields `language_name`, `aliases` and `separators_regex`; `RecursiveSplitter::with_custom_languages(configs)?` registers them.
+
+</Fragment>
+</LangTabs>
+
 ## API reference
+
+<Lang only="python">
 
 For detailed API documentation, refer to the module docstrings:
 
@@ -219,3 +425,11 @@ help(text.SeparatorSplitter)
 help(text.detect_code_language)
 help(text.CustomLanguageConfig)
 ```
+
+</Lang>
+
+<Lang only="rust">
+
+For detailed API documentation, build the crate documentation with `cargo doc --features text --open` and open the `cocoindex::ops::text` module.
+
+</Lang>

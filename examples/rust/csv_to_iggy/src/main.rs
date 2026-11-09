@@ -119,17 +119,18 @@ async fn index(producer: IggyProducer, stream: String, topic: String) -> Result<
                 let options = iggy::IggyTopicOptions {
                     partition: PARTITION,
                     // Iggy has no tombstone; emit a delete marker for removed rows.
-                    deletion_value_fn: Some(Arc::new(|key: &str| {
-                        format!("{{\"_deleted\":\"{key}\"}}").into_bytes()
+                    deletion_value_fn: Some(Arc::new(|key: &[u8]| {
+                        format!("{{\"_deleted\":\"{}\"}}", String::from_utf8_lossy(key)).into_bytes()
                     })),
                 };
                 let target =
-                    iggy::mount_iggy_topic_target(&ctx, &PRODUCER, stream, topic, options)?;
+                    iggy::mount_iggy_topic_target(&ctx, &PRODUCER, stream, topic, options)
+                .await?;
 
                 let files = cocoindex::resources::fs::walk_items("./data", &["**/*.csv"])?;
                 println!("found {} CSV file(s)", files.len());
 
-                let per_file = mount_each!(files, |file| process_csv(ctx, file)).await?;
+                let per_file = use_mount_each!(files, |file| process_csv(ctx, file)).await?;
 
                 let mut declared = 0;
                 for messages in &per_file {

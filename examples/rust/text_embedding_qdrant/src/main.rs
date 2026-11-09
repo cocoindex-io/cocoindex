@@ -10,6 +10,11 @@
 //! `cocoindex::connectors::qdrant` collection connector (built on the public target-state
 //! facade). Parallels the Python example's `cocoindex.connectors.qdrant`.
 //!
+//! Parallels the Python example:
+//!   - source            : `walk_dir(..).live()` + `ctx.mount_each_live` (cf. `localfs.walk_dir(live=True)` + `coco.mount_each`)
+//!   - per-file compute  : `#[cocoindex::function(memo)]` declaring its points (cf. `@coco.fn(memo=True)`)
+//!   - per-chunk compute : `#[cocoindex::function]` under `ctx.map` (cf. `@coco.fn` under `coco.map`)
+//!
 //! Build note: the `qdrant-client` crate compiles protobufs, so a `protoc`
 //! binary is required to build this example (set `PROTOC` or put it on `PATH`).
 
@@ -35,7 +40,7 @@ cocoindex::context_key!(
     detect_change
 );
 
-/// A computed point: id + vector + payload fields.
+/// The collection schema: id + vector + payload fields.
 #[derive(Clone, Serialize, Deserialize, SchemaFields)]
 struct PointData {
     id: u64,
@@ -47,13 +52,47 @@ struct PointData {
     text: String,
 }
 
+/// Embed one chunk and declare its point (cf. Python `process_chunk`).
 #[cocoindex::function]
-async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<PointData>> {
-    let filename = file.key();
-    let text = file.content_str()?;
+async fn process_chunk(
+    ctx: &Ctx,
+    chunk: Chunk,
+    text: &str,
+    filename: &str,
+    id_gen: &IdGenerator,
+    target: &qdrant::CollectionTarget,
+) -> Result<()> {
+    let chunk_text = chunk.text(text);
+    let id = id_gen.next_id(ctx, chunk_text).await?;
+    let vector = ctx.get_key(&EMBEDDER)?.embed(ctx, chunk_text).await?;
+    let payload = json!({
+        "filename": filename,
+        "chunk_start": chunk.start.char_offset,
+        "chunk_end": chunk.end.char_offset,
+        "text": chunk_text,
+    });
+    let serde_json::Value::Object(payload) = payload else {
+        return Err(Error::engine("point payload is not a JSON object"));
+    };
+    target.declare_named_vectors_point(
+        ctx,
+        id,
+        [("vector", NamedPointVector::Single(vector))],
+        payload,
+    )
+}
 
-    let splitter = RecursiveSplitter::new()?;
-    let chunks = splitter.split_with(
+/// Chunk and embed one file, declaring its points (cf. Python `process_file`).
+/// Memoized on the file: an unchanged file keeps its points without re-running.
+/// The collection target is one per app, so it is not part of the memo key.
+#[cocoindex::function(memo, memo_key(target = skip))]
+async fn process_file(
+    ctx: &Ctx,
+    file: &FileEntry,
+    target: &qdrant::CollectionTarget,
+) -> Result<()> {
+    let text = file.read_text().await?;
+    let chunks = RecursiveSplitter::new()?.split_with(
         &text,
         RecursiveChunkConfig {
             chunk_size: CHUNK_SIZE,
@@ -62,35 +101,13 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<PointData>> {
             language: Some("markdown".to_string()),
         },
     );
-    if chunks.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
-    let embedder = ctx.get_key(&EMBEDDER)?.clone();
-    let embedding_ctx = ctx.clone();
-    let embeddings = ctx
-        .map(texts.clone(), move |chunk_text| {
-            let embedder = embedder.clone();
-            let ctx = embedding_ctx.clone();
-            async move { embedder.embed(&ctx, chunk_text).await }
-        })
-        .await?;
-
-    let mut id_gen = IdGenerator::new();
-    let mut points = Vec::with_capacity(texts.len());
-    for ((chunk, chunk_text), vector) in chunks.iter().zip(texts).zip(embeddings) {
-        let id = id_gen.next_id(&ctx, &chunk_text).await?;
-        points.push(PointData {
-            id,
-            vector,
-            filename: filename.clone(),
-            chunk_start: chunk.start.char_offset as i64,
-            chunk_end: chunk.end.char_offset as i64,
-            text: chunk_text,
-        });
-    }
-    Ok(points)
+    let filename = file.key();
+    let id_gen = IdGenerator::new();
+    ctx.map(chunks, async |chunk| {
+        process_chunk(ctx, chunk, &text, &filename, &id_gen, &target).await
+    })
+    .await?;
+    Ok(())
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
@@ -104,38 +121,18 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     )
     .await?;
 
-    let files = walk_items(&sourcedir, &["**/*.md"])?;
-    println!(
-        "indexing {} markdown file(s) from {}",
-        files.len(),
-        sourcedir.display()
-    );
-
-    let points_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
-
-    let mut count = 0usize;
-    for points in &points_by_file {
-        count += points.len();
-        for p in points {
-            let payload = json!({
-                "filename": p.filename,
-                "chunk_start": p.chunk_start,
-                "chunk_end": p.chunk_end,
-                "text": p.text,
-            })
-            .as_object()
-            .unwrap()
-            .clone();
-            target.declare_named_vectors_point(
-                &ctx,
-                p.id,
-                [("vector", NamedPointVector::Single(p.vector.clone()))],
-                payload,
-            )?;
-        }
-    }
-    println!("indexed {count} chunk(s) total");
-    Ok(())
+    // The source supports live watch (cf. Python `localfs.walk_dir(live=True)`).
+    let files = walk_dir(sourcedir)
+        .recursive(true)
+        .path_matcher(PatternFilePathMatcher::include(["**/*.md"])?)
+        .live();
+    // One processing component per file: each file's points sync and clean up
+    // with that file (cf. Python `coco.mount_each(process_file, files.items(), target_collection)`).
+    ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
+        let target = target.clone();
+        async move { process_file(&ctx, &file, &target).await }
+    })
+    .await
 }
 
 async fn query_once(

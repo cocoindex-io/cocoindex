@@ -86,4 +86,13 @@ export const redirects: Record<string, string> = {
   '/examples/simple_vector_index': '/docs/examples/text-embedding/',
   '/examples/google_drive': '/docs/examples/google-drive-embedding/',
   '/examples/s3_sqs_pipeline': '/docs/examples/amazon-s3-embedding/',
+
+  // The Rust tree (/docs/rust/, see src/lib/lang.ts). Its home is the Rust
+  // overview until it has a landing page of its own; the two pages that were
+  // Rust-only before the split moved to their Rust slots.
+  '/rust': '/docs/rust/getting_started/overview/',
+  '/getting_started/rust_quickstart': '/docs/rust/getting_started/quickstart/',
+  '/cli_rust': '/docs/rust/cli/',
+  // An unused, outdated copy of the CLI subcommand reference.
+  '/cli_commands': '/docs/cli/',
 };

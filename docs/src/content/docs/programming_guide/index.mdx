@@ -4,11 +4,21 @@ description: Build a pipeline from Apps, processing components, functions, and t
 ---
 import DocCardGrid from '@cocoindex/brand/DocCardGrid.astro';
 import PipelineOverview from '/src/components/diagrams/PipelineOverview.astro';
-import { programmingGuideGroups } from '/src/data/section-grids';
+import { programmingGuideGroups, programmingGuideRustGroups } from '/src/data/section-grids';
 
-Start with [Core Concepts](/docs/programming_guide/core_concepts/) for the mental model and the diagrams behind it. Use this reference to find each building block, its API, and its role in an incremental pipeline.
+Start with [Core Concepts](./core_concepts) for the mental model and the diagrams behind it. Use this reference to find each building block, its API, and its role in an incremental pipeline.
+
+<Lang only="python">
 
 <DocCardGrid groups={programmingGuideGroups.slice(0, 1)} ariaLabel="Core building blocks" />
+
+</Lang>
+
+<Lang only="rust">
+
+<DocCardGrid groups={programmingGuideRustGroups.slice(0, 1)} ariaLabel="Core building blocks" />
+
+</Lang>
 
 ## How the pieces fit
 
@@ -16,4 +26,14 @@ An App runs processing components. Each component calls functions and declares t
 
 <PipelineOverview />
 
+<Lang only="python">
+
 <DocCardGrid groups={programmingGuideGroups.slice(1)} ariaLabel="Resources and implementation details" />
+
+</Lang>
+
+<Lang only="rust">
+
+<DocCardGrid groups={programmingGuideRustGroups.slice(1)} ariaLabel="Resources and implementation details" />
+
+</Lang>

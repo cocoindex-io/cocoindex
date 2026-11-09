@@ -180,12 +180,12 @@ async fn registered_lifespan_apps_and_protocol() {
     }
     assert_eq!(std::fs::read_dir(&out).unwrap().count(), 5);
 
-    // --- protocol: errors are usage errors ----------------------------------
+    // --- protocol: an app that is not found is a failure (exit 1) ----------
     let (code, events, _) = child(&["update", "--protocol", "1", "--app", "Nope"]).await;
-    assert_eq!(code, ExitCode::from(2));
+    assert_eq!(code, ExitCode::from(1));
     assert!(matches!(events.last(), Some(Event::Error { message }) if message.contains("Nope")));
     let (code, _, _) = child(&["update", "--protocol", "1"]).await;
-    assert_eq!(code, ExitCode::from(2), "two apps: the name is required");
+    assert_eq!(code, ExitCode::from(1), "two apps: the name is required");
 
     // --- protocol: drop ------------------------------------------------------
     let (code, events, _) = child(&["drop", "--protocol", "1", "--app", "app_two"]).await;

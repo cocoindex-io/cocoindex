@@ -52,8 +52,8 @@ use crate::target_state::{
 
 /// Connection configuration for a Doris cluster. Mirrors Python's
 /// `DorisConnectionConfig`. Construct with [`DorisConfig::new`] and adjust with
-/// the builder setters.
-#[derive(Clone, Debug)]
+/// the builder setters. Its `Debug` output redacts the password.
+#[derive(Clone)]
 pub struct DorisConfig {
     /// Frontend host (used for both the MySQL query port and Stream Load HTTP).
     pub fe_host: String,
@@ -179,11 +179,56 @@ pub struct DorisConnection {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for DorisConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DorisConnection")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for DorisConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DorisConfig")
+            .field("fe_host", &self.fe_host)
+            .field("database", &self.database)
+            .field("fe_http_port", &self.fe_http_port)
+            .field("query_port", &self.query_port)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("enable_https", &self.enable_https)
+            .field("be_load_host", &self.be_load_host)
+            .field("batch_size", &self.batch_size)
+            .field("stream_load_timeout", &self.stream_load_timeout)
+            .field("max_retries", &self.max_retries)
+            .field("retry_base_delay", &self.retry_base_delay)
+            .field("retry_max_delay", &self.retry_max_delay)
+            .field("replication_num", &self.replication_num)
+            .field("buckets", &self.buckets)
+            .finish()
+    }
+}
+
 impl DorisConnection {
     /// Connect to a Doris cluster. Opens a MySQL connection pool to the FE query
     /// port (used for DDL/DELETE) and builds an HTTP client for Stream Load. The
     /// `database` must already exist.
     pub async fn connect(config: DorisConfig) -> Result<Self> {
+        // The database name is spliced into DDL, `DELETE` and the Stream Load
+        // URL, so it gets the identifier allow-list too (as in Python, after
+        // CVE-2026-28438).
+        validate_ident(&config.database, "database name")?;
+        for (name, value) in [
+            ("retry_base_delay", config.retry_base_delay),
+            ("retry_max_delay", config.retry_max_delay),
+        ] {
+            if !(value.is_finite() && value >= 0.0) {
+                return Err(Error::engine(format!(
+                    "DorisConfig.{name} must be a finite number of seconds >= 0, got {value}"
+                )));
+            }
+        }
         // Doris speaks the MySQL wire protocol but rejects the `SET
         // sql_mode=CONCAT(@@sql_mode, …)` and timezone statements sqlx issues on
         // connect ("Set statement doesn't support non-constant expr"). Disable
@@ -650,10 +695,16 @@ pub struct DorisTableOptions {
 // ---------------------------------------------------------------------------
 
 /// A declarative Doris table target — a handle to declare rows on.
-#[derive(Clone)]
+///
+/// As a `mount_each!` / `use_mount!` argument it fingerprints by its table name
+/// (its stable key); the schema and runtime provider are not part of the
+/// component-memo identity.
+#[derive(Clone, Serialize)]
 pub struct TableTarget {
     table_name: Arc<str>,
+    #[serde(skip)]
     table_schema: TableSchema,
+    #[serde(skip)]
     rows: TargetStateProvider<RowState>,
 }
 
@@ -1423,8 +1474,11 @@ async fn stream_load(
                         e.message
                     )));
                 }
-                let delay = (config.retry_base_delay * 2f64.powi(attempt as i32))
-                    .min(config.retry_max_delay);
+                // Both delays are finite and >= 0 (checked in `connect`), so
+                // `delay` is too, even when the doubling overflows to infinity.
+                let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
+                let delay =
+                    (config.retry_base_delay * 2f64.powi(exponent)).min(config.retry_max_delay);
                 tracing::warn!(
                     "doris stream load attempt {} failed ({}); retrying in {:.1}s",
                     attempt + 1,
@@ -1502,7 +1556,10 @@ async fn do_stream_load(
     }
     let text = resp.text().await.map_err(transport_err)?;
     let result: JsonValue = serde_json::from_str(&text).map_err(|_| StreamLoadError {
-        message: format!("invalid stream load response: {}", truncate(&text, 200)),
+        message: format!(
+            "invalid stream load response: {}",
+            super::truncate_for_error(&text, 200)
+        ),
         retryable: false,
     })?;
     let load_status = result
@@ -1564,14 +1621,6 @@ fn stream_load_label() -> String {
         .unwrap_or(0);
     let rand = uuid::Uuid::new_v4().simple().to_string();
     format!("cocoindex_{millis}_{}", &rand[..8])
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1804,17 +1853,22 @@ fn json_scalar_to_stable_key(value: &JsonValue) -> Result<StableKey> {
 fn sql_value_literal(value: &JsonValue) -> String {
     match value {
         JsonValue::String(s) => {
-            let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
-            format!("'{escaped}'")
+            format!("'{}'", escape_string_literal(s))
         }
         JsonValue::Bool(b) => if *b { "1" } else { "0" }.to_string(),
         JsonValue::Number(n) => n.to_string(),
         JsonValue::Null => "NULL".to_string(),
-        other => {
-            let escaped = other.to_string().replace('\\', "\\\\").replace('\'', "\\'");
-            format!("'{escaped}'")
-        }
+        other => format!("'{}'", escape_string_literal(&other.to_string())),
     }
+}
+
+/// The body of a single-quoted MySQL string literal: `\`, `'` and U+0000
+/// (which would end the statement text early in some MySQL-protocol parsers)
+/// escaped.
+fn escape_string_literal(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace('\0', "\\0")
 }
 
 // ---------------------------------------------------------------------------
@@ -1858,6 +1912,26 @@ fn validate_indexes(schema: &TableSchema, options: &DorisTableOptions) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn connect_rejects_a_retry_delay_that_cannot_be_slept() {
+        for (base, max) in [(-1.0, 30.0), (f64::NAN, 30.0), (1.0, f64::INFINITY)] {
+            let mut config = config();
+            config.retry_base_delay = base;
+            config.retry_max_delay = max;
+            let Err(err) = DorisConnection::connect(config).await else {
+                panic!("connect accepted retry delays ({base}, {max})");
+            };
+            assert!(err.to_string().contains("must be a finite number"), "{err}");
+        }
+    }
+
+    #[test]
+    fn config_debug_redacts_the_password() {
+        let debug = format!("{:?}", config().password("hunter2"));
+        assert!(!debug.contains("hunter2"), "{debug}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+    }
 
     fn config() -> DorisConfig {
         DorisConfig::new("localhost", "testdb")
@@ -1985,6 +2059,21 @@ mod tests {
         assert_eq!(sql_value_literal(&JsonValue::from("a\\b")), "'a\\\\b'");
         assert_eq!(sql_value_literal(&JsonValue::from(7)), "7");
         assert_eq!(sql_value_literal(&JsonValue::from(true)), "1");
+        assert_eq!(sql_value_literal(&JsonValue::from("a\0b")), "'a\\0b'");
+        assert_eq!(
+            sql_value_literal(&JsonValue::from("x' OR '1'='1")),
+            "'x\\' OR \\'1\\'=\\'1'"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_a_database_name_outside_the_identifier_allow_list() {
+        for bad in ["db`; DROP DATABASE x; --", "", "my-db", "a b"] {
+            let err = DorisConnection::connect(DorisConfig::new("127.0.0.1", bad))
+                .await
+                .expect_err("rejected before connecting");
+            assert!(err.to_string().contains("database name"), "{bad:?}: {err}");
+        }
     }
 
     #[test]
