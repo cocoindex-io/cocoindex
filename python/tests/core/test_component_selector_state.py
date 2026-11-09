@@ -651,13 +651,6 @@ def _tolerant_global_dict() -> None:
     store._action_sink = coco.TargetActionSink.from_fn(sink)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Pre-existing: the parent's tombstone is cleaned although a child"
-    " delete launched by its GC sweep failed (component.rs `cleanup_tombstone`"
-    " checks only `children_outcome.has_exception`); the child's tombstone,"
-    " keyed under the deleted parent, is never listed again.",
-)
 def test_failed_delete_under_a_deleted_parent_is_retried() -> None:
     _tolerant_global_dict()
     mounted = {"m": True}
