@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime
 import decimal
 import json
+import logging
 import re
 import sqlite3
 import uuid
@@ -62,6 +63,8 @@ ValueEncoder = Callable[[Any], Any]
 
 
 _VEC_EXTENSION = "sqlite-vec"
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -790,6 +793,17 @@ def _create_table(
     conn.execute(sql)
 
 
+def _column_declared_type(
+    conn: sqlite3.Connection, table_name: str, col_name: str
+) -> str | None:
+    """Return the declared type of a column, or None if the column is absent."""
+    qualified_name = _qualified_table_name(table_name)
+    for row in conn.execute(f"PRAGMA table_info({qualified_name})"):
+        if row[1] == col_name:
+            return str(row[2])
+    return None
+
+
 def _apply_column_actions(
     conn: sqlite3.Connection,
     table_name: str,
@@ -821,9 +835,15 @@ def _apply_column_actions(
             # SQLite 3.35.0+ supports DROP COLUMN
             try:
                 conn.execute(f'ALTER TABLE {qualified_name} DROP COLUMN "{col_name}"')
-            except sqlite3.OperationalError:
-                # Older SQLite doesn't support DROP COLUMN - silently skip
-                pass
+            except sqlite3.OperationalError as e:
+                # An unused leftover column corrupts nothing, so a failed DROP is
+                # tolerated (older SQLite, or an index still references it).
+                _logger.warning(
+                    "SQLite target: could not drop removed column %r from table %r: %s",
+                    col_name,
+                    table_name,
+                    e,
+                )
             continue
 
         desired_col = non_pk_col_by_name.get(col_name)
@@ -853,10 +873,14 @@ def _apply_column_actions(
         if action == "replace":
             # SQLite doesn't support ALTER COLUMN TYPE directly.
             # For type changes, attempt to drop and re-add column.
+            drop_error: sqlite3.OperationalError | None = None
             try:
                 conn.execute(f'ALTER TABLE {qualified_name} DROP COLUMN "{col_name}"')
-            except sqlite3.OperationalError:
-                pass
+            except sqlite3.OperationalError as e:
+                # DROP fails when an index references the column. Masking that
+                # would record the desired type while the table keeps the old
+                # one, so the outcome is checked below.
+                drop_error = e
             nullable = "" if desired_col.nullable else " NOT NULL"
             try:
                 conn.execute(
@@ -864,11 +888,20 @@ def _apply_column_actions(
                     f'ADD COLUMN "{col_name}" {desired_col.type}{nullable}'
                 )
             except sqlite3.OperationalError as e:
-                if "duplicate column name" in str(e).lower():
-                    pass
-                else:
+                if "duplicate column name" not in str(e).lower():
                     raise RuntimeError(
                         f"Failed to replace column {col_name!r} in SQLite table {table_name!r}: {e}"
+                    ) from e
+                # The ADD collided because the DROP did not remove the column.
+                # That is only fine if the column already has the desired type
+                # (the change landed out of band); otherwise the table would
+                # silently keep the old type while the new one is recorded.
+                actual_type = _column_declared_type(conn, table_name, col_name)
+                if actual_type != desired_col.type:
+                    raise RuntimeError(
+                        f"Failed to change the type of column {col_name!r} in SQLite "
+                        f"table {table_name!r} to {desired_col.type} "
+                        f"(it is still {actual_type}, DROP COLUMN failed: {drop_error})"
                     ) from e
             continue
 

@@ -128,6 +128,20 @@ class ExtendedRow:
     extra: str
 
 
+@dataclass
+class NullableIntValueRow:
+    id: str
+    name: str
+    value: int | None
+
+
+@dataclass
+class NullableStrValueRow:
+    id: str
+    name: str
+    value: str | None
+
+
 # =============================================================================
 # Source data (global state for tests)
 # =============================================================================
@@ -1560,6 +1574,87 @@ def test_unsupported_sqlite_migration_raises_error(
         # Database schema must remain consistent (unaltered)
         cols = get_table_columns(managed_conn, _table_name)
         assert "extra" not in cols
+    finally:
+        _source_rows = old_source_rows
+        _row_type = old_row_type
+        _table_name = old_table_name
+
+
+def test_column_type_change_blocked_by_index_raises_and_retries(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that a column type change whose DROP COLUMN fails raises instead of keeping the old type silently, and is retried once the blocker is gone."""
+    managed_conn, _ = sqlite_db
+    global _source_rows, _row_type, _table_name
+
+    old_source_rows = _source_rows
+    old_row_type = _row_type
+    old_table_name = _table_name
+    try:
+        _source_rows = [NullableIntValueRow(id="1", name="Alice", value=100)]
+        _row_type = NullableIntValueRow
+        _table_name = "test_type_change_blocked_by_index"
+
+        test_env = make_test_env(
+            managed_conn, "test_column_type_change_blocked_by_index_raises_and_retries"
+        )
+
+        async def declare_dynamic_schema() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                sqlite.declare_table_target,
+                SQLITE_DB,
+                _table_name,
+                await sqlite.TableSchema.from_class(_row_type, primary_key=["id"]),
+            )
+            for row in _source_rows:
+                table.declare_row(row=row)
+
+        app = coco.App(
+            coco.AppConfig(
+                name="test_column_type_change_blocked_by_index_raises_and_retries",
+                environment=test_env,
+            ),
+            declare_dynamic_schema,
+        )
+
+        # Initial update creates the column as INTEGER.
+        app.update_blocking()
+        assert get_table_columns(managed_conn, _table_name)["value"] == "INTEGER"
+
+        # SQLite cannot drop a column that an index references.
+        with managed_conn.transaction() as conn:
+            conn.execute(f'CREATE INDEX idx_value ON "{_table_name}" ("value")')
+
+        # Changing the type to TEXT must fail loudly instead of recording the new
+        # type while the table keeps the old one.
+        _row_type = NullableStrValueRow
+        _source_rows = [NullableStrValueRow(id="1", name="Alice", value="100")]
+        with pytest.raises(
+            RuntimeError, match="Failed to change the type of column 'value'"
+        ):
+            app.update_blocking()
+
+        # Nothing was half-applied: the column is still INTEGER.
+        assert get_table_columns(managed_conn, _table_name)["value"] == "INTEGER"
+
+        # The failed run recorded nothing, so the next run retries the change
+        # rather than treating it as applied.
+        with pytest.raises(
+            RuntimeError, match="Failed to change the type of column 'value'"
+        ):
+            app.update_blocking()
+        assert get_table_columns(managed_conn, _table_name)["value"] == "INTEGER"
+
+        # Once the blocking index is gone, the change applies and the value is
+        # preserved through the drop/re-add.
+        with managed_conn.transaction() as conn:
+            conn.execute("DROP INDEX idx_value")
+        app.update_blocking()
+
+        assert get_table_columns(managed_conn, _table_name)["value"] == "TEXT"
+        data = read_table_data(managed_conn, _table_name)
+        assert data == [{"id": "1", "name": "Alice", "value": "100"}]
     finally:
         _source_rows = old_source_rows
         _row_type = old_row_type
