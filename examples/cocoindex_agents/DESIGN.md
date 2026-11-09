@@ -369,10 +369,10 @@ and the read. The second kind is a Google Drive folder
 
 - **The model names the folder and never a credential.** The folder is read
   as the account signed in on this machine through the connector's OAuth
-  sign-in (`cocoindex google-drive sign-in`), an explicit step outside any
-  run. The card names the folder and the patterns; the account's address is
-  in the source's memo key and in every record it makes, so that a
-  different account re-runs what was read, but it is not in any card or
+  sign-in (`cocoindex auth sign-in google-drive`), an explicit step outside
+  any run. The card names the folder and the patterns; the account's
+  address is in the source's memo key and in every record it makes, so that
+  a different account re-runs what was read, but it is not in any card or
   transcript, and no token is anywhere the engine stores or the model sees.
   A run with no sign-in fails in `open_source`, which an open session
   contains and reports as the error's class name; the session re-runs until

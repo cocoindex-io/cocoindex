@@ -1,4 +1,5 @@
-//! `ls`, `show`, `update`, `drop`, and the `google-drive` sign-in.
+//! `ls`, `show`, `update`, `drop`, and `auth sign-in` / `auth sign-out` for
+//! Google Drive.
 
 use std::path::{Path, PathBuf};
 
@@ -440,7 +441,7 @@ pub async fn drop_app(args: DropArgs) -> CliResult<()> {
 }
 
 // ---------------------------------------------------------------------------
-// google-drive sign-in / sign-out
+// auth sign-in google-drive / auth sign-out google-drive
 // ---------------------------------------------------------------------------
 
 /// The account at `token_path`, or at the connector's default token file.

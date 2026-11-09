@@ -621,17 +621,30 @@ fn init_scaffold_builds_and_runs() {
     );
 }
 
-/// `google-drive sign-out` without a stored sign-in says so; `sign-in` with a
-/// missing client file is a usage error, and without one this build (which
-/// has no built-in OAuth client) says how to sign in. No browser opens: both
-/// fail before the consent.
+/// `auth sign-in --help` and `auth sign-out --help` list the providers.
+/// `auth sign-out google-drive` without a stored sign-in says so;
+/// `auth sign-in google-drive` with a missing client file is a usage error,
+/// and without one this build (which has no built-in OAuth client) says how
+/// to sign in. No browser opens: both fail before the consent.
 #[test]
 fn google_drive_sign_in_and_sign_out() {
     let sb = Sandbox::new(&[]);
     let token = sb.path("google_drive_token.json");
     let token_arg = token.display().to_string();
 
-    let out = sb.cli(&["google-drive", "sign-out", "--token-path", &token_arg]);
+    for action in ["sign-in", "sign-out"] {
+        let help = sb.cli(&["auth", action, "--help"]);
+        assert_ok(&help);
+        assert!(stdout(&help).contains("google-drive"), "{}", stdout(&help));
+    }
+
+    let out = sb.cli(&[
+        "auth",
+        "sign-out",
+        "google-drive",
+        "--token-path",
+        &token_arg,
+    ]);
     assert_ok(&out);
     assert!(
         stdout(&out).contains("No sign-in was stored."),
@@ -640,8 +653,9 @@ fn google_drive_sign_in_and_sign_out() {
     );
 
     let missing = sb.cli(&[
-        "google-drive",
+        "auth",
         "sign-in",
+        "google-drive",
         "/definitely/not/here.json",
         "--token-path",
         &token_arg,
@@ -653,7 +667,13 @@ fn google_drive_sign_in_and_sign_out() {
         stderr(&missing)
     );
 
-    let no_builtin = sb.cli(&["google-drive", "sign-in", "--token-path", &token_arg]);
+    let no_builtin = sb.cli(&[
+        "auth",
+        "sign-in",
+        "google-drive",
+        "--token-path",
+        &token_arg,
+    ]);
     assert_eq!(no_builtin.status.code(), Some(1));
     assert!(
         stderr(&no_builtin).contains("no built-in OAuth client"),
@@ -674,7 +694,13 @@ fn google_drive_sign_in_and_sign_out() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let out = sb.cli(&["google-drive", "sign-out", "--token-path", &token_arg]);
+    let out = sb.cli(&[
+        "auth",
+        "sign-out",
+        "google-drive",
+        "--token-path",
+        &token_arg,
+    ]);
     assert_ok(&out);
     assert!(stdout(&out).contains("Signed out."), "{}", stdout(&out));
     assert!(!token.exists());
