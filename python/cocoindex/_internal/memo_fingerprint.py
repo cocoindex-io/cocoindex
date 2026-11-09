@@ -220,7 +220,14 @@ def _type_identity_parts(
     type's own declared or registered stable ID still wins, but when no stable
     ID applies the identity stays with the key function's owner type.
     """
-    stable_type_id = getattr(typ, "__coco_memo_type_id__", None)
+    stable_type_id = next(
+        (
+            vars(c)["__coco_memo_type_id__"]
+            for c in typ.__mro__
+            if "__coco_memo_type_id__" in vars(c)
+        ),
+        None,
+    )
     if not isinstance(stable_type_id, str):
         if registry is not None and registry.stable_type_id is not None:
             stable_type_id = registry.stable_type_id
