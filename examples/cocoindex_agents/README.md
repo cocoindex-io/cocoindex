@@ -19,8 +19,8 @@ input.
 
 ## Running
 
-It runs on the CocoIndex in this repository: it uses APIs no release has
-yet, so install it from a clone, not from PyPI. Once, from the repository
+It needs CocoIndex 1.2.0 or later. The steps below run it from a clone of
+this repository, on the CocoIndex built from it. Once, from the repository
 root:
 
 ```sh
@@ -81,6 +81,5 @@ From the repository root, after `uv run maturin develop`:
 uv run pytest examples/cocoindex_agents/tests
 ```
 
-The tests need no API key. They also need this repository's CocoIndex, so
-there is no standalone install yet: `uv sync` inside this directory would
-take the last CocoIndex release from PyPI, which lacks APIs this package uses.
+The tests need no API key. They run on this repository's CocoIndex, in the
+same environment as the steps under [Running](#running).
