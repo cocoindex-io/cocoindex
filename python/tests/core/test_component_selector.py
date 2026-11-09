@@ -675,7 +675,7 @@ def test_memoized_function_that_mounts_is_rejected_even_if_its_mounts_are_skippe
 
     _source.update(a=1)
     app = _app("memo_fn", main)
-    with pytest.raises(ValueError, match="memo=True mounted child components"):
+    with pytest.raises(ValueError, match="mounted child components"):
         app.update_blocking(component_selector=[_items_path("nope")])
 
 

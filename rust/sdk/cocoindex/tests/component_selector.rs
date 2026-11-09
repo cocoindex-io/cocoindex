@@ -1602,7 +1602,7 @@ async fn memo_mount_app(
     .await
 }
 
-const MEMO_MOUNT_ERROR: &str = "memo=True mounted child components";
+const MEMO_MOUNT_ERROR: &str = "mounted child components";
 
 /// `Ctx::mount` in a memoized function is rejected whether or not the
 /// selector skips the child: its mount frame joins the function's frame
