@@ -1060,7 +1060,11 @@ def check_reached_like_replay(
                 continue
             if selection(sel, a, always) == "selected":
                 return True
-            if "Component" in str(before.details.get(a, ("",))[0]):
+            detail = before.details.get(a)
+            # A component whose delete failed has lost its entry in its
+            # parent, so inspect lists it as a directory; its processor
+            # name still marks it a component.
+            if detail is not None and ("Component" in detail[0] or detail[2]):
                 return False
         return True
 
