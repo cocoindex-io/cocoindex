@@ -368,6 +368,139 @@ async fn listed_paths_round_trip_into_a_selector() {
     );
 }
 
+/// An iterator that counts the items taken from it.
+struct Counted<I> {
+    inner: I,
+    taken: Arc<AtomicUsize>,
+}
+
+impl<I: Iterator> Iterator for Counted<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<I::Item> {
+        self.taken.fetch_add(1, Ordering::SeqCst);
+        self.inner.next()
+    }
+}
+
+fn counted<T>(items: Vec<T>, taken: &Arc<AtomicUsize>) -> Counted<std::vec::IntoIter<T>> {
+    Counted {
+        inner: items.into_iter(),
+        taken: taken.clone(),
+    }
+}
+
+async fn sources_app(
+    app: &App,
+    out: std::path::PathBuf,
+    version: u32,
+    taken: [Arc<AtomicUsize>; 3],
+    opts: UpdateOptions,
+) {
+    app.update_with_options(opts, move |ctx| async move {
+        let ctx = &ctx;
+        let target = DirTarget::mount(ctx, &out)?;
+        let [each_taken, macro_taken, closure_taken] = taken;
+        let items = vec![
+            ("x".to_string(), "x".to_string()),
+            ("y".to_string(), "y".to_string()),
+        ];
+        cocoindex::mount_each!("each", counted(items, &each_taken), |name| write_item(
+            ctx,
+            name,
+            version,
+            target.clone()
+        ))
+        .await?;
+        let items = vec![("m".to_string(), "m".to_string())];
+        cocoindex::mount_each!("macro", counted(items, &macro_taken), |name| write_item(
+            ctx,
+            name,
+            version,
+            target.clone()
+        ))
+        .await?;
+        let tgt = target.clone();
+        ctx.with_subpath("closure")
+            .mount_each(
+                counted(vec!["c".to_string()], &closure_taken),
+                |name| name.clone(),
+                move |c, name| {
+                    let tgt = tgt.clone();
+                    async move {
+                        ran(&c, format!("closure:{name}"));
+                        tgt.declare_file(
+                            &c,
+                            &format!("{name}.txt"),
+                            format!("{name}@{version}").as_bytes(),
+                        )
+                    }
+                },
+            )
+            .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+/// A `mount_each` whose every child the selector leaves out does not read its
+/// source at all; one with a selected child reads it and runs only that child.
+#[tokio::test]
+async fn a_mount_each_the_selector_leaves_out_never_reads_its_items() {
+    let (app, dir, log) = temp_app("unread_sources").await;
+    let out = dir.path().join("out");
+    let new_counters = || std::array::from_fn(|_| Arc::new(AtomicUsize::new(0)));
+    let taken: [Arc<AtomicUsize>; 3] = new_counters();
+    sources_app(
+        &app,
+        out.clone(),
+        1,
+        taken.clone(),
+        UpdateOptions::default(),
+    )
+    .await;
+    let read_all: Vec<usize> = taken.iter().map(|t| t.load(Ordering::SeqCst)).collect();
+    assert_eq!(read_all, [3, 2, 2]);
+    assert_eq!(
+        drain_sorted(&log),
+        vec!["closure:c", "write_item:m", "write_item:x", "write_item:y"]
+    );
+
+    let taken: [Arc<AtomicUsize>; 3] = new_counters();
+    sources_app(
+        &app,
+        out.clone(),
+        2,
+        taken.clone(),
+        select([p(&[s("each"), s("y")])]),
+    )
+    .await;
+    let read_now: Vec<usize> = taken.iter().map(|t| t.load(Ordering::SeqCst)).collect();
+    assert_eq!(read_now, [3, 0, 0]);
+    assert_eq!(drain_sorted(&log), vec!["write_item:y"]);
+    assert_eq!(read(&out.join("x.txt")).as_deref(), Some("x@1"));
+    assert_eq!(read(&out.join("y.txt")).as_deref(), Some("y@2"));
+    assert_eq!(read(&out.join("m.txt")).as_deref(), Some("m@1"));
+    assert_eq!(read(&out.join("c.txt")).as_deref(), Some("c@1"));
+
+    // A full update reads everything again and catches the rest up.
+    sources_app(
+        &app,
+        out.clone(),
+        2,
+        new_counters(),
+        UpdateOptions::default(),
+    )
+    .await;
+    assert_eq!(
+        drain_sorted(&log),
+        vec!["closure:c", "write_item:m", "write_item:x"]
+    );
+    assert_eq!(read(&out.join("m.txt")).as_deref(), Some("m@2"));
+    assert_eq!(read(&out.join("c.txt")).as_deref(), Some("c@2"));
+}
+
 // ---------------------------------------------------------------------------
 // scope / with_subpath / stats_group / Ctx::mount / mount_target
 // ---------------------------------------------------------------------------

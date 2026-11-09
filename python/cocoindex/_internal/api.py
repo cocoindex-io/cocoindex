@@ -10,9 +10,11 @@ from typing import (
     Generic,
     Iterable,
     ParamSpec,
+    Protocol,
     TypeVar,
     cast,
     overload,
+    runtime_checkable,
 )
 
 from . import core, environment
@@ -561,13 +563,35 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         )
         core_handles.append(core_handle)
 
-    if isinstance(items, AsyncIterable):
+    # Under a selector that leaves out some keys, read only the ones it may
+    # run: none at all, or, from a source that reads by key, just those.
+    keys = core.mount_each_keys(
+        child_path, parent_ctx._core_processor_ctx, parent_ctx._core_fn_call_ctx
+    )
+    if keys is not None and (not keys or isinstance(items, _ReadableByKey)):
+        if keys:
+            async for key, item in items.__coco_items_for_keys__(keys):
+                await _mount_one(key, item)
+    elif isinstance(items, AsyncIterable):
         async for key, item in items:
             await _mount_one(key, item)
     else:
         for key, item in items:
             await _mount_one(key, item)
     return ComponentMountHandle(core_handles)
+
+
+@runtime_checkable
+class _ReadableByKey(Protocol):
+    """Items of a source that can read single keys, as well as list them all.
+    An update that runs only some components (``component_selector``) reads
+    just the keys it may run instead of listing everything."""
+
+    def __coco_items_for_keys__(
+        self, keys: list[StableKey], /
+    ) -> AsyncIterable[tuple[StableKey, Any]]:
+        """The items with these keys that the source holds, in any order."""
+        ...
 
 
 # Keep map task failures wrapped so a user function can return an Exception

@@ -271,7 +271,15 @@ app.update_with_options(
 
 A selector is a set of component paths, each a `StablePath` built from the keys of the mount calls: in Python, a mount without a subpath adds the `Symbol` of the function's name (in Rust, a `Str` key), `coco.component_subpath("process", key)` adds its keys, and a key keeps its type (`1` is not `"1"`). A path names one component and everything below it, so `coco.ROOT_PATH / "process"` selects everything mounted under it. Selecting a path that does not exist is not an error: it selects nothing, so check that a path you built is one the app has.
 
-To get the paths of an app, call `await cocoindex.inspect.list_stable_paths(app)` (or `list_stable_paths_sync(app)`): it returns `StablePath` values that you can pass to `component_selector` as they are. [`cocoindex show`](#managing-apps-with-cli) prints the same paths for reading: `@name` is a `Symbol`, a quoted part is a string, and a bare number is an int. There is no parser from that text back to a `StablePath`, so keep the typed paths, for example in a UI.
+To get the paths of an app, call `await cocoindex.inspect.list_stable_paths(app)` (or `list_stable_paths_sync(app)`): it returns `StablePath` values that you can pass to `component_selector` as they are. [`cocoindex show`](#managing-apps-with-cli) prints the same paths for reading: `@name` is a `Symbol`, a quoted part is a string, and a bare number is an int.
+
+From the command line, pass the paths as `cocoindex show` prints them to `cocoindex update --select`, once per path. Quote each one for the shell:
+
+```sh
+cocoindex update main.py --select '/@process_file/"docs/a.md"' --select '/@process_file/"docs/b.md"'
+```
+
+For a Rust app, the [`cocoindex` CLI for Rust](../cli_rust) takes the same flag; a Rust mount key is a string, so write `'/"process_file"/"docs/a.md"'`. `--select` works with `--preview`, `--live` and `--full-reprocess`, but not with `--reset`. A path that is not written as `cocoindex show` prints it, such as `/process_file/docs/a.md`, is an error.
 
 What each component does in such an update:
 
@@ -298,7 +306,7 @@ Details to rely on:
 - **Preview** returns the actions of the components that ran: the selected ones, plus any changes to the own target states of the ancestors and `use_mount` children that ran. As in any preview, the deletion of a component that is no longer mounted is not previewed, and a failure that happens only when a sink applies its actions shows up only in the update.
 - **Taking over a target state.** A selected component that declares a target state another component owns takes it over, as it would in a plain update. If the update leaves the other component out, it and its ancestors lose their memos, so that the next update that covers them runs them. The rest of the other component is left alone.
 - **Empty selector.** `component_selector=[]` selects nothing: the root and its `use_mount` children run, and no other component does. `None`, the default, is a plain update.
-- A source is still listed in full, since `mount_each()` filters item by item. Reading only the selected keys from a source that supports point reads is not implemented yet.
+- **A source is read only as far as needed.** A `mount_each()` that the selector leaves out does not read its items at all. One that is only an ancestor of selected paths reads just the selected keys from a source that can read by key, such as `localfs.walk_dir(...).items()` outside live mode, which checks the selected files instead of walking the directory. A selected key that the source no longer has is deleted, as in a plain update. Any other source is listed in full, and `mount_each()` skips the unselected items. A `mount_each()` that is not read cannot report a duplicate key, so a key used twice may only show up in a plain update.
 - In Rust, the selector filters `ctx.mount`, `ctx.mount_each` and live components. `ctx.scope`, `use_mount!` and `use_mount_each!` return values, so they always run.
 
 ## How an app runs

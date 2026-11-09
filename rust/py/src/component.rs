@@ -8,7 +8,7 @@ use crate::{
     },
     prelude::*,
     runtime::{PyAsyncContext, PyCallback, build_on_error},
-    stable_path::PyStablePath,
+    stable_path::{PyStableKey, PyStablePath},
     value::PyStoredValue,
 };
 
@@ -238,6 +238,26 @@ pub fn skips_mount(
         .0
         .skips_mount(&fn_ctx.0, &stable_path.0)
         .into_py_result()
+}
+
+/// The item keys a `mount_each` at `stable_path` can run: `None` for every
+/// key. See `ComponentProcessorContext::mount_each_keys`.
+#[pyfunction]
+pub fn mount_each_keys(
+    py: Python<'_>,
+    stable_path: PyStablePath,
+    comp_ctx: PyComponentProcessorContext,
+    fn_ctx: &PyFnCallContext,
+) -> PyResult<Option<Vec<Py<PyAny>>>> {
+    comp_ctx
+        .0
+        .mount_each_keys(&fn_ctx.0, &stable_path.0)
+        .map(|keys| {
+            keys.into_iter()
+                .map(|key| PyStableKey(key).into_pyobject(py).map(|b| b.unbind()))
+                .collect()
+        })
+        .transpose()
 }
 
 #[pyfunction]

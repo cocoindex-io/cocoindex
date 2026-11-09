@@ -89,6 +89,28 @@ impl ComponentSelector {
         }
     }
 
+    /// The keys of the children of `path` that are selected or lead to a
+    /// selected path: `None` when `path` is selected, so every child is.
+    pub fn selected_child_keys(&self, path: &StablePath) -> Option<Vec<StableKey>> {
+        if self.within_selected {
+            return None;
+        }
+        let mut node = &*self.root;
+        for key in path.iter() {
+            if node.selected {
+                return None;
+            }
+            let Some(child) = node.children.get(key) else {
+                return Some(Vec::new());
+            };
+            node = child;
+        }
+        if node.selected {
+            return None;
+        }
+        Some(node.children.keys().cloned().collect())
+    }
+
     /// The path is selected, directly or through a prefix.
     pub fn covers(&self, path: &StablePath) -> bool {
         self.classify(path) == ComponentSelection::Selected
@@ -180,6 +202,31 @@ mod tests {
             selector.classify(&path(&[s("other")])),
             ComponentSelection::Unselected
         );
+    }
+
+    #[test]
+    fn selected_child_keys_lists_what_leads_to_a_selected_path() {
+        let selector = ComponentSelector::new([
+            path(&[s("process"), s("a"), s("chunk")]),
+            path(&[s("process"), s("b")]),
+            path(&[s("other")]),
+        ]);
+        let mut keys = selector
+            .selected_child_keys(&path(&[s("process")]))
+            .unwrap();
+        keys.sort();
+        assert_eq!(keys, vec![s("a"), s("b")]);
+        assert_eq!(selector.selected_child_keys(&path(&[s("other")])), None);
+        assert_eq!(
+            selector.selected_child_keys(&path(&[s("other"), s("x")])),
+            None
+        );
+        assert_eq!(
+            selector.selected_child_keys(&path(&[s("none")])),
+            Some(Vec::new())
+        );
+        let within = ComponentSelector::scoped_to(Some(&selector), &path(&[s("other")])).unwrap();
+        assert_eq!(within.selected_child_keys(&path(&[s("process")])), None);
     }
 
     #[test]

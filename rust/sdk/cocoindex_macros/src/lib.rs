@@ -1668,7 +1668,9 @@ fn expand_single_mount(
 /// `coco.mount_each`: evaluates to a `Result<ComponentMountHandle>` whose
 /// `ready().await` waits until every child's target states are synced; the
 /// children are mounted as `items` is consumed, and `my_fn` returns
-/// `Result<()>`. `use_mount_each!` is the form that returns the values.
+/// `Result<()>`. When the update's `component_selector` leaves out every
+/// child under the prefix, `items` is not read at all. `use_mount_each!` is
+/// the form that returns the values.
 ///
 /// The closure binds the item's **value**; inside the call, `ctx` → child
 /// scope, the bound `item` → that value, and any other arguments are captured

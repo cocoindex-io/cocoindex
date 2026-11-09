@@ -49,6 +49,8 @@ import random
 import shlex
 import subprocess
 import threading
+import zlib
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -327,6 +329,30 @@ def declare_container(
     )
 
 
+class _KeyedItems:
+    """Items that a selective update can read by key, as `localfs` items can."""
+
+    def __init__(self, pairs: list[tuple[Any, Any]]) -> None:
+        self._pairs = pairs
+
+    def __iter__(self) -> Iterator[tuple[Any, Any]]:
+        return iter(self._pairs)
+
+    async def __coco_items_for_keys__(
+        self, keys: list[Any]
+    ) -> AsyncIterator[tuple[Any, Any]]:
+        for key in keys:
+            for k, v in self._pairs:
+                if type(k) is type(key) and k == key:
+                    yield k, v
+
+
+def _items(g: Any, items: dict[Any, Any]) -> Any:
+    """Half of the groups read by key under a selector, the other half list."""
+    pairs = [(k, (k, v)) for k, v in items.items()]
+    return _KeyedItems(pairs) if zlib.crc32(g.name.encode()) % 2 else pairs
+
+
 @coco.fn
 async def app_main(side: str) -> None:
     for g in list(PROGRAM.groups.values()):
@@ -336,7 +362,7 @@ async def app_main(side: str) -> None:
             await coco.mount_each(
                 coco.component_subpath(*base),
                 leaf_fn(g),
-                [(k, (k, v)) for k, v in items.items()],
+                _items(g, items),
                 side,
                 base,
                 g.name,
@@ -372,7 +398,7 @@ async def app_main(side: str) -> None:
             await coco.mount_each(
                 coco.component_subpath(*base, "rows"),
                 _wrapped("cleaf", _cleaf, g.memo, g.version),
-                [(k, (k, v)) for k, v in items.items()],
+                _items(g, items),
                 side,
                 base + ("rows",),
                 provider,

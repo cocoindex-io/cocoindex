@@ -1452,6 +1452,23 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         Ok(true)
     }
 
+    /// The keys a mount of one component per key under `path` (`mount_each`)
+    /// can run: `None` for every key, else only these, which may be none. A
+    /// host that gets a list need not list its source in full: it can read
+    /// just these keys, and with an empty list it need not read at all. The
+    /// run records that it leaves the other keys out, as
+    /// [`Self::skips_mount`] records one skip.
+    pub fn mount_each_keys(
+        &self,
+        fn_ctx: &FnCallContext,
+        path: &StablePath,
+    ) -> Option<Vec<StableKey>> {
+        let keys = self.component_selector()?.selected_child_keys(path)?;
+        fn_ctx.update(|inner| inner.has_child_components = true);
+        self.mark_left_out_children();
+        Some(keys)
+    }
+
     pub fn live(&self) -> bool {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.live,

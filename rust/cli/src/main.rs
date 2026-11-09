@@ -16,8 +16,10 @@ mod target;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::str::FromStr;
 
 use clap::{Args, Parser, Subcommand};
+use cocoindex::StablePath;
 
 use build::BuildOpts;
 use commands::{DropArgs, ShowArgs, UpdateArgs};
@@ -134,6 +136,11 @@ enum Command {
         /// Compute target actions without applying them. Prints planned actions.
         #[arg(long)]
         preview: bool,
+        /// Run only the component at PATH and the components below it; repeat to run several.
+        /// Write PATH as `cocoindex show` prints it, such as '/"process_file"/"docs/a.md"'.
+        /// Other components are not run and not treated as gone.
+        #[arg(long, value_name = "PATH", value_parser = parse_selected_path)]
+        select: Vec<StablePath>,
         #[command(flatten)]
         build: BuildArgs,
     },
@@ -271,6 +278,7 @@ async fn run(cli: Cli) -> CliResult<()> {
             full_reprocess,
             live,
             preview,
+            select,
             build,
         } => {
             commands::update(UpdateArgs {
@@ -281,6 +289,7 @@ async fn run(cli: Cli) -> CliResult<()> {
                 full_reprocess,
                 live,
                 preview,
+                select,
                 build: build.opts(quiet),
             })
             .await
@@ -316,6 +325,11 @@ async fn run(cli: Cli) -> CliResult<()> {
     }
 }
 
+/// A `--select` path, in the form `cocoindex show` prints.
+fn parse_selected_path(text: &str) -> Result<StablePath, String> {
+    StablePath::from_str(text).map_err(|err| err.to_string())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -327,5 +341,48 @@ async fn main() -> ExitCode {
             }
             ExitCode::from(err.code)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("cocoindex").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn update_takes_repeated_select_paths() {
+        let cli = parse(&[
+            "update",
+            "--select",
+            r#"/@process/"a.md""#,
+            "--select",
+            "/3",
+        ])
+        .unwrap();
+        let Command::Update { select, .. } = cli.command else {
+            panic!("not an update");
+        };
+        let shown: Vec<String> = select.iter().map(ToString::to_string).collect();
+        assert_eq!(shown, [r#"/@process/"a.md""#, "/3"]);
+    }
+
+    #[test]
+    fn select_rejects_a_path_not_in_show_form() {
+        let err = parse(&["update", "--select", "process/a.md"])
+            .err()
+            .unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+        assert!(
+            err.to_string().contains("cannot parse component path"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn select_is_only_for_update() {
+        assert!(parse(&["drop", "--select", "/3"]).is_err());
     }
 }

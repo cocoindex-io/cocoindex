@@ -1599,6 +1599,9 @@ impl Ctx {
     /// All items are reported under one processor name, `mount_each`, in
     /// update stats and `cocoindex show -l`.
     ///
+    /// When the update's `component_selector` leaves out every child here,
+    /// `items` is not read at all: neither `key_fn` nor `f` runs.
+    ///
     /// # Errors
     ///
     /// Returns an error when `key_fn` yields the same key twice, or when a
@@ -1732,6 +1735,19 @@ impl Ctx {
                 deadline: self.deadline,
             });
         };
+        // A selector that leaves out every child here: the source is not read
+        // at all, so no item, key or closure of the caller's runs.
+        let mount_each_keys = {
+            let fn_ctx = Arc::new(FnCallContext::default());
+            let _frame = parent.frame_guard(fn_ctx.clone());
+            comp_ctx.mount_each_keys(&fn_ctx, &parent.mount_base_path(comp_ctx))
+        };
+        if mount_each_keys.is_some_and(|keys| keys.is_empty()) {
+            return Ok(ComponentMountHandle {
+                inner: MountHandleInner::Core(Vec::new()),
+                deadline: self.deadline,
+            });
+        }
         let mut handles = Vec::new();
         while let Some((key, value)) = items.next().await {
             parent.check_cancellation()?;
