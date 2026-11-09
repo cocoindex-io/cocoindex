@@ -395,11 +395,6 @@ def register_memo_type(
     ``typ``: omitting ``stable_type_id`` clears any previous registered stable
     type ID, and omitting ``key_fn`` or passing ``None`` clears any previous
     key/state functions.
-
-    When a registered stable type ID should affect a value used in ``deps=``,
-    call this before the corresponding ``@coco.fn`` / ``@coco.fn.as_async``
-    decorator is applied because ``deps`` fingerprints are computed at
-    decoration time.
     """
 
     if not isinstance(typ, type):

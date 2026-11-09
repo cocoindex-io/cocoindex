@@ -382,17 +382,9 @@ async fn summarize(_ctx: &Ctx, text: &str) -> Result<String> { /* ... */ }
 
 The value is canonicalized through the [memoization-key pipeline](../advanced_topics/memoization_keys), including custom memo keys, registered memo key functions, stable type IDs, and built-in handling for primitives, containers, dataclasses, Pydantic models, and class objects.
 
-:::::caution[Snapshotted at decoration time]
-`deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call.
-
-Only `deps` is snapshotted at decoration time; regular function arguments are fingerprinted when the function is called.
-
-This has three consequences:
-
-- Register stable type IDs before decorating any function whose `deps` include values of that type: define `__coco_memo_type_id__` on the class, or call `register_memo_type(..., stable_type_id=...)`, before any `@coco.fn(..., deps=...)` or `@coco.fn.as_async(..., deps=...)` decorator that references those values.
-- A later registration can affect future argument fingerprints, but it cannot retroactively update the logic fingerprint already computed for that decorated function.
-- For per-call or per-instance values (instance attributes in a bound method, request-scoped config, anything that changes at runtime) pass them as regular function arguments instead, so the memoization layer observes each new value.
-:::::
+:::caution[Snapshotted at decoration time]
+`deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call. For per-call or per-instance values (instance attributes in a bound method, request-scoped config, anything that changes at runtime) pass them as regular function arguments instead, so the memoization layer observes each new value.
+:::
 
 `deps` requires `logic_tracking` to be enabled; combining `deps=<value>` with `logic_tracking=None` raises `ValueError`.
 
