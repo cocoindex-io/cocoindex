@@ -363,8 +363,9 @@ def test_the_sign_in_discloses_its_use_of_google_data_before_the_consent(
     result = CliRunner().invoke(
         cli,
         [
-            "google-drive",
+            "auth",
             "sign-in",
+            "google-drive",
             str(flow.client_secrets),
             "--token-path",
             str(flow.token_path),
@@ -550,7 +551,7 @@ def test_a_run_without_a_sign_in_says_how_to_sign_in(flow: Flow) -> None:
         asyncio.run(first())
     message = str(excinfo.value)
     assert str(flow.token_path) in message
-    assert "cocoindex google-drive sign-in" in message
+    assert "cocoindex auth sign-in google-drive" in message
 
 
 def test_exactly_one_credential_kind(flow: Flow) -> None:
@@ -662,11 +663,17 @@ def test_cli_sign_in_and_sign_out(flow: Flow, monkeypatch: pytest.MonkeyPatch) -
 
     _script_sign_in(flow, monkeypatch)
     runner = CliRunner()
+    # `auth sign-in` and `auth sign-out` list one command per provider.
+    for action in ("sign-in", "sign-out"):
+        result = runner.invoke(cli, ["auth", action, "--help"])
+        assert result.exit_code == 0, result.output
+        assert "google-drive" in result.output
     result = runner.invoke(
         cli,
         [
-            "google-drive",
+            "auth",
             "sign-in",
+            "google-drive",
             str(flow.client_secrets),
             "--token-path",
             str(flow.token_path),
@@ -675,13 +682,13 @@ def test_cli_sign_in_and_sign_out(flow: Flow, monkeypatch: pytest.MonkeyPatch) -
     assert result.exit_code == 0, result.output
     assert f"Signed in as {EMAIL}." in result.output
     result = runner.invoke(
-        cli, ["google-drive", "sign-out", "--token-path", str(flow.token_path)]
+        cli, ["auth", "sign-out", "google-drive", "--token-path", str(flow.token_path)]
     )
     assert result.exit_code == 0, result.output
     assert "Signed out." in result.output
     assert not flow.token_path.exists()
     result = runner.invoke(
-        cli, ["google-drive", "sign-out", "--token-path", str(flow.token_path)]
+        cli, ["auth", "sign-out", "google-drive", "--token-path", str(flow.token_path)]
     )
     assert "No sign-in was stored." in result.output
 
@@ -713,7 +720,7 @@ def test_without_a_client_file_the_built_in_client_signs_in(
     _script_sign_in(flow, monkeypatch)
     flow.token_path.unlink()
     result = CliRunner().invoke(
-        cli, ["google-drive", "sign-in", "--token-path", str(flow.token_path)]
+        cli, ["auth", "sign-in", "google-drive", "--token-path", str(flow.token_path)]
     )
     assert result.exit_code == 0, result.output
     assert f"Signed in as {EMAIL}." in result.output
@@ -744,7 +751,7 @@ def test_a_build_without_the_built_in_client_asks_for_a_client_file(
     assert not flow.opened and not flow.token_path.exists()
 
     result = CliRunner().invoke(
-        cli, ["google-drive", "sign-in", "--token-path", str(flow.token_path)]
+        cli, ["auth", "sign-in", "google-drive", "--token-path", str(flow.token_path)]
     )
     assert result.exit_code == 1
     assert "no built-in OAuth client" in result.output

@@ -1347,16 +1347,28 @@ def init(project_name: str | None, dir: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# google-drive: the interactive sign-in of the Google Drive connector
+# auth: the interactive sign-ins of connectors that read a personal account.
+# `auth sign-in <provider>` and `auth sign-out <provider>`, one command per
+# provider under each, each with the arguments its provider needs.
 # ---------------------------------------------------------------------------
 
 
-@cli.group("google-drive")
-def google_drive_group() -> None:
-    """Sign a personal Google account in to the Google Drive connector (experimental)."""
+@cli.group("auth")
+def auth_group() -> None:
+    """Sign in to or out of the accounts connectors read (experimental)."""
 
 
-@google_drive_group.command("sign-in")
+@auth_group.group("sign-in")
+def auth_sign_in_group() -> None:
+    """Sign in to an account a connector reads."""
+
+
+@auth_group.group("sign-out")
+def auth_sign_out_group() -> None:
+    """Sign out of an account a connector reads."""
+
+
+@auth_sign_in_group.command("google-drive")
 @click.argument(
     "client_secrets",
     required=False,
@@ -1388,15 +1400,16 @@ def google_drive_sign_in(client_secrets: str | None, token_path: str | None) -> 
     click.echo(f"Signed in as {email}.")
 
 
-@google_drive_group.command("sign-out")
+@auth_sign_out_group.command("google-drive")
 @click.option(
     "--token-path",
     type=click.Path(dir_okay=False),
     default=None,
-    help="The sign-in to end; default: the one `sign-in` writes by default.",
+    help="The sign-in to end; default: the one `auth sign-in google-drive` "
+    "writes by default.",
 )
 def google_drive_sign_out(token_path: str | None) -> None:
-    """Revoke the stored sign-in at Google and delete its token file."""
+    """Revoke the sign-in at Google and delete its token file."""
     from cocoindex.connectors.google_drive import SignInError, UserAccount
 
     try:

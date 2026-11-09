@@ -739,10 +739,10 @@ class UserAccount:
     """A personal Google account signed in with OAuth, kept in a token file.
 
     Experimental. ``sign_in`` is the interactive step; run it once, outside any
-    CocoIndex run (``cocoindex google-drive sign-in`` does the same from the
-    shell). A run then passes ``UserAccount()`` to ``GoogleDriveSource``, which
-    reads the file and raises ``SignInRequiredError`` when it holds no usable
-    sign-in.
+    CocoIndex run (``cocoindex auth sign-in google-drive`` does the same from
+    the shell). A run then passes ``UserAccount()`` to ``GoogleDriveSource``,
+    which reads the file and raises ``SignInRequiredError`` when it holds no
+    usable sign-in.
     """
 
     def __init__(self, token_path: str | os.PathLike[str] | None = None) -> None:
@@ -814,7 +814,8 @@ class UserAccount:
         if tokens is None:
             raise SignInRequiredError(
                 f"No usable Google sign-in is stored at {self._token_path}. "
-                "Sign in once with `cocoindex google-drive sign-in <client_secret.json>` "
+                "Sign in once with "
+                "`cocoindex auth sign-in google-drive <client_secret.json>` "
                 "or `UserAccount().sign_in(...)`."
             )
         return tokens

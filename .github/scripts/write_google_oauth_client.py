@@ -6,7 +6,8 @@ The release workflow runs this in every job that builds a wheel or the sdist,
 with the repository's Actions secrets GOOGLE_OAUTH_CLIENT_ID and
 GOOGLE_OAUTH_CLIENT_SECRET in the environment. It writes the client in the
 shape of the JSON Google downloads for a Desktop app client, which the Google
-Drive connector reads when `cocoindex google-drive sign-in` gets no client file.
+Drive connector reads when `cocoindex auth sign-in google-drive` gets no
+client file.
 
 - Neither secret set: writes nothing, and the build has no built-in client.
   This is the state until Google has verified the client.

@@ -1747,8 +1747,8 @@ async fn run_consent(
 /// Python SDK reads and writes too.
 ///
 /// Experimental. [`sign_in`](Self::sign_in) is the interactive step; run it once,
-/// outside any CocoIndex run (`cocoindex google-drive sign-in` in the Python
-/// CLI does the same from the shell). A run then builds a
+/// outside any CocoIndex run (`cocoindex auth sign-in google-drive`, in the Rust
+/// CLI or the Python one, does the same from the shell). A run then builds a
 /// [`GoogleDriveClient::from_user_account`], which reads the file and errors
 /// when it holds no usable sign-in.
 #[derive(Clone, Debug)]
@@ -1885,7 +1885,7 @@ impl UserAccount {
         load_tokens(&self.token_path)?.ok_or_else(|| {
             SignInError::required(format!(
                 "No usable Google sign-in is stored at {}. Sign in once with \
-                 `cocoindex google-drive sign-in` or `UserAccount::sign_in(..)`.",
+                 `cocoindex auth sign-in google-drive` or `UserAccount::sign_in(..)`.",
                 self.token_path.display()
             ))
         })

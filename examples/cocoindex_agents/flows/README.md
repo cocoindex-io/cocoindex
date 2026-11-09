@@ -69,12 +69,12 @@ setup). Once:
 2. Sign in on the machine that runs the flow:
 
    ```sh
-   uv run cocoindex google-drive sign-in ~/Downloads/client_secret_XXXX.json
+   uv run cocoindex auth sign-in google-drive ~/Downloads/client_secret_XXXX.json
    ```
 
    On a host with no browser the command prints a link to open elsewhere and
    takes the address the browser lands on, pasted back. The sign-in is kept
-   in a file readable by your user only; `cocoindex google-drive sign-out`
+   in a file readable by your user only; `cocoindex auth sign-out google-drive`
    ends it.
 3. Put a few files in a Drive folder: a Google Doc, a Google Sheet, a text
    file, a PDF. The model reads a Doc as Markdown, a Sheet as CSV and a

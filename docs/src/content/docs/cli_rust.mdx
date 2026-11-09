@@ -3,12 +3,12 @@ title: The *CLI* reference
 description: >
   Reference for the `cocoindex` CLI for Rust projects — how it builds and drives
   your crate, the app target format, the three attributes an app registers with,
-  and the ls, show, update, drop, init and google-drive subcommands.
+  and the ls, show, update, drop, init and auth subcommands.
 languages: [rust]
 # The Rust page in the CLI slot: /docs/rust/cli/.
 route: cli
 ---
-The `cocoindex` CLI for Rust projects is a standalone tool for managing and inspecting your apps: `ls`, `show`, `update`, `drop`, `init` and `google-drive`. It is a binary of its own, built from the `rust/cli` crate of the repository. Python projects use the [Python CLI](/docs/cli/), which has the same subcommands.
+The `cocoindex` CLI for Rust projects is a standalone tool for managing and inspecting your apps: `ls`, `show`, `update`, `drop`, `init` and `auth`. It is a binary of its own, built from the `rust/cli` crate of the repository. Python projects use the [Python CLI](/docs/cli/), which has the same subcommands.
 
 ## How it works
 
@@ -214,16 +214,16 @@ The scaffold is a crate with `Cargo.toml`, `src/main.rs` (a `lifespan`, an `app`
 * `--dir <DIR>`: Directory to create the project in.
 * `--sdk-path <PATH>`: Depend on a local checkout of the cocoindex Rust SDK (`rust/sdk/cocoindex`) instead of the git repository.
 
-### `google-drive`
+### `auth`
 
-Sign a personal Google account in to the Google Drive connector (experimental). The Python CLI has the same two commands over the same token file, so one sign-in serves both SDKs; see [Google Drive](./connectors/google_drive#signing-in-with-a-personal-account).
+Sign in to or out of the accounts connectors read (experimental). `auth sign-in` and `auth sign-out` have one command per provider, each with the arguments its provider needs; `cocoindex auth sign-in --help` lists them. The provider today is `google-drive`. The Python CLI has the same commands over the same token file, so one sign-in serves both SDKs; see [Google Drive](./connectors/google_drive#signing-in-with-a-personal-account).
 
 ```sh
-cocoindex google-drive sign-in [CLIENT_SECRETS]
-cocoindex google-drive sign-out
+cocoindex auth sign-in google-drive [CLIENT_SECRETS]
+cocoindex auth sign-out google-drive
 ```
 
-`sign-in` opens the consent page in the browser, or prints the link when this host has none, and keeps the tokens in a file readable by this user only. It uses CocoIndex's own OAuth client when this release includes one; to use a Desktop-app OAuth client of your own, pass `CLIENT_SECRETS`, the JSON file you downloaded for it. `sign-out` revokes the stored sign-in at Google and deletes its token file.
+`auth sign-in google-drive` opens the consent page in the browser, or prints the link when this host has none, and keeps the tokens in a file readable by this user only. It uses CocoIndex's own OAuth client when this release includes one; to use a Desktop-app OAuth client of your own, pass `CLIENT_SECRETS`, the JSON file you downloaded for it. `auth sign-out google-drive` revokes the stored sign-in at Google and deletes its token file.
 
 **Options:**
 

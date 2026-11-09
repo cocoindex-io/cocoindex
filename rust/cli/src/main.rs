@@ -153,9 +153,9 @@ enum Command {
         #[command(flatten)]
         build: BuildArgs,
     },
-    /// Sign a personal Google account in to the Google Drive connector (experimental).
-    #[command(name = "google-drive", subcommand)]
-    GoogleDrive(GoogleDriveCommand),
+    /// Sign in to or out of the accounts connectors read (experimental).
+    #[command(subcommand)]
+    Auth(AuthCommand),
     /// Initialize a new Rust CocoIndex project.
     Init {
         /// Name of the project (defaults to the directory name).
@@ -170,8 +170,20 @@ enum Command {
     },
 }
 
+/// `auth sign-in <provider>` and `auth sign-out <provider>`: one command per
+/// provider under each, each with the arguments its provider needs.
 #[derive(Subcommand)]
-enum GoogleDriveCommand {
+enum AuthCommand {
+    /// Sign in to an account a connector reads.
+    #[command(name = "sign-in", subcommand)]
+    SignIn(SignInCommand),
+    /// Sign out of an account a connector reads.
+    #[command(name = "sign-out", subcommand)]
+    SignOut(SignOutCommand),
+}
+
+#[derive(Subcommand)]
+enum SignInCommand {
     /// Sign in with a Google account to read its Google Drive.
     ///
     /// Uses CocoIndex's own OAuth client when this release includes one. To use a
@@ -180,8 +192,8 @@ enum GoogleDriveCommand {
     ///
     /// Opens the consent page in the browser, or prints the link when this host has
     /// none, and keeps the tokens in a file readable by this user only.
-    #[command(name = "sign-in")]
-    SignIn {
+    #[command(name = "google-drive")]
+    GoogleDrive {
         #[arg(value_name = "CLIENT_SECRETS")]
         client_secrets: Option<PathBuf>,
         /// Where to keep the sign-in; default: cocoindex/google_drive_token.json under the
@@ -189,10 +201,15 @@ enum GoogleDriveCommand {
         #[arg(long, value_name = "FILE")]
         token_path: Option<PathBuf>,
     },
-    /// Revoke the stored sign-in at Google and delete its token file.
-    #[command(name = "sign-out")]
-    SignOut {
-        /// The sign-in to end; default: the one `sign-in` writes by default.
+}
+
+#[derive(Subcommand)]
+enum SignOutCommand {
+    /// Revoke the sign-in at Google and delete its token file.
+    #[command(name = "google-drive")]
+    GoogleDrive {
+        /// The sign-in to end; default: the one `auth sign-in google-drive` writes by
+        /// default.
         #[arg(long, value_name = "FILE")]
         token_path: Option<PathBuf>,
     },
@@ -284,11 +301,11 @@ async fn run(cli: Cli) -> CliResult<()> {
             })
             .await
         }
-        Command::GoogleDrive(GoogleDriveCommand::SignIn {
+        Command::Auth(AuthCommand::SignIn(SignInCommand::GoogleDrive {
             client_secrets,
             token_path,
-        }) => commands::google_drive_sign_in(client_secrets, token_path).await,
-        Command::GoogleDrive(GoogleDriveCommand::SignOut { token_path }) => {
+        })) => commands::google_drive_sign_in(client_secrets, token_path).await,
+        Command::Auth(AuthCommand::SignOut(SignOutCommand::GoogleDrive { token_path })) => {
             commands::google_drive_sign_out(token_path).await
         }
         Command::Init {
