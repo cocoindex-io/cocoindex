@@ -2367,7 +2367,7 @@ def test_fingerprint_dict_and_set_with_fingerprint_keys_order_independent() -> N
 
 def _canonical_form_fingerprint(obj: object) -> core.Fingerprint:
     return core.fingerprint_simple_object(
-        _canonicalize(obj, state=None, state_methods=[])
+        _canonicalize(obj, _seen=None, state_methods=[])
     )
 
 

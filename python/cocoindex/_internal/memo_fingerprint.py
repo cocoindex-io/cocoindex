@@ -52,24 +52,6 @@ class StateFnEntry(typing.NamedTuple):
     call: typing.Callable[[typing.Any], typing.Any]
 
 
-@dataclasses.dataclass(slots=True)
-class _CanonicalizeState:
-    """Objects on the current canonicalization path, by ``id()``."""
-
-    seen: dict[int, int] = dataclasses.field(default_factory=dict)
-
-    def remember(self, obj: object) -> int | None:
-        oid = id(obj)
-        ordinal = self.seen.get(oid)
-        if ordinal is not None:
-            return ordinal
-        self.seen[oid] = len(self.seen)
-        return None
-
-    def release(self, obj: object) -> None:
-        del self.seen[id(obj)]
-
-
 @functools.cache
 def _make_state_deserialize_fn(
     raw_state_fn: typing.Callable[..., typing.Any],
@@ -258,7 +240,7 @@ def _canonicalize_registered_memo_key(
     obj: object,
     owner: type,
     registry: _MemoTypeRegistry,
-    state: _CanonicalizeState,
+    _seen: dict[int, int],
     state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
     key_fn = registry.key_fn
@@ -286,13 +268,13 @@ def _canonicalize_registered_memo_key(
     return (
         tag,
         *identity,
-        _canonicalize(key, state, state_methods),
+        _canonicalize(key, _seen, state_methods),
     )
 
 
 def _canonicalize_class_object(
     cls: type,
-    state: _CanonicalizeState,
+    _seen: dict[int, int],
     state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
     """Canonicalize a class object without invoking memo attributes on it."""
@@ -309,7 +291,7 @@ def _canonicalize_class_object(
         )
         if registry is not None and registry.key_fn is not None:
             return _canonicalize_registered_memo_key(
-                cls, owner, registry, state, state_methods
+                cls, owner, registry, _seen, state_methods
             )
 
     cls_registry = (
@@ -337,7 +319,7 @@ def _is_pydantic_model(obj: object) -> bool:
 def _canonicalize_dataclass(
     obj: object,
     registry: _MemoTypeRegistry | None,
-    state: _CanonicalizeState,
+    _seen: dict[int, int],
     state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
     """Canonicalize a dataclass instance.
@@ -351,7 +333,7 @@ def _canonicalize_dataclass(
         "dataclass",
         *_type_identity_parts(typ, registry),
         tuple(
-            (field.name, _canonicalize(getattr(obj, field.name), state, state_methods))
+            (field.name, _canonicalize(getattr(obj, field.name), _seen, state_methods))
             for field in fields
         ),
     )
@@ -360,7 +342,7 @@ def _canonicalize_dataclass(
 def _canonicalize_pydantic(
     obj: object,
     registry: _MemoTypeRegistry | None,
-    state: _CanonicalizeState,
+    _seen: dict[int, int],
     state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
     """Canonicalize a Pydantic v2 model instance.
@@ -374,7 +356,7 @@ def _canonicalize_pydantic(
         "pydantic",
         *_type_identity_parts(typ, registry),
         tuple(
-            (name, _canonicalize(getattr(obj, name), state, state_methods))
+            (name, _canonicalize(getattr(obj, name), _seen, state_methods))
             for name in field_names
         ),
     )
@@ -562,12 +544,12 @@ def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
 
 def _canonicalize(
     obj: object,
-    state: _CanonicalizeState | None,
+    _seen: dict[int, int] | None,
     state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
     # 0) Track objects on the current recursion path
-    if state is None:
-        state = _CanonicalizeState()
+    if _seen is None:
+        _seen = {}
 
     # 1) Primitives
     if obj is None:
@@ -581,7 +563,7 @@ def _canonicalize(
     # 2) Memo key dispatch. Raw class objects skip memo attributes but honor
     # explicit key registrations on their metaclass MRO.
     if isinstance(obj, type):
-        return _canonicalize_class_object(obj, state, state_methods)
+        return _canonicalize_class_object(obj, _seen, state_methods)
 
     typ = type(obj)
     hook = getattr(obj, _MEMO_KEY_ATTR, None)
@@ -598,7 +580,7 @@ def _canonicalize(
         return (
             tag,
             *_type_identity_parts(typ, registry),
-            _canonicalize(k, state, state_methods),
+            _canonicalize(k, _seen, state_methods),
         )
 
     for owner in typ.__mro__:
@@ -607,47 +589,49 @@ def _canonicalize(
         )
         if owner_registry is not None and owner_registry.key_fn is not None:
             return _canonicalize_registered_memo_key(
-                obj, owner, owner_registry, state, state_methods
+                obj, owner, owner_registry, _seen, state_methods
             )
 
     # 3) Cycle tracking
     #
     # Note: we intentionally do this before branching on container types, so the
     # logic is shared and we support cyclic/self-referential structures.
-    ordinal = state.remember(obj)
+    oid = id(obj)
+    ordinal = _seen.get(oid)
     if ordinal is not None:
         return ("ref", ordinal)
+    _seen[oid] = len(_seen)
 
     result: Fingerprintable
 
     # 4) Containers
     if isinstance(obj, typing.Sequence):
-        result = ("seq", tuple(_canonicalize(e, state, state_methods) for e in obj))
+        result = ("seq", tuple(_canonicalize(e, _seen, state_methods) for e in obj))
 
     elif isinstance(obj, typing.Mapping):
         items: list[tuple[Fingerprintable, Fingerprintable]] = []
         for k, v in obj.items():
             items.append(
                 (
-                    _canonicalize(k, state, state_methods),
-                    _canonicalize(v, state, state_methods),
+                    _canonicalize(k, _seen, state_methods),
+                    _canonicalize(v, _seen, state_methods),
                 )
             )
         items.sort(key=lambda kv: (_stable_sort_key(kv[0]), _stable_sort_key(kv[1])))
         result = ("map", tuple(items))
 
     elif isinstance(obj, (set, frozenset)):
-        elts = [_canonicalize(e, state, state_methods) for e in obj]
+        elts = [_canonicalize(e, _seen, state_methods) for e in obj]
         elts.sort(key=_stable_sort_key)
         result = ("set", tuple(elts))
 
     # 5) Dataclass instances
     elif _is_dataclass_instance(obj):
-        result = _canonicalize_dataclass(obj, registry, state, state_methods)
+        result = _canonicalize_dataclass(obj, registry, _seen, state_methods)
 
     # 6) Pydantic v2 models
     elif _is_pydantic_model(obj):
-        result = _canonicalize_pydantic(obj, registry, state, state_methods)
+        result = _canonicalize_pydantic(obj, registry, _seen, state_methods)
 
     # 7) Fallback
     else:
@@ -662,7 +646,7 @@ def _canonicalize(
             ) from None
 
     # A completed object may be shared by a sibling without forming a cycle.
-    state.release(obj)
+    del _seen[oid]
     return result
 
 
@@ -680,13 +664,13 @@ def _make_call_canonical(
         getattr(func, "__qualname__", None),
     )
     canonical_args = tuple(
-        _canonicalize(a, state=None, state_methods=state_methods) for a in prefix_args
+        _canonicalize(a, _seen=None, state_methods=state_methods) for a in prefix_args
     )
     canonical_args = canonical_args + tuple(
-        _canonicalize(a, state=None, state_methods=state_methods) for a in args
+        _canonicalize(a, _seen=None, state_methods=state_methods) for a in args
     )
     canonical_kwargs = tuple(
-        (k, _canonicalize(v, state=None, state_methods=state_methods))
+        (k, _canonicalize(v, _seen=None, state_methods=state_methods))
         for k, v in sorted(kwargs.items())
     )
     return (
@@ -707,7 +691,7 @@ def memo_fingerprint(obj: object) -> core.Fingerprint:
     # State methods are meaningless for an object-only fingerprint; collect
     # into a throwaway list so the canonicalizer signature stays uniform.
     return core.fingerprint_simple_object(
-        _canonicalize(obj, state=None, state_methods=[])
+        _canonicalize(obj, _seen=None, state_methods=[])
     )
 
 
