@@ -283,7 +283,7 @@ fn write_plain(
 
 /// Whether a memo key function is registered for a plain container type or a
 /// base of one, replacing the default canonical form the native walker
-/// reproduces. Mirrors the Python registry (`_memo_fns` in
+/// reproduces. Mirrors the Python registry (`_memo_type_registry` in
 /// `memo_fingerprint.py`), which updates it on every change.
 static PLAIN_CANONICAL_FORM_OVERRIDDEN: AtomicBool = AtomicBool::new(false);
 

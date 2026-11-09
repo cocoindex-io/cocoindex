@@ -19,7 +19,6 @@ from cocoindex._internal.memo_fingerprint import (
     register_memo_key_function,
     register_memo_type,
     register_not_memo_keyable,
-    unregister_memo_key_function,
     unregister_memo_type,
 )
 from cocoindex._internal.typing import MemoStateOutcome
@@ -101,7 +100,7 @@ def test_registry_overrides_default_behavior() -> None:
         assert fp_a == fp_irrelevant_changed
         assert fp_a != fp_b
     finally:
-        unregister_memo_key_function(Y)
+        unregister_memo_type(Y)
 
 
 def test_hook_and_registry_include_type_name_to_avoid_collisions() -> None:
@@ -140,8 +139,8 @@ def test_hook_and_registry_include_type_name_to_avoid_collisions() -> None:
             _dummy_fn, (D(1),), {}, []
         )
     finally:
-        unregister_memo_key_function(C)
-        unregister_memo_key_function(D)
+        unregister_memo_type(C)
+        unregister_memo_type(D)
 
 
 def test_dataclass_stable_type_id_reuses_fingerprint_across_module_move() -> None:
@@ -306,7 +305,7 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
         __coco_memo_type_id__: ClassVar[str] = marker
 
     assert (
-        _memo_fingerprint._type_identity_parts(IdentitySourceEntry, None)
+        _memo_fingerprint._type_identity_parts(IdentitySourceEntry)
         is marker._identity_parts
     )
     with pytest.raises(AttributeError, match="immutable"):
@@ -325,7 +324,7 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
         class MovedSourceEntry:
             __coco_memo_type_id__: ClassVar[str] = variant
 
-        assert _memo_fingerprint._type_identity_parts(MovedSourceEntry, None) == (
+        assert _memo_fingerprint._type_identity_parts(MovedSourceEntry) == (
             module,
             qualname,
         )
@@ -335,13 +334,10 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
 
     try:
         register_memo_type(RegisteredSourceEntry, stable_type_id=marker)
-        registry = _memo_fingerprint._registered_memo_type_registry(
-            RegisteredSourceEntry
+        assert _memo_fingerprint._type_identity_parts(RegisteredSourceEntry) == (
+            module,
+            qualname,
         )
-        assert registry is not None
-        assert _memo_fingerprint._type_identity_parts(
-            RegisteredSourceEntry, registry
-        ) == (module, qualname)
     finally:
         unregister_memo_type(RegisteredSourceEntry)
 
@@ -350,7 +346,7 @@ def test_prev_type_id_marker_is_immutable_and_round_trips() -> None:
     class OrdinaryStringSourceEntry:
         __coco_memo_type_id__: ClassVar[str] = ordinary_marker
 
-    assert _memo_fingerprint._type_identity_parts(OrdinaryStringSourceEntry, None) == (
+    assert _memo_fingerprint._type_identity_parts(OrdinaryStringSourceEntry) == (
         ("__coco_memo_type_id__", ordinary_marker),
         None,
     )
@@ -460,7 +456,7 @@ def test_hook_memo_key_fragment_preserves_parent_cycle() -> None:
 
     assert canonical == (
         "seq",
-        (("hook", *_memo_fingerprint._type_identity_parts(Entry, None), ("ref", 0)),),
+        (("hook", *_memo_fingerprint._type_identity_parts(Entry), ("ref", 0)),),
     )
     assert _memo_fingerprint.memo_fingerprint(
         graph
@@ -487,7 +483,7 @@ def test_registered_memo_key_fragment_preserves_parent_cycle() -> None:
             (
                 (
                     "hook",
-                    *_memo_fingerprint._type_identity_parts(Entry, None),
+                    *_memo_fingerprint._type_identity_parts(Entry),
                     ("ref", 0),
                 ),
             ),
@@ -496,7 +492,7 @@ def test_registered_memo_key_fragment_preserves_parent_cycle() -> None:
             graph
         ) == _memo_fingerprint.memo_fingerprint(make_graph())
     finally:
-        unregister_memo_key_function(Entry)
+        unregister_memo_type(Entry)
 
 
 def test_raw_class_object_default_identity_never_calls_classmethod_memo_key() -> None:
@@ -942,12 +938,12 @@ def test_declared_stable_type_id_is_inherited_and_takes_precedence_over_register
         # Register an ID on Sub — declared (inherited from Base) must take precedence:
         register_memo_type(Sub, stable_type_id="test.RegisteredSub/v1")
 
-        assert _memo_fingerprint._type_identity_parts(Base, None) == (
+        assert _memo_fingerprint._type_identity_parts(Base) == (
             ("__coco_memo_type_id__", "test.DeclaredBase/v1"),
             None,
         )
         # Sub inherits Base's declared ID, beating Sub's registered ID:
-        assert _memo_fingerprint._type_identity_parts(Sub, None) == (
+        assert _memo_fingerprint._type_identity_parts(Sub) == (
             ("__coco_memo_type_id__", "test.DeclaredBase/v1"),
             None,
         )
@@ -955,7 +951,7 @@ def test_declared_stable_type_id_is_inherited_and_takes_precedence_over_register
             _dummy_fn, (Sub(1),), {}, []
         )
         # OverridingSub overrides Base's declared ID:
-        assert _memo_fingerprint._type_identity_parts(OverridingSub, None) == (
+        assert _memo_fingerprint._type_identity_parts(OverridingSub) == (
             ("__coco_memo_type_id__", "test.DeclaredOverridingSub/v1"),
             None,
         )
@@ -1414,9 +1410,7 @@ def test_register_memo_type_rejects_state_fn_without_key_function() -> None:
         register_memo_type(Entry, **kwargs)
 
 
-def test_register_and_unregister_memo_key_function_shortcuts_preserve_stable_type_id() -> (
-    None
-):
+def test_register_memo_key_function_shortcut_replaces_stable_type_id() -> None:
     @dataclasses.dataclass
     class Entry:
         value: int
@@ -1427,48 +1421,50 @@ def test_register_and_unregister_memo_key_function_shortcuts_preserve_stable_typ
         value: int
         ignored: str
 
-    stable_id = "test.ShortcutPreservesStable/v1"
+    def key_fn(entry: Any) -> object:
+        return ("key", entry.value)
+
+    stable_id = "test.ShortcutReplacesStable/v1"
     try:
-        # Register reference twin with stable ID:
-        register_memo_type(Twin, stable_type_id=stable_id)
+        register_memo_type(Entry, key_fn, stable_type_id=stable_id)
+        register_memo_type(Twin, key_fn, stable_type_id=stable_id)
+        # Same key function and stable type ID: Entry and Twin share entries.
+        assert fingerprint_call(
+            _dummy_fn, (Entry(1, "a"),), {}, []
+        ) == fingerprint_call(_dummy_fn, (Twin(1, "a"),), {}, [])
 
-        # 1. Register only stable type ID on Entry:
-        register_memo_type(Entry, stable_type_id=stable_id)
+        # The shortcut replaces Entry's whole registration: its key function
+        # still applies, but its stable type ID is gone.
+        register_memo_key_function(Entry, key_fn)
         assert fingerprint_call(
             _dummy_fn, (Entry(1, "a"),), {}, []
-        ) != fingerprint_call(
-            _dummy_fn, (Entry(1, "b"),), {}, []
-        )  # No key_fn yet: dataclass hashing includes 'ignored'
+        ) == fingerprint_call(_dummy_fn, (Entry(1, "b"),), {}, [])
         assert fingerprint_call(
             _dummy_fn, (Entry(1, "a"),), {}, []
-        ) == fingerprint_call(_dummy_fn, (Twin(1, "a"),), {}, [])  # Matches twin ID
-
-        # 2. Call register_memo_key_function shortcut: delegates to key_fn AND preserves stable_id
-        register_memo_key_function(Entry, lambda e: ("key", e.value))
-        assert fingerprint_call(
-            _dummy_fn, (Entry(1, "a"),), {}, []
-        ) == fingerprint_call(
-            _dummy_fn, (Entry(1, "b"),), {}, []
-        )  # key_fn active (ignores 'ignored')
-
-        # 3. Call unregister_memo_key_function shortcut: removes key_fn AND preserves stable_id
-        unregister_memo_key_function(Entry)
-        assert fingerprint_call(
-            _dummy_fn, (Entry(1, "a"),), {}, []
-        ) != fingerprint_call(
-            _dummy_fn, (Entry(1, "b"),), {}, []
-        )  # key_fn removed: dataclass hashing includes 'ignored'
-        assert fingerprint_call(
-            _dummy_fn, (Entry(1, "a"),), {}, []
-        ) == fingerprint_call(
-            _dummy_fn, (Twin(1, "a"),), {}, []
-        )  # stable_id still preserved and matches twin
-
-        # 4. Full unregister clears everything:
+        ) != fingerprint_call(_dummy_fn, (Twin(1, "a"),), {}, [])
+    finally:
         unregister_memo_type(Entry)
-        assert fingerprint_call(
-            _dummy_fn, (Entry(1, "a"),), {}, []
-        ) != fingerprint_call(_dummy_fn, (Twin(1, "a"),), {}, [])  # stable_id removed
+        unregister_memo_type(Twin)
+
+
+def test_registry_writes_after_first_fingerprint_take_effect() -> None:
+    # Each fingerprint resolves the type's identity before the next registry write.
+    @dataclasses.dataclass
+    class Entry:
+        value: int
+
+    @dataclasses.dataclass
+    class Twin:
+        value: int
+
+    stable_id = "test.RegistryWriteAfterUse/v1"
+    try:
+        assert memo_fingerprint(Entry(1)) != memo_fingerprint(Twin(1))
+        register_memo_type(Entry, stable_type_id=stable_id)
+        register_memo_type(Twin, stable_type_id=stable_id)
+        assert memo_fingerprint(Entry(1)) == memo_fingerprint(Twin(1))
+        unregister_memo_type(Entry)
+        assert memo_fingerprint(Entry(1)) != memo_fingerprint(Twin(1))
     finally:
         unregister_memo_type(Entry)
         unregister_memo_type(Twin)
@@ -1622,7 +1618,6 @@ def test_register_memo_type_validation_and_public_export() -> None:
     assert not hasattr(coco, "register_memo_type_identifier")
     assert not hasattr(coco, "register_not_memo_keyable")
     assert not hasattr(coco, "unregister_memo_type")
-    assert not hasattr(coco, "unregister_memo_key_function")
     with pytest.raises(TypeError, match="expects typ to be a type"):
         coco.register_memo_type(cast(Any, object()), stable_type_id="test.Invalid/v1")
 
@@ -1635,10 +1630,10 @@ def test_register_memo_type_validation_and_public_export() -> None:
             state_fn=None,
             stable_type_id="test.ExplicitNoneState/v1",
         )
-        assert _memo_fingerprint._type_identity_parts(
-            ExplicitNoneStateEntry,
-            _memo_fingerprint._registered_memo_type_registry(ExplicitNoneStateEntry),
-        ) == (("__coco_memo_type_id__", "test.ExplicitNoneState/v1"), None)
+        assert _memo_fingerprint._type_identity_parts(ExplicitNoneStateEntry) == (
+            ("__coco_memo_type_id__", "test.ExplicitNoneState/v1"),
+            None,
+        )
     finally:
         _memo_fingerprint.unregister_memo_type(ExplicitNoneStateEntry)
 
@@ -2137,7 +2132,7 @@ def test_state_methods_collected_from_registry() -> None:
         assert isinstance(methods[0], StateFnEntry)
         assert callable(methods[0].call)
     finally:
-        unregister_memo_key_function(Registered)
+        unregister_memo_type(Registered)
 
 
 def test_multiple_state_methods_collected_in_order() -> None:
@@ -2474,5 +2469,5 @@ def test_memo_fingerprint_honors_registry_for_plain_container_types() -> None:
         assert fp == memo_fingerprint({"a": [3, 4]})
         assert fp == _canonical_form_fingerprint({"a": [1, 2]})
     finally:
-        unregister_memo_key_function(list)
+        unregister_memo_type(list)
     assert memo_fingerprint({"a": [1, 2]}) != fp

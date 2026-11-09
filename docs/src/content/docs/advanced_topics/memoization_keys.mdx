@@ -3,7 +3,8 @@ title: "*Memoization keys* & states"
 description: >
   Customize how CocoIndex fingerprints memoized inputs via __coco_memo_key__,
   registered memo key functions, or stable type IDs, and layer state validation
-  (e.g. mtime, then content hash) on top.
+  (e.g. mtime, then content hash) on top — plus NotMemoKeyable to opt out for
+  stateful types.
 ---
 CocoIndex detects [logic, input, and context changes](../programming_guide/function#change-detection) to decide whether it can reuse a memo. Most types work automatically.
 
@@ -521,7 +522,16 @@ class MyStatefulGenerator(coco.NotMemoKeyable):
         return self._counter
 ```
 
-Attempting to use a `NotMemoKeyable` instance as a memo key raises a clear error.
+### Register as not memo-keyable (when you don't control the type)
+
+```python
+import cocoindex as coco
+from some_library import StatefulGenerator
+
+coco.register_not_memo_keyable(StatefulGenerator)
+```
+
+In either case, attempting to use the type as a memo key raises a clear error.
 
 ## Choosing keys and states
 

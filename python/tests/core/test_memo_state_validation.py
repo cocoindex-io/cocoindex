@@ -16,7 +16,7 @@ import pytest
 
 import cocoindex as coco
 
-from cocoindex._internal.memo_fingerprint import unregister_memo_key_function
+from cocoindex._internal.memo_fingerprint import unregister_memo_type
 from tests import common
 from tests.common.target_states import (
     DictDataWithPrev,
@@ -1117,4 +1117,4 @@ def test_class_object_registered_metaclass_memo_state_sync() -> None:
         assert GlobalDictTarget.store.data["row"].data == "class content: C"
         assert _class_object_prev_states == []
     finally:
-        unregister_memo_key_function(_ClassObjectMemoMeta)
+        unregister_memo_type(_ClassObjectMemoMeta)
