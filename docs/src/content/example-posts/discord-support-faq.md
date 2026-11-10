@@ -42,7 +42,7 @@ Questions nobody has answered come last, under `## Open questions`, with the sam
 The extract → merge steps follow [Meeting notes to a knowledge graph](/docs/examples/meeting-notes-to-knowledge-graph/), with questions where that example has people; what differs is the source and the output. The pipeline runs in three phases:
 
 1. **Per thread:** render the thread as text, and have an LLM extract the question it asks, the answer that settled it, whether it's resolved, and a topic. A post tagged **Solved** counts as resolved, whatever the LLM says.
-2. **Merge questions** asked in other words with [entity resolution](/docs/ops/entity_resolution/): embeddings find the close pairs, and an LLM confirms each one.
+2. **Merge questions** asked in other words with [entity resolution](/docs/ops/entity_resolution/): embeddings find each question's close candidates, and an LLM picks the one it matches, if any.
 3. **Write `FAQ.md`:** the answered questions by topic, each with how often it was asked and links to its threads, and the unanswered ones last, under **Open questions**.
 
 Messages outside a thread are skipped: there, a question and its answer are separate messages, and pairing them up would be guesswork.
@@ -177,7 +177,7 @@ The two levels of memoization do different jobs:
 
 ![Phase 2: a single _resolve_questions pass; the set of extracted questions from every thread is deduplicated by embedding similarity plus LLM confirmation into a canonical-question map](https://cocoindex.io/blobs/docs-v1/img/examples/discord-support-faq/stage-phase2-dark.svg)
 
-The seeded forum has three posts about long video uploads that never finish behind a proxy, each worded differently. [`resolve_entities`](/docs/ops/entity_resolution/) embeds every extracted question, finds the pairs within `max_distance`, and has `LlmPairResolver` confirm each one. The result maps every question to its group's canonical one.
+The seeded forum has three posts about long video uploads that never finish behind a proxy, each worded differently. [`resolve_entities`](/docs/ops/entity_resolution/) embeds every extracted question and, for each one, finds the close candidates within `max_distance`; `LlmPairResolver` then picks which candidate it matches, if any. The result maps every question to its group's canonical one.
 
 ```python title="main.py"
 @coco.fn(memo=True)
@@ -195,13 +195,13 @@ async def _resolve_questions(questions: set[str]) -> ResolvedEntities:
             ),
         ),
         # A question reworded sits further from the original than a name
-        # written another way does. The LLM confirms every pair within reach,
-        # so reaching further costs calls, not wrong merges.
+        # written another way does. A wider reach gives the LLM more candidates
+        # to check, which costs calls; every merge is still one the LLM chose.
         max_distance=0.55,
     )
 ```
 
-The library's default `max_distance` is 0.3, which suits a name written different ways; a reworded question sits further from the original than that. The LLM confirms every pair within reach, so the wider reach costs LLM calls, not wrong merges. The function is memoized on the set of questions, so a run in which no question changed resolves nothing again.
+The library's default `max_distance` is 0.3, which suits a name written different ways; a reworded question sits further from the original than that. A wider reach gives the LLM more candidates to check, which costs LLM calls; every merge is still one the LLM chose. The function is memoized on the set of questions, so a run in which no question changed resolves nothing again.
 
 ## Phase 3: write FAQ.md
 
