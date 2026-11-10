@@ -201,6 +201,26 @@ class TestS3File:
         assert await f.read(2) == b""
         assert await f.read() == b""
 
+    async def test_read_helper_partial_reads(self, s3_client: tuple[Any, str]) -> None:
+        """The standalone ``read()`` helper honors ``size``, including 0."""
+        client, bucket_name = s3_client
+        uri = f"s3://{bucket_name}/file1.txt"
+
+        assert await amazon_s3.read(client, uri, size=0) == b""
+        assert await amazon_s3.read(client, uri, size=2) == b"he"
+        assert await amazon_s3.read(client, uri) == b"hello"
+
+    async def test_read_helper_empty_object(self, s3_client: tuple[Any, str]) -> None:
+        """The standalone ``read()`` helper returns b"" for an empty object."""
+        client, bucket_name = s3_client
+        boto3.client("s3", region_name="us-east-1").put_object(
+            Bucket=bucket_name, Key="empty.bin", Body=b""
+        )
+        uri = f"s3://{bucket_name}/empty.bin"
+
+        assert await amazon_s3.read(client, uri, size=0) == b""
+        assert await amazon_s3.read(client, uri) == b""
+
     async def test_read_text(self, s3_client: tuple[Any, str]) -> None:
         """await read_text() returns file content as text."""
         client, bucket_name = s3_client

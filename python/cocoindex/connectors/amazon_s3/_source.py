@@ -249,6 +249,9 @@ async def read(client: AioBaseClient, uri: str, size: int = -1) -> bytes:
         The object content as bytes.
     """
     bucket_name, key = _parse_s3_uri(uri)
+    if size == 0:
+        return b""
+
     if size >= 0:
         response = await client.get_object(
             Bucket=bucket_name, Key=key, Range=f"bytes=0-{size - 1}"
