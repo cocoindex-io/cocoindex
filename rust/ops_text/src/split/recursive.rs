@@ -313,7 +313,9 @@ struct AtomChunksCollector<'s> {
 }
 
 impl<'s> AtomChunksCollector<'s> {
-    fn collect(&mut self, range: TextRange, boundary_cut_cost: u32) {
+    /// Collects the atom at `range`, trimmed; `boundary_cut_cost` gives the
+    /// cost of a cut at its first content, from that position.
+    fn collect(&mut self, range: TextRange, boundary_cut_cost: impl FnOnce(usize) -> u32) {
         // Trim trailing whitespaces.
         let end_trimmed_text = &self.full_text[range.start..range.end].trim_end();
         if end_trimmed_text.is_empty() {
@@ -341,7 +343,7 @@ impl<'s> AtomChunksCollector<'s> {
             boundary_syntax_level: self.min_level,
             internal_lb_level: line_break_level(trimmed_text),
             boundary_lb_level,
-            boundary_cut_cost,
+            boundary_cut_cost: boundary_cut_cost(new_start),
         });
         self.min_level = self.curr_level;
     }
@@ -406,17 +408,29 @@ fn node_header(
     let body = body_field_ids
         .iter()
         .find_map(|&field| node.child_by_field_id(field.get()))
+        // tree-sitter finds a node's siblings through its parent, which it
+        // finds by walking down from the root, so these index into `node`.
         .or_else(|| {
-            let last = node.named_child(node.named_child_count().checked_sub(1)?)?;
+            let mut index = node.child_count();
+            let last = loop {
+                index = index.checked_sub(1)?;
+                let child = node.child(index)?;
+                if child.is_named() {
+                    break child;
+                }
+            };
             let opens_with_bracket =
                 matches!(bytes.get(last.start_byte()), Some(b'{' | b'(' | b'['));
-            (opens_with_bracket && last.prev_sibling().is_some_and(|token| !token.is_named()))
-                .then_some(last)
+            let follows_token = index
+                .checked_sub(1)
+                .and_then(|before| node.child(before))
+                .is_some_and(|token| !token.is_named());
+            (opens_with_bracket && follows_token).then_some(last)
         })
         .or_else(|| {
             let first = node.named_child(0)?;
             if first.kind().ends_with("heading") {
-                first.next_named_sibling()
+                node.named_child(1)
             } else {
                 None
             }
@@ -470,6 +484,28 @@ struct WalkFrame<'t, 's: 't> {
     /// that does not fit, or all of such a body's text: it may fit, but is not
     /// kept whole (see `node_frame`).
     unfitting_body: Option<TextRange>,
+    /// The outermost `fitting_node` of this frame and the frames it is in.
+    /// Frames nest, so it contains every other one: a position inside any of
+    /// them is inside it, and one check per atom does for all of them.
+    outermost_fitting_node: Option<TextRange>,
+    /// The index in the frame stack of the innermost frame with a `header`,
+    /// this one or one it is in. The frames with a header form a chain from
+    /// it: the next is the one `header_frame` of the frame below names.
+    header_frame: Option<usize>,
+}
+
+impl<'t, 's: 't> WalkFrame<'t, 's> {
+    /// A frame that walks text split by regex, inside `parent` if any.
+    fn text(iter: ChunkIterator<'t, 's>, parent: Option<&WalkFrame<'t, 's>>) -> Self {
+        WalkFrame {
+            iter,
+            fitting_node: None,
+            header: None,
+            unfitting_body: None,
+            outermost_fitting_node: parent.and_then(|parent| parent.outermost_fitting_node),
+            header_frame: parent.and_then(|parent| parent.header_frame),
+        }
+    }
 }
 
 impl<'t, 's: 't> InternalRecursiveChunker<'s> {
@@ -498,7 +534,8 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
         TextRange::new(start, range.start + text.trim_end().len())
     }
 
-    /// The frame that walks inside `node`, a child of the `parent` frame.
+    /// The frame that walks inside `node`, to be pushed on `frames`: a child
+    /// of the frame on top, if any.
     ///
     /// The body of a node that does not fit is not kept whole, even if it fits
     /// on its own: the unit is the header with its body, and keeping the body
@@ -513,8 +550,9 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
         iter: ChunkIterator<'t, 's>,
         node: tree_sitter::Node<'_>,
         splits_as_text: bool,
-        parent: Option<&WalkFrame<'t, 's>>,
+        frames: &[WalkFrame<'t, 's>],
     ) -> WalkFrame<'t, 's> {
+        let parent = frames.last();
         let range = TextRange::new(node.start_byte(), node.end_byte());
         let content = self.trimmed(range);
         let header = node_header(self.full_text, &self.body_field_ids, node);
@@ -524,39 +562,61 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                     || (splits_as_text && parent.unfitting_body == Some(content))
             }))
         .then_some(content);
+        let fitting_node = if unfitting_body.is_some() {
+            None
+        } else {
+            self.fitting_node(range)
+        };
         WalkFrame {
             iter,
-            fitting_node: if unfitting_body.is_some() {
-                None
-            } else {
-                self.fitting_node(range)
-            },
+            fitting_node,
             header,
             unfitting_body,
+            outermost_fitting_node: parent
+                .and_then(|parent| parent.outermost_fitting_node)
+                .or(fitting_node),
+            header_frame: if header.is_some() {
+                Some(frames.len())
+            } else {
+                parent.and_then(|parent| parent.header_frame)
+            },
         }
     }
 
-    /// The cost of cutting at the start of the atom at `range`, given the
+    /// The cost of cutting at `pos`, the first content of an atom, given the
     /// frames of the syntax walk that the atom is inside of.
     ///
     /// A cut inside a node that fits in `chunk_size` costs
     /// `CUT_FITTING_NODE_COST`, a cut inside a node's header costs
     /// `CUT_INSIDE_HEADER_COST`, and one just after it `CUT_AFTER_HEADER_COST`,
     /// however many such nodes there are.
-    fn boundary_cut_cost(&self, frames: &[WalkFrame<'t, 's>], range: TextRange) -> u32 {
-        let text = &self.full_text[range.start..range.end];
-        let pos = range.start + (text.len() - text.trim_start().len());
-        let mut cost = 0;
-        let headers = || frames.iter().filter_map(|frame| frame.header);
-        if headers().any(|h| h.range.start < pos && pos < h.range.end) {
-            cost += CUT_INSIDE_HEADER_COST;
-        } else if headers().any(|h| pos == h.range.end) {
-            cost += CUT_AFTER_HEADER_COST;
+    fn boundary_cut_cost(&self, frames: &[WalkFrame<'t, 's>], pos: usize) -> u32 {
+        let Some(top) = frames.last() else {
+            return 0;
+        };
+        let (mut inside_header, mut after_header) = (false, false);
+        let mut header_frame = top.header_frame;
+        while let Some(index) = header_frame {
+            let header = frames[index]
+                .header
+                .expect("a header frame has a header")
+                .range;
+            inside_header |= header.start < pos && pos < header.end;
+            after_header |= pos == header.end;
+            header_frame = index
+                .checked_sub(1)
+                .and_then(|below| frames[below].header_frame);
         }
-        if frames
-            .iter()
-            .filter_map(|frame| frame.fitting_node)
-            .any(|node| node.start < pos && pos < node.end)
+        let mut cost = if inside_header {
+            CUT_INSIDE_HEADER_COST
+        } else if after_header {
+            CUT_AFTER_HEADER_COST
+        } else {
+            0
+        };
+        if top
+            .outermost_fitting_node
+            .is_some_and(|node| node.start < pos && pos < node.end)
         {
             cost += CUT_FITTING_NODE_COST;
         }
@@ -574,13 +634,8 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
         };
         let root_iter = ChunkIterator::Once(std::iter::once(chunk));
         let mut frames = vec![match root_node {
-            Some(node) => self.node_frame(root_iter, node, false, None),
-            None => WalkFrame {
-                iter: root_iter,
-                fitting_node: None,
-                header: None,
-                unfitting_body: None,
-            },
+            Some(node) => self.node_frame(root_iter, node, false, &[]),
+            None => WalkFrame::text(root_iter, None),
         }];
 
         while !frames.is_empty() {
@@ -588,8 +643,9 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
 
             if let Some(current_chunk) = frames.last_mut().unwrap().iter.next() {
                 if current_chunk.range.len() <= self.min_atom_chunk_size {
-                    let cost = self.boundary_cut_cost(&frames, current_chunk.range);
-                    atom_collector.collect(current_chunk.range, cost);
+                    atom_collector.collect(current_chunk.range, |pos| {
+                        self.boundary_cut_cost(&frames, pos)
+                    });
                 } else {
                     match current_chunk.kind {
                         ChunkKind::TreeSitterNode {
@@ -611,7 +667,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                                         next_start_pos: current_chunk.range.start,
                                         end_pos: current_chunk.range.end,
                                     });
-                                    let frame = self.node_frame(iter, node, false, frames.last());
+                                    let frame = self.node_frame(iter, node, false, &frames);
                                     frames.push(frame);
                                     continue;
                                 }
@@ -626,7 +682,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                                     next_regexp_sep_id: 0,
                                 },
                             }));
-                            let frame = self.node_frame(iter, node, true, frames.last());
+                            let frame = self.node_frame(iter, node, true, &frames);
                             frames.push(frame);
                         }
                         ChunkKind::RegexpSepChunk {
@@ -634,20 +690,18 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                             next_regexp_sep_id,
                         } => {
                             if next_regexp_sep_id >= lang_config.separator_regex.len() {
-                                let cost = self.boundary_cut_cost(&frames, current_chunk.range);
-                                atom_collector.collect(current_chunk.range, cost);
-                            } else {
-                                frames.push(WalkFrame {
-                                    iter: ChunkIterator::Text(TextChunksIter::new(
-                                        lang_config,
-                                        current_chunk.full_text,
-                                        current_chunk.range,
-                                        next_regexp_sep_id,
-                                    )),
-                                    fitting_node: None,
-                                    header: None,
-                                    unfitting_body: None,
+                                atom_collector.collect(current_chunk.range, |pos| {
+                                    self.boundary_cut_cost(&frames, pos)
                                 });
+                            } else {
+                                let iter = ChunkIterator::Text(TextChunksIter::new(
+                                    lang_config,
+                                    current_chunk.full_text,
+                                    current_chunk.range,
+                                    next_regexp_sep_id,
+                                ));
+                                let frame = WalkFrame::text(iter, frames.last());
+                                frames.push(frame);
                             }
                         }
                     }
