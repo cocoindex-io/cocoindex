@@ -16,12 +16,11 @@ import os
 import pickle
 import threading
 import multiprocessing as mp
-import warnings
 from abc import ABC, abstractmethod
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextvars import Context, ContextVar
-from typing import Any, Callable, Coroutine, TypeVar, ParamSpec
+from typing import Any, Callable, Coroutine, NamedTuple, TypeVar, ParamSpec
 
 from . import core
 
@@ -92,39 +91,78 @@ class Runner(ABC):
 # ============================================================================
 
 _WATCHDOG_INTERVAL_SECONDS = 10.0
-_pool_lock = threading.Lock()
-_pool: ProcessPoolExecutor | None = None
+
+# Ceiling on subprocess workers per GPU. `GPUPool` decides how many calls run at once,
+# and admits at most `1/fraction` calls on one GPU; this only stops a tiny fraction from
+# spawning processes without bound. Past it, a call queues behind the least busy worker.
+_MAX_SUBPROCESS_WORKERS = 32
 
 
-def _get_pool() -> ProcessPoolExecutor:
-    """Get or create the singleton subprocess pool."""
-    global _pool
-    with _pool_lock:
-        if _pool is None:
-            _pool = ProcessPoolExecutor(
-                max_workers=1,
-                initializer=_subprocess_init,
-                initargs=(os.getpid(),),
-                mp_context=mp.get_context("spawn"),
-            )
-        return _pool
+class _Worker:
+    """One subprocess, as a single-worker executor, and the calls currently on it."""
 
+    __slots__ = ("executor", "calls")
 
-def _restart_pool(old_pool: ProcessPoolExecutor | None = None) -> None:
-    """Restart the subprocess pool if it died."""
-    global _pool
-    with _pool_lock:
-        if old_pool is not None and _pool is not old_pool:
-            return  # Another thread already restarted
-        prev_pool = _pool
-        _pool = ProcessPoolExecutor(
+    def __init__(self) -> None:
+        self.executor = ProcessPoolExecutor(
             max_workers=1,
             initializer=_subprocess_init,
             initargs=(os.getpid(),),
             mp_context=mp.get_context("spawn"),
         )
-        if prev_pool is not None:
-            prev_pool.shutdown(cancel_futures=True)
+        self.calls = 0
+
+
+_workers_lock = threading.Lock()
+# Workers per GPU id. A worker only ever serves the GPU its calls were given, so it
+# holds a CUDA context (and any model it caches) on that device only. Each worker is
+# its own executor, and a call goes to an idle one when there is one: a GPU gets a new
+# worker only when every worker it has is busy, and a worker that dies fails only the
+# calls on it.
+_workers: dict[int, list[_Worker]] = {}
+
+
+def _take_worker(gpu_id: int) -> _Worker:
+    """Assign the next call on `gpu_id` to an idle worker, else a new one, else (at the
+    cap) the least busy one."""
+    with _workers_lock:
+        workers = _workers.setdefault(gpu_id, [])
+        worker = min(workers, key=lambda w: w.calls, default=None)
+        if worker is None or (
+            worker.calls > 0 and len(workers) < _MAX_SUBPROCESS_WORKERS
+        ):
+            worker = _Worker()
+            workers.append(worker)
+        worker.calls += 1
+        return worker
+
+
+def _finish_call(gpu_id: int, worker: _Worker) -> None:
+    """Take a finished call off `worker`, and drop the worker if its process died.
+
+    Runs on the worker's own management thread when a call completes. A dead worker's
+    executor has already terminated its process and failed the calls on it, so all
+    that is left is to drop it. Shutting it down here would wait on this very thread:
+    3.14 holds the executor's shutdown lock while it fails the calls.
+    """
+    with _workers_lock:
+        worker.calls -= 1
+        workers = _workers.get(gpu_id, [])
+        # Whether the process died, not whether the call raised `BrokenProcessPool`,
+        # which a user function may do itself. The executor sets this before it fails
+        # the calls.
+        if worker.executor._broken and worker in workers:
+            workers.remove(worker)
+
+
+def _discard_worker(gpu_id: int, worker: _Worker) -> None:
+    """Take a worker that failed to accept a call out of service."""
+    with _workers_lock:
+        workers = _workers.get(gpu_id, [])
+        if worker in workers:
+            workers.remove(worker)
+    # `wait=False`: do not block the event loop; calls already on it still finish.
+    worker.executor.shutdown(wait=False)
 
 
 def _subprocess_init(parent_pid: int) -> None:
@@ -173,7 +211,11 @@ def _start_parent_watchdog(parent_pid: int) -> None:
 
 def _execute_in_subprocess(payload_bytes: bytes) -> bytes:
     """Run in subprocess: unpack, execute, return pickled result."""
-    fn, args, kwargs = pickle.loads(payload_bytes)
+    fn, args, kwargs, gpu_ids, fraction = pickle.loads(payload_bytes)
+    # ContextVars do not cross a process boundary, so the parent's assignment
+    # travels in the payload and is re-established here.
+    _current_gpus.set(gpu_ids)
+    _current_gpu_fraction.set(fraction)
     result = fn(*args, **kwargs)
     # Handle async callables (functions or callable objects with async __call__)
     if asyncio.iscoroutine(result):
@@ -181,24 +223,81 @@ def _execute_in_subprocess(payload_bytes: bytes) -> bytes:
     return pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-async def _submit_to_pool_async(fn: Callable[..., Any], *args: Any) -> Any:
-    """Submit work to pool and wait asynchronously."""
-    loop = asyncio.get_running_loop()
+class _Submission(NamedTuple):
+    worker: _Worker
+    future: Future[bytes]
+
+
+def _submit(gpu_id: int, payload: bytes) -> _Submission:
+    """Queue `payload` on a worker for `gpu_id`."""
     while True:
-        pool = _get_pool()
+        worker = _take_worker(gpu_id)
         try:
-            return await loop.run_in_executor(pool, fn, *args)
+            return _Submission(
+                worker, worker.executor.submit(_execute_in_subprocess, payload)
+            )
         except BrokenProcessPool:
-            _restart_pool(old_pool=pool)
+            # The worker died while idle and its executor has noticed, so the call never
+            # reached it: drop the worker and give the call to another.
+            _finish_call(gpu_id, worker)
+        except BaseException:
+            _finish_call(gpu_id, worker)
+            _discard_worker(gpu_id, worker)
+            raise
 
 
-async def execute_in_subprocess(fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+async def execute_in_subprocess(
+    gpu_ids: list[int],
+    fraction: float,
+    release: Callable[[], None],
+    fn: Callable[..., R],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> R:
     """Execute a function in a subprocess and return the result.
 
-    The function and all arguments must be picklable.
+    The function and all arguments must be picklable. ``gpu_ids`` and ``fraction``
+    are the caller's GPU assignment; the call runs on a worker of its first GPU. The
+    parameters before ``*args`` are positional-only, so the submitted function's
+    keyword arguments cannot collide with them.
+
+    ``release`` hands the assignment back to the GPU pool, and is called exactly
+    once. Once the call is queued, that happens when its future completes, not when
+    this coroutine returns. A started worker cannot be interrupted, so a cancelled
+    call that a worker has started keeps its GPU until the work is off the device,
+    and the next call is not admitted onto a card that is still busy.
+
+    A call whose worker dies fails with ``BrokenProcessPool`` and is not retried, so
+    a function that reliably crashes fails once instead of respawning forever. The
+    engine handles that like any failed component: nothing is written or memoized
+    for it, and the next update retries it. Only a call that never reached its
+    worker, because the worker had already died while idle, is given to another.
     """
-    payload = pickle.dumps((fn, args, kwargs), protocol=pickle.HIGHEST_PROTOCOL)
-    result_bytes = await _submit_to_pool_async(_execute_in_subprocess, payload)
+    gpu_id = gpu_ids[0]
+    try:
+        payload = pickle.dumps(
+            (fn, args, kwargs, gpu_ids, fraction), protocol=pickle.HIGHEST_PROTOCOL
+        )
+        worker, future = _submit(gpu_id, payload)
+    except BaseException:
+        release()
+        raise
+
+    def _on_done(_: Future[bytes]) -> None:
+        try:
+            # The worker is marked idle before the GPU goes back, so the call that the
+            # release admits finds it idle instead of starting another worker.
+            _finish_call(gpu_id, worker)
+        finally:
+            release()
+
+    # On the `concurrent.futures.Future`, not the asyncio wrapper: the wrapper is
+    # cancelled as soon as the caller is, which would release the GPU while the
+    # worker is still on it. Added before `wrap_future` adds its own callback, so
+    # the GPU is back in the pool by the time the caller sees the result.
+    future.add_done_callback(_on_done)
+    result_bytes = await asyncio.wrap_future(future)
     return pickle.loads(result_bytes)  # type: ignore[no-any-return]
 
 
@@ -239,7 +338,12 @@ def current_gpu_fraction() -> float | None:
 
 
 def _run_with_gpu_context(
-    gpu_ids: list[int], fraction: float, fn: Callable[..., R], *args: Any, **kwargs: Any
+    gpu_ids: list[int],
+    fraction: float,
+    fn: Callable[..., R],
+    /,
+    *args: Any,
+    **kwargs: Any,
 ) -> R:
     tok_gpus = _current_gpus.set(gpu_ids)
     tok_frac = _current_gpu_fraction.set(fraction)
@@ -292,6 +396,12 @@ class EmptyContextThreadPoolExecutor(ThreadPoolExecutor):
         return Context().run(super().submit, fn, *args, **kwargs)
 
 
+class _GPUAssignment(NamedTuple):
+    gpu_id: int
+    # Gives the GPU back to the pool it was acquired from.
+    release: Callable[[], None]
+
+
 class GPURunner(Runner):
     """Runner for GPU workloads with fractional allocation support.
 
@@ -301,9 +411,11 @@ class GPURunner(Runner):
     The assigned GPU id(s) are available inside the function via
     ``coco.current_gpu()`` (first id) and ``coco.current_gpus()`` (full list).
     The allocated fraction is available via ``coco.current_gpu_fraction()``.
-    For multi-GPU subprocess mode (where ``CUDA_VISIBLE_DEVICES`` must be set
-    per-process), use in-process mode (the default) until per-GPU subprocess
-    pools are implemented.
+    Subprocess mode reports the same assignment as in-process mode: the id is
+    carried in the payload and re-established in the child. Each GPU has its own
+    workers, so a worker only serves the GPU its calls were given.
+    ``CUDA_VISIBLE_DEVICES`` is left unset, so ``cuda:{coco.current_gpu()}`` names
+    the same device in both modes.
     """
 
     _fraction: float
@@ -337,11 +449,17 @@ class GPURunner(Runner):
             )
         return self._gpu_executor
 
-    async def _acquire_gpu(self) -> int:
-        return await _get_default_gpu_pool().acquire(self._fraction)
+    async def _acquire_gpu(self) -> _GPUAssignment:
+        """Acquire a GPU.
 
-    def _release_gpu(self, gpu_id: int) -> None:
-        _get_default_gpu_pool().release(gpu_id, self._fraction)
+        The release is bound to the pool the GPU came from, so it returns the capacity
+        there even if `configure_gpu_pool` has replaced the default pool since.
+        """
+        gpu_pool = _get_default_gpu_pool()
+        gpu_id = await gpu_pool.acquire(self._fraction)
+        return _GPUAssignment(
+            gpu_id, functools.partial(gpu_pool.release, gpu_id, self._fraction)
+        )
 
     async def run(
         self, fn: Callable[P, Coroutine[Any, Any, R]], *args: P.args, **kwargs: P.kwargs
@@ -352,20 +470,26 @@ class GPURunner(Runner):
         - In-process (default): runs directly on the event loop.
         - Subprocess mode: via execute_in_subprocess (asyncio.run() in subprocess).
         """
-        gpu_id = await self._acquire_gpu()
-        gpu_ids = [gpu_id]
+        assignment = await self._acquire_gpu()
+        gpu_ids = [assignment.gpu_id]
+        if self._should_use_subprocess():
+            return await execute_in_subprocess(
+                gpu_ids,
+                self._fraction,
+                assignment.release,
+                # The subprocess runs a coroutine function through `asyncio.run()`.
+                fn,  # type: ignore[arg-type]
+                *args,
+                **kwargs,
+            )
         tok_gpus = _current_gpus.set(gpu_ids)
         tok_frac = _current_gpu_fraction.set(self._fraction)
         try:
-            if self._should_use_subprocess():
-                _warn_subprocess_multi_gpu()
-                # Type ignore: execute_in_subprocess handles async fns via asyncio.run() internally
-                return await execute_in_subprocess(fn, *args, **kwargs)  # type: ignore[arg-type]
             return await fn(*args, **kwargs)
         finally:
             _current_gpus.reset(tok_gpus)
             _current_gpu_fraction.reset(tok_frac)
-            self._release_gpu(gpu_id)
+            assignment.release()
 
     async def run_sync_fn(
         self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs
@@ -376,40 +500,28 @@ class GPURunner(Runner):
         - In-process (default): offloads to the dedicated GPU thread pool.
         - Subprocess mode: via execute_in_subprocess.
         """
-        gpu_id = await self._acquire_gpu()
-        gpu_ids = [gpu_id]
-        try:
-            if self._should_use_subprocess():
-                _warn_subprocess_multi_gpu()
-                return await execute_in_subprocess(fn, *args, **kwargs)
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(
-                self._get_gpu_executor(),
-                functools.partial(
-                    _run_with_gpu_context, gpu_ids, self._fraction, fn, *args, **kwargs
-                ),
+        assignment = await self._acquire_gpu()
+        gpu_ids = [assignment.gpu_id]
+        if self._should_use_subprocess():
+            return await execute_in_subprocess(
+                gpu_ids,
+                self._fraction,
+                assignment.release,
+                fn,
+                *args,
+                **kwargs,
             )
-        finally:
-            self._release_gpu(gpu_id)
+        try:
+            future = self._get_gpu_executor().submit(
+                _run_with_gpu_context, gpu_ids, self._fraction, fn, *args, **kwargs
+            )
+        except BaseException:
+            assignment.release()
+            raise
+        # As in subprocess mode: a started thread cannot be interrupted, so the GPU goes
+        # back when the thread finishes, not when this call returns or is cancelled.
+        future.add_done_callback(lambda _: assignment.release())
+        return await asyncio.wrap_future(future)
 
 
 GPU = GPURunner(fraction=1.0)
-
-_subprocess_multi_gpu_warned = False
-
-
-def _warn_subprocess_multi_gpu() -> None:
-    global _subprocess_multi_gpu_warned
-    if _subprocess_multi_gpu_warned:
-        return
-    _subprocess_multi_gpu_warned = True
-    pool = _get_default_gpu_pool()
-    if pool.num_gpus > 1:
-        warnings.warn(
-            f"COCOINDEX_RUN_GPU_IN_SUBPROCESS=1 with num_gpus={pool.num_gpus}: "
-            "subprocess mode does not yet support per-GPU CUDA_VISIBLE_DEVICES. "
-            "All subprocess calls run on the same GPU regardless of pool "
-            "assignment. Use in-process mode for multi-GPU support.",
-            UserWarning,
-            stacklevel=4,
-        )
