@@ -197,7 +197,9 @@ impl PyRecursiveSplitter {
     ///     text: The text to split — a `str`, or a `CodeSource` whose cached
     ///         parse is reused (and populated for later consumers).
     ///     chunk_size: Target chunk size in bytes.
-    ///     min_chunk_size: Minimum chunk size in bytes. Defaults to chunk_size / 2.
+    ///     min_chunk_size: Minimum chunk size in bytes. It is a soft floor: a
+    ///         chunk may be smaller where that avoids a worse split point.
+    ///         Defaults to chunk_size / 2.
     ///     chunk_overlap: Overlap between consecutive chunks in bytes.
     ///     language: Language name or file extension for syntax-aware splitting.
     ///         Only valid when `text` is a `str` — a `CodeSource` carries its own.

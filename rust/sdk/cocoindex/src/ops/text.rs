@@ -23,7 +23,8 @@ pub use cocoindex_ops_text::split::{CustomLanguageConfig, KeepSeparator, Separat
 pub struct RecursiveChunkConfig {
     /// Target chunk size in bytes.
     pub chunk_size: usize,
-    /// Minimum chunk size in bytes. Defaults to `chunk_size / 2`.
+    /// Minimum chunk size in bytes. It is a soft floor: a chunk may be smaller
+    /// where that avoids a worse split point. Defaults to `chunk_size / 2`.
     pub min_chunk_size: Option<usize>,
     /// Overlap between consecutive chunks in bytes.
     pub chunk_overlap: Option<usize>,
