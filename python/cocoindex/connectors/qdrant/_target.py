@@ -400,13 +400,15 @@ class _CollectionHandler(
             client = context_provider.get(key.db_key, QdrantClient)
             for action in key_actions:
                 if action.main_action in ("replace", "delete"):
-                    try:
+                    # A failed delete must fail the action: the engine then
+                    # keeps tracking the collection and retries next run.
+                    if await asyncio.to_thread(
+                        _collection_exists, client, key.collection_name
+                    ):
                         await asyncio.to_thread(
                             client.delete_collection,
                             collection_name=key.collection_name,
                         )
-                    except Exception:
-                        pass
 
                 if coco.is_non_existence(action.spec):
                     continue
