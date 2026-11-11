@@ -1,5 +1,5 @@
 //! Shared SQL-style identifier validation for the relational target connectors
-//! (`doris`, `sqlite`, `surrealdb`), which each build DDL/DML by interpolating
+//! (`doris`, `sqlite`, `surrealdb`, `bigquery`, `snowflake`), which each build DDL/DML by interpolating
 //! table/column names and so must reject anything but a safe identifier.
 
 use crate::error::{Error, Result};

@@ -2,7 +2,7 @@ name: Link Check
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
     types: [opened, synchronize, reopened, ready_for_review, stacked]
     paths:
       - "docs/**/*.md"
@@ -10,7 +10,7 @@ on:
       - ".lycheeignore"
       - ".github/workflows/links.yml"
   push:
-    branches: [main]
+    branches: [main, 'release/**']
     paths:
       - "docs/**/*.md"
       - "docs/**/*.mdx"

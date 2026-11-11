@@ -149,7 +149,7 @@ class TestSingleApp:
         run_cli("update", "./single_app.py")
 
         result = run_cli("drop", "./single_app.py", "-f")
-        assert "Dropped app" in result.stdout
+        assert "✓ Dropped SingleApp (target states reverted" in result.stdout
 
         # After drop, ls should show [+] again
         result = run_cli("ls", "./single_app.py")
@@ -427,7 +427,7 @@ class TestDropNoPersisted:
     def test_drop_app_not_run(self) -> None:
         """Drop on app that was never run should indicate nothing to drop."""
         result = run_cli("drop", "./single_app.py", "-f")
-        assert "no persisted state" in result.stdout.lower()
+        assert "Nothing to drop (SingleApp has no stored state)" in result.stdout
 
 
 # =============================================================================
@@ -698,8 +698,8 @@ class TestDropQuiet:
         """drop --quiet should not print informational messages (only errors/prompts)."""
         run_cli("update", "./single_app.py")
         result = run_cli("drop", "./single_app.py", "-f", "--quiet")
-        assert "Preparing to drop" not in result.stdout
-        assert "Dropped app" not in result.stdout
+        assert "Dropping" not in result.stdout
+        assert "Dropped" not in result.stdout
 
 
 # =============================================================================
@@ -713,7 +713,8 @@ class TestPreview:
     def test_preview_prints_actions(self) -> None:
         """update --preview should print planned actions without writing."""
         result = run_cli("update", "./flat_target_app.py", "--preview")
-        assert "Preview: planned target actions" in result.stdout
+        assert "● 1 planned change (preview · " in result.stdout
+        assert "Previewing" in result.stdout
         assert "('x', 42)" in result.stdout
 
     def test_preview_reset_rejected(self) -> None:

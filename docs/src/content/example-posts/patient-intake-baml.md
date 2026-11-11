@@ -8,7 +8,7 @@ tags: [structured-extraction, baml]
 
 ![Patient Intake Forms to Typed JSON with BAML and CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-baml/cover.png)
 
-We'll take a folder of patient intake forms — the messy, multi-section PDFs a clinic hands you on a clipboard — and turn each one into a clean, validated JSON record: demographics, insurance, medications, allergies, surgeries, consent. The hard part isn't reading the PDF; it's getting back data that *matches a schema* every time, so downstream code can trust it. We use [BAML](https://boundaryml.com/) to declare that schema and run a single type-safe extraction per form against a Gemini vision model.
+We'll take a folder of patient intake forms (the messy, multi-section PDFs a clinic hands you on a clipboard) and turn each one into a clean, validated JSON record: demographics, insurance, medications, allergies, surgeries, consent. The hard part isn't reading the PDF; it's getting back data that *matches a schema* every time, so downstream code can trust it. We use [BAML](https://boundaryml.com/) to declare that schema and run a single type-safe extraction per form against a Gemini vision model.
 
 The whole pipeline is ordinary `async` Python. You write a [BAML schema](https://docs.boundaryml.com/) for the `Patient` type and one extraction function, wrap it in a [CocoIndex function](/docs/programming_guide/function/), and let the Rust engine underneath handle [incremental processing](/docs/programming_guide/core_concepts/) — only changed PDFs get re-extracted, and the LLM call (the one genuinely expensive step) is skipped entirely for forms you've already processed.
 
@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python. You write a [BAML schema](https:/
 
 ## Flow overview
 
-![CocoIndex patient intake extraction flow: walk a folder of PDF intake forms, run one BAML Gemini-vision extraction per form into a typed Patient model, dump it to JSON, and write one JSON file per form to a local directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-baml/flow-v1.svg)
+![CocoIndex patient intake extraction flow: walk a folder of PDF intake forms, run one BAML Gemini-vision extraction per form into a typed Patient model, dump it to JSON, and write one JSON file per form to a local directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-baml/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -96,11 +96,11 @@ async def extract_patient_info(content: bytes) -> Patient:
     return await b.ExtractPatientInfo(pdf)
 ```
 
-The return type is `Patient` — the actual Pydantic class BAML generated, not a dict — so everything downstream is typed and validated. There's no prompt engineering or response parsing here; that all lives in the BAML schema, and the LLM call is one `await`.
+The return type is `Patient` (the actual Pydantic class BAML generated, not a dict) so everything downstream is typed and validated. There's no prompt engineering or response parsing here; that all lives in the BAML schema, and the LLM call is one `await`.
 
 ## Process a file
 
-![One processing component per intake form: read the PDF, extract a typed Patient with BAML, serialize to JSON, and declare a JSON file into the output directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-baml/stage-file-process.svg)
+![One processing component per intake form: read the PDF, extract a typed Patient with BAML, serialize to JSON, and declare a JSON file into the output directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-baml/stage-file-process-dark.svg)
 
 `process_patient_form` runs once per PDF. It reads the file, runs the BAML extraction, dumps the typed `Patient` to JSON, and declares one output file named after the source form.
 
@@ -142,7 +142,7 @@ app = coco.App(
 )
 ```
 
-The [filesystem source](/docs/connectors/localfs/) walks `data/patient_forms/` for `*.pdf`, and `mount_each` runs one component per form so the engine can track and update each independently. `coco.App` binds the main function to its arguments — the source and output directories — into a runnable unit.
+The [filesystem source](/docs/connectors/localfs/) walks `data/patient_forms/` for `*.pdf`, and `mount_each` runs one component per form so the engine can track and update each independently. `coco.App` binds the main function to its arguments (the source and output directories) into a runnable unit.
 
 ## Setup
 
@@ -183,7 +183,7 @@ ls output_patients/
 # ...one .json per intake PDF
 ```
 
-Each file is a fully populated, schema-validated patient record — the same shape every time, ready to load into a database, a chart, or another pipeline.
+Each file contains a schema-validated patient record in JSON format.
 
 ## Incremental updates
 
@@ -198,5 +198,3 @@ The same machinery covers **logic** changes too: edit the BAML schema (add a fie
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/patient_intake_extraction_baml](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_baml). The exact same task — intake PDFs to a typed `Patient` — has a [DSPy twin](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy) that swaps BAML for a DSPy signature and module, so you can compare the two structured-extraction libraries side by side on one flow.
-
-Got a stack of forms, invoices, or reports you want to turn into validated records? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

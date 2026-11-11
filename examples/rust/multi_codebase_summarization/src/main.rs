@@ -12,7 +12,7 @@
 //! - `mount_each!("project", projects, |project| process_project(ctx, …))` — one
 //!   component per project, processed concurrently and skipped wholesale on the
 //!   component-memo fast-path when unchanged
-//! - `mount_each!(files, |file| extract_file_info(ctx, file))` — concurrent
+//! - `use_mount_each!(files, |file| extract_file_info(ctx, file))` — concurrent
 //!   per-file extraction, each its own component (unchanged files skip the LLM)
 //! - `#[cocoindex::function(memo)]` — project aggregation cached by project
 //!   fingerprint (function-memo nested inside the project component)
@@ -326,7 +326,7 @@ async fn process_project(
     let (project_name, files) = project;
     // Extract per-file info — one child component per file (unchanged files skip).
     let file_infos: Vec<CodebaseInfo> =
-        mount_each!(files.into_iter().map(|f| (f.key(), f)), |file| {
+        use_mount_each!(files.into_iter().map(|f| (f.key(), f)), |file| {
             extract_file_info(ctx, file)
         })
         .await?;

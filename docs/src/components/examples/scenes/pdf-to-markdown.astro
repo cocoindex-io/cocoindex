@@ -1,0 +1,140 @@
+---
+// PDF to Markdown: the example's own sample PDF (pdf_files/1706.03762v7.pdf,
+// "Attention Is All You Need") beside the Markdown docling writes for it
+// (out/1706.03762v7.md). The transform is the real one: a CPU-pinned docling
+// DocumentConverter and export_to_markdown(). The sync strip shows the
+// incremental rule from the README: add a PDF and only that PDF converts.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="pm">
+    <div class="sc-row pm-main">
+      <div class="sc-col pm-src">
+        <span class="sc-cap">PDF page</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-pdf"></span><span class="sc-t">pdf_files/1706.03762v7.pdf</span></div>
+          <div class="pm-page">
+            <p class="pm-title">Attention Is All You Need</p>
+            <p class="pm-authors">Ashish Vaswani∗ · Noam Shazeer∗ · Niki Parmar∗ · Jakob Uszkoreit∗ · Llion Jones∗ · Aidan N. Gomez∗ · Łukasz Kaiser∗ · Illia Polosukhin∗</p>
+            <p class="pm-h">Abstract</p>
+            <p class="pm-body sc-clip3">The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder. The best performing models also connect the encoder and decoder through an attention mechanism.</p>
+            <p class="pm-h is-left">1&nbsp;&nbsp;Introduction</p>
+            <p class="pm-body sc-clip2">Recurrent neural networks, long short-term memory and gated recurrent neural networks in particular, have been firmly established as state of the art approaches in sequence modeling…</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="sc-col pm-op">
+        <span class="sc-to pm-arrow"></span>
+        <span class="sc-chip is-strong">docling</span>
+        <span class="sc-chip">DocumentConverter</span>
+        <span class="sc-chip">export_to_markdown()</span>
+        <span class="sc-cap pm-fine">device=CPU</span>
+      </div>
+
+      <div class="sc-col pm-out">
+        <span class="sc-cap">Markdown</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-file"></span><span class="sc-t">out/1706.03762v7.md</span></div>
+<pre class="sc-code pm-md"><span class="k">## Attention Is All You Need</span>
+
+<span class="k">## Abstract</span>
+
+The dominant sequence transduction models are based on complex recurrent or convolutional neural networks…
+
+<span class="k">## 1 Introduction</span>
+
+Recurrent neural networks, long short-term memory [13] and gated…</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="pm-sync">
+      <span class="sc-cap">Re-run <span class="sc-mono sc-muted">cocoindex update main</span> after adding a PDF</span>
+      <div class="sc-row pm-sync-row">
+        <div class="sc-panel sc-grow">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span><span class="sc-t">pdf_files/</span></div>
+          <div class="sc-panel-b">
+            <div class="sc-li"><span class="sc-ico i-pdf"></span><span>1706.03762v7.pdf</span><span class="sc-meta">unchanged, skipped</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-pdf"></span><span>your_new.pdf</span><span class="sc-dmark">Δ</span></div>
+          </div>
+        </div>
+        <span class="sc-to"></span>
+        <div class="sc-panel sc-grow">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span><span class="sc-t">out/</span></div>
+          <div class="sc-panel-b">
+            <div class="sc-li"><span class="sc-ico i-file"></span><span>1706.03762v7.md</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span class="sc-dtext">your_new.md</span></div>
+          </div>
+        </div>
+      </div>
+      <p class="sc-quote pm-note">Delete a PDF and its .md is removed from out/ too.</p>
+    </div>
+  </div>
+) : (
+  <div class="pm-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel pm-card-pdf">
+        <div class="sc-panel-h"><span class="sc-ico i-pdf"></span><span class="sc-t">1706.03762v7.pdf</span></div>
+        <div class="pm-page is-card">
+          <p class="pm-title">Attention Is All You Need</p>
+          <p class="pm-h">Abstract</p>
+          <p class="pm-body sc-clip3">The dominant sequence transduction models are based on complex recurrent or convolutional neural networks…</p>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel pm-card-md">
+        <div class="sc-panel-h"><span class="sc-ico i-file"></span><span class="sc-t">out/1706.03762v7.md</span></div>
+<pre class="sc-code pm-md"><span class="k">## Attention Is All You Need</span>
+
+<span class="k">## Abstract</span>
+
+The dominant sequence transduction models…</pre>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .sc-panel-h > .sc-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pm { display: flex; flex-direction: column; gap: 18px; }
+  .pm-main { gap: 10px; }
+  .pm-src { flex: 1.05 1 0; }
+  .pm-out { flex: 1.05 1 0; }
+  .pm-op { flex: none; width: 150px; align-items: center; justify-content: center; gap: 6px; padding-top: 20px; }
+  .pm-op .sc-chip { width: 100%; justify-content: center; overflow: hidden; text-overflow: ellipsis; }
+  .pm-arrow { margin-bottom: 4px; }
+  .pm-fine { font-weight: 400; }
+
+  /* the PDF page: a paper-like sheet drawn inside the panel */
+  .pm-page { display: flex; flex-direction: column; gap: 5px; padding: 14px 16px 16px; background: #161616; margin: 8px; }
+  .pm-title { margin: 0 0 2px; text-align: center; font-family: var(--sans); font-size: 14px; font-weight: 600; color: var(--sc-ink); }
+  .pm-authors { margin: 0 0 4px; text-align: center; font-family: var(--sans); font-size: 12px; color: var(--sc-dim); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .pm-h { margin: 4px 0 0; text-align: center; font-family: var(--sans); font-size: 12px; font-weight: 600; color: var(--sc-ink); }
+  .pm-h.is-left { text-align: left; }
+  .pm-body { margin: 0; font-family: var(--sans); font-size: 12px; line-height: 1.4; color: var(--sc-muted); }
+  .pm-bar { display: block; height: 5px; border-radius: 2px; background: rgba(255, 255, 255, 0.09); }
+  .pm-bar.is-short { width: 62%; }
+  .pm-md { border: 0; border-radius: 0; background: transparent; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  .pm-sync { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .pm-sync-row { gap: 10px; }
+  .pm-note { margin: 0; font-size: 12px; color: var(--sc-dim); }
+
+  @container (max-width: 560px) {
+    .pm-op { width: 100%; flex-direction: row; flex-wrap: wrap; padding-top: 0; }
+    .pm-op .sc-chip { width: auto; }
+    .pm-arrow { transform: rotate(90deg); margin: 0 4px 0 0; }
+  }
+
+  .pm-card { height: 100%; display: flex; align-items: center; }
+  .pm-card > .sc-row { width: 100%; align-items: center; }
+  .pm-card-pdf { flex: 0.9 1 0; }
+  .pm-card-md { flex: 1.1 1 0; }
+  .pm-page.is-card { margin: 6px; padding: 8px 10px 10px; gap: 4px; }
+  .pm-page.is-card .pm-title { font-size: 11px; }
+  .pm-page.is-card .pm-h { font-size: 11px; margin: 2px 0 0; }
+  .pm-page.is-card .pm-bar { height: 4px; }
+  .pm-card .pm-md { font-size: 11px; line-height: 1.45; }
+</style>

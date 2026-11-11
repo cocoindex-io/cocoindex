@@ -10,13 +10,13 @@ tags: [file-transform, incremental]
 
 We'll take a folder of Markdown files and render each one to HTML, writing the results to a second folder that stays in sync with the source. No database, no embeddings, no API keys — just files in, files out. It's the smallest complete CocoIndex pipeline, and the cleanest way to see the **source → transform → target** shape that every larger example is built from.
 
-The transform is your own ordinary `async` function. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, watching the directory, and keeping the output folder in sync — runs in a Rust engine underneath, so only the files that actually changed get re-rendered and re-written.
+Write the transform as an `async` function. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, watching the directory, and keeping the output folder in sync. As a result, only the files that actually changed get re-rendered and re-written.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/files_transform)
 
 ## Flow overview
 
-![CocoIndex files transform flow: watch a directory of Markdown, render each file to HTML with markdown-it-py, and write the .html outputs to a local folder](https://cocoindex.io/blobs/docs-v1/img/examples/files-transform/flow-v1.svg)
+![CocoIndex files transform flow: watch a directory of Markdown, render each file to HTML with markdown-it-py, and write the .html outputs to a local folder](https://cocoindex.io/blobs/docs-v1/img/examples/files-transform/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -28,7 +28,7 @@ You [declare the transformation logic](/docs/programming_guide/core_concepts/) w
 
 ## Process a file
 
-![One processing component per file: each Markdown file is rendered to HTML and written as a file target on the local filesystem](https://cocoindex.io/blobs/docs-v1/img/examples/files-transform/stage-file-process.svg)
+![One processing component per file: each Markdown file is rendered to HTML and written as a file target on the local filesystem](https://cocoindex.io/blobs/docs-v1/img/examples/files-transform/stage-file-process-dark.svg)
 
 `process_file` runs once per file. It reads the Markdown, renders it to HTML, derives an output name from the source path, and declares the output file as a target state.
 
@@ -125,5 +125,3 @@ The same machinery covers **logic** changes too: change the markdown-it preset o
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/files_transform](https://github.com/cocoindex-io/cocoindex/tree/main/examples/files_transform). This is the minimal building block — once it clicks, swap the transform for chunking and embedding and you have [Semantic Search 101](/docs/examples/text-embedding/), or point the same flow at a Postgres or vector target.
-
-If this helped, [give CocoIndex a star on GitHub](https://github.com/cocoindex-io/cocoindex) and come say hi in our [Discord](https://discord.com/invite/zpA9S2DR7s) — we'd love to see what you build.

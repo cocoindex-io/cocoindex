@@ -5,12 +5,37 @@ description: >
   Read Postgres tables via PgTableSource and write with declare_table_target() —
   automatic schema inference, pgvector index management (ivfflat / hnsw), custom
   type overrides, and SQL attachments for triggers and indexes.
+rust_description: >
+  Read Postgres tables as a row stream via read_table and write with
+  declare_table_target() — schema derivation from Rust structs, pgvector index
+  management (ivfflat / hnsw), column type overrides, and SQL attachments for
+  triggers and indexes.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 The `postgres` connector provides utilities for reading rows from and writing rows to PostgreSQL databases, with built-in support for pgvector.
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import postgres
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::postgres;
+```
+
+The module is compiled with the `postgres` Cargo feature of the `cocoindex` crate.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 :::note[Dependencies]
 This connector requires additional dependencies. Install with:
@@ -21,9 +46,15 @@ pip install cocoindex[postgres]
 
 :::
 
+</Lang>
+
 ## Connection setup
 
-Create an [`asyncpg`](https://magicstack.github.io/asyncpg/current/) connection pool directly:
+<Lang only="python">Create an [`asyncpg`](https://magicstack.github.io/asyncpg/current/) connection pool directly:</Lang><Lang only="rust">Open a `postgres::Database`:</Lang>
+
+{/* Rust: examples/rust/text_embedding/src/main.rs, rust/sdk/cocoindex/src/connectors/postgres.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import asyncpg
@@ -31,13 +62,42 @@ import asyncpg
 pool = await asyncpg.create_pool("postgresql://user:pass@localhost/dbname")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let db = postgres::Database::connect("postgres://user:pass@localhost/dbname").await?;
+let pool = db.pool().clone();  // the underlying sqlx::PgPool
+```
+
+`postgres::Database` wraps an [`sqlx`](https://docs.rs/sqlx) `PgPool`. `Database::connect(url)` opens a pool of up to 8 connections; `Database::from_pool(state_id, pool)` wraps a pool you built yourself.
+
+</Fragment>
+</LangTabs>
+
 The connector handles pgvector extension setup automatically when a table uses vector columns — no special pool initialization is needed.
 
 ## As source
 
+<Lang only="python">
+
 Use `PgTableSource` to read rows from a PostgreSQL table. It returns a `RowFetcher` that supports both synchronous and asynchronous iteration.
 
 ### PgTableSource
+
+</Lang>
+
+<Lang only="rust">
+
+Use `read_table` to read rows from a PostgreSQL table. It returns a stream of rows, read from one consistent snapshot of the table.
+
+### read_table
+
+</Lang>
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/postgres.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 class PgTableSource(Generic[RowT]):
@@ -55,7 +115,50 @@ class PgTableSource(Generic[RowT]):
     def fetch_rows(self) -> RowFetcher[RowT]
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub async fn read_table<T>(
+    db: &Database,
+    table_name: &str,
+) -> Result<impl Stream<Item = Result<T>> + Send + 'static>
+where
+    T: serde::de::DeserializeOwned + Send + 'static
+
+pub async fn read_table_with_options<T>(
+    db: &Database,
+    table_name: &str,
+    options: ReadTableOptions,
+) -> Result<impl Stream<Item = Result<T>> + Send + 'static>
+where
+    T: serde::de::DeserializeOwned + Send + 'static
+
+pub async fn read_table_items<T, K, S>(
+    db: &Database,
+    table_name: &str,
+    key_fn: K,
+) -> Result<impl Stream<Item = Result<(StableKey, T)>> + Send + 'static>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+    K: Fn(&T) -> S + Send + 'static,
+    S: IntoStableKey
+
+impl ReadTableOptions {
+    pub fn new() -> Self
+    pub fn pg_schema_name(self, schema: impl Into<String>) -> Self
+    pub fn columns(self, columns: impl IntoIterator<Item = impl Into<String>>) -> Self
+}
+```
+
+`read_table_with_options` and `read_table_items_with_options` take a `ReadTableOptions` as well. `read_table_items` pairs each row with the key `key_fn` derives from it, ready for `ctx.mount_each` once collected.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
+
+<Lang only="python">
 
 - `pool` — An asyncpg connection pool.
 - `table_name` — Name of the table to read from.
@@ -64,13 +167,56 @@ class PgTableSource(Generic[RowT]):
 - `row_type` — Optional record type (dataclass, NamedTuple, or Pydantic model) for automatic row conversion. When provided, `columns` (if specified) must be a subset of the record's fields.
 - `row_factory` — Optional callable to transform each row dict. Mutually exclusive with `row_type`.
 
+</Lang>
+
+<Lang only="rust">
+
+- `db` — The `postgres::Database` to read from.
+- `table_name` — Name of the table to read from.
+- `T` — The row type. Each row is deserialized into `T`.
+- `ReadTableOptions::columns` — Column names to select. When not set, the query is `SELECT *`.
+- `ReadTableOptions::pg_schema_name` — PostgreSQL schema name. When not set, the table name isn't schema-qualified, so the connection's `search_path` picks the schema (normally `public`).
+- `key_fn` (`read_table_items` only) — Derives the stable key of a row.
+
+</Lang>
+
 ### Row mapping
 
+<Lang only="python">
+
 By default, rows are returned as `dict[str, Any]`, with PostgreSQL types converted to Python types using [asyncpg's type conversion](https://magicstack.github.io/asyncpg/current/usage.html#type-conversion). You can configure automatic conversion to custom types using `row_type` or `row_factory`.
+
+</Lang>
+
+<Lang only="rust">
+
+The row type is the type parameter of `read_table::<T>`. `T` must implement `serde::Deserialize`; column names map to struct fields, and unknown columns are ignored. Use `serde_json::Value` as `T` to get each row as a JSON object.
+
+<RustNote>
+There is no `row_factory`. Read the rows into a struct, then map them with the stream's or an iterator's `map`.
+</RustNote>
+
+</Lang>
+
+<Lang only="python">
 
 #### Using `row_type`
 
 Pass a record type (dataclass, NamedTuple, or Pydantic model) to automatically convert rows. When `columns` is omitted, the record's field names are used:
+
+</Lang>
+
+<Lang only="rust">
+
+#### Choosing the row type
+
+Name the row type on the result, or as `read_table::<T>`. Select fewer columns with `ReadTableOptions::columns`:
+
+</Lang>
+
+{/* Rust: examples/rust/postgres_source/src/main.rs, rust/sdk/cocoindex/tests/postgres_source.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from dataclasses import dataclass
@@ -88,6 +234,45 @@ source = postgres.PgTableSource(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+/// One row of the `source_products` source table (extra columns are ignored).
+#[derive(Clone, Serialize, Deserialize, MemoInput)]
+struct SourceProduct {
+    product_category: String,
+    product_name: String,
+    description: String,
+    price: f64,
+    amount: i64,
+}
+
+let products: Vec<SourceProduct> = postgres::read_table(source_db, "source_products")
+    .await?
+    .try_collect()
+    .await?;
+
+// Only some columns
+let mut rows: Vec<SourceNameOnly> = postgres::read_table_with_options(
+    &db,
+    &src_table,
+    postgres::ReadTableOptions::new().columns(["name"]),
+)
+.await?
+.try_collect()
+.await?;
+```
+
+`try_collect` comes from `futures::TryStreamExt`.
+
+Derive `MemoInput` as well when the row is an argument of a memoized function.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 #### Using `row_factory`
 
 For custom transformations, pass a callable:
@@ -101,9 +286,15 @@ source = postgres.PgTableSource(
 )
 ```
 
+</Lang>
+
 ### Iterating rows
 
-`fetch_rows()` returns a `RowFetcher` that supports both sync and async iteration:
+<Lang only="python">`fetch_rows()` returns a `RowFetcher` that supports both sync and async iteration:</Lang><Lang only="rust">`read_table` returns a stream of `Result<T>`. Consume it with the `futures` stream adapters, or collect it:</Lang>
+
+{/* Rust: examples/rust/postgres_source/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Synchronous iteration
@@ -115,7 +306,29 @@ async for row in source.fetch_rows():
     print(row.name, row.price)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use futures::TryStreamExt as _;
+
+let products: Vec<SourceProduct> = postgres::read_table(source_db, "source_products")
+    .await?
+    .try_collect()
+    .await?;
+println!("read {} source product(s)", products.len());
+```
+
+`read_table` reads the whole table in one `REPEATABLE READ, READ ONLY` transaction, so the rows come from one consistent snapshot. The rows stream from the server as the stream is consumed: at most 256 rows are buffered ahead of the consumer. Dropping the stream ends the read.
+
+</Fragment>
+</LangTabs>
+
 ### Example
+
+{/* Rust: examples/rust/postgres_source/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import cocoindex as coco
@@ -143,6 +356,65 @@ async def app_main(pool: asyncpg.Pool) -> None:
         )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::postgres;
+use cocoindex::prelude::*;
+use futures::TryStreamExt as _;
+
+// Source database.
+cocoindex::context_key!(static SOURCE_DB: postgres::Database);
+
+/// One row of the `source_products` source table (extra columns are ignored).
+#[derive(Clone, Serialize, Deserialize, MemoInput)]
+struct SourceProduct {
+    product_category: String,
+    product_name: String,
+    description: String,
+    price: f64,
+    amount: i64,
+}
+
+/// Derive and embed one product, declaring its output row. Memoized on the
+/// source row: an unchanged row keeps its output without re-running.
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_product(
+    ctx: &Ctx,
+    product: SourceProduct,
+    table: postgres::TableTarget,
+) -> Result<()> {
+    // ...
+}
+
+async fn app_main(ctx: Ctx) -> Result<()> {
+    let target =
+        postgres::mount_table_target(&ctx, &DB, TABLE, output_schema()?, Some(PG_SCHEMA)).await?;
+
+    let source_db = ctx.get_key(&SOURCE_DB)?;
+    let products: Vec<SourceProduct> = postgres::read_table(source_db, "source_products")
+        .await?
+        .try_collect()
+        .await?;
+
+    // One processing component per source row.
+    mount_each!(
+        products
+            .into_iter()
+            .map(|p| (format!("{}|{}", p.product_category, p.product_name), p)),
+        |product| process_product(ctx, product, target)
+    )
+    .await?;
+    Ok(())
+}
+```
+
+`mount_each!` takes `(key, row)` pairs; the key is the component subpath. See `examples/rust/postgres_source` for the full program.
+
+</Fragment>
+</LangTabs>
+
 ## As target
 
 The `postgres` connector provides target state APIs for writing rows to tables. With it, CocoIndex tracks what rows should exist and automatically handles upserts and deletions.
@@ -151,11 +423,15 @@ The `postgres` connector provides target state APIs for writing rows to tables. 
 
 #### Setting up a connection
 
-Create a `ContextKey[asyncpg.Pool]` to identify your connection pool, then provide the pool directly in your lifespan:
+<Lang only="python">Create a `ContextKey[asyncpg.Pool]` to identify your connection pool, then provide the pool directly in your lifespan:</Lang><Lang only="rust">Declare a context key for the `postgres::Database`, then provide the database in your lifespan:</Lang>
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import asyncpg
@@ -170,9 +446,38 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
         yield
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::postgres;
+use cocoindex::prelude::*;
+
+cocoindex::context_key!(static DB: postgres::Database);
+
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    let db = postgres::Database::connect(&database_url()).await?;
+    let pool = db.pool().clone();
+    Ok(builder
+        .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&DB, db)
+        .on_shutdown(move || async move { pool.close().await }))
+}
+```
+
+`context_key!(static DB: postgres::Database)` declares the key; its name (`DB`) is the stable identity. `provide_key(&DB, db)` provides the connection. Without a lifespan, call `Environment::builder().provide_key(&DB, db)` directly.
+
+</Fragment>
+</LangTabs>
+
 #### Tables (parent state)
 
 Declares a table as a target state. Returns a `TableTarget` for declaring rows.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/postgres.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def declare_table_target(
@@ -185,7 +490,44 @@ def declare_table_target(
 ) -> TableTarget[RowT, coco.PendingS]
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn declare_table_target(
+    ctx: &Ctx,
+    db: &ContextKey<Database>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    pg_schema_name: Option<&str>,
+) -> Result<TableTarget>
+
+pub async fn mount_table_target(
+    ctx: &Ctx,
+    db: &ContextKey<Database>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    pg_schema_name: Option<&str>,
+) -> Result<TableTarget>
+
+pub async fn mount_table_target_with_options(
+    ctx: &Ctx,
+    db: &ContextKey<Database>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    pg_schema_name: Option<&str>,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget>
+```
+
+Each function has a `_with_options` variant (`declare_table_target_with_options`, `mount_table_target_with_options`, `table_target_with_options`) that takes a `ManagedTargetOptions`. `ManagedTargetOptions::user_managed()` sets a user-managed table; the default is system-managed.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
+
+<Lang only="python">
 
 - `db` — A `ContextKey[asyncpg.Pool]` identifying the connection pool to use.
 - `table_name` — Name of the table.
@@ -195,10 +537,25 @@ def declare_table_target(
 
 **Returns:** A pending `TableTarget`. Use the convenience wrapper `await postgres.mount_table_target(PG_DB, table_name, table_schema)` to resolve.
 
+</Lang>
+
+<Lang only="rust">
+
+- `ctx` — The current component's context.
+- `db` — The `ContextKey<postgres::Database>` identifying the database to use.
+- `table_name` — Name of the table.
+- `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-a-rust-struct)).
+- `pg_schema_name` — Optional PostgreSQL schema name. When `None`, the table name isn't schema-qualified, so the connection's `search_path` picks the schema (normally `public`).
+- `options` (`_with_options` variants) — `ManagedTargetOptions`: whether CocoIndex manages the table lifecycle (the default) or assumes it exists (`ManagedTargetOptions::user_managed()`).
+
+**Returns:** A `TableTarget`. From `declare_table_target`, its rows resolve when the current component commits. From `mount_table_target(...).await?`, it accepts rows at once.
+
+</Lang>
+
 :::caution[One table, one key]
 CocoIndex identifies a table by its key: the `db` key, `pg_schema_name` and `table_name`. Two different keys are two different tables to CocoIndex, even when PostgreSQL resolves them to the same table (see [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity)). Two cases are easy to miss:
 
-- `pg_schema_name=None` and `pg_schema_name="public"` are two different keys, even when `search_path` makes them reach the same table.
+- <Lang only="python">`pg_schema_name=None` and `pg_schema_name="public"` are two different keys, even when `search_path` makes them reach the same table.</Lang><Lang only="rust">`pg_schema_name: None` and `Some("public")` are the same key, even when `search_path` makes `None` reach a table in another schema. Two targets in that case collide on one key.</Lang>
 - PostgreSQL truncates a table name longer than 63 bytes, so two long names that share their first 63 bytes are one table.
 
 Declare each table through one key only. Switching a table from one form to the other changes its key: CocoIndex then cleans up the table it tracked under the old key, which is the same table.
@@ -208,6 +565,10 @@ Declare each table through one key only. Switching a table from one form to the 
 
 Once a `TableTarget` is resolved, declare rows to be upserted:
 
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def TableTarget.declare_row(
     self,
@@ -216,13 +577,33 @@ def TableTarget.declare_row(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl TableTarget {
+    pub fn declare_row<R: Serialize>(&self, ctx: &Ctx, row: &R) -> Result<()>
+}
+
+table.declare_row(&ctx, &row)?;
+```
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
-- `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
+- `row` — <Lang only="python">A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.</Lang><Lang only="rust">Any `Serialize` value that serializes to an object whose entries are the table's columns. Extra entries are ignored, and a missing entry is written as NULL. It must include all primary key columns.</Lang>
+
+CocoIndex writes rows in batches: each upsert or delete statement carries up to 2,000 rows, and the statements of a batch run concurrently over the pool.
 
 #### Vector indexes (attachment)
 
 Declare a pgvector index on a vector column of the table. CocoIndex tracks the index spec and automatically creates, recreates, or drops the index as needed.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/postgres.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def TableTarget.declare_vector_index(
@@ -238,7 +619,33 @@ def TableTarget.declare_vector_index(
 ) -> None
 ```
 
-The actual PostgreSQL index is named `{table_name}__vector__{name}`. PostgreSQL truncates a name longer than 63 bytes. If two vector indexes declared on the same `TableTarget` get the same name after truncation, `declare_vector_index` raises a `ValueError`.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl TableTarget {
+    pub fn declare_vector_index(
+        &self,
+        ctx: &Ctx,
+        column: &str,
+        options: VectorIndexOptions,
+    ) -> Result<()>
+}
+
+pub struct VectorIndexOptions {
+    pub name: Option<String>,
+    pub metric: &'static str,    // "cosine" (default), "l2", "ip"
+    pub method: &'static str,    // "ivfflat" (default), "hnsw"
+    pub lists: Option<u32>,
+    pub m: Option<u32>,
+    pub ef_construction: Option<u32>,
+}
+```
+
+</Fragment>
+</LangTabs>
+
+The actual PostgreSQL index is named `{table_name}__vector__{name}`. PostgreSQL truncates a name longer than 63 bytes. <Lang only="python">If two vector indexes declared on the same `TableTarget` get the same name after truncation, `declare_vector_index` raises a `ValueError`.</Lang><Lang only="rust">`declare_vector_index` does not check for two names that become the same after truncation: keep the full index names distinct in their first 63 bytes.</Lang>
 
 **Parameters:**
 
@@ -252,6 +659,10 @@ The actual PostgreSQL index is named `{table_name}__vector__{name}`. PostgreSQL 
 
 **Example:**
 
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 # Creates a PostgreSQL index named "products__vector__embedding"
 table.declare_vector_index(
@@ -263,9 +674,30 @@ table.declare_vector_index(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+table.declare_vector_index(
+    &ctx,
+    "embedding",
+    postgres::VectorIndexOptions {
+        method: "hnsw",
+        ..Default::default()
+    },
+)?;
+```
+
+</Fragment>
+</LangTabs>
+
 #### SQL command attachments
 
 Declare an arbitrary SQL command that CocoIndex manages alongside the table. The setup SQL runs when the attachment is created or changed; the optional teardown SQL runs when the attachment is removed or before re-running setup on change.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/postgres.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def TableTarget.declare_sql_command_attachment(
@@ -277,6 +709,24 @@ def TableTarget.declare_sql_command_attachment(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl TableTarget {
+    pub fn declare_sql_command_attachment(
+        &self,
+        ctx: &Ctx,
+        name: &str,
+        setup_sql: impl Into<String>,
+        teardown_sql: Option<String>,
+    ) -> Result<()>
+}
+```
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `name` — Stable identifier for the attachment.
@@ -284,6 +734,10 @@ def TableTarget.declare_sql_command_attachment(
 - `teardown_sql` — SQL to execute on removal or before re-running setup (optional). If omitted, no cleanup is performed when the attachment is removed.
 
 **Example:**
+
+{/* Rust: rust/sdk/cocoindex/tests/postgres_target.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 table.declare_sql_command_attachment(
@@ -293,9 +747,40 @@ table.declare_sql_command_attachment(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+table.declare_sql_command_attachment(
+    &ctx,
+    "label_index",
+    format!("CREATE INDEX IF NOT EXISTS rows_label_idx ON \"{schema}\".\"rows\" (label)"),
+    Some(format!("DROP INDEX IF EXISTS \"{schema}\".rows_label_idx")),
+)?;
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 ### Table schema: from Python class
 
 Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
+
+</Lang>
+
+<Lang only="rust">
+
+### Table schema: from a Rust struct
+
+Define the table structure with a struct that derives `SchemaFields` and `Serialize`:
+
+</Lang>
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/postgres.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @classmethod
@@ -308,13 +793,52 @@ async def TableSchema.from_class(
 ) -> TableSchema[RowT]
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl TableSchema {
+    pub fn from_row<T: SchemaFields>(
+        primary_key: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self>
+
+    pub fn with_vector_dim(self, field_name: &str, dim: usize) -> Result<Self>
+    pub async fn with_vector_schema(
+        self,
+        field_name: &str,
+        provider: &(impl VectorSchemaProvider + ?Sized),
+    ) -> Result<Self>
+    pub fn with_column_type(self, field_name: &str, pg_type: impl Into<String>) -> Result<Self>
+}
+```
+
+`TableSchema::from_row::<Row>(primary_key)` derives the columns. Builder calls on the derived schema override single columns: `with_vector_schema` or `with_vector_dim` for a vector column, `with_column_type` for a type override.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
+
+<Lang only="python">
 
 - `record_type` — A record type whose fields define table columns.
 - `primary_key` — List of column names forming the primary key.
 - `column_overrides` — Optional per-column overrides for type mapping or vector configuration.
 
+</Lang>
+
+<Lang only="rust">
+
+- `T` — A struct whose fields define table columns.
+- `primary_key` — Column names forming the primary key.
+
+</Lang>
+
 **Example:**
+
+{/* Rust: examples/rust/postgres_source/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @dataclass
@@ -329,6 +853,36 @@ schema = await postgres.TableSchema.from_class(
     primary_key=["category", "name"],
 )
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+/// One row written to the output table.
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct OutputProduct {
+    product_category: String,
+    product_name: String,
+    description: String,
+    price: f64,
+    amount: i64,
+    total_value: f64,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+fn output_schema() -> Result<postgres::TableSchema> {
+    postgres::TableSchema::from_row::<OutputProduct>(["product_category", "product_name"])?
+        .with_vector_dim("embedding", EMBED_DIM)
+}
+```
+
+`#[coco(vector)]` marks a vector column whose dimension is set later with `with_vector_dim` or `with_vector_schema`; `#[coco(vector = 384)]` fixes it in the struct. `Option<T>` fields become nullable columns; all others are `NOT NULL`.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 Python types are automatically mapped to PostgreSQL types:
 
@@ -348,12 +902,40 @@ Python types are automatically mapped to PostgreSQL types:
 | `list`, `dict`, nested structs | `jsonb` |
 | `NDArray` (with vector schema) | `vector(n)` or `halfvec(n)` |
 
+</Lang>
+
+<Lang only="rust">
+
+Rust field types are automatically mapped to PostgreSQL types:
+
+| Rust Type | PostgreSQL Type |
+|-----------|-----------------|
+| `bool` | `boolean` |
+| `i64` (`i16`: `smallint`, `i32`: `integer`) | `bigint` |
+| `f64` (`f32`: `real`) | `double precision` |
+| `Decimal` | `numeric` |
+| `String` | `text` |
+| `Vec<u8>` | `bytea` |
+| `Uuid` | `uuid` |
+| `NaiveDate` | `date` |
+| `NaiveTime` | `time with time zone` |
+| `DateTime`, `NaiveDateTime` | `timestamp with time zone` |
+| `Duration` | `interval` |
+| other `Vec<T>`, maps, nested structs, `#[coco(json)]` | `jsonb` |
+| `Vec<f32>` with `#[coco(vector)]` (`half` for `halfvec`) | `vector(n)` or `halfvec(n)` |
+
+Unsigned integers map to the next signed width (`u32` to `bigint`, `u64` to `bigint`); a value above `i64::MAX` is rejected when the row is written.
+
+</Lang>
+
 :::note[U+0000 (NUL) in strings]
 U+0000 (NUL) is a valid Unicode codepoint, but Postgres cannot store it — neither in `text`-family columns nor inside strings in `jsonb` (the `\u0000` escape is rejected at parse time). CocoIndex automatically strips U+0000 from strings before writing to Postgres, recursively for nested strings and dict keys in `jsonb` payloads. For example, `"Hello\0World"` is written as `"HelloWorld"`.
 :::
 
+<Lang only="python">
+
 If distinct dictionary keys become equal after stripping NUL (for example,
-`"a\\0b"` and `"ab"`), declaring the row raises `ValueError` before writing it.
+`"a\0b"` and `"ab"`), declaring the row raises `ValueError` before writing it.
 This also applies to nested dictionaries, preventing one field from silently
 overwriting another. Rename the conflicting keys in the source data first.
 
@@ -365,6 +947,25 @@ To override the default mapping, provide a `PgType` or `VectorSchemaProvider` vi
 #### PgType
 
 Use `PgType` to specify a custom PostgreSQL type:
+
+</Lang>
+
+<Lang only="rust">
+
+To override the default mapping, use:
+
+- **Field attribute** — `#[coco(type = "…")]` or `#[coco(vector = N)]` on the struct field
+- **Schema builder calls** — `with_column_type`, `with_vector_schema` or `with_vector_dim` on the `TableSchema` derived with `from_row`
+
+#### Column types
+
+Set a custom PostgreSQL type on a field:
+
+</Lang>
+
+{/* Rust: rust/sdk/cocoindex/src/row_schema.rs, rust/sdk/cocoindex/tests/postgres_target.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from typing import Annotated
@@ -380,7 +981,7 @@ class MyRow:
 Or via `column_overrides`:
 
 ```python
-schema = postgres.TableSchema(
+schema = await postgres.TableSchema.from_class(
     MyRow,
     primary_key=["id"],
     column_overrides={
@@ -389,13 +990,85 @@ schema = postgres.TableSchema(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[derive(Serialize, SchemaFields)]
+struct MyRow {
+    #[coco(type = "integer")]
+    id: i64,
+    #[coco(type = "real")]
+    value: f64,
+    #[coco(type = "timestamp")]
+    created_at: DateTime<Utc>,
+}
+```
+
+Or on the derived schema, for this schema only:
+
+```rust
+let table_schema = postgres::TableSchema::from_row::<ProviderRow>(["id"])?
+    .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+    .await?
+    .with_column_type("title", "varchar(40)")?;
+```
+
+`#[coco(type = "…")]` applies to every connector the struct is used with; `with_column_type` applies to one schema and keeps the column's nullability.
+
+<RustNote>
+There is no `PgType` encoder. A field's `Serialize` impl produces the value that is bound: `uuid`, `chrono`, `rust_decimal`, `std::net::IpAddr` (for `inet`) and `Vec<f32>` (for pgvector) serialize to what their columns take. For another form, use `#[serde(serialize_with = "…")]` on the field.
+</RustNote>
+
+</Fragment>
+</LangTabs>
+
 #### VectorSchemaProvider
 
+<Lang only="python">
+
 For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider) annotation specifies the vector dimension and dtype. The connector has built-in pgvector support and automatically creates the extension when needed. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
+
+</Lang>
+
+<Lang only="rust">
+
+For a `#[coco(vector)]` field, a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider) passed to `with_vector_schema` specifies the vector dimension and element type. The connector has built-in pgvector support and automatically creates the extension when needed.
+
+</Lang>
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
+```python
+@dataclass
+class OutputProduct:
+    embedding: Annotated[NDArray, embedder]
+```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// The embedder reports the dimension of the `embedding` column.
+postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+    .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+    .await?
+```
+
+`with_vector_schema(field, provider)` takes any `VectorSchemaProvider`: an embedder, or a `VectorSchema`. For an embedder held in the context, pass `ctx.get_key(&EMBEDDER)?`. An `f16` provider selects `halfvec(n)`.
+
+</Fragment>
+</LangTabs>
 
 ### Table schema: explicit column definitions
 
 Define columns directly using `ColumnDef`:
+
+{/* Rust: rust/sdk/cocoindex/tests/postgres_source.rs, tests/schema_from_row.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def TableSchema.__init__(
@@ -419,7 +1092,42 @@ schema = postgres.TableSchema(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+impl TableSchema {
+    pub fn new(
+        columns: impl IntoIterator<Item = (impl Into<String>, ColumnDef)>,
+        primary_key: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self>
+}
+```
+
+**Example:**
+
+```rust
+postgres::TableSchema::new(
+    [
+        ("category", postgres::ColumnDef::new("text")),
+        ("name", postgres::ColumnDef::new("text")),
+        ("total_value", postgres::ColumnDef::new("double precision")),
+        ("title", postgres::ColumnDef::new("text").nullable()),
+    ],
+    ["category", "name"],
+)?
+```
+
+`ColumnDef::new(pg_type)` is `NOT NULL`; `.nullable()` opts in to nulls.
+
+</Fragment>
+</LangTabs>
+
 ### Example
+
+{/* Rust: examples/rust/text_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import asyncpg
@@ -466,3 +1174,91 @@ async def app_main() -> None:
         method="hnsw",
     )
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::postgres;
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+use cocoindex::prelude::*;
+
+const PG_SCHEMA: &str = "coco_examples";
+const TABLE: &str = "doc_embeddings";
+
+cocoindex::context_key!(static DB: postgres::Database);
+cocoindex::context_key!(
+    static EMBEDDER: SentenceTransformerEmbedder,
+    detect_change
+);
+
+#[derive(Clone, Serialize, Deserialize, SchemaFields)]
+struct DocEmbedding {
+    id: i64,
+    filename: String,
+    chunk_start: i32,
+    chunk_end: i32,
+    text: String,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    let db = postgres::Database::connect(&database_url()).await?;
+    let pool = db.pool().clone();
+    let embedder = load_embedder().await?;
+    Ok(builder
+        .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&DB, db)
+        .provide_key(&EMBEDDER, embedder)
+        .on_shutdown(move || async move { pool.close().await }))
+}
+
+async fn index(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
+    // The embedder reports the dimension of the `embedding` column.
+    let table = postgres::mount_table_target(
+        &ctx,
+        &DB,
+        TABLE,
+        postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
+            .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+            .await?,
+        Some(PG_SCHEMA),
+    )
+    .await?;
+    table.declare_vector_index(
+        &ctx,
+        "embedding",
+        postgres::VectorIndexOptions {
+            method: "hnsw",
+            ..Default::default()
+        },
+    )?;
+
+    // One component per markdown file; each declares its own rows.
+    let files = walk_dir(sourcedir)
+        .recursive(true)
+        .path_matcher(PatternFilePathMatcher::new(
+            ["**/*.md"],
+            std::iter::empty::<&str>(),
+        )?)
+        .live()
+        .poll_interval(Duration::from_secs(1));
+    ctx.mount_each_live(&"files", files, move |ctx, file: FileEntry| {
+        let table = table.clone();
+        async move {
+            for row in process_file(&ctx, &file).await? {
+                table.declare_row(&ctx, &row)?;
+            }
+            Ok(())
+        }
+    })
+    .await
+}
+```
+
+See `examples/rust/text_embedding` for the full program, including `process_file` and the `#[cocoindex::app]` entry point.
+
+</Fragment>
+</LangTabs>

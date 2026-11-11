@@ -6,11 +6,31 @@ description: >
   with prefix filters, path matchers, size limits, and an optional live mode
   driven by OCI Object Storage events delivered through OCI Streaming.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 The `oci_object_storage` connector provides utilities for reading objects from Oracle Cloud Infrastructure (OCI) Object Storage buckets, with an optional [live mode](../programming_guide/live_mode) driven by OCI Object Storage events delivered through OCI Streaming.
+
+{/* Rust: examples/rust/oci_object_storage_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import oci_object_storage
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::oci_object_storage::{self, ListOptions, OciClient, OciFile};
+```
+
+The module is compiled with the `oci_object_storage` Cargo feature of the `cocoindex` crate. Oracle has no official Rust SDK, so the connector calls the Object Storage REST API directly and signs each request itself.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 :::note[Installation]
 This connector requires the `oci` SDK. Install with:
@@ -26,15 +46,51 @@ pip install cocoindex[kafka]
 ```
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+:::note[Installation]
+Enable the `oci_object_storage` feature of the `cocoindex` crate. For live mode over OCI Streaming, also enable the `kafka` feature:
+
+```toml title="Cargo.toml"
+[dependencies]
+cocoindex = { git = "https://github.com/cocoindex-io/cocoindex", features = [
+    "oci_object_storage",
+    "kafka",
+] }
+```
+:::
+
+</Lang>
+
 ## As source
 
 The connector provides three ways to read from OCI Object Storage:
+
+<Lang only="python">
 
 - `list_objects()` — List and iterate over objects in a bucket (with optional prefix and filtering)
 - `get_object()` — Fetch a single object by its name
 - `read()` — Read object content directly without first fetching metadata
 
 All require an `oci.object_storage.ObjectStorageClient`, which you create and manage yourself. The OCI SDK is synchronous; this connector wraps SDK calls with `asyncio.to_thread`, so the public API remains async.
+
+</Lang>
+
+<Lang only="rust">
+
+- `list_objects()` — List the objects in a bucket (with optional prefix and filtering); `list_objects_live()` adds live mode
+- `OciClient::get_object()` — Fetch a single object's metadata by its name
+- `OciClient::read()` — Read the content of an object
+
+All take an `OciClient`, which you create and provide yourself.
+
+</Lang>
+
+{/* Rust: examples/rust/oci_object_storage_embedding/src/main.rs; rust/sdk/cocoindex/src/connectors/oci_object_storage.rs (OciClient, OciConfig) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import oci
@@ -44,9 +100,43 @@ config = oci.config.from_file()  # or instance principals, etc.
 client = ObjectStorageClient(config)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+cocoindex::context_key!(static OCI: OciClient);
+
+let oci = OciClient::connect().await?;
+let app = Environment::builder()
+    .provide_key(&OCI, oci)
+    .build()
+    .await?
+    .app("OciObjectStorageEmbeddingRust")
+    .await?;
+```
+
+`OciClient::connect()` reads an API-key profile from `~/.oci/config` (or `OCI_CONFIG_FILE`), profile `DEFAULT` (or `OCI_PROFILE` / `OCI_CLI_PROFILE`). `OciClient::from_config(OciConfig { tenancy, user, fingerprint, key_file, region, pass_phrase })?` takes the profile's values directly; `OciConfig::from_file(path, profile)?` parses one. The private key is a PKCS#8 or PKCS#1 PEM; a profile with a `pass_phrase` opens an encrypted PKCS#8 key, as `oci setup config` writes one. A key in the legacy OpenSSL encryption (`Proc-Type: 4,ENCRYPTED`) is rejected: re-encode it with `openssl pkcs8 -topk8`.
+
+To run as the compute instance itself (an instance principal), build the client with `OciClient::from_instance_principal()`:
+
+```rust
+let oci = OciClient::from_instance_principal().await?;
+```
+
+It exchanges the instance's certificate from the metadata service for a session token and renews the token as it expires. The instance must be in a dynamic group with a policy that lets it read the bucket. `from_instance_principal_with_options(InstancePrincipalOptions { metadata_base_url, federation_endpoint })` sets the two endpoints explicitly; `OCI_METADATA_BASE_URL` also overrides the metadata endpoint.
+
+An `OciClient` is `Clone` and has no `close()`. Its stable identity (`state_id()`) comes from the region, never from the credentials.
+
+</Fragment>
+</LangTabs>
+
 ### list_objects
 
 List objects in an OCI Object Storage bucket. Returns an `OCIWalker` that supports async iteration.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/oci_object_storage.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def list_objects(
@@ -61,6 +151,37 @@ def list_objects(
 ) -> OCIWalker
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn list_objects(
+    client: &OciClient,
+    namespace: impl Into<String>,
+    bucket: impl Into<String>,
+    options: ListOptions,
+) -> OciWalker
+
+pub struct ListOptions {
+    /// Only list objects whose name starts with this prefix.
+    pub prefix: String,
+    /// Filter by relative path (after prefix stripping). Defaults to match-all.
+    pub path_matcher: Option<Arc<dyn FilePathMatcher>>,
+    /// Skip objects larger than this many bytes.
+    pub max_file_size: Option<u64>,
+}
+
+pub async fn OciWalker::list(&self) -> Result<Vec<OciFile>>
+pub async fn OciWalker::items(&self) -> Result<Vec<(String, OciFile)>>
+```
+
+The walker is not an iterator: `list()` returns every matching object, and `items()` the `(key, file)` pairs for `mount_each!`. The Rust prefix is passed to OCI as given, so `"data"` also matches `database.csv`: name a folder with its trailing slash, `"data/"`. Live mode is a separate function, `list_objects_live` (see [Live bucket watching](#live-bucket-watching)).
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 **Parameters:**
 
 - `client` — An `oci.object_storage.ObjectStorageClient`.
@@ -73,9 +194,40 @@ def list_objects(
 
 **Returns:** An `OCIWalker` that can be used with `async for` loops.
 
+</Lang>
+
+<Lang only="rust">
+
+**Parameters:**
+
+- `client` — An `OciClient`.
+- `namespace` — The OCI Object Storage namespace.
+- `bucket` — The bucket name.
+- `options.prefix` — Only list objects whose name starts with this prefix. The prefix is stripped from the relative paths of the returned files.
+- `options.path_matcher` — Optional filter for files. Patterns are matched against the relative path (after prefix stripping). See [PatternFilePathMatcher](../common_resources/data_types#patternfilepathmatcher).
+- `options.max_file_size` — Skip objects larger than this size in bytes.
+
+**Returns:** An `OciWalker`.
+
+</Lang>
+
 ### Iterating files
 
+<Lang only="python">
+
 `list_objects()` returns an `OCIWalker` that yields `OCIFile` objects (implementing the [`FileLike`](../common_resources/data_types#filelike) base class):
+
+</Lang>
+
+<Lang only="rust">
+
+`OciWalker::list()` returns `OciFile` values, which implement the [`FileLike`](../common_resources/data_types#filelike) trait:
+
+</Lang>
+
+{/* Rust: examples/rust/oci_object_storage_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import oci
@@ -90,20 +242,72 @@ async for file in oci_object_storage.list_objects(client, "my-namespace", "my-bu
     ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let client = OciClient::connect().await?;
+
+let files = oci_object_storage::list_objects(
+    &client,
+    "my-namespace",
+    "my-bucket",
+    ListOptions {
+        prefix: "data/".to_string(),
+        ..Default::default()
+    },
+)
+.list()
+.await?;
+for file in files {
+    let text = file.read_text().await?;
+    // ...
+}
+```
+
+A listed file carries the client, so `file.read_text()` works; `client.read_text(&file)` reads through a client you hold.
+
+</Fragment>
+</LangTabs>
+
 See [`FileLike`](../common_resources/data_types#filelike) for details on the file objects.
 
 ### Keyed iteration with `items()`
 
-`OCIWalker.items()` yields `(str, OCIFile)` pairs, useful for associating each file with a stable string key: the object name relative to the prefix, exactly as stored. Keys are not normalized, so `a//b.txt` and `a/b.txt` are two items. Live events use the same keys:
+<Lang only="python">`OCIWalker.items()` yields `(str, OCIFile)` pairs</Lang><Lang only="rust">`OciWalker::items()` returns `(String, OciFile)` pairs</Lang>, useful for associating each file with a stable string key: the object name relative to the prefix, exactly as stored. Keys are not normalized, so `a//b.txt` and `a/b.txt` are two items. Live events use the same keys:
+
+{/* Rust: examples/rust/oci_object_storage_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async for key, file in oci_object_storage.list_objects(client, "ns", "my-bucket").items():
     content = await file.read()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let items = oci_object_storage::list_objects(&client, "ns", "my-bucket", ListOptions::default())
+    .items()
+    .await?;
+for (key, file) in items {
+    let content = file.read().await?;
+    // ...
+}
+```
+
+</Fragment>
+</LangTabs>
+
 ### Filtering files
 
 Use `PatternFilePathMatcher` to filter which objects are included. Patterns are matched against the relative path (after prefix stripping):
+
+{/* Rust: examples/rust/oci_object_storage_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import oci_object_storage
@@ -117,9 +321,41 @@ async for file in oci_object_storage.list_objects(
     process(file)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::resources::file::PatternFilePathMatcher;
+
+let files = oci_object_storage::list_objects(
+    ctx.get_key(&OCI)?,
+    &namespace,
+    &bucket,
+    ListOptions {
+        prefix,
+        path_matcher: Some(Arc::new(
+            PatternFilePathMatcher::include(["**/*.md"])
+                .map_err(|e| Error::engine(format!("matcher: {e}")))?,
+        )),
+        ..Default::default()
+    },
+)
+.list()
+.await?;
+```
+
+`PatternFilePathMatcher::new(included, excluded)` takes exclude patterns too.
+
+</Fragment>
+</LangTabs>
+
 ### Limiting file size
 
 Use `max_file_size` to skip objects that exceed a size threshold:
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/oci_object_storage.rs (ListOptions) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Skip objects larger than 10 MB
@@ -129,9 +365,34 @@ async for file in oci_object_storage.list_objects(
     process(file)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Skip objects larger than 10 MB
+let small = oci_object_storage::list_objects(
+    &client,
+    "ns",
+    "my-bucket",
+    ListOptions {
+        max_file_size: Some(10 * 1024 * 1024),
+        ..Default::default()
+    },
+)
+.list()
+.await?;
+```
+
+</Fragment>
+</LangTabs>
+
 ### get_object
 
 Fetch a single object from an OCI bucket by its full object name.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/oci_object_storage.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async def get_object(
@@ -142,6 +403,27 @@ async def get_object(
 ) -> OCIFile
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub async fn OciClient::get_object(
+    &self,
+    namespace: &str,
+    bucket: &str,
+    object_name: &str,
+) -> Result<OciFile>
+
+pub async fn OciClient::get_object_uri(&self, uri: &str) -> Result<OciFile>
+```
+
+`get_object_uri` takes an `oci://namespace/bucket/object` URI.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 **Parameters:**
 
 - `client` — An `oci.object_storage.ObjectStorageClient`.
@@ -151,7 +433,19 @@ async def get_object(
 
 **Returns:** An `OCIFile` (FileLike) for the specified object, with its metadata pre-populated.
 
+</Lang>
+
+<Lang only="rust">
+
+**Returns:** An `OciFile` for the specified object, with its metadata from a `HEAD` request. Its relative path is the full object name.
+
+</Lang>
+
 **Example:**
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/oci_object_storage.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 f = await oci_object_storage.get_object(
@@ -160,9 +454,24 @@ f = await oci_object_storage.get_object(
 data = await f.read()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let f = client.get_object("my-namespace", "my-bucket", "data/config.json").await?;
+let data = f.read().await?;
+```
+
+</Fragment>
+</LangTabs>
+
 ### read
 
 Read object content directly without first fetching metadata.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/oci_object_storage.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async def read(
@@ -174,6 +483,22 @@ async def read(
 ) -> bytes
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub async fn OciClient::read(&self, file: &OciFile) -> Result<Vec<u8>>
+pub async fn OciClient::read_range(&self, file: &OciFile, len: u64) -> Result<Vec<u8>>
+pub async fn OciClient::read_text(&self, file: &OciFile) -> Result<String>
+```
+
+The Rust client reads an `OciFile`, not a name: get the file with `get_object` first. `read_range` reads the first `len` bytes.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 **Parameters:**
 
 - `client` — An `oci.object_storage.ObjectStorageClient`.
@@ -184,13 +509,42 @@ async def read(
 
 **Returns:** The object content as bytes.
 
+</Lang>
+
 **Example:**
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/oci_object_storage.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 data = await oci_object_storage.read(client, "my-namespace", "my-bucket", "data/config.json")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let f = client.get_object("my-namespace", "my-bucket", "data/config.json").await?;
+let data = client.read(&f).await?;
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 ### OCIFilePath
+
+</Lang>
+
+<Lang only="rust">
+
+### OciFilePath
+
+</Lang>
+
+<Lang only="python">
 
 Each file returned by the connector has an `OCIFilePath` — a [`FilePath`](../common_resources/data_types#filepath) specialized for OCI Object Storage:
 
@@ -205,9 +559,43 @@ For example, with `prefix="data/"` and an object named `"data/docs/readme.md"`:
 
 A derived path (`parent`, `/`, `with_name()`, `with_suffix()`) resolves to the object name of the new path in the same folder: `file.file_path.with_suffix(".txt").resolve()` → `"data/docs/readme.txt"`.
 
+</Lang>
+
+<Lang only="rust">
+
+Each file returned by the connector has an `OciFilePath` (`file.file_path()`):
+
+- **Relative path** (`path()`, a `&str`) — The object name relative to the walker prefix (or the full name if no prefix was used).
+- **Resolved path** (`resolve()`) — The full OCI object name.
+- **Namespace and bucket** — `namespace()`, `bucket()`.
+
+For example, with prefix `"data/"` and an object named `"data/docs/readme.md"`, `path()` is `"docs/readme.md"` and `resolve()` is `"data/docs/readme.md"`.
+
+</Lang>
+
+<RustNote>
+`OciFilePath` has no derived-path methods (`parent`, `/`, `with_name()`, `with_suffix()`). `OciFile` has the public fields `size`, `modified_secs` and `etag`, plus `key()`, `read()`, `read_size(n)` and `read_text()`; it implements `FileLike` and `MemoInput`.
+</RustNote>
+
+<Lang only="python">
+
 ### OCIFile.exists()
 
 `OCIFile` provides an async `exists()` method that probes whether the object currently exists in OCI:
+
+</Lang>
+
+<Lang only="rust">
+
+### OciFile::exists()
+
+`OciFile::exists()` probes whether the object currently exists in OCI, with a `HEAD` request:
+
+</Lang>
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/oci_object_storage.rs (OciFile::exists) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 if await oci_file.exists():
@@ -216,13 +604,53 @@ else:
     print("Object no longer exists")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+if oci_file.exists().await? {
+    let data = oci_file.read().await?;
+} else {
+    println!("Object no longer exists");
+}
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 Call `exists()` first and branch on the result; on a `True` verdict, subsequent `size()` / `read()` calls reuse the cached metadata without re-probing.
 
+</Lang>
+
+<Lang only="rust">
+
+Call `exists()` first and branch on the result, instead of letting `read()` fail on a `404`. The verdict is kept for the lifetime of the `OciFile`: fetch the object again for a fresh probe.
+
+</Lang>
+
 ### Live bucket watching
+
+<Lang only="python">
 
 When `live_stream` is provided, `items()` returns a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview) instead of a plain `AsyncIterable`. Combined with [`mount_each()`](../programming_guide/processing_component#mount_each), this enables automatic incremental bucket watching — newly created, updated, and deleted objects are processed without a full rescan.
 
 The typical setup uses **OCI Streaming**. Configure an [OCI Events Rule](https://docs.oracle.com/en-us/iaas/Content/Events/Concepts/eventsoverview.htm) that forwards Object Storage events (`createobject`, `updateobject`, `deleteobject`) to an OCI Streaming stream, then consume that stream as a `LiveStream[bytes]` via the Kafka connector — see [`topic_as_stream()` and `payloads()`](./kafka#as-a-live-stream) for the consumer / stream setup — and pass it as `live_stream`:
+
+</Lang>
+
+<Lang only="rust">
+
+`list_objects_live()` returns an `OciLiveWalker`, a [`LiveMapFeed`](../advanced_topics/live_component#livemapfeed-and-livemapview) of `OciFile`s. Combined with `ctx.mount_each_live`, this enables automatic incremental bucket watching — newly created, updated, and deleted objects are processed without a full rescan.
+
+The typical setup uses **OCI Streaming**. Configure an [OCI Events Rule](https://docs.oracle.com/en-us/iaas/Content/Events/Concepts/eventsoverview.htm) that forwards Object Storage events (`createobject`, `updateobject`, `deleteobject`) to an OCI Streaming stream, then consume that stream as a `LiveStream<Vec<u8>>` via the Kafka connector — see [`topic_as_stream()` and `payloads()`](./kafka#as-a-live-stream) for the consumer / stream setup — and pass it as `events`:
+
+</Lang>
+
+{/* Rust: rust/sdk/SHOWCASE.md (OCI live view), rust/sdk/cocoindex/tests/oci_live.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from confluent_kafka.aio import AIOConsumer
@@ -243,9 +671,54 @@ walker = oci_object_storage.list_objects(
 await coco.mount_each(process_file, walker.items(), target)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::kafka;
+use cocoindex::connectors::oci_object_storage::{ListOptions, OciFile, list_objects_live};
+
+let consumer = kafka::KafkaConsumer::connect_with_options(
+    &["<oci-streaming-bootstrap-host>:9092"],
+    kafka::KafkaConsumerOptions {
+        consumer_group: Some("my-group".to_string()),
+        ..Default::default()
+    },
+)
+.await?;
+let events = kafka::topic_as_stream(&consumer, ["object-storage-events"]).payloads();
+
+let feed = list_objects_live(
+    &client,
+    "my-namespace",
+    "my-bucket",
+    ListOptions::default(),
+    events,
+);
+ctx.mount_each_live(&"objects", feed, move |_ctx, file: OciFile| {
+    async move {
+        let text = file.read_text().await?;
+        // ...
+        Ok(())
+    }
+})
+.await
+```
+
+`events` is any `LiveStream<Vec<u8>>` of raw OCI event JSON payloads, one event per item, such as the Kafka connector's `topic_as_stream(..).payloads()`. Each event is confirmed with a `HEAD` of the object: a present object is an update, a `404` a delete. The walker acknowledges each event to the stream once the object it names has synced (at once when the event is filtered out), so a consumer group's committed offset never passes an unprocessed event.
+
+`OciLiveWalker::logic_version(version)` opts into skipping the startup scan on a rerun whose recorded version matches, and relies on the durable stream to replay the backlog. Bump the version whenever the processing logic changes.
+
+</Fragment>
+</LangTabs>
+
 See [Live Mode](../programming_guide/live_mode) for how live mode works and how to enable it on the app.
 
 ### Example
+
+{/* Rust: examples/rust/oci_object_storage_embedding/src/main.rs (one-shot listing, no live mode) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import pathlib
@@ -301,3 +774,53 @@ app = coco.App(
 )
 app.update_blocking(live=True)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::sync::Arc;
+
+use cocoindex::connectors::oci_object_storage::{self, ListOptions, OciClient, OciFile};
+use cocoindex::prelude::*;
+use cocoindex::resources::file::PatternFilePathMatcher;
+
+cocoindex::context_key!(static OCI: OciClient);
+
+#[cocoindex::function(memo)]
+async fn process_file(ctx: &Ctx, file: OciFile) -> Result<()> {
+    let text = ctx.get_key(&OCI)?.read_text(&file).await?;
+    // ... process the file content ...
+    Ok(())
+}
+
+async fn app_main(ctx: Ctx, namespace: String, bucket: String, prefix: String) -> Result<()> {
+    let files = oci_object_storage::list_objects(
+        ctx.get_key(&OCI)?,
+        &namespace,
+        &bucket,
+        ListOptions {
+            prefix,
+            path_matcher: Some(Arc::new(
+                PatternFilePathMatcher::include(["**/*.md"])
+                    .map_err(|e| Error::engine(format!("matcher: {e}")))?,
+            )),
+            ..Default::default()
+        },
+    )
+    .list()
+    .await?;
+
+    mount_each!(
+        files.into_iter().map(|f| (f.key(), f)),
+        |file| process_file(ctx, file)
+    )
+    .await?;
+    Ok(())
+}
+```
+
+The Rust example is a one-shot listing: the full program, which chunks and embeds each object into Postgres, is `examples/rust/oci_object_storage_embedding`. For live mode, replace the listing with `list_objects_live` and `ctx.mount_each_live`, as above.
+
+</Fragment>
+</LangTabs>

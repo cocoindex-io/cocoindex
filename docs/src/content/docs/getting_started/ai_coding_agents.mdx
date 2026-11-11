@@ -4,8 +4,40 @@ description: >
   Make Claude Code, Cursor, and other AI coding agents write correct CocoIndex v1
   code by installing the official CocoIndex skill — concepts, APIs, and patterns
   packaged for agent context.
+rust_description: >
+  The official CocoIndex agent skill covers the Python SDK only. For the Rust SDK,
+  point Claude Code, Cursor, and other AI coding agents at the Rust SDK showcase
+  and the Rust examples.
 ---
-CocoIndex ships an official **agent skill** that teaches AI coding agents how to build CocoIndex v1 pipelines correctly — core concepts, API surface, common patterns, connectors, and best practices, all in one place.
+<Lang only="rust">
+
+CocoIndex ships an official agent skill for AI coding agents, but it covers the **Python SDK only**: its concepts, API reference and patterns are Python code. Installing it into a Rust project would teach your agent the Python API.
+
+For a Rust pipeline, give your agent these references instead:
+
+- [`rust/sdk/SHOWCASE.md`](https://github.com/cocoindex-io/cocoindex/blob/main/rust/sdk/SHOWCASE.md) — a tour of the Rust SDK API: apps, functions, memoization, mounting, context, targets and connectors, each with a code sample.
+- [`examples/rust/`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/rust) — complete Rust pipelines (text embedding, code embedding, knowledge graphs, Kafka, and more), each with a `README.md`.
+- These docs. Every page has a Markdown twin at `/docs/rust/<slug>.md`, and [`/docs/rust/llms.txt`](/docs/rust/llms.txt) lists them all.
+
+A short note in your project's `AGENTS.md` or `CLAUDE.md` that points the agent at these files is usually enough. For example:
+
+```md title="AGENTS.md"
+This project uses the CocoIndex Rust SDK (the `cocoindex` crate).
+Before writing pipeline code, read
+https://github.com/cocoindex-io/cocoindex/blob/main/rust/sdk/SHOWCASE.md
+and the closest example under
+https://github.com/cocoindex-io/cocoindex/tree/main/examples/rust.
+```
+
+## Contributing
+
+A Rust version of the skill is welcome. The skill lives in [`skills/cocoindex/`](https://github.com/cocoindex-io/cocoindex/tree/main/skills/cocoindex) and is versioned alongside the codebase. See the [contributing guide](../contributing/guide/) for how to get started.
+
+</Lang>
+
+<Lang only="python">
+
+CocoIndex ships an official agent skill with the v1 core concepts, APIs, pipeline patterns, and connector instructions for AI coding agents.
 
 The skill lives in the [`skills/cocoindex/`](https://github.com/cocoindex-io/cocoindex/tree/main/skills/cocoindex) directory of the main repo.
 
@@ -17,7 +49,7 @@ CocoIndex v1 is a fundamental redesign from v0. Without context, an LLM trained 
 - **Core APIs** — `@coco.fn`, `mount` / `use_mount` / `mount_each`, `ContextKey`, `@coco.lifespan`, target state declarations.
 - **Common patterns** — file transformation, vector embedding, LLM extraction, knowledge graphs.
 - **Connectors** — PostgreSQL, SQLite, LanceDB, Qdrant, SurrealDB, Apache Doris, LocalFS, S3, Kafka, Google Drive.
-- **Best practices** — memoization, stable component paths, vector schema with `Annotated[NDArray, KEY]`.
+- **Pipeline patterns** — memoization, stable component paths, vector schema with `Annotated[NDArray, KEY]`.
 
 ## Install the skill
 
@@ -46,3 +78,5 @@ Once installed, your agent picks up the skill automatically when you ask it to b
 ## Contributing
 
 The skill is versioned alongside the codebase — when the API changes, the skill changes with it. PRs that improve clarity, add examples, or cover new connectors are welcome. See the [contributing guide](../contributing/guide/) for how to get started.
+
+</Lang>

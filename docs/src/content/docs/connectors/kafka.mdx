@@ -7,11 +7,29 @@ description: >
   target states — with automatic offset commits and partition rebalancing at
   at-least-once semantics.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 The `kafka` connector supports Kafka as both a **source** (consuming messages as a live keyed map, or as a raw event stream) and a **target** (producing messages for declared target states).
+
+{/* Rust: examples/rust/kafka_consume/src/main.rs and examples/rust/csv_to_kafka/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import kafka
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::kafka::{self, KafkaMessage, KafkaProducer};
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 :::note[Dependencies]
 This connector requires additional dependencies. Install with:
@@ -22,13 +40,37 @@ pip install cocoindex[kafka]
 
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+:::note[Dependencies]
+Enable the `kafka` Cargo feature of the `cocoindex` crate. The connector uses `rskafka`, a pure-Rust client with no `librdkafka` dependency.
+:::
+
+</Lang>
+
 ## As source
 
-The `kafka` connector can treat a Kafka topic as a live keyed map — each message is an upsert or delete for a key. It returns a [`LiveMapFeed`](../advanced_topics/live_component#livemapfeed-and-livemapview) for use with `mount_each()`.
+The `kafka` connector can treat a Kafka topic as a live keyed map — each message is an upsert or delete for a key. It returns a [`LiveMapFeed`](../advanced_topics/live_component#livemapfeed-and-livemapview) for use with <Lang only="python">`mount_each()`</Lang><Lang only="rust">`ctx.mount_each_live`: a `KafkaTopicMap`, which is a `LiveMapFeed<String, KafkaMessage>`</Lang>.
 
 ### Setting up a consumer
 
+<Lang only="python">
+
 Create an `AIOConsumer` directly — no `ContextKey` needed. The consumer must be **unsubscribed** (the connector handles subscription internally to manage partition rebalance callbacks).
+
+</Lang>
+
+<Lang only="rust">
+
+Create a `KafkaConsumer` directly — no `ContextKey` needed. It is cheap to clone, and one consumer can serve several feeds.
+
+</Lang>
+
+{/* Rust: examples/rust/kafka_consume/src/main.rs; SASL/TLS from rust/sdk/SHOWCASE.md, verified against rust/sdk/cocoindex/src/connectors/kafka.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from confluent_kafka.aio import AIOConsumer
@@ -40,7 +82,50 @@ consumer = AIOConsumer({
 })
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let consumer = kafka::KafkaConsumer::connect_with_options(
+    &["localhost:9092"],
+    kafka::KafkaConsumerOptions {
+        consumer_group: Some("my-group".to_string()),
+        ..Default::default()
+    },
+)
+.await?;
+```
+
+`KafkaConsumer::connect(&["localhost:9092"])` connects in plaintext, without authentication and without a consumer group. `KafkaConsumerOptions` adds the consumer group and the connection options; SASL and TLS go through `KafkaConnectOptions`:
+
+```rust
+let consumer = kafka::KafkaConsumer::connect_with_options(
+    &["broker:9093"],
+    kafka::KafkaConsumerOptions {
+        consumer_group: Some("my_app".into()),
+        connect: kafka::KafkaConnectOptions {
+            sasl: Some(kafka::KafkaSasl::ScramSha256 { username, password }),
+            tls: Some(kafka::KafkaTls::default()),
+        },
+    },
+)
+.await?;
+```
+
+`KafkaSasl` is `Plain`, `ScramSha256` or `ScramSha512`, each with a `username` and a `password`. `KafkaTls::default()` trusts the Mozilla root certificates; its `ca_cert_pem`, `client_cert_pem` and `client_key_pem` fields add a private CA and a client certificate for mutual TLS. For a connection setup these options cannot express, build an `rskafka` client yourself and wrap it with `KafkaConsumer::from_client(client, state_id, consumer_group)`, where `state_id` is the cluster's stable identity (for example its bootstrap-server list), never a credential.
+
+</Fragment>
+</LangTabs>
+
+<RustNote>
+The client does not speak the consumer-group protocol. A `consumer_group` is CocoIndex's own durable cursor, kept in the app's state database: the broker does not see its lag, and two processes with the same group name do not share partitions.
+</RustNote>
+
 ### `topic_as_map()`
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/kafka.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def topic_as_map(
@@ -51,7 +136,31 @@ def topic_as_map(
 ) -> LiveMapFeed[bytes | str, Message]:
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn topic_as_map(consumer: &KafkaConsumer, topic: impl Into<String>) -> KafkaTopicMap
+
+pub fn topic_as_map_with_options(
+    consumer: &KafkaConsumer,
+    topic: impl Into<String>,
+    options: KafkaSourceOptions,
+) -> KafkaTopicMap
+
+pub struct KafkaSourceOptions {
+    /// Custom deletion predicate; defaults to "value is a tombstone (`None`)".
+    pub is_deletion: Option<IsDeletionFn>,
+}
+pub type IsDeletionFn = Arc<dyn Fn(&KafkaMessage) -> bool + Send + Sync>;
+```
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
+
+<Lang only="python">
 
 - `consumer` — An unsubscribed `AIOConsumer`. Auto-commit should be disabled.
 - `topic` — The topic to consume. To consume several topics, see [Consuming several topics](#consuming-several-topics).
@@ -59,8 +168,24 @@ def topic_as_map(
 
 **Returns:** A `LiveMapFeed[bytes | str, Message]` where each item is keyed by the message key and the value is the full `confluent_kafka.Message` object.
 
+</Lang>
+
+<Lang only="rust">
+
+- `consumer` — A `KafkaConsumer`.
+- `topic` — The topic to consume. To consume several topics, see [Consuming several topics](#consuming-several-topics).
+- `options.is_deletion` — Optional predicate `Fn(&KafkaMessage) -> bool` for custom deletion detection on non-tombstone messages (see [Deletion handling](#deletion-handling)).
+
+**Returns:** A `KafkaTopicMap`, keyed by the message key as a `String` (lossy UTF-8). Each item is a `KafkaMessage`: its `topic`, `partition`, `offset`, `key`, `value`, `headers` and `timestamp` fields, with `key_str()` and `value_str()` for the text forms.
+
+</Lang>
+
 ### Deletion handling
-Messages with `None` value (Kafka tombstones) are **always** treated as deletions. The optional `is_deletion` predicate provides additional deletion logic for non-tombstone messages:
+Messages with <Lang only="python">`None` value</Lang><Lang only="rust">a `None` value</Lang> (Kafka tombstones) are **always** treated as deletions. The optional `is_deletion` predicate provides additional deletion logic for non-tombstone messages:
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/kafka.rs (KafkaSourceOptions) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Default: only tombstones are deletions
@@ -73,15 +198,47 @@ items = kafka.topic_as_map(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Default: only tombstones are deletions
+let feed = kafka::topic_as_map(&consumer, "my-topic");
+
+// Custom: also treat messages with a specific value as deletions
+let feed = kafka::topic_as_map_with_options(
+    &consumer,
+    "my-topic",
+    kafka::KafkaSourceOptions {
+        is_deletion: Some(Arc::new(|msg: &KafkaMessage| {
+            msg.value.as_deref() == Some(b"DELETED")
+        })),
+    },
+);
+```
+
+</Fragment>
+</LangTabs>
+
 ### Offset management
 
-Offsets are committed automatically with at-least-once semantics. Messages are processed in parallel, but an offset is only committed after all earlier messages in the same partition have been fully processed. Messages with `None` keys are logged as errors and skipped.
+Offsets are committed automatically with at-least-once semantics. Messages are processed in parallel, but an offset is only committed after all earlier messages in the same partition have been fully processed. Messages with `None` keys are <Lang only="python">logged as errors and </Lang>skipped.
+
+<Lang only="rust">
+
+A consumer with a `consumer_group` commits the offsets of the records a live run has processed, per partition, to the app's state database under that group name once their child components have synced. The next live run resumes from them. A consumer without a group re-reads the topic on every run.
+
+</Lang>
 
 ### Readiness
 
 The feed signals readiness after catching up to the high watermark offsets that existed when consumption started. After that, it continues consuming indefinitely until the app is stopped.
 
 ### Example
+
+{/* Rust: examples/rust/kafka_consume/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import pathlib
@@ -122,9 +279,71 @@ app = coco.App(
 app.update_blocking(live=True)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::kafka::{self, KafkaMessage};
+use cocoindex::{App, UpdateOptions};
+
+#[tokio::main]
+async fn main() -> cocoindex::Result<()> {
+    let consumer = kafka::KafkaConsumer::connect_with_options(
+        &["localhost:9092"],
+        kafka::KafkaConsumerOptions {
+            consumer_group: Some("kafka_consume".to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let app = App::open("kafka_consume", ".cocoindex_db").await?;
+
+    let body = move |ctx: cocoindex::Ctx| {
+        let consumer = consumer.clone();
+        async move {
+            let feed = kafka::topic_as_map(&consumer, "my-topic");
+            ctx.mount_each_live(&"messages", feed, move |_ctx, message: KafkaMessage| {
+                async move {
+                    println!(
+                        "message {}@{}/{}: {}",
+                        message.key_str().unwrap_or_default(),
+                        message.partition,
+                        message.offset,
+                        message.value_str().unwrap_or_default()
+                    );
+                    Ok(())
+                }
+            })
+            .await
+        }
+    };
+
+    let handle = app.start_update_with_options(
+        UpdateOptions {
+            full_reprocess: false,
+            live: true,
+            ..UpdateOptions::default()
+        },
+        body,
+    )?;
+    handle.result().await?;
+    Ok(())
+}
+```
+
+`ctx.mount_each_live(&"messages", feed, process_fn)` mounts one child component per message key. Without `live: true`, `app.run(body)` takes one snapshot of the topic up to its high watermark and stops. The full program is `examples/rust/kafka_consume`; it pairs with `examples/rust/csv_to_kafka`.
+
+</Fragment>
+</LangTabs>
+
 ### Consuming several topics
 
-`topic_as_map()` keys each item by its message key alone, so one feed reads one topic. To consume several topics, create one feed per topic, each with its own consumer, and mount each feed under its own `mount_each()` subpath. The subpath keeps the same message key on two topics (for example, `42` on `users` and `42` on `orders`) in two separate components.
+`topic_as_map()` keys each item by its message key alone, so one feed reads one topic. To consume several topics, create one feed per topic<Lang only="python">, each with its own consumer,</Lang> and mount each feed under its own <Lang only="python">`mount_each()`</Lang><Lang only="rust">`mount_each_live`</Lang> subpath. The subpath keeps the same message key on two topics (for example, `42` on `users` and `42` on `orders`) in two separate components.
+
+{/* Rust: examples/rust/kafka_consume/src/main.rs (one feed per topic) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn
@@ -142,7 +361,30 @@ async def app_main(outdir: pathlib.Path) -> None:
         )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+for topic in ["users", "orders"] {
+    let feed = kafka::topic_as_map(&consumer, topic);
+    ctx.mount_each_live(&topic, feed, move |_ctx, message: KafkaMessage| {
+        async move {
+            println!("{}: {}", message.topic, message.key_str().unwrap_or_default());
+            Ok(())
+        }
+    })
+    .await?;
+}
+```
+
+The first argument of `mount_each_live` is the subpath; here it is the topic name. One `KafkaConsumer` can serve several feeds.
+
+</Fragment>
+</LangTabs>
+
 Each topic also writes to its own directory here, because `process_message` names a file by the message key only.
+
+<Lang only="python">
 
 #### Switching from a list of topics
 
@@ -163,6 +405,8 @@ Switching from several topics in a list to one feed per topic changes the item k
 
 3. Change the code to one feed per topic and start the app again. It processes every message the topics still retain.
 
+</Lang>
+
 ## As a live stream
 
 Some downstream connectors don't model Kafka messages as a keyed map — they treat each message as an opaque event payload (e.g. the [OCI Object Storage](./oci_object_storage#live-bucket-watching) live mode ingests Object Storage event JSON delivered through OCI Streaming). For these, the `kafka` connector exposes a topic as a [`LiveStream`](../advanced_topics/live_component#livestream) — CocoIndex's keyless counterpart to `LiveMapFeed`, an opaque sequence of messages with the same readiness and back-pressure machinery but no key/delete semantics.
@@ -171,6 +415,10 @@ Set up the consumer the same way as for [`topic_as_map()`](#setting-up-a-consume
 
 ### `topic_as_stream()`
 
+{/* Rust: rust/sdk/cocoindex/src/connectors/kafka.rs; usage in rust/sdk/cocoindex/tests/kafka_source.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 def topic_as_stream(
     consumer: AIOConsumer,
@@ -178,22 +426,88 @@ def topic_as_stream(
 ) -> TopicStream:
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn topic_as_stream(
+    consumer: &KafkaConsumer,
+    topics: impl IntoIterator<Item = impl Into<String>>,
+) -> KafkaTopicStream
+```
+
+For example:
+
+```rust
+let feed = kafka::topic_as_stream(&consumer, ["users", "orders"]);
+ctx.mount_each_live(&"events", feed, move |_ctx, message: KafkaMessage| {
+    async move { Ok(()) }
+})
+.await?;
+```
+
+`KafkaTopicStream` is a `LiveStream<KafkaMessage>`. It is also a `LiveMapFeed<String, KafkaMessage>` for `mount_each_live`, as above: each record becomes a distinct child keyed by its `"{topic}:{partition}:{offset}"` position, tombstones included, and nothing is compacted or deleted. The position keys are stable, so a replayed catch-up reconciles to no-ops.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
+
+<Lang only="python">
 
 - `consumer` — An unsubscribed `AIOConsumer`. Auto-commit should be disabled.
 - `topics` — Topics to subscribe to.
 
 **Returns:** A `TopicStream` (a `LiveStream[Message]`) that delivers raw `confluent_kafka.Message` objects to its subscriber. [Offset management](#offset-management) and [readiness](#readiness) behave identically to `topic_as_map()`.
 
+</Lang>
+
+<Lang only="rust">
+
+- `consumer` — A `KafkaConsumer`.
+- `topics` — Topics to read, across all their partitions.
+
+**Returns:** A `KafkaTopicStream` (a `LiveStream<KafkaMessage>`) that delivers every record, tombstones included, to its subscriber. [Offset management](#offset-management) and [readiness](#readiness) behave identically to `topic_as_map()`.
+
+</Lang>
+
+<Lang only="python">
+
 ### `TopicStream.payloads()`
+
+</Lang>
+
+<Lang only="rust">
+
+### `KafkaTopicStream::payloads()`
+
+</Lang>
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/kafka.rs (KafkaTopicStream::payloads) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def payloads(self) -> LiveStream[bytes]:
 ```
 
-A view over the same `TopicStream` that yields each message's value (the byte payload) instead of the full `Message`. Null-valued messages (Kafka tombstones) are filtered out of this view; consumers that need tombstone semantics should subscribe to the `TopicStream` directly.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn payloads(self) -> KafkaPayloadStream // a LiveStream<Vec<u8>>
+```
+
+</Fragment>
+</LangTabs>
+
+A view over the same stream that yields each message's value (the byte payload) instead of the full message. Null-valued messages (Kafka tombstones) are filtered out of this view; consumers that need tombstone semantics should subscribe to the <Lang only="python">`TopicStream`</Lang><Lang only="rust">`KafkaTopicStream`</Lang> directly.
 
 This is the typical input for sources that consume opaque event payloads:
+
+{/* Rust: rust/sdk/SHOWCASE.md (OCI live view); signatures in rust/sdk/cocoindex/src/connectors/oci_object_storage.rs (list_objects_live) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from confluent_kafka.aio import AIOConsumer
@@ -212,11 +526,42 @@ walker = oci_object_storage.list_objects(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let events = kafka::topic_as_stream(&consumer, ["object-storage-events"]).payloads();
+let walker = oci_object_storage::list_objects_live(
+    &client,
+    "my-namespace",
+    "my-bucket",
+    oci_object_storage::ListOptions::default(),
+    events,
+);
+```
+
+The OCI live view acknowledges each event to the stream once the object it names has synced, so the consumer group's offset never passes an unprocessed event.
+
+</Fragment>
+</LangTabs>
+
 For a complete app using this pattern, see the [OCI Object Storage live-mode example](./oci_object_storage#example).
+
+<Lang only="python">
 
 :::caution
 A `TopicStream` (and any `payloads()` view of it) supports at most one active watcher — the underlying consumer can hold only one subscription. A second concurrent `watch()` raises `RuntimeError`.
 :::
+
+</Lang>
+
+<Lang only="rust">
+
+:::caution
+A `KafkaTopicStream` (and its `payloads()` view) supports at most one active watcher. A second concurrent `watch` returns an error.
+:::
+
+</Lang>
 
 ## As target
 
@@ -224,11 +569,15 @@ The `kafka` connector provides target state APIs for producing messages to Kafka
 
 ### Setting up a producer
 
-Create a `ContextKey[AIOProducer]` to identify your producer, then provide it in your lifespan:
+<Lang only="python">Create a `ContextKey[AIOProducer]` to identify your producer, then provide it in your lifespan:</Lang><Lang only="rust">Declare a `ContextKey<KafkaProducer>` with `context_key!` to identify your producer, then provide it when you build the environment:</Lang>
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track target state for topics produced through this key. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
+
+{/* Rust: examples/rust/csv_to_kafka/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from confluent_kafka import AIOProducer
@@ -243,11 +592,42 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     yield
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::kafka::{self, KafkaProducer};
+use cocoindex::Environment;
+
+cocoindex::context_key!(static PRODUCER: KafkaProducer);
+
+let producer = KafkaProducer::connect(&["localhost:9092"]).await?;
+// The topic is user-managed; create it up front if absent (idempotent).
+producer.ensure_topic(&topic, 1).await?;
+
+// The producer is provided under a `ContextKey`; the target names the key.
+let app = Environment::builder()
+    .provide_key(&PRODUCER, producer)
+    .build()
+    .await?
+    .app("CsvToKafkaRust")
+    .await?;
+```
+
+`KafkaProducer::connect_with_options(servers, KafkaConnectOptions { sasl, tls })` adds SASL and TLS, as for the consumer, and `KafkaProducer::from_client(client, state_id)` wraps an `rskafka` client you built. `ensure_topic(topic, num_partitions)` is an explicit helper outside reconciliation; CocoIndex never creates or drops a topic on its own.
+
+</Fragment>
+</LangTabs>
+
 ### Declaring target states
 
 #### Topics (parent state)
 
-Declares a topic as a target state. Returns a `KafkaTopicTarget` for declaring messages.
+Declares a topic as a target state. Returns a `KafkaTopicTarget` for declaring messages. `kafka_topic_target()` takes the same arguments and builds the topic's target state alone, for <Lang only="python">`coco.mount_target()`</Lang><Lang only="rust">`mount_target` or `declare_target_state_with_child`</Lang>; `declare_kafka_topic_target()` and `mount_kafka_topic_target()` wrap it.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/kafka.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def declare_kafka_topic_target(
@@ -258,7 +638,44 @@ def declare_kafka_topic_target(
 ) -> KafkaTopicTarget[coco.PendingS]
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn declare_kafka_topic_target(
+    ctx: &Ctx,
+    producer: &ContextKey<KafkaProducer>,
+    topic: impl Into<String>,
+    options: KafkaTopicOptions,
+) -> Result<KafkaTopicTarget>
+
+pub async fn mount_kafka_topic_target(
+    ctx: &Ctx,
+    producer: &ContextKey<KafkaProducer>,
+    topic: impl Into<String>,
+    options: KafkaTopicOptions,
+) -> Result<KafkaTopicTarget>
+
+pub fn kafka_topic_target(
+    ctx: &Ctx,
+    producer: &ContextKey<KafkaProducer>,
+    topic: impl Into<String>,
+    options: KafkaTopicOptions,
+) -> Result<TargetState<TopicSpec>>
+
+pub struct KafkaTopicOptions {
+    pub deletion_value_fn: Option<DeletionValueFn>,
+}
+/// Takes the key as Kafka stores it: a `&str` key is its UTF-8 bytes.
+pub type DeletionValueFn = Arc<dyn Fn(&[u8]) -> Vec<u8> + Send + Sync>;
+```
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
+
+<Lang only="python">
 
 - `producer` — A `ContextKey[AIOProducer]` identifying the producer to use.
 - `topic` — The Kafka topic name.
@@ -266,15 +683,51 @@ def declare_kafka_topic_target(
 
 **Returns:** A pending `KafkaTopicTarget`. Use the async convenience wrapper to resolve:
 
+</Lang>
+
+<Lang only="rust">
+
+- `producer` — A `ContextKey<KafkaProducer>` identifying the producer to use.
+- `topic` — The Kafka topic name; it must be non-empty.
+- `options.deletion_value_fn` — Optional callback that produces a deletion value for a given key (see [Deletion handling](#deletion-handling-1)).
+
+**Returns:** A `KafkaTopicTarget`. `declare_kafka_topic_target` declares the topic in the current component, and its messages resolve at the component's commit; `mount_kafka_topic_target` mounts it in the foreground, so you can declare messages at once:
+
+</Lang>
+
+{/* Rust: examples/rust/csv_to_kafka/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 topic_target = await kafka.mount_kafka_topic_target(
     KAFKA_PRODUCER, "my-topic"
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let target = kafka::mount_kafka_topic_target(
+    &ctx,
+    &PRODUCER,
+    "my-topic",
+    kafka::KafkaTopicOptions::default(),
+)
+.await?;
+```
+
+</Fragment>
+</LangTabs>
+
 #### Messages (child states)
 
 Once a `KafkaTopicTarget` is resolved, declare target states to produce messages:
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/kafka.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def KafkaTopicTarget.declare_target_state(
@@ -285,10 +738,43 @@ def KafkaTopicTarget.declare_target_state(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn KafkaTopicTarget::declare_message(
+    &self,
+    ctx: &Ctx,
+    key: &str,
+    value: impl AsRef<[u8]>,
+) -> Result<()>
+
+pub fn KafkaTopicTarget::declare_message_bytes(
+    &self,
+    ctx: &Ctx,
+    key: &[u8],
+    value: impl AsRef<[u8]>,
+) -> Result<()>
+```
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
+
+<Lang only="python">
 
 - `key` — The message key, used as the stable identity for change detection. A `str` key is sent as its UTF-8 bytes, so `"a"` and `b"a"` are the same Kafka key: declare each key in one form only. If a key changes form between runs (for example, from `"a"` to `b"a"`), CocoIndex publishes the new form and sends no deletion message for the old form, so the record stays.
 - `value` — The message value.
+
+</Lang>
+
+<Lang only="rust">
+
+- `key` — The message key, used as the stable identity for change detection; it must be non-empty. `declare_message` takes a `&str` and sends its UTF-8 bytes; `declare_message_bytes` takes a binary key. A `&str` key and its UTF-8 bytes are the same Kafka key: declare each key in one form only. If a key changes form between runs (for example, from `"a"` to `b"a"`), CocoIndex publishes the new form and sends no deletion message for the old form, so the record stays.
+- `value` — The message value: any byte slice, so a `&str`, `String` or `Vec<u8>` works.
+
+</Lang>
 
 CocoIndex fingerprints the value and only produces a message when it has changed since the last run.
 
@@ -298,6 +784,14 @@ While the topic is still declared, a message target state that is no longer decl
 
 - **Without callback** (default): Produces a message with the key and no value (Kafka tombstone).
 - **With callback**: Calls `deletion_value_fn(key)` to produce the deletion value.
+
+<RustNote>
+The callback lives in your process: a run that declares the topic target, or drops the app from a process that did, applies it. `App::drop_state` from a process that never declared the topic target produces tombstones.
+</RustNote>
+
+{/* Rust: rust/sdk/cocoindex/tests/kafka_target.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Tombstone on deletion (default)
@@ -312,9 +806,34 @@ topic_target = await kafka.mount_kafka_topic_target(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Tombstone on deletion (default)
+let target = kafka::mount_kafka_topic_target(
+    &ctx,
+    &PRODUCER,
+    "my-topic",
+    kafka::KafkaTopicOptions::default(),
+)
+.await?;
+
+// Custom deletion value
+let options = kafka::KafkaTopicOptions {
+    deletion_value_fn: Some(Arc::new(|key: &[u8]| {
+        format!("deleted:{}", String::from_utf8_lossy(key)).into_bytes()
+    })),
+};
+let target = kafka::mount_kafka_topic_target(&ctx, &PRODUCER, "my-topic", options).await?;
+```
+
+</Fragment>
+</LangTabs>
+
 #### Abandoning a topic
 
-Removing the topic declaration itself — or calling `App.drop()` — **abandons** the topic: CocoIndex stops producing to it and emits no tombstones for the messages it produced earlier. Renaming the topic in code abandons the old topic the same way. Avoid reusing an abandoned topic in a later declaration: its stale keys remain and are never tombstoned, and keys you declare again are republished as new even when their values are unchanged.
+Removing the topic declaration itself — or calling <Lang only="python">`App.drop()`</Lang><Lang only="rust">`App::drop_state`</Lang> — **abandons** the topic: CocoIndex stops producing to it and emits no tombstones for the messages it produced earlier. Renaming the topic in code abandons the old topic the same way. Avoid reusing an abandoned topic in a later declaration: its stale keys remain and are never tombstoned, and keys you declare again are republished as new even when their values are unchanged.
 
 To tombstone everything before abandoning a topic, drain it first:
 
@@ -323,6 +842,10 @@ To tombstone everything before abandoning a topic, drain it first:
 3. Remove the topic declaration.
 
 ### Example
+
+{/* Rust: examples/rust/csv_to_kafka/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from collections.abc import AsyncIterator
@@ -368,3 +891,71 @@ app = coco.App(
 )
 app.update_blocking(report_to_stdout=True)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::kafka::{self, KafkaProducer};
+use cocoindex::prelude::*;
+use cocoindex::Environment;
+
+cocoindex::context_key!(static PRODUCER: KafkaProducer);
+
+/// Parse one CSV file and declare one message per row. Memoized on the file:
+/// an unchanged file keeps its messages without re-parsing. The topic target
+/// is one per app, so it is not part of the memo key.
+#[cocoindex::function(memo, memo_key(target = skip))]
+async fn process_csv(ctx: &Ctx, file: &FileEntry, target: &kafka::KafkaTopicTarget) -> Result<()> {
+    let text = file.read_text().await?;
+    // ... for each CSV row, build its message key and JSON value, then:
+    // target.declare_message(ctx, key, value)?;
+    Ok(())
+}
+
+async fn index(producer: KafkaProducer, topic: String) -> Result<()> {
+    // The topic is user-managed; create it up front if absent (idempotent).
+    producer.ensure_topic(&topic, 1).await?;
+
+    let app = Environment::builder()
+        .db_path(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&PRODUCER, producer)
+        .build()
+        .await?
+        .app("CsvToKafkaRust")
+        .await?;
+
+    let stats = app
+        .run(move |ctx| {
+            let topic = topic.clone();
+            async move {
+                let target = kafka::mount_kafka_topic_target(
+                    &ctx,
+                    &PRODUCER,
+                    topic,
+                    kafka::KafkaTopicOptions::default(),
+                )
+                .await?;
+
+                let files = walk_dir("./data")
+                    .path_matcher(PatternFilePathMatcher::include(["**/*.csv"])?)
+                    .live();
+                // One processing component per file: each file's messages sync
+                // and clean up with that file.
+                ctx.mount_each_live(&"process_csv", files, move |ctx, file: FileEntry| {
+                    let target = target.clone();
+                    async move { process_csv(&ctx, &file, &target).await }
+                })
+                .await
+            }
+        })
+        .await?;
+    println!("{stats}");
+    Ok(())
+}
+```
+
+The full program, with the CSV parsing, is `examples/rust/csv_to_kafka`. `KafkaTopicTarget` is not a memo input, so a memoized function that takes it skips it in its memo key with `memo_key(target = skip)`.
+
+</Fragment>
+</LangTabs>

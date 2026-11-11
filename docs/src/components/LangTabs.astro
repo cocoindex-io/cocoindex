@@ -1,0 +1,25 @@
+---
+// A Python / Rust pair of code samples (or any content). Each page shows one
+// language, so this renders only the slot of the page's language, with no tab
+// UI: Python pages show `python`, Rust pages show `rust`. Kept as a pair so the
+// two samples stay side by side in the source.
+//
+//   <LangTabs>
+//     <Fragment slot="python">
+//       ```python ... ```
+//     </Fragment>
+//     <Fragment slot="rust">
+//       ```rust ... ```
+//     </Fragment>
+//   </LangTabs>
+//
+// Authoring contract: docs/CONTENT_LANGUAGES.md.
+import { currentLang } from '../lib/lang';
+
+interface Props {
+  /** Ignored: kept so pages written for the tabbed form still build. */
+  initial?: number;
+}
+const lang = currentLang(Astro);
+---
+{lang === 'rust' ? <slot name="rust" /> : <slot name="python" />}

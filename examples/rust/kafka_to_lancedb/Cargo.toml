@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "kafka_to_lancedb"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# `kafka` is the source (`topic_as_map`), `lancedb` the embedded target.
+cocoindex = { path = "../../../rust/sdk/cocoindex", features = [
+    "kafka",
+    "lancedb",
+] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dotenvy = "0.15"

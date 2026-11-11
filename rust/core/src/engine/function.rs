@@ -1,6 +1,6 @@
 use crate::engine::context::{
-    ComponentProcessorContext, FnCallContext, FnCallMemo, FnCallMemoEntry, MemoStatesPayload,
-    decode_stored_entry,
+    ComponentProcessorContext, DataDepRecord, FnCallContext, FnCallMemo, FnCallMemoEntry,
+    MemoStatesPayload, decode_stored_entry,
 };
 use crate::engine::execution::target_provider_deps_still_valid;
 use crate::engine::profile::EngineProfile;
@@ -23,7 +23,9 @@ fn build_fn_call_memo<Prof: EngineProfile>(
             logic_deps: inner.entry_logic_deps().collect(),
             memo_states: memo_states.positional,
             context_memo_states: memo_states.by_context_fp,
-            already_stored: false,
+            data_deps: inner.data_deps.sorted_records(),
+            persisted: false,
+            reused: false,
         })
     })
 }
@@ -47,6 +49,7 @@ pub struct CachedFnCallMemo<'a, Prof: EngineProfile> {
     pub ret: &'a Prof::FunctionData,
     pub memo_states: &'a [Prof::FunctionData],
     pub context_memo_states: &'a [(Fingerprint, Vec<Prof::FunctionData>)],
+    pub data_deps: &'a [DataDepRecord],
 }
 
 impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
@@ -58,6 +61,7 @@ impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
                 ret: &memo.ret,
                 memo_states: &memo.memo_states,
                 context_memo_states: &memo.context_memo_states,
+                data_deps: &memo.data_deps,
             }),
             _ => None,
         }
@@ -126,17 +130,36 @@ impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
         }
     }
 
+    /// On a cache hit, re-offer the stored entry's data dependencies through
+    /// the callee's own frame, so a caller re-stored after the hit records
+    /// them too. Call next to [`join_cached_logic_deps`](Self::join_cached_logic_deps),
+    /// after any refresh of the states, so the re-offered records are the
+    /// refreshed ones.
+    pub fn join_cached_data_deps(&self, fn_ctx: &FnCallContext) {
+        if let FnCallMemoEntry::Ready(Some(memo)) = &*self.guard
+            && !memo.data_deps.is_empty()
+        {
+            fn_ctx.update(|inner| {
+                for record in memo.data_deps.iter().cloned() {
+                    inner.data_deps.insert(record);
+                }
+            });
+        }
+    }
+
     /// Update memo states on a cache hit without re-execution.
     ///
     /// Used when the state function indicates `can_reuse=true` but the state value itself
-    /// has changed (e.g. mtime changed but content fingerprint is the same). Sets
-    /// `already_stored = false` so the entry gets persisted with updated states at
-    /// finalization time.
+    /// has changed (e.g. mtime changed but content fingerprint is the same). Clears
+    /// `persisted` so the entry gets written with updated states at finalization
+    /// time, and leaves `reused` set: the body did not run, so the entry must keep
+    /// protecting its target states and the entries it depends on.
     pub fn update_memo_states(&mut self, memo_states: MemoStatesPayload<Prof>) {
         if let FnCallMemoEntry::Ready(Some(ref mut memo)) = *self.guard {
             memo.memo_states = memo_states.positional;
             memo.context_memo_states = memo_states.by_context_fp;
-            memo.already_stored = false;
+            memo.data_deps = memo_states.data_deps;
+            memo.persisted = false;
         }
     }
 
@@ -151,12 +174,24 @@ impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
         ret: impl FnOnce() -> Prof::FunctionData,
         memo_states: MemoStatesPayload<Prof>,
     ) -> Result<bool> {
-        let has_child_components = fn_ctx.update(|inner| inner.has_child_components);
+        let (has_child_components, data_dep_conflict) =
+            fn_ctx.update(|inner| (inner.has_child_components, inner.data_deps.conflict()));
+        if let Some((kind_fp, key_fp)) = data_dep_conflict {
+            // The call observed one key in two states: no single stored state
+            // can validate its output. Store nothing (a previous row is deleted
+            // at flush), so the call runs again next time.
+            debug!(
+                "memoized function call observed data dependency (kind {kind_fp:?}, key {key_fp:?}) in two states; storing no entry"
+            );
+            *self.guard = FnCallMemoEntry::Ready(None);
+            return Ok(false);
+        }
         if has_child_components {
             *self.guard = FnCallMemoEntry::Ready(None);
             client_bail!(
-                "A function with memo=True mounted child components. \
-                 Either mount the function as a component, or set memo=False."
+                "A memoized function (`memo=True` in Python, `#[function(memo)]` in Rust) \
+                 mounted child components. Either mount the function as a component, \
+                 or turn off its memoization."
             );
         }
         let memo_ret = build_fn_call_memo(fn_ctx, ret(), memo_states);

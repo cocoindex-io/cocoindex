@@ -1,20 +1,24 @@
+.dg-figure { min-width: 0; max-width: 100%; margin: 24px auto; }
+
 /* Shared styles for inline SVG diagrams in docs pages.
    Palette vars come from src/styles/globals.css.
-   Convention: animations are IDLE by default and trigger on hover of .dg-root.
-   Mirrors the cocoindex.github.io homepage style. */
+   Diagrams are static: no hover loops. Neutral boxes and arrows; periwinkle
+   marks what changed (new and updated), a removed element is a dashed ghost,
+   and green appears only on the fresh/ready tick, matching cocoindex.io's
+   Δ and live rules. */
 
 .dg-root {
   display: block;
   width: 100%;
-  max-width: 720px;
-  margin: 24px auto;
+  max-width: var(--dg-max-width, 720px);
+  margin: 0 auto;
   overflow: visible;
   font-family: var(--sans);
   color: var(--maroon-ink);
 
   /* Diagram-local palette extensions (gold for "updated" state,
      etc.). Kept here so they don't leak outside diagrams. */
-  --dg-gold: #D4A835;
+  --dg-gold: var(--coral); /* "updated" = Δ periwinkle */
 }
 
 /* ─── Text ─────────────────────────────────────────────────── */
@@ -34,9 +38,9 @@
 
 .dg-label--caps {
   font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: none;
   fill: var(--muted);
 }
 
@@ -93,9 +97,9 @@
 /* ─── Boxes ────────────────────────────────────────────────── */
 
 .dg-box {
-  fill: var(--cream);
-  stroke: var(--maroon);
-  stroke-width: 1.4;
+  fill: #111111;
+  stroke: rgba(255, 255, 255, 0.28);
+  stroke-width: 1.2;
   transition: fill .25s ease, stroke .25s ease;
 }
 
@@ -103,14 +107,14 @@
    and bullet shapes share the same cream + maroon treatment. Shape
    (not color) carries the semantic distinction. */
 .dg-box--component {
-  fill: color-mix(in oklab, var(--peach) 16%, var(--cream));
-  stroke: var(--coral);
+  fill: #161616;
+  stroke: rgba(255, 255, 255, 0.36);
 }
 
 .dg-box--app {
-  fill: color-mix(in oklab, var(--peach) 10%, var(--cream));
-  stroke: var(--coral);
-  stroke-width: 1.4;
+  fill: #0F0F0F;
+  stroke: rgba(255, 255, 255, 0.2);
+  stroke-width: 1.2;
 }
 
 /* Highlight for "the currently discussed element" — thick palm-green
@@ -119,8 +123,8 @@
 .dg-highlight>.dg-box,
 .dg-highlight>rect.dg-box,
 .dg-highlight>path.dg-box {
-  stroke: var(--palm);
-  stroke-width: 3;
+  stroke: #FFFFFF;
+  stroke-width: 2;
 }
 
 .dg-box--muted {
@@ -132,19 +136,20 @@
 /* ─── Tags / small pills ──────────────────────────────────── */
 
 .dg-tag-rect {
-  fill: color-mix(in oklab, var(--coral) 14%, var(--cream));
-  stroke: color-mix(in oklab, var(--coral) 35%, transparent);
+  fill: #161616;
+  stroke: rgba(255, 255, 255, 0.16);
   stroke-width: 1;
 }
 
 .dg-tag-rect--palm {
-  fill: color-mix(in oklab, var(--palm) 14%, var(--cream));
-  stroke: color-mix(in oklab, var(--palm) 45%, transparent);
+  fill: color-mix(in oklab, var(--coral) 14%, var(--cream));
+  stroke: color-mix(in oklab, var(--coral) 55%, transparent);
 }
 
 .dg-tag-rect--pink {
-  fill: color-mix(in oklab, var(--pink) 16%, var(--cream));
-  stroke: color-mix(in oklab, var(--pink) 45%, transparent);
+  fill: transparent;
+  stroke: rgba(255, 255, 255, 0.28);
+  stroke-dasharray: 3 3;
 }
 
 .dg-tag-rect--muted {
@@ -154,20 +159,20 @@
 
 .dg-tag-text {
   font-family: var(--mono);
-  font-size: 9.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  fill: var(--coral);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  fill: var(--muted);
   dominant-baseline: middle;
   text-anchor: middle;
 }
 
 .dg-tag-text--palm {
-  fill: var(--palm);
+  fill: var(--coral-text);
 }
 
 .dg-tag-text--pink {
-  fill: var(--pink);
+  fill: var(--muted);
 }
 
 .dg-tag-text--muted {
@@ -181,22 +186,25 @@
    cascade into every nested .dg-box (chunks, embeds, vectors) — each
    primitive owns its own state on its own wrapper <g>. */
 .dg-state-new>.dg-box {
-  stroke: var(--palm);
-  stroke-width: 2.2;
-  fill: color-mix(in oklab, var(--palm) 22%, var(--cream));
+  stroke: var(--coral);
+  stroke-width: 1.6;
+  fill: color-mix(in oklab, var(--coral) 14%, var(--cream));
 }
 
 .dg-state-updated>.dg-box {
-  stroke: var(--dg-gold);
-  stroke-width: 2.2;
-  fill: color-mix(in oklab, var(--dg-gold) 32%, var(--cream));
+  stroke: var(--coral);
+  stroke-width: 1.6;
+  fill: color-mix(in oklab, var(--coral) 28%, var(--cream));
 }
 
 .dg-state-removed>.dg-box {
-  stroke: var(--pink);
-  stroke-width: 2.2;
-  fill: color-mix(in oklab, var(--pink) 22%, var(--cream));
+  stroke: rgba(255, 255, 255, 0.35);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 3;
+  fill: transparent;
 }
+/* Fade neither the group nor its children: removed labels still explain the
+   diagram, and opacity would compound inside a deleted processing component. */
 
 /* Removed elements also strike through their label and mute its color
    so the "no longer there" reading is immediate. The native SVG
@@ -206,8 +214,9 @@
 .dg-state-removed>.dg-label,
 .dg-state-removed>foreignObject .dg-fo-label {
   text-decoration: line-through;
-  color: var(--muted);
-  fill: var(--muted);
+  /* Keep labels readable after the removed group's opacity is applied. */
+  color: var(--maroon-ink);
+  fill: var(--maroon-ink);
 }
 
 /* `changed` is kept as a thin invalidation marker (pink stroke, no fill
@@ -222,7 +231,7 @@
 
 .dg-flow {
   fill: none;
-  stroke: var(--coral);
+  stroke: var(--muted);
   stroke-width: 1.4;
   stroke-dasharray: 4 5;
   stroke-linecap: round;
@@ -285,7 +294,7 @@
 /* ─── Step-through reveal (dg-step-1 … dg-step-6) ──────── */
 
 .dg-step {
-  opacity: 0.35;
+  opacity: 1;
   transition: opacity .4s ease;
 }
 
@@ -321,13 +330,14 @@
 
 .dg-fingerprint {
   fill: none;
-  stroke: var(--coral);
+  stroke: var(--muted);
   stroke-width: 1;
   stroke-linecap: round;
 }
 
 .dg-fingerprint--stale {
-  stroke: var(--pink);
+  stroke: var(--muted);
+  stroke-dasharray: 2 2;
 }
 
 .dg-fingerprint--fresh {
@@ -462,3 +472,7 @@
     opacity: 1;
   }
 }
+
+/* Static diagrams: every hover loop off (One Moment Rule; the docs carry none). */
+.dg-root, .dg-root * { animation: none !important; }
+.dg-root:hover .dg-step { transition: none; }

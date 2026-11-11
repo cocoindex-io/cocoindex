@@ -1,6 +1,7 @@
 //! Convenience re-exports for cocoindex pipelines.
 
-pub use crate::ctx::Ctx;
+pub use crate::ctx::{ComponentMountHandle, Ctx};
+pub use crate::deps::{DataDep, LogicDep, PropagatedCallback};
 pub use crate::entity_resolution::{
     CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
     ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,
@@ -8,14 +9,15 @@ pub use crate::entity_resolution::{
 };
 pub use crate::error::{Error, Result};
 pub use crate::live_component::{
-    ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
-    LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
+    ExceptionContext, ExceptionHandler, ExceptionSource, LiveComponent, LiveComponentOperator,
+    LiveMapFeed, LiveMapSubscriber, LiveMapView, LiveStream, LiveStreamSubscriber, MountKind,
+    ReadyHandle, SingleWatcherGuard, SingleWatcherToken,
 };
 pub use crate::resources::chunk::{Chunk, TextPosition};
 pub use crate::resources::embedder::Embedder;
 pub use crate::resources::file::{
-    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
-    MatchAllFilePathMatcher, PatternFilePathMatcher,
+    DecodeErrors, FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher,
+    FileSourceItem, MatchAllFilePathMatcher, PatternFilePathMatcher,
 };
 pub use crate::resources::fs::{
     DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
@@ -25,11 +27,16 @@ pub use crate::resources::id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
     generate_uuid_default,
 };
-pub use crate::resources::live_map::LiveMap;
+pub use crate::resources::live_map::{LiveMap, LiveMapKey};
 pub use crate::resources::rate_limit::RateLimiter;
 pub use crate::resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,
+};
+pub use crate::resources::view::{SegmentKind, SourceView, ViewSegment};
+pub use crate::runner::{
+    GPU, GPURunner, Runner, RunnerBody, RunnerOutput, configure_gpu_pool, current_gpu,
+    current_gpu_fraction, current_gpus,
 };
 pub use crate::statediff::{
     DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, TrackingRecordTransition,
@@ -49,6 +56,6 @@ pub use crate::{
     UpdateOptions,
 };
 
-pub use crate::{function, mount_each, use_mount};
+pub use crate::{app, function, lifespan, main, mount, mount_each, use_mount, use_mount_each};
 
 pub use serde::{Deserialize, Serialize};

@@ -19,9 +19,24 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::connectors::kafka;
-use cocoindex::{App, Result};
+use cocoindex::{App, Environment, Result};
 use rskafka::client::partition::UnknownTopicHandling;
 use rskafka::client::{Client, ClientBuilder};
+
+cocoindex::context_key!(static PRODUCER: kafka::KafkaProducer);
+
+/// An app over `db_path` with the producer provided under `PRODUCER`.
+async fn app(name: &str, db_path: &std::path::Path, producer: &kafka::KafkaProducer) -> App {
+    Environment::builder()
+        .db_path(db_path)
+        .provide_key(&PRODUCER, producer.clone())
+        .build()
+        .await
+        .unwrap()
+        .app(name)
+        .await
+        .unwrap()
+}
 
 /// Consume every record on partition 0 from the beginning. Returns the decoded
 /// `(key, value)` pairs in log order plus the high watermark.
@@ -98,22 +113,18 @@ async fn kafka_target_produces_skips_updates_and_tombstones_when_available() -> 
         let topic = topic.clone();
         let db_path = db_path.clone();
         async move {
-            let app = App::builder("KafkaTargetTest")
-                .db_path(&db_path)
-                .build()
-                .await
-                .unwrap();
+            let app = app("KafkaTargetTest", &db_path, &producer).await;
             app.run(move |ctx| {
-                let producer = producer.clone();
                 let topic = topic.clone();
                 let messages = messages.clone();
                 async move {
                     let target = kafka::mount_kafka_topic_target(
                         &ctx,
-                        &producer,
+                        &PRODUCER,
                         topic,
                         kafka::KafkaTopicOptions::default(),
-                    )?;
+                    )
+                    .await?;
                     for (k, v) in &messages {
                         target.declare_message(&ctx, k, v)?;
                     }
@@ -187,22 +198,18 @@ async fn kafka_target_custom_delete_value_when_available() -> Result<()> {
         let topic = topic.clone();
         let db_path = db_path.clone();
         async move {
-            let app = App::builder("KafkaCustomDeleteTest")
-                .db_path(&db_path)
-                .build()
-                .await
-                .unwrap();
+            let app = app("KafkaCustomDeleteTest", &db_path, &producer).await;
             app.run(move |ctx| {
-                let producer = producer.clone();
                 let topic = topic.clone();
                 let messages = messages.clone();
                 async move {
                     let options = kafka::KafkaTopicOptions {
-                        deletion_value_fn: Some(Arc::new(|key: &str| {
-                            format!("deleted:{key}").into_bytes()
+                        deletion_value_fn: Some(Arc::new(|key: &[u8]| {
+                            format!("deleted:{}", String::from_utf8_lossy(key)).into_bytes()
                         })),
                     };
-                    let target = kafka::mount_kafka_topic_target(&ctx, &producer, topic, options)?;
+                    let target =
+                        kafka::mount_kafka_topic_target(&ctx, &PRODUCER, topic, options).await?;
                     for (k, v) in &messages {
                         target.declare_message(&ctx, k, v)?;
                     }
@@ -226,5 +233,61 @@ async fn kafka_target_custom_delete_value_when_available() -> Result<()> {
         "removed message's latest record uses the custom deletion value"
     );
 
+    Ok(())
+}
+
+/// The topic target as a composable `TargetState` (`kafka_topic_target` +
+/// `mount_target`), with a binary message key.
+#[tokio::test]
+async fn kafka_topic_target_state_and_bytes_keys_when_available() -> Result<()> {
+    let Ok(brokers) = std::env::var("KAFKA_BOOTSTRAP_SERVERS") else {
+        eprintln!("skipping live Kafka target-state test; KAFKA_BOOTSTRAP_SERVERS is not set");
+        return Ok(());
+    };
+    let broker_refs: Vec<&str> = brokers.split(',').collect();
+    let producer = kafka::KafkaProducer::connect(&broker_refs).await?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let topic = format!("cocoindex_kafka_target_state_{nonce}");
+    producer.ensure_topic(&topic, 1).await?;
+    let consumer = ClientBuilder::new(broker_refs.iter().map(|s| s.to_string()).collect())
+        .build()
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("consumer connect: {e}")))?;
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = app("KafkaTargetState", &tempdir.path().join("db"), &producer).await;
+    app.run({
+        let topic = topic.clone();
+        move |ctx| {
+            let topic = topic.clone();
+            async move {
+                let ts = kafka::kafka_topic_target(
+                    &ctx,
+                    &PRODUCER,
+                    topic,
+                    kafka::KafkaTopicOptions::default(),
+                )?;
+                let messages: cocoindex::TargetStateProvider<Vec<u8>> =
+                    cocoindex::mount_target(&ctx, ts).await?;
+                cocoindex::declare_target_state(
+                    &ctx,
+                    messages.target_state(
+                        cocoindex::StableKey::Bytes(std::sync::Arc::from(&b"\x00\x01"[..])),
+                        b"binary".to_vec(),
+                    ),
+                )?;
+                Ok(())
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let (records, hw) = consume_all(&consumer, &topic).await;
+    assert_eq!(hw, 1);
+    // `consume_all` decodes the key lossily; the two bytes survive as they are.
+    assert_eq!(records[0].0, "\u{0}\u{1}");
+    assert_eq!(records[0].1.as_deref(), Some("binary"));
     Ok(())
 }

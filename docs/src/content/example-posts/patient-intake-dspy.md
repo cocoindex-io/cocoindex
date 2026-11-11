@@ -8,15 +8,15 @@ tags: [structured-extraction, dspy]
 
 ![Patient Intake Extraction with DSPy on CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-dspy/cover.png)
 
-We'll take a folder of patient intake PDFs — names, addresses, insurance, medications, allergies, consent — and turn each one into a clean, validated JSON record. The hard part isn't the file plumbing; it's that intake forms are *visual*: checkboxes, hand-filled fields, tables of medications. So instead of extracting text, we render each PDF page to an image and let a vision model read the form the way a person would. [DSPy](https://github.com/stanfordnlp/dspy) handles the prompting — you declare a typed `Signature` and it produces a [Pydantic](https://docs.pydantic.dev/) `Patient`, no prompt strings to hand-tune.
+We'll take a folder of patient intake PDFs (names, addresses, insurance, medications, allergies, consent) and turn each one into a clean, validated JSON record. The hard part isn't the file plumbing; it's that intake forms are *visual*: checkboxes, hand-filled fields, tables of medications. So instead of extracting text, we render each PDF page to an image and let a vision model read the form the way a person would. [DSPy](https://github.com/stanfordnlp/dspy) handles the prompting — you declare a typed `Signature` and it produces a [Pydantic](https://docs.pydantic.dev/) `Patient`, no prompt strings to hand-tune.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only changed forms get re-extracted, and each one becomes exactly one JSON file on disk.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and target management. As a result, only changed forms get re-extracted, and each one becomes exactly one JSON file on disk.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy)
 
 ## Flow overview
 
-![CocoIndex patient intake flow: walk a folder of PDF intake forms, render each page to an image, extract a typed Patient with a DSPy ChainOfThought vision module on Gemini, and write one JSON file per form to a local directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-dspy/flow-v1.svg)
+![CocoIndex patient intake flow: walk a folder of PDF intake forms, render each page to an image, extract a typed Patient with a DSPy ChainOfThought vision module on Gemini, and write one JSON file per form to a local directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-dspy/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -138,7 +138,7 @@ def extract_patient(pdf_content: bytes) -> Patient:
 
 ## Process a file
 
-![One processing component per PDF: render to images, extract a Patient with DSPy, and declare a JSON file into the output directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-dspy/stage-file-process.svg)
+![One processing component per PDF: render to images, extract a Patient with DSPy, and declare a JSON file into the output directory](https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-dspy/stage-file-process-dark.svg)
 
 `process_patient_form` runs once per PDF. It reads the file's bytes, extracts the `Patient`, serializes it to pretty-printed JSON, and declares one output file named after the source form.
 
@@ -199,7 +199,7 @@ ls output_patients/
 # ...
 ```
 
-Open one and you'll see the full `Patient` record — name, date of birth, address, insurance, the medication and allergy lists, consent — extracted straight from the rendered form and validated against the schema.
+Open one and you'll see the full `Patient` record (name, date of birth, address, insurance, the medication and allergy lists, consent) extracted straight from the rendered form and validated against the schema.
 
 ## Incremental updates
 
@@ -214,5 +214,3 @@ The same machinery covers **logic** changes too: add a field to the `Patient` mo
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/patient_intake_extraction_dspy](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy). Prefer to define your schema and extraction in a typed DSL instead of Python? The twin example [Patient Intake Extraction with BAML](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_baml) runs the exact same flow with [BAML](https://boundaryml.com/) doing the extraction. For a Postgres-backed structured-extraction flow with embeddings, see [Paper Metadata](https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata).
-
-Got a stack of forms, invoices, or scanned records you want as clean structured data? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

@@ -1,38 +1,42 @@
 ---
-import { sidebar, type SidebarItem } from '../data/docs-sidebar';
+import { sidebar } from '../data/docs-sidebar';
+import { langHref, pageRegistry, sidebarFor, type Lang } from '../lib/lang';
+import LangSwitch from './LangSwitch.astro';
 import Search from './Search.astro';
 
 export interface Props {
-  /** Slug of the currently-rendered doc, e.g. `getting_started/quickstart`. */
+  /** Route of the currently-rendered doc, e.g. `getting_started/quickstart`. */
   currentSlug: string;
+  /** SDK language of the page: the sidebar lists that language's pages. */
+  lang: Lang;
 }
 
-const { currentSlug } = Astro.props;
-const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const { currentSlug, lang } = Astro.props;
+const items = sidebarFor(sidebar, lang, await pageRegistry());
 
-function href(slug: string): string {
-  // Trailing slash matches the canonical URL Astro emits under
-  // `build.format: 'directory'` — saves a 301 round-trip per click.
-  return `${base}/${slug}/`;
-}
+// Trailing slash matches the canonical URL Astro emits under
+// `build.format: 'directory'` — saves a 301 round-trip per click.
+const href = (slug: string): string => langHref(lang, slug);
 ---
 
-<aside class="side">
+<aside class="side" aria-label="Documentation pages">
+  <LangSwitch lang={lang} route={currentSlug} />
   <Search />
   <div class="side-group">
     <ul>
       <li>
         <a
-          href={`${base}/`}
+          href={href('')}
           class={currentSlug === '' ? 'on' : ''}
           data-current={currentSlug === '' || null}
+          aria-current={currentSlug === '' ? 'page' : undefined}
         >
           About CocoIndex
         </a>
       </li>
     </ul>
   </div>
-  {sidebar.map((item) => (
+  {items.map((item) => (
     item.type === 'doc' ? (
       <div class="side-group">
         <ul>
@@ -41,6 +45,7 @@ function href(slug: string): string {
               href={href(item.slug)}
               class={currentSlug === item.slug ? 'on' : ''}
               data-current={currentSlug === item.slug || null}
+              aria-current={currentSlug === item.slug ? 'page' : undefined}
             >
               {item.label ?? item.slug}
             </a>
@@ -49,13 +54,13 @@ function href(slug: string): string {
       </div>
     ) : (
       <div class="side-group">
-        <h5>
+        <p class="side-h">
           {item.slug ? (
-            <a href={href(item.slug)} style="color:inherit; text-decoration:none;">{item.label}</a>
+            <a href={href(item.slug)}>{item.label}</a>
           ) : (
             <span>{item.label}</span>
           )}
-        </h5>
+        </p>
         <ul>
           {item.items.map((child) => (
             child.type === 'doc' ? (
@@ -64,6 +69,7 @@ function href(slug: string): string {
                   href={href(child.slug)}
                   class={currentSlug === child.slug ? 'on' : ''}
                   data-current={currentSlug === child.slug || null}
+                  aria-current={currentSlug === child.slug ? 'page' : undefined}
                 >
                   {child.label ?? child.slug}
                 </a>
@@ -77,11 +83,13 @@ function href(slug: string): string {
 </aside>
 
 <script>
-  // On load, scroll the active sidebar entry into view so the user never
-  // lands on a page where the highlighted nav item is off-screen. `nearest`
-  // avoids jumping the whole viewport — it just nudges the sidebar scroller.
+  // On load, bring the active sidebar entry into view by scrolling the rail
+  // itself. scrollIntoView would also scroll the window (the rail is sticky),
+  // which left pages low in the tree (CLI, FAQ, About) opening mid-page.
   const current = document.querySelector<HTMLAnchorElement>('aside.side a[data-current]');
-  if (current) {
-    current.scrollIntoView({ block: 'center', inline: 'nearest' });
+  const rail = current?.closest<HTMLElement>('aside.side');
+  if (current && rail) {
+    const target = current.offsetTop - rail.clientHeight / 2 + current.offsetHeight / 2;
+    if (target > 0) rail.scrollTop = target;
   }
 </script>

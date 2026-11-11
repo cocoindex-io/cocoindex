@@ -5,10 +5,13 @@ description: >-
   when the user doesn't give one, draft the release notes from the commits
   since the last release, create the GitHub release (which creates the tag),
   and watch the Release workflow publish the wheels to PyPI and deploy the
-  docs. Use whenever the user wants to release, cut, ship or publish a new
-  CocoIndex version: "release 1.0.27", "cut a release", "make a new release",
-  "publish a new version to PyPI", "draft the release", "what should the next
-  version be".
+  docs, then, for a minor or major release, create its release branch
+  (release/1.2) from the tag. Use whenever the user wants to release, cut,
+  ship or publish a new CocoIndex version: "release 1.0.27", "cut a release",
+  "make a new release", "publish a new version to PyPI", "draft the release",
+  "what should the next version be", "create the release branch for 1.2". A
+  minor or major release is cut from main, and a patch from the release branch
+  of its own minor (1.1.1 from release/1.1); the skill tells them apart.
 ---
 
 # Create a CocoIndex Release
@@ -25,7 +28,8 @@ tag on the release's target commit. That tag push starts
    needs no version-bump commit;
 2. builds the wheels (abi3 and free-threaded, every platform) and the sdist,
    and smoke-tests them;
-3. uploads them to PyPI, then deploys the docs.
+3. uploads them to PyPI, then deploys the docs when the release is the
+   repository's "Latest" one (the `Docs Gate` job).
 
 So publishing the GitHub release is the one action that ships everything.
 Don't `git tag` and `git push` instead: that ships to PyPI with no release
@@ -33,23 +37,41 @@ entry and no notes. And publishing can't be taken back — PyPI never accepts th
 same version twice — so the release is drafted first, shown to the user, and
 published only on their go-ahead.
 
-Needs `gh` authenticated with push access to `cocoindex-io/cocoindex`. The
-commands below use placeholders: `<prev_tag>` (e.g. `v1.0.26`), `<sha>` (full
-commit SHA), `<version>` (e.g. `1.1.0`) and `<tag>` (`v<version>`).
+A minor or major release is cut from `main`. A patch release is cut from the
+minor's release branch, `release/<X.Y>`, which starts at the minor's tag and
+takes only backports (`dev/agent-skills/backport/SKILL.md` says what
+qualifies and how one lands; `AGENTS.md`, Versioning, is the policy). The
+minor's release creates that branch as its last step (step 7), so it's there
+before the first fix needs it. The docs site shows the docs of the latest
+release, so a patch of an older minor is published with `--latest=false`
+(step 5) and deploys no docs.
 
-## 1. Pin the commit and the previous release
+Needs `gh` authenticated with push access to `cocoindex-io/cocoindex`. The
+commands below use placeholders: `<branch>` (`main` or `release/1.1`),
+`<prev_tag>` (e.g. `v1.0.26`), `<sha>` (full commit SHA), `<version>` (e.g.
+`1.1.0`) and `<tag>` (`v<version>`).
+
+## 1. Pin the branch, the commit and the previous release
 
 ```bash
-git fetch origin
-gh release view --json tagName -q .tagName   # <prev_tag>: the latest published release (drafts and prereleases excluded)
-git rev-parse origin/main                    # <sha>
+git fetch origin --tags
+git rev-parse origin/<branch>                              # <sha>
+git describe --tags --abbrev=0 --match 'v[0-9]*' <sha>     # <prev_tag>: the newest release tag the commit descends from
 git log --oneline <prev_tag>..<sha>
 ```
 
-Release `origin/main` unless the user names another commit, and use the SHA,
-not a branch name, from here on: `main` can move while you work, and the tag
-must land on the commit the notes describe. If the range is empty, or holds
-nothing a user would notice (step 3), say so and stop.
+`<branch>` is `main` for a minor or major release and `release/<X.Y>` for a
+patch of `X.Y` (`git ls-remote --heads origin 'release/*'` lists them; the
+minor's release created it, step 7). Release the branch's tip unless the user
+names another commit, and use the SHA, not the branch name, from here on: the
+branch can move while you work, and the tag must land on the commit the notes
+describe. `git describe` finds the previous release on the commit's own line
+of history; `gh release view` without a tag returns the release GitHub marks
+"Latest", which is the wrong one once releases come from two branches. A
+prerelease tag (`v1.2.0-rc.1`) can be what `git describe` finds; for a final
+release use the last stable tag instead, so the notes cover everything since
+it. If the range is empty, or holds nothing a user would notice (step 3), say
+so and stop.
 
 ## 2. Check the commit is green
 
@@ -66,9 +88,10 @@ combined-status endpoint reports `pending` forever because the repository uses
 check runs, not statuses; ignore it.)
 
 CI never runs the release build itself (manylinux containers, free-threaded
-wheels, sdist, third-party notices). If the range touches it, offer a dry run
-before publishing: `gh workflow run release.yml --ref main` builds and tests
-everything and publishes nothing (~15 minutes). Check with
+wheels, sdist, third-party notices). If the range touches it, or this is the
+first release from a new release branch, offer a dry run before publishing:
+`gh workflow run release.yml --ref <branch>` builds and tests everything and
+publishes nothing (~15 minutes). Check with
 `git diff --stat <prev_tag> <sha> -- .github/workflows/release.yml .github/scripts/update_version.py about.toml about.hbs`,
 plus `[build-system]` or `[tool.maturin]` changes in `pyproject.toml`.
 
@@ -119,6 +142,20 @@ earliest commit in the range), `unresolved_prs` and `warnings`. Read
 `warnings` first. If `gh` can't reach the repository, fall back to
 `git log --first-parent <prev_tag>..<sha> --oneline` and say that handles and
 contributors are missing, rather than inventing them.
+
+A backport lands on a release branch as a squash commit whose body keeps the
+`(cherry picked from commit <sha>)` trailer of each commit it carried. The
+collector expands such a commit into one entry per trailer, with the original
+commit's subject, PR and author and `backport_pr` set to the backport pull
+request: credit and link the original, as the entry does. It needs the
+original commits in the clone (`git fetch origin main`); a warning names a
+squash commit it couldn't expand.
+
+A minor's range starts at the previous minor's tag, so it holds the originals
+of fixes a patch release already shipped. List the originals that are on the
+release branch (`git log origin/release/<X.Y> --format=%b | grep -o 'cherry picked from commit [0-9a-f]*'`),
+leave those items out, and close "What's Changed" with one line that names
+the patch releases: `This release also includes the fixes of v1.1.1.`
 
 If `unresolved_prs` is non-empty, those PR numbers appear in commit subjects but
 their `gh` lookup failed. When they also 404 through the REST API, the usual
@@ -183,6 +220,12 @@ Each entry's `pr` is the PR for its "made their first contribution in" link.
 
 ## 4. Pick the version
 
+**The branch fixes the kind.** A patch (`X.Y.Z+1`) is released from
+`release/<X.Y>`, and a minor or major from `main`; a patch from `main` would
+ship everything landed since the minor, and a feature never goes to a release
+branch. A version that doesn't match the branch, the user's or a proposed
+one: say so and stop.
+
 **The user gave one.** Accept `1.2.3` or `v1.2.3`; the tag is `v1.2.3`. Check
 that:
 
@@ -211,7 +254,8 @@ drive the bump.
 - **Minor** (`X.Y+1.0`): any new backward-compatible capability: a new API,
   parameter, connector, source, language, CLI command or option, or a
   deprecation (it adds the replacement).
-- **Patch** (`X.Y.Z+1`): only fixes, performance, docs and dependency bumps.
+- **Patch** (`X.Y.Z+1`): only fixes, performance, docs and dependency bumps,
+  from the minor's release branch.
 
 For a prerelease, append `-rc.N` (or `-alpha.N` / `-beta.N`) to the proposed
 version, with `N` one past the highest existing tag of that series
@@ -228,14 +272,24 @@ Write the notes to a file outside the repository, then create a draft:
 
 ```bash
 gh release create <tag> --draft --target <sha> --title <tag> \
-  --notes-file /tmp/cocoindex-<tag>-notes.md   # add --prerelease for a prerelease
+  --notes-file /tmp/cocoindex-<tag>-notes.md   # add --prerelease for a prerelease, --latest=false for a patch of an older minor
+```
+
+GitHub marks a published stable release "Latest" unless told otherwise, and
+the Release workflow deploys the docs only from the Latest release. When the
+version is lower than the highest published stable one, pass `--latest=false`
+so the newer release stays Latest and the docs stay on it:
+
+```bash
+gh release list --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName' | sort -V | tail -1
 ```
 
 A draft creates no tag, starts no workflow, and only maintainers can see it.
 Then show the user, and wait for their answer:
 
-- the version and its one-line reason;
+- the version and its one-line reason, and the branch it comes from;
 - the commit `<sha>` and that its CI is green;
+- whether the release will be Latest, and so deploy the docs;
 - the notes in a fenced markdown block (a longer outer fence if the notes
   contain fences), so they can be read and copied in place;
 - the judgment calls: which commits you excluded and why, and the borderline
@@ -253,8 +307,10 @@ gh release edit <tag> --draft=false
 git fetch origin --tags && git rev-parse <tag>^{commit}   # must print <sha>
 ```
 
-A stable release becomes "Latest" on its own. If the user drops the release
-instead, delete the draft: `gh release delete <tag> --yes`.
+A stable release becomes "Latest" on its own unless it was created with
+`--latest=false`; `gh release list` marks the Latest one once it is
+published. If the user drops the release instead, delete the draft:
+`gh release delete <tag> --yes`.
 
 ## 6. Watch the workflow and verify
 
@@ -278,7 +334,36 @@ curl -fsS https://pypi.org/pypi/cocoindex/<pypi_version>/json \
 (`1.1.0-rc.1` → `1.1.0rc1`). Expect one wheel per `build` matrix entry in
 `release.yml` plus the `.tar.gz` sdist; PyPI's JSON API can lag the upload by a
 minute. Report the release URL, `https://pypi.org/project/cocoindex/<pypi_version>/`,
-the workflow run URL, and the result of its `Release Docs` job.
+the workflow run URL, and the result of its `Release Docs` job. That job is
+skipped when the release isn't Latest (the `Docs Gate` job's log says which
+release is); for a patch of an older minor that is the expected outcome, not a
+failure.
+
+## 7. Create the release branch (minor or major only)
+
+A final minor or major release gets its release branch as soon as PyPI has
+its files (step 6), so that a fix for it can be backported at once. From then
+on the version is spent and can't be re-cut; a failed `Release Docs` job
+doesn't hold the branch back. `<X.Y>` is the release's major and minor: `v1.2.0` gets
+`release/1.2`, and `v2.0.0` gets `release/2.0`.
+
+```bash
+git ls-remote --heads origin 'refs/heads/release/<X.Y>'   # must print nothing
+git push origin <tag>:refs/heads/release/<X.Y>
+git ls-remote --heads origin 'refs/heads/release/<X.Y>'   # must print <sha>
+```
+
+Not earlier: the `release-branches` ruleset forbids deleting a release branch
+or force-pushing to it, so a branch created for a release that is then
+dropped, or re-cut on another commit (below), could never be removed or moved
+back. From the tag, so the branch starts exactly at the release. Once it
+exists the ruleset applies: pull requests only, `ci-gate` required. The push
+also starts a CI run on the branch, for a commit `main` already tested.
+
+A patch release creates no branch, since it's cut from one, and neither does a
+prerelease (`-rc.N`, `-alpha.N`, `-beta.N`): fixes between prereleases land on
+`main`, and the final release creates the branch. Report the branch with the
+release.
 
 ## If the Release workflow fails
 
@@ -287,12 +372,16 @@ Read the failure first: `gh run view <run_id> --log-failed`.
 - **A build or test job** (`generate-3p-notices`, `build`, `test-abi3`,
   `test-free-threaded`, `sdist`): nothing reached PyPI. A flake (runner,
   network): `gh run rerun <run_id> --failed`. A real failure needs a fix on
-  `main` first; then ask the user whether to delete the release and its tag
+  the release's branch first (on `main`, then backported, for a release
+  branch); then ask the user whether to delete the release and its tag
   (`gh release delete <tag> --cleanup-tag --yes`) and re-cut the same version
-  on the fixed commit, or keep it and cut the next patch. Deleting a published
-  release is visible to everyone, so it is their call.
+  on the fixed commit, or keep it and cut the next patch. A minor or major
+  kept this way gets its release branch from its tag first (step 7), and the
+  patch is cut from that. Deleting a published release is visible to
+  everyone, so it is their call.
 - **The `Release` job** (PyPI upload): rerun the failed jobs. The upload passes
   `--skip-existing`, so files already on PyPI are skipped. Once any file is on
   PyPI the version is spent; never delete and re-cut it.
 - **`Release Docs`**: rerun the failed job. The `docs_release.yml` workflow also
-  deploys the docs on demand.
+  deploys the docs on demand, from the branch given as its ref: the latest
+  release's branch, never `main` while `main` describes unreleased work.

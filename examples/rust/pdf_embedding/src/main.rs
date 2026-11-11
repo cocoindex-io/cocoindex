@@ -12,6 +12,11 @@
 //! Rust-native PDF approach used by the `paper_metadata` example. Everything
 //! downstream (chunking 2000/500, MiniLM embeddings, Postgres target, query)
 //! mirrors Python.
+//!
+//! Parallels the Python example:
+//!   - source            : `walk_dir(..).live()` + `ctx.mount_each_live` (cf. `localfs.walk_dir(live=True)` + `coco.mount_each`)
+//!   - per-file compute  : `#[cocoindex::function(memo)]` declaring its rows (cf. `@coco.fn(memo=True)`)
+//!   - per-chunk compute : `#[cocoindex::function]` under `ctx.map` (cf. `@coco.fn` under `coco.map`)
 
 use std::path::PathBuf;
 
@@ -59,16 +64,42 @@ fn pdf_to_text(content: &[u8]) -> Result<String> {
         .map_err(|e| Error::engine(format!("failed to extract PDF text: {e}")))
 }
 
+/// Embed one chunk and declare its row (cf. Python `process_chunk`).
 #[cocoindex::function]
-async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<PdfEmbedding>> {
-    let filename = file.key();
-    let content = file.content()?;
+async fn process_chunk(
+    ctx: &Ctx,
+    chunk: Chunk,
+    text: &str,
+    filename: &str,
+    id_gen: &IdGenerator,
+    table: &postgres::TableTarget,
+) -> Result<()> {
+    let chunk_text = chunk.text(text);
+    let id = i64::try_from(id_gen.next_id(ctx, chunk_text).await?)
+        .map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
+    table.declare_row(
+        ctx,
+        &PdfEmbedding {
+            id,
+            filename: filename.to_string(),
+            chunk_start: chunk.start.char_offset as i32,
+            chunk_end: chunk.end.char_offset as i32,
+            text: chunk_text.to_string(),
+            embedding: ctx.get_key(&EMBEDDER)?.embed(ctx, chunk_text).await?,
+        },
+    )
+}
+
+/// Extract, chunk and embed one PDF, declaring its rows (cf. Python `process_file`).
+/// Memoized on the file: an unchanged PDF keeps its rows without re-running.
+/// The table target is one per app, so it is not part of the memo key.
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_file(ctx: &Ctx, file: &FileEntry, table: &postgres::TableTarget) -> Result<()> {
+    let content = file.read().await?;
     let text = tokio::task::spawn_blocking(move || pdf_to_text(&content))
         .await
         .map_err(|e| Error::engine(format!("PDF parse task panicked: {e}")))??;
-
-    let splitter = RecursiveSplitter::new()?;
-    let chunks = splitter.split_with(
+    let chunks = RecursiveSplitter::new()?.split_with(
         &text,
         RecursiveChunkConfig {
             chunk_size: CHUNK_SIZE,
@@ -77,29 +108,13 @@ async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<PdfEmbedding>> {
             language: Some("markdown".to_string()),
         },
     );
-    if chunks.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
-    let embeddings = ctx.get_key(&EMBEDDER)?.embed_batch(texts.clone()).await?;
-
-    let mut id_gen = IdGenerator::new();
-    let mut rows = Vec::with_capacity(texts.len());
-    for ((chunk, chunk_text), embedding) in chunks.iter().zip(texts).zip(embeddings) {
-        let id = id_gen.next_id(&ctx, &chunk_text).await?;
-        let id =
-            i64::try_from(id).map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
-        rows.push(PdfEmbedding {
-            id,
-            filename: filename.clone(),
-            chunk_start: chunk.start.char_offset as i32,
-            chunk_end: chunk.end.char_offset as i32,
-            text: chunk_text,
-            embedding,
-        });
-    }
-    Ok(rows)
+    let filename = file.key();
+    let id_gen = IdGenerator::new();
+    ctx.map(chunks, async |chunk| {
+        process_chunk(ctx, chunk, &text, &filename, &id_gen, &table).await
+    })
+    .await?;
+    Ok(())
 }
 
 fn pdf_embedding_schema() -> Result<postgres::TableSchema> {
@@ -111,24 +126,18 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         postgres::mount_table_target(&ctx, &DB, TABLE, pdf_embedding_schema()?, Some(PG_SCHEMA))
             .await?;
 
-    let files = walk_items(&sourcedir, &["**/*.pdf"])?;
-    println!(
-        "indexing {} PDF(s) from {}",
-        files.len(),
-        sourcedir.display()
-    );
-
-    let rows_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
-
-    let mut count = 0usize;
-    for rows in &rows_by_file {
-        count += rows.len();
-        for row in rows {
-            table.declare_row(&ctx, row)?;
-        }
-    }
-    println!("indexed {count} chunk(s) total");
-    Ok(())
+    // The source supports live watch (cf. Python `localfs.walk_dir(live=True)`).
+    let files = walk_dir(sourcedir)
+        .recursive(true)
+        .path_matcher(PatternFilePathMatcher::include(["**/*.pdf"])?)
+        .live();
+    // One processing component per file: each file's rows sync and clean up
+    // with that file (cf. Python `coco.mount_each(process_file, files.items(), target_table)`).
+    ctx.mount_each_live(&"process_file", files, move |ctx, file: FileEntry| {
+        let table = table.clone();
+        async move { process_file(&ctx, &file, &table).await }
+    })
+    .await
 }
 
 async fn query_once(
@@ -136,7 +145,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = vector_param(&Embedder::embed(embedder, query).await?);
+    let query_vec = vector_param(&embedder.embed_batch(vec![query.to_string()]).await?.remove(0));
     let rows = sqlx::query(&format!(
         "SELECT filename, text, embedding <=> $1::vector AS distance \
          FROM \"{PG_SCHEMA}\".\"{TABLE}\" ORDER BY distance ASC LIMIT $2"

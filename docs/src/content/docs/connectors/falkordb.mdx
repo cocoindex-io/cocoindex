@@ -2,16 +2,33 @@
 title: "*FalkorDB* connector"
 toc_max_heading_level: 4
 description: >
-  Write to FalkorDB — a Redis-backed graph database — with support for node
+  Write to FalkorDB (a Redis-backed graph database) with support for node
   tables, relationship tables (edges), per-graph multitenancy, and vector
   indexes with cosine / euclidean / inner-product distances.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
 
 The `falkordb` connector writes records to FalkorDB, a Cypher-compatible graph database that runs as a Redis module. It supports node tables (labels), relationship tables (edge types), per-graph multitenancy (one Redis instance, many isolated graphs), and vector indexes.
+
+{/* Rust: examples/rust/meeting_notes_graph_falkordb/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import falkordb
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::falkordb::{self, TableSchema};
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 :::note[Dependencies]
 This connector requires additional dependencies. Install with:
@@ -22,13 +39,37 @@ pip install cocoindex[falkordb]
 
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+:::note[Dependencies]
+Enable the `falkordb` Cargo feature of the `cocoindex` crate.
+:::
+
+</Lang>
+
 ## Connection setup
 
+<Lang only="python">
+
 Create a `ConnectionFactory` and provide it via a `ContextKey`. The factory holds the FalkorDB URI plus the target graph name; it opens one connection-pooled client per event loop, on first use on that loop, shared by all tables and batches. Call `await factory.close()` at shutdown (in the lifespan, after `yield`) to close it.
+
+</Lang>
+
+<Lang only="rust">
+
+Connect a `falkordb::Graph` and provide it under a context key declared with `cocoindex::context_key!`. The graph holds the FalkorDB URI plus the target graph name, over one multiplexed Redis connection shared by all tables and batches.
+
+</Lang>
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
+
+{/* Rust: examples/rust/meeting_notes_graph_falkordb/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from collections.abc import AsyncIterator
@@ -48,9 +89,43 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     await factory.close()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::falkordb;
+use cocoindex::prelude::*;
+
+// The graph connection, provided to the environment in `main`. Its name is the
+// graph's stable identity in the target states.
+cocoindex::context_key!(static GRAPH: falkordb::Graph);
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let graph = falkordb::Graph::connect(&uri, &graph_name).await?;
+    let app = Environment::builder()
+        .provide_key(&GRAPH, graph)
+        .build()
+        .await?
+        .app("meeting_notes_graph_falkordb")
+        .await?;
+    // ...
+    Ok(())
+}
+```
+
+`falkordb::Graph::connect(uri, graph)` opens one multiplexed Redis connection. The URI is `falkor://host:6379` or a `redis://` URL; a password goes in the URI (`falkor://:password@host:6379`). The example provides the graph in `main`; a `#[cocoindex::lifespan]` function can do the same with `builder.provide_key(&GRAPH, graph)`, and `builder.on_shutdown(..)` is the place for teardown. A `Graph` has no `close()` method.
+
+</Fragment>
+</LangTabs>
+
 ### Multitenancy
 
-A single Redis instance can host many fully isolated graphs. Pair each graph with its own `ContextKey` and `ConnectionFactory(graph=...)`:
+A single Redis instance can host many fully isolated graphs. Pair each graph with its own <Lang only="python">`ContextKey` and `ConnectionFactory(graph=...)`</Lang><Lang only="rust">context key and `falkordb::Graph::connect(uri, graph)`</Lang>:
+
+{/* Rust: examples/rust/meeting_notes_graph_falkordb/src/main.rs (two keys instead of one) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 KG_DB: coco.ContextKey[falkordb.ConnectionFactory] = coco.ContextKey("kg_db")
@@ -68,7 +143,30 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     await apis_factory.close()
 ```
 
-Different `ContextKey`s with different graph names produce fully separate target-state trees — changes to one never spill into the other.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+cocoindex::context_key!(static KG_DB: falkordb::Graph, key = "kg_db");
+cocoindex::context_key!(static APIS_DB: falkordb::Graph, key = "apis_db");
+
+let kg = falkordb::Graph::connect(&uri, "knowledge_graph").await?;
+let apis = falkordb::Graph::connect(&uri, "apis_graph").await?;
+let app = Environment::builder()
+    .provide_key(&KG_DB, kg)
+    .provide_key(&APIS_DB, apis)
+    .build()
+    .await?
+    .app("kg_app")
+    .await?;
+```
+
+`context_key!` names the key after the static by default; `key = "..."` sets the name the target states are tracked under.
+
+</Fragment>
+</LangTabs>
+
+Different context keys with different graph names produce fully separate target-state trees — changes to one never spill into the other.
 
 ## As target
 
@@ -76,15 +174,27 @@ The `falkordb` connector provides target state APIs for writing nodes to node ta
 
 Each `graph.query` call against FalkorDB is its own atomic unit (FalkorDB does not expose multi-statement transactions); the connector orders writes within a batch as **node upserts → relation upserts → relation deletes → node deletes** so dependent edges always see their endpoints.
 
+<Lang only="python">
+
 :::note
 The node and relationship APIs below replace the table and relation APIs (`mount_table_target`, `mount_relation_target`, …), which are deprecated. To move an existing table over, see [Deprecated: table and relation APIs](#deprecated-table-and-relation-apis).
 :::
+
+</Lang>
+
+<RustNote>
+The functions are named `mount_table_target` / `TableTarget` and `mount_relation_target` / `RelationTarget`. They are the node and relationship APIs, not the deprecated Python table and relation APIs of the same names: a node table and a relationship table live in separate key spaces, so a label and a relationship type may share a name, and a derived edge id has the length-prefixed form described under [Relationships](#relationships-child-states). There is no deprecated API.
+</RustNote>
 
 ### Declaring target states
 
 #### Node tables (parent state)
 
-Declares a node label as a target state. Returns a `NodeTarget` for declaring nodes.
+Declares a node label as a target state. Returns a <Lang only="python">`NodeTarget`</Lang><Lang only="rust">`TableTarget`</Lang> for declaring nodes.
+
+{/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def declare_node_target(
@@ -97,7 +207,34 @@ def declare_node_target(
 ) -> NodeTarget[RowT, coco.PendingS]
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn declare_table_target(
+    ctx: &Ctx,
+    graph: &ContextKey<falkordb::Graph>,
+    table_name: impl Into<String>,
+    schema: TableSchema,
+) -> Result<TableTarget>
+
+pub fn declare_table_target_with_options(
+    ctx: &Ctx,
+    graph: &ContextKey<falkordb::Graph>,
+    table_name: impl Into<String>,
+    schema: TableSchema,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget>
+```
+
+`mount_table_target` and `mount_table_target_with_options` take the same arguments, are `async`, and return a handle whose records resolve immediately. The schema is required. It carries the primary key: `TableSchema::from_row::<Row>("id")?` derives the columns from a row struct, and `TableSchema::schemaless("id")?` declares no columns. `ManagedTargetOptions::user_managed()` makes the table user-managed; the default is system-managed.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
+
+<Lang only="python">
 
 - `db` — A `ContextKey[falkordb.ConnectionFactory]` for the FalkorDB connection.
 - `table_name` — The Cypher node label (e.g. `"Document"`).
@@ -107,9 +244,26 @@ def declare_node_target(
 
 **Returns:** A pending `NodeTarget`. Use `await falkordb.mount_node_target(KG_DB, ...)` to get a resolved target.
 
+</Lang>
+
+<Lang only="rust">
+
+- `graph` — The context key of the `falkordb::Graph`.
+- `table_name` — The Cypher node label (e.g. `"Meeting"`).
+- `schema` — Schema definition (see [Table schema](#table-schema-from-a-rust-struct)), which names the single primary-key property. FalkorDB does not enforce per-property types server-side, so the schema participates in CocoIndex's fingerprint (so two flows declaring the same label must agree) but no per-column DDL is emitted. Compound primary keys are not supported.
+- `options` — `ManagedTargetOptions::default()` (system-managed) or `ManagedTargetOptions::user_managed()`.
+
+**Returns:** A `TableTarget`. It is cheap to clone and serializes to its stable key, the graph's context key name and the label, so it can be a `mount_each!` / `use_mount!` argument or a memoized function argument.
+
+</Lang>
+
 #### Nodes (child states)
 
-Once a `NodeTarget` is resolved, declare nodes to be upserted (translated to `MERGE (n:Label {pk: $key_0}) SET n += $props`):
+Once a <Lang only="python">`NodeTarget`</Lang><Lang only="rust">`TableTarget`</Lang> is resolved, declare nodes to be upserted (translated to `MERGE (n:Label {pk: $key_0}) SET n += $props`):
+
+{/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def NodeTarget.declare_record(
@@ -119,15 +273,44 @@ def NodeTarget.declare_record(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn TableTarget::declare_record<R: serde::Serialize>(
+    &self,
+    ctx: &Ctx,
+    id: impl IntoStableKey,
+    row: &R,
+) -> Result<()>
+```
+
+The node's primary-key value is passed as `id` (a `&str`, `String`, `i64` or `u64`) and the row serializes to the node's properties with serde.
+
+A row that also carries the primary-key field must hold the same value as `id` (a null counts as absent), or the declaration fails. A property value must be a primitive or a list of primitives: a map, a list holding a null or a map, an integer beyond `i64`, or a NaN or infinite float fails the declaration before anything is written.
+
+FalkorDB leaves empty strings out of its property indexes, so a `MERGE` on an empty-string key would never find the node it wrote: an empty-string `id`, or an empty-string relationship endpoint, fails the batch before it writes anything.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 **Parameters:**
 
 - `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include the `primary_key` field declared above.
 
 `declare_row` is an alias for `declare_record`, for compatibility with Postgres and other RDBMS targets.
 
+</Lang>
+
 #### Relationship tables (parent state)
 
-Declares a relationship type as a target state. Returns a `RelationshipTarget` for declaring edges.
+Declares a relationship type as a target state. Returns a <Lang only="python">`RelationshipTarget`</Lang><Lang only="rust">`RelationTarget`</Lang> for declaring edges.
+
+{/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def declare_relationship_target(
@@ -142,7 +325,46 @@ def declare_relationship_target(
 ) -> RelationshipTarget[RowT, coco.PendingS]
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn declare_relation_target(
+    ctx: &Ctx,
+    graph: &ContextKey<falkordb::Graph>,
+    relation_name: impl Into<String>,
+    from_table: &TableTarget,
+    to_table: &TableTarget,
+) -> Result<RelationTarget>
+
+pub fn declare_relation_target_with_schema(
+    ctx: &Ctx,
+    graph: &ContextKey<falkordb::Graph>,
+    relation_name: impl Into<String>,
+    from_table: &TableTarget,
+    to_table: &TableTarget,
+    schema: TableSchema,
+) -> Result<RelationTarget>
+
+pub fn declare_relation_target_with_options(
+    ctx: &Ctx,
+    graph: &ContextKey<falkordb::Graph>,
+    relation_name: impl Into<String>,
+    from_table: &TableTarget,
+    to_table: &TableTarget,
+    schema: TableSchema,
+    options: ManagedTargetOptions,
+) -> Result<RelationTarget>
+```
+
+Without a schema the relationship is schemaless and keyed by its `id` property. A schema names the primary key: `TableSchema::from_row::<Edge>("edge_id")?` or `TableSchema::schemaless("edge_id")?`. The `mount_relation_target`, `mount_relation_target_with_schema` and `mount_relation_target_with_options` variants take the same arguments and are `async`.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
+
+<Lang only="python">
 
 - `db` — A `ContextKey[falkordb.ConnectionFactory]` for the FalkorDB connection.
 - `table_name` — The Cypher relationship type (e.g. `"MENTION"`). A node label and a relationship type may share a name.
@@ -154,9 +376,28 @@ def declare_relationship_target(
 
 **Returns:** A pending `RelationshipTarget`. Use `await falkordb.mount_relationship_target(KG_DB, ...)` to get a resolved target.
 
+</Lang>
+
+<Lang only="rust">
+
+- `graph` — The context key of the `falkordb::Graph`.
+- `relation_name` — The Cypher relationship type (e.g. `"ATTENDED"`). A node label and a relationship type may share a name.
+- `from_table` — The node target whose nodes are the *source* endpoints of edges in this relationship.
+- `to_table` — The node target whose nodes are the *target* endpoints of edges in this relationship.
+- `schema` — Schema for the relationship's own properties (see [Table schema](#table-schema-from-a-rust-struct)). It names the primary-key property that uniquely identifies each edge.
+- `options` — `ManagedTargetOptions::default()` (system-managed) or `ManagedTargetOptions::user_managed()`.
+
+**Returns:** A `RelationTarget`. Like a `TableTarget`, it is cheap to clone and serializes to its stable key (the graph's context key name and the relationship type), so it can be a `mount_each!` / `use_mount!` or memoized function argument.
+
+</Lang>
+
 #### Relationships (child states)
 
-Once a `RelationshipTarget` is resolved, declare edges. Each declaration MERGEs the source endpoint, the target endpoint, then the relationship.
+Once a <Lang only="python">`RelationshipTarget`</Lang><Lang only="rust">`RelationTarget`</Lang> is resolved, declare edges. Each declaration MERGEs the source endpoint, the target endpoint, then the relationship.
+
+{/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def RelationshipTarget.declare_relationship(
@@ -168,19 +409,48 @@ def RelationshipTarget.declare_relationship(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn RelationTarget::declare_relation(
+    &self,
+    ctx: &Ctx,
+    from_id: impl IntoStableKey,
+    to_id: impl IntoStableKey,
+) -> Result<()>
+
+pub fn RelationTarget::declare_relation_record<R: serde::Serialize>(
+    &self,
+    ctx: &Ctx,
+    from_id: impl IntoStableKey,
+    to_id: impl IntoStableKey,
+    record: &R,
+) -> Result<()>
+```
+
+`declare_relation` declares an edge without properties. `declare_relation_record` adds the properties of `record`; a record that carries the primary key is keyed by it (a string or an integer), otherwise the id is derived from the endpoints.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
 - `from_id` — The source node's primary-key value. The connector MERGEs `(s:FromLabel {pk: $from_id})` so endpoints are auto-created if absent.
 - `to_id` — The target node's primary-key value. Same MERGE behavior.
-- `record` — Optional row object whose fields populate the relationship's properties. Its `primary_key` field, if present, is the edge's id.
+- `record` — <Lang only="python">Optional row object</Lang><Lang only="rust">A `Serialize` value (with `declare_relation_record`)</Lang> whose fields populate the relationship's properties. Its primary-key field, if present, is the edge's id.
 
-If `record` is omitted or has no primary key value, the connector derives the edge id from its endpoints: the source label, source id, target label and target id, each written as `<UTF-8 byte length>:<value>;`. For example, an edge from `Person` `"alice"` to `Task` `42` gets the id `6:Person;5:alice;4:Task;2:42;`. A string id that reads as an integer, or that starts with `s:`, is written with an `s:` prefix, so the ids `1` and `"1"` never share an edge. Endpoint ids must then be `int` or `str`; for other types, pass a `record` that carries the primary key.
+If `record` is omitted or has no primary key value, the connector derives the edge id from its endpoints: the source label, source id, target label and target id, each written as `<UTF-8 byte length>:<value>;`. For example, an edge from `Person` `"alice"` to `Task` `42` gets the id `6:Person;5:alice;4:Task;2:42;`. A string id that reads as an integer, or that starts with `s:`, is written with an `s:` prefix, so the ids `1` and `"1"` never share an edge. <Lang only="python">Endpoint ids must then be `int` or `str`; for other types, pass a `record` that carries the primary key.</Lang><Lang only="rust">Endpoint ids are strings or integers.</Lang>
 
-An edge id names one edge. When the endpoints of an edge with an explicit id change, the edge moves: the upsert deletes the relationship of this type with the same id between the old endpoints. To find it, every upsert looks the edge up by its primary key property. A system-managed relationship table has an index on it; for a `managed_by="user"` table, create one yourself.
+An edge id names one edge. When the endpoints of an edge with an explicit id change, the edge moves: the upsert deletes the relationship of this type with the same id between the old endpoints. To find it, every upsert looks the edge up by its primary key property. A system-managed relationship table has an index on it; for a user-managed table, create one yourself.
 
 #### Vector indexes (attachment)
 
-Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `NodeTarget`:
+Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a <Lang only="python">`NodeTarget`</Lang><Lang only="rust">`TableTarget`</Lang>:
+
+{/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro); usage in rust/sdk/cocoindex/tests/graph_vector_index.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def NodeTarget.declare_vector_index(
@@ -193,6 +463,42 @@ def NodeTarget.declare_vector_index(
 ) -> None
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn TableTarget::declare_vector_index(
+    &self,
+    ctx: &Ctx,
+    field: &str,
+    dimension: u32,
+    metric: VectorMetric,
+) -> Result<()>
+
+pub fn TableTarget::declare_vector_index_named(
+    &self,
+    ctx: &Ctx,
+    name: &str,
+    field: &str,
+    dimension: u32,
+    metric: VectorMetric,
+) -> Result<()>
+```
+
+For example, from the graph vector index test:
+
+```rust
+table.declare_vector_index(&ctx, "embedding", 3, VectorMetric::Cosine)?;
+table.declare_node_index(&ctx, &["name"])?;
+```
+
+`VectorMetric::Cosine`, `VectorMetric::Euclidean` and `VectorMetric::InnerProduct` are the FalkorDB metrics, translated to FalkorDB's `similarityFunction` option. `declare_vector_index` names the declaration `vec_{table}__{field}`; `declare_vector_index_named` takes the name. `declare_node_index(ctx, &["name"])` declares a plain secondary index on the listed properties.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 **Parameters:**
 
 - `name` — Optional logical name for the index. Defaults to `f"idx_{table_name}__{field}"`.
@@ -200,15 +506,37 @@ def NodeTarget.declare_vector_index(
 - `metric` — Similarity metric: `"cosine"`, `"euclidean"`, or `"ip"` (inner product). Translated to FalkorDB's `similarityFunction` option.
 - `dimension` — The vector's dimension. Required.
 
+</Lang>
+
+<RustNote>
+The default declared name is `vec_{table}__{field}`, where Python's is `idx_{table}__{field}`. To keep a declaration's identity when you move a pipeline between the two SDKs, give the name with `declare_vector_index_named`.
+</RustNote>
+
 The connector emits `CREATE VECTOR INDEX FOR (e:Label) ON (e.field) OPTIONS {dimension: N, similarityFunction: '...'}`.
 
 FalkorDB identifies a vector index by its label and field, not by `name`, so a field has at most one vector index. Renaming `name` keeps the index. Declaring a second name for the same field is an error.
 
 Vectors are float32 only — wider vector dtypes are not supported.
 
+<Lang only="python">
+
 ### Table schema: from Python class
 
 Build a `TableSchema` by introspecting a record type:
+
+</Lang>
+
+<Lang only="rust">
+
+### Table schema: from a Rust struct
+
+Build a `TableSchema` from a struct that derives `SchemaFields`:
+
+</Lang>
+
+{/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (TableSchema::from_row doc example); usage in rust/sdk/cocoindex/tests/graph_target.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @classmethod
@@ -220,6 +548,33 @@ async def TableSchema.from_class(
     column_overrides: dict[str, FalkorType | VectorSchemaProvider] | None = None,
 ) -> TableSchema[RowT]
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn TableSchema::from_row<T: SchemaFields>(primary_key: impl Into<String>) -> Result<Self>
+```
+
+The row type derives `cocoindex::SchemaFields`:
+
+```rust
+#[derive(serde::Serialize, cocoindex::SchemaFields)]
+struct Person {
+    id: String,
+    name: Option<String>,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+let schema = cocoindex::connectors::falkordb::TableSchema::from_row::<Person>("id")?;
+```
+
+`primary_key` has no default and must name a field of the struct. An `Option<T>` field is a nullable column.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 **Parameters:**
 
@@ -257,6 +612,24 @@ class FalkorType(NamedTuple):
 
 Use with `typing.Annotated`:
 
+</Lang>
+
+<Lang only="rust">
+
+#### Default Rust → FalkorDB type mapping
+
+The FalkorDB and [Neo4j](./neo4j) connectors share one type table, which records Cypher type names: `BOOLEAN`, `INTEGER`, `FLOAT`, `STRING`, `BYTES`, `DATE`, `LOCAL_TIME`, `ZONED_DATETIME`, `DURATION`, `LIST<FLOAT>` for `#[coco(vector)]`, and `MAP` for collections and nested structs. The type is metadata only, so no DDL is emitted from it; a value is written as it serializes with serde.
+
+#### Custom column types
+
+Override the default mapping for a single column with a field attribute:
+
+</Lang>
+
+{/* Rust: rust/sdk/cocoindex/tests/graph_target.rs (from_row_matches_explicit_schema) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 from typing import Annotated
 from dataclasses import dataclass
@@ -268,15 +641,67 @@ class Row:
     score: Annotated[float, FalkorType("decimal", encoder=str)]
 ```
 
-The `falkor_type` string is metadata-only — it participates in the schema fingerprint (so two flows declaring the same table must agree) but no DDL is emitted from it.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[derive(SchemaFields)]
+struct Row {
+    id: String,
+    #[coco(type = "POINT")]
+    location: String,
+    #[coco(json)]
+    tags: Vec<String>,
+    #[coco(rename = "label")]
+    name: String,
+}
+```
+
+`#[coco(type = "…")]` records the type string verbatim, `#[coco(json)]` records `MAP` for a field that would map to another type, and `#[coco(rename = "…")]` names the property.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="rust">
+
+To override a column for one schema only, call `with_column_type` on the derived schema. It replaces the column's type and keeps its nullability:
+
+{/* Rust: rust/sdk/cocoindex/tests/graph_target.rs (from_row_takes_column_type_overrides) */}
+```rust
+let schema = TableSchema::from_row::<Row>("id")?.with_column_type("location", "POINT")?;
+```
+
+</Lang>
+
+<RustNote>
+There is no per-column `encoder`: a value is written as it serializes with serde.
+</RustNote>
+
+The <Lang only="python">`falkor_type`</Lang><Lang only="rust">type</Lang> string is metadata-only — it participates in the schema fingerprint (so two flows declaring the same table must agree) but no DDL is emitted from it.
+
+<Lang only="python">
 
 #### VectorSchemaProvider
 
 For NumPy `ndarray` columns, attach a `VectorSchema` annotation to specify dtype + dimension. See [VectorSchema](../common_resources/vector_schema) for details.
 
+</Lang>
+
+<Lang only="rust">
+
+#### Vector fields
+
+Mark a vector field `#[coco(vector)]` (or `#[coco(vector = N)]`). The property is recorded as `LIST<FLOAT>`, and the dimension belongs to the vector index declaration, not the property.
+
+</Lang>
+
 ### Table schema: explicit column definitions
 
-Build a `TableSchema` directly from a dict of column definitions when the row type is dynamic:
+Build a `TableSchema` directly from <Lang only="python">a dict of</Lang><Lang only="rust">a list of</Lang> column definitions when the row type is dynamic:
+
+{/* Rust: rust/sdk/cocoindex/tests/graph_target.rs (from_row_matches_explicit_schema) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors.falkordb import TableSchema, ColumnDef
@@ -291,11 +716,43 @@ schema = TableSchema(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::falkordb::{ColumnDef, TableSchema};
+
+let schema = TableSchema::new(
+    [
+        ("filename", ColumnDef::new("STRING")),
+        ("title", ColumnDef::new("STRING")),
+        ("summary", ColumnDef::new("STRING").nullable()),
+    ],
+    "filename",
+)?;
+```
+
+A `ColumnDef` is `NOT NULL` unless `.nullable()` is called.
+
+</Fragment>
+</LangTabs>
+
 `ColumnDef` fields:
+
+<Lang only="python">
 
 - `type` — The FalkorDB type string (metadata only; see table above).
 - `nullable` — Whether the column may be `None`. Defaults to `True`.
 - `encoder` — Optional `Callable[[Any], Any]` applied to non-`None` values before they're sent to FalkorDB.
+
+</Lang>
+
+<Lang only="rust">
+
+- `cypher_type` — The type string (metadata only; see above).
+- `nullable` — Whether the column may be null. Defaults to `false`; `.nullable()` sets it.
+
+</Lang>
 
 ### DDL: indexes and constraints
 
@@ -306,13 +763,17 @@ For each managed table, the connector creates the supporting Cypher index on the
 
 It then attempts a uniqueness constraint via the `GRAPH.CONSTRAINT CREATE` Redis command (best-effort — failures are logged but do not abort).
 
-A system-managed table owns its label or relationship type, the way a Postgres table owns its rows. When the table is no longer declared, or on `cocoindex drop`, the connector destroys it: every node carrying the label is deleted (`DETACH DELETE`, so the relationships attached to those nodes go with them) or every relationship of the type is deleted, and then the constraint and index are dropped. A node table's vector indexes (every vector index on its label) are dropped with it. This includes nodes and relationships written under that label or type by anything other than CocoIndex — to share a label with data CocoIndex doesn't own, declare the table with `managed_by="user"`.
+A system-managed table owns its label or relationship type, the way a Postgres table owns its rows. When the table is no longer declared, or on `cocoindex drop`, the connector destroys it: every node carrying the label is deleted (`DETACH DELETE`, so the relationships attached to those nodes go with them) or every relationship of the type is deleted, and then the constraint and index are dropped. A node table's vector indexes (every vector index on its label) are dropped with it. This includes nodes and relationships written under that label or type by anything other than CocoIndex — to share a label with data CocoIndex doesn't own, declare the table <Lang only="python">with `managed_by="user"`</Lang><Lang only="rust">with `ManagedTargetOptions::user_managed()`</Lang>.
 
 The same teardown happens when a table's identity changes — its primary key field, or a relationship table's endpoint tables or their primary keys: the table is destroyed and recreated, and the components that declared its records are reprocessed. Its vector indexes are dropped and created again. Attaching a schema or changing a property type does not rebuild the table; at most the records are re-upserted.
 
-When `managed_by="user"` is set, the connector skips DDL entirely — you're responsible for creating and dropping the index and constraint — and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.
+When <Lang only="python">`managed_by="user"` is set</Lang><Lang only="rust">a table is user-managed</Lang>, the connector skips DDL entirely (you're responsible for creating and dropping the index and constraint) and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.<Lang only="rust"> Pass `ManagedTargetOptions::user_managed()` to `mount_table_target_with_options` or `mount_relation_target_with_options`.</Lang>
 
 ### Example: Node tables
+
+{/* Rust: examples/rust/meeting_notes_graph_falkordb/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from collections.abc import AsyncIterator
@@ -358,7 +819,78 @@ async def app_main() -> None:
 app = coco.App(coco.AppConfig(name="docs_to_falkordb"), app_main)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::path::PathBuf;
+
+use cocoindex::connectors::falkordb::{self, TableSchema};
+use cocoindex::prelude::*;
+use serde::{Deserialize, Serialize};
+
+cocoindex::context_key!(static GRAPH: falkordb::Graph);
+
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::SchemaFields)]
+struct Meeting {
+    id: i64,
+    note_file: String,
+    time: String,
+    note: String,
+}
+
+async fn build_graph(ctx: &Ctx, input_dir: &str) -> Result<()> {
+    // Node table schemas are derived from the row structs.
+    let meeting_table = falkordb::mount_table_target(
+        ctx,
+        &GRAPH,
+        "Meeting",
+        TableSchema::from_row::<Meeting>("id")?,
+    )
+    .await?;
+    let meeting_id = 1;
+    meeting_table.declare_record(
+        ctx,
+        meeting_id,
+        &Meeting {
+            id: meeting_id,
+            note_file: "2024-01-10.md".to_string(),
+            time: "2024-01-10".to_string(),
+            note: "Kickoff".to_string(),
+        },
+    )?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let graph = falkordb::Graph::connect(&uri, &graph_name).await?;
+    let app = Environment::builder()
+        .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
+        .provide_key(&GRAPH, graph)
+        .build()
+        .await?
+        .app("meeting_notes_graph_falkordb")
+        .await?;
+    app.update(move |ctx| {
+        let input_dir = input_dir.clone();
+        async move { build_graph(&ctx, &input_dir).await }
+    })
+    .await?;
+    Ok(())
+}
+```
+
+The full program is `examples/rust/meeting_notes_graph_falkordb`.
+
+</Fragment>
+</LangTabs>
+
 ### Example: Relationship tables (knowledge graph)
+
+{/* Rust: examples/rust/meeting_notes_graph_falkordb/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @dataclass
@@ -405,7 +937,81 @@ async def kg_app_main() -> None:
 kg_app = coco.App(coco.AppConfig(name="kg_app"), kg_app_main)
 ```
 
-The `Entity` table is declared up-front (via `mount_node_target`) so its index and constraint are reconciled before any `RELATIONSHIP` edge MERGEs entity endpoints. The relationship's three-MERGE pattern (source endpoint → target endpoint → edge) means missing endpoints are auto-created — but it's good practice to declare them explicitly so deletion-cascade behavior stays predictable.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::SchemaFields)]
+struct Person {
+    name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::SchemaFields)]
+struct Task {
+    description: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct AttendedRel {
+    is_organizer: bool,
+}
+
+async fn build_graph(ctx: &Ctx, input_dir: &str) -> Result<()> {
+    let meeting_table = falkordb::mount_table_target(
+        ctx,
+        &GRAPH,
+        "Meeting",
+        TableSchema::from_row::<Meeting>("id")?,
+    )
+    .await?;
+    let person_table = falkordb::mount_table_target(
+        ctx,
+        &GRAPH,
+        "Person",
+        TableSchema::from_row::<Person>("name")?,
+    )
+    .await?;
+    let task_table = falkordb::mount_table_target(
+        ctx,
+        &GRAPH,
+        "Task",
+        TableSchema::from_row::<Task>("description")?,
+    )
+    .await?;
+    // Relations are schemaless: their ids are derived from the endpoints.
+    let attended_rel =
+        falkordb::mount_relation_target(ctx, &GRAPH, "ATTENDED", &person_table, &meeting_table)
+            .await?;
+    let assigned_rel =
+        falkordb::mount_relation_target(ctx, &GRAPH, "ASSIGNED_TO", &person_table, &task_table)
+            .await?;
+
+    // populate ...
+    person_table.declare_record(ctx, "Alice Chen", &Person { name: "Alice Chen".to_string() })?;
+    task_table.declare_record(
+        ctx,
+        "Write the roadmap",
+        &Task { description: "Write the roadmap".to_string() },
+    )?;
+    attended_rel.declare_relation_record(
+        ctx,
+        "Alice Chen",
+        meeting_id,
+        &AttendedRel { is_organizer: true },
+    )?;
+    assigned_rel.declare_relation(ctx, "Alice Chen", "Write the roadmap")?;
+    Ok(())
+}
+```
+
+An edge with properties of its own is declared with `declare_relation_record`; one without is declared with `declare_relation`. To key edges by a property, mount the relation with `mount_relation_target_with_schema(ctx, &GRAPH, "KNOWS", &people, &people, TableSchema::from_row::<Knows>("edge_id")?)` and put the `edge_id` in the record.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">The `Entity` table is declared up-front (via `mount_node_target`) so its index and constraint are reconciled before any `RELATIONSHIP` edge MERGEs entity endpoints.</Lang><Lang only="rust">The `Person`, `Meeting` and `Task` tables are mounted up-front so their indexes and constraints are reconciled before any edge MERGEs their endpoints.</Lang> The relationship's three-MERGE pattern (source endpoint → target endpoint → edge) means missing endpoints are auto-created — but it's good practice to declare them explicitly so deletion-cascade behavior stays predictable.
+
+<Lang only="python">
 
 ## Deprecated: table and relation APIs
 
@@ -436,3 +1042,5 @@ Switching a table from the deprecated API to its replacement keeps its nodes, ed
 Run the two steps as separate updates, in this order. Without step 1, removing a deprecated declaration destroys its table: every node of the label or edge of the type is deleted, possibly after the new table has written it.
 
 You can switch tables one at a time: a new relationship table accepts node targets of both APIs.
+
+</Lang>

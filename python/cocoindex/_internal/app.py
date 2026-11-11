@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from collections.abc import AsyncIterator
@@ -31,6 +32,7 @@ from .update_stats import (
     _StatsView,
     _decode_update_stats,
     _resolve_report_to_stdout,
+    _std_streams_in_order,
     _TERMINATED_VERSION,
 )
 
@@ -170,7 +172,8 @@ async def show_progress(
     refresh_interval_secs = (
         refresh_interval.total_seconds() if refresh_interval is not None else None
     )
-    pyvalue: Any = await core.show_progress(core_handle, refresh_interval_secs)
+    with _std_streams_in_order():
+        pyvalue: Any = await core.show_progress(core_handle, refresh_interval_secs)
     return pyvalue.get(fn_ret_deserializer(handle._main_fn))  # type: ignore[no-any-return]
 
 
@@ -362,16 +365,17 @@ class App(Generic[P, R]):
             deadline_context=deadline_context,
         )
         report, refresh_interval_secs = _resolve_report_to_stdout(report_to_stdout)
-        pyvalue: Any = core_app.update(
-            processor,
-            full_reprocess=full_reprocess,
-            host_ctx=env._context_provider,
-            report_to_stdout=report,
-            refresh_interval_secs=refresh_interval_secs,
-            live=live,
-            preview=preview,
-            deadline=deadline_context,
-        )
+        with _std_streams_in_order() if report else contextlib.nullcontext():
+            pyvalue: Any = core_app.update(
+                processor,
+                full_reprocess=full_reprocess,
+                host_ctx=env._context_provider,
+                report_to_stdout=report,
+                refresh_interval_secs=refresh_interval_secs,
+                live=live,
+                preview=preview,
+                deadline=deadline_context,
+            )
         if preview:
             return pyvalue  # type: ignore[no-any-return]
         return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]
@@ -407,8 +411,9 @@ class App(Generic[P, R]):
         """
         env, core_app = self._get_core_env_app_sync()
         report, refresh_interval_secs = _resolve_report_to_stdout(report_to_stdout)
-        core_app.drop(
-            env._context_provider,
-            report_to_stdout=report,
-            refresh_interval_secs=refresh_interval_secs,
-        )
+        with _std_streams_in_order() if report else contextlib.nullcontext():
+            core_app.drop(
+                env._context_provider,
+                report_to_stdout=report,
+                refresh_interval_secs=refresh_interval_secs,
+            )

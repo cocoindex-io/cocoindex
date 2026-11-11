@@ -2,10 +2,13 @@
 title: The *CLI* reference
 description: >
   Reference for the `cocoindex` CLI — app target formats, environment variable
-  loading, and subcommands for init, ls, show, update (catch-up or live), and
-  drop.
+  loading, and subcommands for init, ls, show, update (catch-up or live), drop
+  and auth.
+languages: [python]
 ---
-CocoIndex CLI is a standalone tool for easily managing and inspecting your apps.
+CocoIndex CLI is a standalone tool for managing and inspecting your apps. This page describes the CLI for Python projects, installed with the `cocoindex` package.
+
+Rust projects have their own `cocoindex` binary with the same subcommands; see [the Rust CLI reference](/docs/rust/cli/). Both read the same state database format, so `show --db PATH --app-name NAME` works on either tool against an app the other SDK wrote.
 
 ## Invoke the CLI
 
@@ -53,6 +56,110 @@ CocoIndex CLI supports the following global options:
 {/* Regenerate with: python dev/generate_cli_docs.py */}
 
 ## Subcommands Reference
+
+### `auth`
+
+Sign in to or out of the accounts connectors read (experimental).
+
+
+**Usage:**
+
+```bash
+cocoindex auth [OPTIONS] COMMAND [ARGS]...
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--help` | Show this message and exit. |
+
+---
+
+### `auth sign-in`
+
+Sign in to an account a connector reads.
+
+
+**Usage:**
+
+```bash
+cocoindex auth sign-in [OPTIONS] COMMAND [ARGS]...
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--help` | Show this message and exit. |
+
+---
+
+### `auth sign-in google-drive`
+
+Sign in with a Google account to read its Google Drive.
+
+Uses CocoIndex's own OAuth client when this release includes one. To use a
+Desktop-app OAuth client of your own, pass CLIENT_SECRETS, the JSON file you
+downloaded for it.
+
+Opens the consent page in the browser, or prints the link when this host has
+none, and keeps the tokens in a file readable by this user only.
+
+
+**Usage:**
+
+```bash
+cocoindex auth sign-in google-drive [OPTIONS] [CLIENT_SECRETS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--token-path FILE` | Where to keep the sign-in; default: cocoindex/google_drive_token.json under the user's config directory. |
+| `--help` | Show this message and exit. |
+
+---
+
+### `auth sign-out`
+
+Sign out of an account a connector reads.
+
+
+**Usage:**
+
+```bash
+cocoindex auth sign-out [OPTIONS] COMMAND [ARGS]...
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--help` | Show this message and exit. |
+
+---
+
+### `auth sign-out google-drive`
+
+Revoke the sign-in at Google and delete its token file.
+
+
+**Usage:**
+
+```bash
+cocoindex auth sign-out google-drive [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--token-path FILE` | The sign-in to end; default: the one `auth sign-in google-drive` writes by default. |
+| `--help` | Show this message and exit. |
+
+---
 
 ### `drop`
 
