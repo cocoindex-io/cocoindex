@@ -690,6 +690,142 @@ def test_failed_delete_under_a_deleted_parent_is_retried() -> None:
 
 
 # ---------------------------------------------------------------------------
+# A memoized parent that a selective run leaves partly unrun
+# ---------------------------------------------------------------------------
+
+
+def _memo_parent_app(name: str) -> tuple[coco.App[Any, Any], dict[str, bool]]:
+    """`p` is memoized and mounts `a` and `b` while `_src` has them; a child
+    whose key is in `fail` raises."""
+    fail: dict[str, bool] = {}
+
+    @coco.fn
+    async def child(key: str) -> None:
+        _runs.append(key)
+        if fail.get(key):
+            raise ValueError(f"injected failure in {key}")
+        coco.declare_target_state(GlobalDictTarget.target_state(key, _src[key]))
+
+    @coco.fn(memo=True)
+    async def parent() -> None:
+        _runs.append("p")
+        for key in ("a", "b"):
+            if key in _src:
+                await coco.mount(coco.component_subpath(key), child, key)
+
+    @coco.fn
+    async def main() -> None:
+        await coco.mount(coco.component_subpath("p"), parent)
+
+    return _app(name, main), fail
+
+
+def _update_tolerating_failure(app: coco.App[Any, Any], **kwargs: Any) -> None:
+    try:
+        app.update_blocking(**kwargs)
+    except Exception:
+        pass
+
+
+def test_a_selective_run_with_a_failed_child_still_drops_the_parent_memo() -> None:
+    app, fail = _memo_parent_app("memo_failed_child")
+    _src.update(a=1, b=1)
+    app.update_blocking()
+    assert _stored() == {"a": 1, "b": 1}
+
+    del _src["b"]
+    fail["a"] = True
+    _update_tolerating_failure(
+        app,
+        full_reprocess=True,
+        component_selector=[coco.ROOT_PATH / "p" / "a"],
+    )
+    # `b` is left out, so it keeps its target state for now.
+    assert _stored() == {"a": 1, "b": 1}
+
+    fail["a"] = False
+    _runs.clear()
+    app.update_blocking()
+    assert "p" in _runs
+    assert _stored() == {"a": 1}
+
+
+def test_a_tombstone_the_selector_keeps_is_no_failed_delete() -> None:
+    store = GlobalDictTarget.store
+    fail_delete = {"b": False}
+
+    def sink(ctx: Any, actions: Any, /) -> None:
+        for key, value in actions:
+            if coco.is_non_existence(value) and fail_delete.get(key):
+                raise ValueError(f"injected delete failure for {key}")
+        for key, value in actions:
+            if coco.is_non_existence(value):
+                store.data.pop(key, None)
+            else:
+                store.data[key] = value
+
+    store._action_sink = coco.TargetActionSink.from_fn(sink)
+    try:
+        app, _ = _memo_parent_app("memo_kept_tombstone")
+        _src.update(a=1, b=1)
+        app.update_blocking()
+
+        # `b`'s delete fails, so its tombstone stays under `p`.
+        del _src["b"]
+        fail_delete["b"] = True
+        _update_tolerating_failure(app, full_reprocess=True)
+        assert _stored() == {"a": 1, "b": 1}
+        fail_delete["b"] = False
+
+        # A selective run that leaves the tombstone alone succeeds.
+        app.update_blocking(
+            full_reprocess=True, component_selector=[coco.ROOT_PATH / "p" / "a"]
+        )
+        assert _stored() == {"a": 1, "b": 1}
+
+        # The next plain update runs `p` and deletes `b`.
+        _runs.clear()
+        app.update_blocking()
+        assert "p" in _runs
+        assert _stored() == {"a": 1}
+    finally:
+        store._action_sink = coco.TargetActionSink.from_fn(store._sink)
+
+
+def test_a_failed_child_delete_under_full_reprocess_is_retried() -> None:
+    store = GlobalDictTarget.store
+    fail_delete = {"b": False}
+
+    def sink(ctx: Any, actions: Any, /) -> None:
+        for key, value in actions:
+            if coco.is_non_existence(value) and fail_delete.get(key):
+                raise ValueError(f"injected delete failure for {key}")
+        for key, value in actions:
+            if coco.is_non_existence(value):
+                store.data.pop(key, None)
+            else:
+                store.data[key] = value
+
+    store._action_sink = coco.TargetActionSink.from_fn(sink)
+    try:
+        app, _ = _memo_parent_app("memo_failed_delete_full_reprocess")
+        _src.update(a=1, b=1)
+        app.update_blocking()
+
+        del _src["b"]
+        fail_delete["b"] = True
+        _update_tolerating_failure(app, full_reprocess=True)
+        fail_delete["b"] = False
+
+        # Same memo key as the stored memo: only a dropped memo makes `p`
+        # run, and only a run of `p` sweeps `b`'s tombstone again.
+        app.update_blocking()
+        assert _stored() == {"a": 1}
+    finally:
+        store._action_sink = coco.TargetActionSink.from_fn(store._sink)
+
+
+# ---------------------------------------------------------------------------
 # Attachments declared by children, some unselected
 # ---------------------------------------------------------------------------
 

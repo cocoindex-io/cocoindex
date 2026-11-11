@@ -903,17 +903,23 @@ impl<Prof: EngineProfile> Committer<Prof> {
         // A child delete that failed keeps its tombstone, and with no handler
         // (or one that swallows) its handle still resolves `Ok`; the store is
         // what tells. Each child delete cleans its tombstone before its
-        // handle resolves, so one still listed is a delete still owed.
-        if self
+        // handle resolves, so one still listed that this sweep was to delete
+        // is a delete still owed. One the selector kept is not this run's
+        // to delete: the run reports leaving it out, not a failure.
+        let owed = self
             .app_store
             .list_tombstones(&self.component_path)
             .await?
-            .is_empty()
-        {
-            Ok(ChildDeletes::Done)
+            .into_iter()
+            .any(|relative_path| {
+                let stable_path = self.component_path.concat(relative_path.as_ref());
+                selector.is_none_or(|selector| selector.covers(&stable_path))
+            });
+        Ok(if owed {
+            ChildDeletes::Pending
         } else {
-            Ok(ChildDeletes::Pending)
-        }
+            ChildDeletes::Done
+        })
     }
 }
 
@@ -1132,14 +1138,6 @@ enum PreCommitOutcome<Prof: EngineProfile> {
     PendingRetry,
 }
 
-/// Captures bundle shared into the precommit callback closure. Every
-/// field is `O(1)` to clone (Arc-internal or persistent data structure)
-/// so the body's per-call `Arc::clone(&captures)` is cheap. The callback
-/// must stay `Fn` and only read the bundle: LMDB's batcher re-runs a body
-/// after growing the map on `MDB_MAP_FULL`, or after another body in its
-/// write batch fails, so one `AppStore::precommit` call can run it — and
-/// with it `pre_commit` and every `TargetHandler::reconcile` — more than
-/// once.
 /// A change to a container target state takes the target states of all its
 /// children with it, and the selector leaves some of them unrun: nothing would
 /// declare theirs again. Refused before anything is applied, so that a selective
@@ -1160,6 +1158,35 @@ fn bail_container_change_under_selector(
     Err(Error::client(message))
 }
 
+/// Whether a target state below `container` belongs to a component the
+/// update does not run. A change to the container that drops or converts its
+/// children's data must then wait for a full update; when every owner runs,
+/// the update declares the children again, as a plain one does.
+async fn container_has_left_out_children(
+    app_store: &AppStore,
+    wtxn: &mut WriteTxn<'_>,
+    container: &TargetStatePath,
+    selector: Option<&ComponentSelector>,
+    stable_path: &StablePath,
+) -> Result<bool> {
+    let Some(selector) = selector else {
+        return Ok(false);
+    };
+    app_store
+        .any_owner_below_in_txn(wtxn, container, |owner| {
+            owner != stable_path && !selector.update_runs(owner)
+        })
+        .await
+}
+
+/// Captures bundle shared into the precommit callback closure. Every
+/// field is `O(1)` to clone (Arc-internal or persistent data structure)
+/// so the body's per-call `Arc::clone(&captures)` is cheap. The callback
+/// must stay `Fn` and only read the bundle: LMDB's batcher re-runs a body
+/// after growing the map on `MDB_MAP_FULL`, or after another body in its
+/// write batch fails, so one `AppStore::precommit` call can run it — and
+/// with it `pre_commit` and every `TargetHandler::reconcile` — more than
+/// once.
 struct PreCommitCaptures<Prof: EngineProfile> {
     app_store: AppStore,
     stable_path: StablePath,
@@ -1524,11 +1551,6 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                     .as_ref()
                     .and_then(|item| item.provider_generation.clone());
 
-                // A container whose desired record is the one every previous
-                // state holds did not change: its reconcile may still report a
-                // rebuild, because it could not trust the previous state
-                // (`full_reprocess`, a pending state), so that is no reason to
-                // refuse.
                 // A rebuild drops the container's data, so it is always refused.
                 // A lossy change is refused only if the container's record
                 // changed: a reconcile that could not trust the previous state
@@ -1554,7 +1576,17 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                         }
                         None => false,
                     };
-                if refused && let Some(container) = &child_provider {
+                if refused
+                    && let Some(container) = &child_provider
+                    && container_has_left_out_children(
+                        app_store,
+                        wtxn,
+                        target_state_path,
+                        selector,
+                        stable_path,
+                    )
+                    .await?
+                {
                     bail_container_change_under_selector(
                         update_refusal,
                         &container.display_name(),
@@ -1727,7 +1759,16 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 })?
                 .reconcile(target_state_key, None, &prev_states, prev_may_be_missing)?;
             if let Some(recon_output) = recon_output {
-                if let Some(container_name) = &container_name {
+                if let Some(container_name) = &container_name
+                    && container_has_left_out_children(
+                        app_store,
+                        wtxn,
+                        &target_state_path_with_pid.target_state_path,
+                        selector,
+                        stable_path,
+                    )
+                    .await?
+                {
                     bail_container_change_under_selector(
                         update_refusal,
                         container_name,

@@ -183,6 +183,12 @@ def _core_component_selector(
 ) -> list[core.StablePath] | None:
     if component_selector is None:
         return None
+    if isinstance(component_selector, (StablePath, str, bytes)):
+        raise TypeError(
+            "component_selector takes an iterable of StablePath values, got "
+            f"{component_selector!r}. Pass a list, e.g. "
+            '[coco.ROOT_PATH / "process" / key].'
+        )
     paths: list[core.StablePath] = []
     for path in component_selector:
         if not isinstance(path, StablePath):

@@ -149,3 +149,34 @@ def test_lossy_report_for_an_unchanged_container_is_not_refused() -> None:
     finally:
         DictsTarget.store.child_invalidation = None
     assert _data() == {"a": 2, "b": 1}
+
+
+@pytest.mark.parametrize("memo", [False, True])
+def test_container_change_is_applied_when_every_row_owner_runs(memo: bool) -> None:
+    """The refusal is per container: when the update runs every component that
+    owns a row under it, a rebuild goes through as in a plain update."""
+    DictsTarget.store.clear()
+    _rows.clear()
+    _rows.update(a=1, b=1)
+    app = coco.App(
+        coco.AppConfig(name=f"selector_container_all_run_{memo}", environment=coco_env),
+        _main_for(_memo_row if memo else _row),
+    )
+    app.update_blocking()
+
+    DictsTarget.store.child_invalidation = "destructive"
+    _rows.update(a=2, b=2)
+    try:
+        selector = [coco.ROOT_PATH / "rows"]
+        app.update_blocking(component_selector=selector)
+    finally:
+        DictsTarget.store.child_invalidation = None
+    assert _data() == {"a": 2, "b": 2}
+
+    # A selector that leaves a row owner out still refuses.
+    DictsTarget.store.child_invalidation = "destructive"
+    try:
+        with pytest.raises(Exception, match="A full update is needed"):
+            app.update_blocking(component_selector=[coco.ROOT_PATH / "rows" / "a"])
+    finally:
+        DictsTarget.store.child_invalidation = None

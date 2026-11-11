@@ -7,6 +7,7 @@ key (``__coco_items_for_keys__``) is asked for just those keys, and a
 from __future__ import annotations
 
 import pathlib
+import pickle
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -251,20 +252,26 @@ def test_localfs_reads_only_the_selected_files(tmp_path: pathlib.Path) -> None:
     assert _stored() == {"a.md": "a1", "docs/b.md": "b2"}
 
 
-def _walk(walker: localfs.DirWalker) -> dict[str, str]:
-    async def collect() -> dict[str, str]:
-        return {key: await f.read_text() async for key, f in walker.items()}
+async def _file_view(f: localfs.File) -> tuple[str, bytes]:
+    """A file's content and its memo key as pickled: a read by key must give
+    the memo key the walk gives, or a memo stored by one misses in the other."""
+    return await f.read_text(), pickle.dumps(f.__coco_memo_key__())
+
+
+def _walk(walker: localfs.DirWalker) -> dict[str, tuple[str, bytes]]:
+    async def collect() -> dict[str, tuple[str, bytes]]:
+        return {key: await _file_view(f) async for key, f in walker.items()}
 
     import asyncio
 
     return asyncio.run(collect())
 
 
-def _read(walker: localfs.DirWalker, keys: list[Any]) -> dict[str, str]:
-    async def collect() -> dict[str, str]:
+def _read(walker: localfs.DirWalker, keys: list[Any]) -> dict[str, tuple[str, bytes]]:
+    async def collect() -> dict[str, tuple[str, bytes]]:
         items = walker.items()
         return {
-            key: await f.read_text()
+            key: await _file_view(f)
             async for key, f in items.__coco_items_for_keys__(keys)  # type: ignore[attr-defined]
         }
 
@@ -301,6 +308,8 @@ def test_localfs_reads_by_key_exactly_what_it_walks(
         "/a.md",
         "",
         "missing.md",
+        "A.md",
+        "DOCS/c.md",
         3,
     ]
     assert _read(walker, candidates) == walked

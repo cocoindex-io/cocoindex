@@ -185,6 +185,10 @@ class DirWalker:
         if not root_resolved.is_dir():
             raise ValueError(f"Path is not a directory: {root_resolved}")
         root_stat = root_resolved.stat()
+        # The entry names of each directory read so far: a part must name an
+        # entry exactly, as the walk would list it. A case-insensitive file
+        # system would otherwise find `a.md` under the key `A.md`.
+        names: dict[Path, set[str]] = {}
         out: list[tuple[str, File]] = []
         for key in keys:
             if not isinstance(key, str):
@@ -199,23 +203,38 @@ class DirWalker:
                 or (len(parts) > 1 and not self._recursive)
             ):
                 continue
-            file = self._read_one_sync(root_resolved, root_stat, Path(*parts))
+            file = self._read_one_sync(root_resolved, root_stat, parts, names)
             if file is not None:
                 out.append((key, file))
         return out
 
     def _read_one_sync(
-        self, root_resolved: Path, root_stat: os.stat_result, relative_path: Path
+        self,
+        root_resolved: Path,
+        root_stat: os.stat_result,
+        parts: tuple[str, ...],
+        names: dict[Path, set[str]],
     ) -> File | None:
+        # Paths are built as the walk builds them (`relative_to` the resolved
+        # root), so that a file's memo key is the walk's: a Path pickles its
+        # raw segments on Python 3.13+, and `Path("a", "b")` differs there
+        # from `Path("a/b")`.
+        relative_path = root_resolved.joinpath(*parts).relative_to(root_resolved)
         # Each directory on the way must be one the walk enters: included, and
         # not one of its own ancestors (a symlink cycle).
         ancestor_ids = {(root_stat.st_dev, root_stat.st_ino)}
         current = root_resolved
         try:
-            for i, part in enumerate(relative_path.parts[:-1]):
+            for i, part in enumerate(parts):
+                if current not in names:
+                    names[current] = set(os.listdir(current))
+                if part not in names[current]:
+                    return None
+                if i == len(parts) - 1:
+                    break
                 current = current / part
                 if not current.is_dir() or not self._path_matcher.is_dir_included(
-                    Path(*relative_path.parts[: i + 1])
+                    current.relative_to(root_resolved)
                 ):
                     return None
                 stat = current.stat()

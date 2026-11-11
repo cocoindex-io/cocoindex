@@ -254,10 +254,43 @@ impl<'a> std::fmt::Display for StablePathRef<'a> {
         }
         for part in self.0.iter() {
             f.write_str("/")?;
-            part.fmt(f)?;
+            fmt_path_part(part, f)?;
         }
         Ok(())
     }
+}
+
+/// A part of a path as [`StableKey`]'s `Display` writes it, except that a
+/// symbol that is not a plain name is quoted (`@"cocoindex/mount_target"`),
+/// so that the path parses back.
+fn fmt_path_part(key: &StableKey, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match key {
+        StableKey::Symbol(s) if !is_bare_symbol(s) => {
+            f.write_str("@\"")?;
+            f.write_str(s.escape_default().to_string().as_str())?;
+            f.write_char('"')
+        }
+        StableKey::Array(a) => {
+            f.write_char('[')?;
+            for (i, part) in a.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(",")?;
+                }
+                fmt_path_part(part, f)?;
+            }
+            f.write_char(']')
+        }
+        _ => std::fmt::Display::fmt(key, f),
+    }
+}
+
+/// A symbol that a path writes as `@name`: printable ASCII with none of the
+/// characters that end a key or start a quote.
+fn is_bare_symbol(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with('"')
+        && s.chars()
+            .all(|c| c.is_ascii_graphic() && !matches!(c, '/' | ',' | '[' | ']' | '\\'))
 }
 
 impl<'a> From<&'a [StableKey]> for StablePathRef<'a> {
@@ -422,6 +455,11 @@ impl<'t> KeyParser<'t> {
             }
             Some('@') => {
                 self.chars.next();
+                if self.chars.peek().is_some_and(|(_, c)| *c == '"') {
+                    self.chars.next();
+                    let name = self.quoted(false)?;
+                    return Ok(StableKey::Symbol(Arc::from(name)));
+                }
                 let name = self.token();
                 if name.is_empty() {
                     return Err(self.error("expected a symbol name after `@`"));
@@ -592,7 +630,10 @@ mod tests {
             StablePath(
                 vec![
                     StableKey::Symbol(Arc::from("process")),
+                    StableKey::Symbol(Arc::from("cocoindex/mount_target")),
+                    StableKey::Symbol(Arc::from("a,b]\"c\u{e9} d")),
                     StableKey::Str(Arc::from("docs/a \"b\".md\t\u{e9}\u{1F600}")),
+                    StableKey::Array(vec![StableKey::Symbol(Arc::from("x/y"))].into()),
                 ]
                 .into(),
             ),
@@ -624,6 +665,17 @@ mod tests {
             let text = path.to_string();
             assert_eq!(StablePath::from_str(&text).unwrap(), path, "{text}");
         }
+        let symbols = StablePath(
+            vec![
+                StableKey::Symbol(Arc::from("process_file")),
+                StableKey::Symbol(Arc::from("cocoindex/mount_target")),
+            ]
+            .into(),
+        );
+        assert_eq!(
+            symbols.to_string(),
+            "/@process_file/@\"cocoindex/mount_target\""
+        );
     }
 
     #[test]

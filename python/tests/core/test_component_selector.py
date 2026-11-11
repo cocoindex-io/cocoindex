@@ -282,11 +282,11 @@ def test_default_subpath_is_a_symbol_key() -> None:
 
 def test_rejects_anything_but_paths_early() -> None:
     app = _app("reject")
-    with pytest.raises(TypeError, match="takes StablePath values"):
+    with pytest.raises(TypeError, match="takes an iterable of StablePath values"):
         app.update_blocking(component_selector="items/a")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="takes StablePath values"):
         app.update(component_selector=["items/a"])  # type: ignore[list-item]
-    with pytest.raises(TypeError, match="not iterable"):
+    with pytest.raises(TypeError, match="takes an iterable of StablePath values"):
         app.update(component_selector=_items_path("a"))  # type: ignore[arg-type]
 
 

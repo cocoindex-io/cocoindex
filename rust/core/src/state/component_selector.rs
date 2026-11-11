@@ -127,6 +127,18 @@ impl ComponentSelector {
         .covers(path)
     }
 
+    /// The update runs the component at `path`, wherever this view's run is:
+    /// it is selected or leads to a selected path. A `use_mount` child that
+    /// runs anyway is not counted.
+    pub(crate) fn update_runs(&self, path: &StablePath) -> bool {
+        Self {
+            root: self.root.clone(),
+            within_selected: false,
+        }
+        .classify(path)
+            != ComponentSelection::Unselected
+    }
+
     /// A run under this view can leave out something it mounts. False inside a
     /// selected subtree, from where on the run is an ordinary one. That never
     /// comes back on the way down, so the ancestors of a run with this true

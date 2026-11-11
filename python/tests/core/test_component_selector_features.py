@@ -371,24 +371,13 @@ def _dicts() -> dict[str, dict[str, Any]]:
 
 
 @pytest.mark.parametrize("preview", [False, True])
-@pytest.mark.parametrize(
-    "selected",
-    [
-        # Every row of D1 lies in the selected subtree.
-        [coco.ROOT_PATH / "p1"],
-        # D1's owner runs only as an ancestor of a selected row.
-        [coco.ROOT_PATH / "p1" / "rows" / "a"],
-    ],
-    ids=["whole_owner_selected", "one_row_selected"],
-)
-def test_container_refusal_under_a_mounted_owner_is_raised(
-    selected: list[coco.StablePath], preview: bool
-) -> None:
-    """The docs: a selective update that would rebuild a container "fails with an
-    error", and a preview with the same selector fails alike."""
+def test_container_refusal_under_a_mounted_owner_is_raised(preview: bool) -> None:
+    """The docs: a selective update that would rebuild a container while it
+    leaves out a row owner "fails with an error", and a preview with the same
+    selector fails alike. D1's owner runs only as an ancestor of a selected
+    row, so row b is left out."""
     _source.update(a=1, b=1)
-    name = f"container_mounted_owner_{len(selected[0].parts())}_{preview}"
-    app = _app(name, _two_pipelines_main)
+    app = _app(f"container_mounted_owner_one_row_{preview}", _two_pipelines_main)
     app.update_blocking()
     assert _dicts() == {"D1": {"a": 1, "b": 1}, "D2": {"a": 1, "b": 1}}
 
@@ -396,11 +385,30 @@ def test_container_refusal_under_a_mounted_owner_is_raised(
     _source.update(a=2, b=2)
     try:
         with pytest.raises(Exception, match="A full update is needed"):
-            app.update_blocking(component_selector=selected, preview=preview)
+            app.update_blocking(
+                component_selector=[coco.ROOT_PATH / "p1" / "rows" / "a"],
+                preview=preview,
+            )
     finally:
         DictsTarget.store.child_invalidation = None
         # Whatever happens, nothing under p1 was applied.
         assert _dicts() == {"D1": {"a": 1, "b": 1}, "D2": {"a": 1, "b": 1}}
+
+
+def test_container_change_applies_when_its_whole_owner_is_selected() -> None:
+    """Every row of D1 lies in the selected subtree, so the rebuild goes
+    through as in a plain update; D2 is left alone."""
+    _source.update(a=1, b=1)
+    app = _app("container_mounted_owner_whole", _two_pipelines_main)
+    app.update_blocking()
+
+    DictsTarget.store.child_invalidation = "destructive"
+    _source.update(a=2, b=2)
+    try:
+        app.update_blocking(component_selector=[coco.ROOT_PATH / "p1"])
+    finally:
+        DictsTarget.store.child_invalidation = None
+    assert _dicts() == {"D1": {"a": 2, "b": 2}, "D2": {"a": 1, "b": 1}}
 
 
 _declares_container = {"on": True}

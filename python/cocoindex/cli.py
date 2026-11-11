@@ -844,10 +844,15 @@ def _parse_selected_path(text: str) -> StablePath:
 def _parse_stable_path(path_str: str) -> StablePath:
     """Parse a CLI stable path string into a StablePath.
 
-    Accepts formats like:
-      /"files"/"file1.txt"   (quoted parts, as displayed by StablePath.__str__)
-      /files/file1.txt       (unquoted parts)
+    Reads the path as `cocoindex show` prints it, as `--select` does:
+      /@process_file/"docs/a.md"   (a Symbol, then a string)
+    Text that is not in that form is read the older way, every part a string:
+      /files/file1.txt
     """
+    try:
+        return StablePath(_core.StablePath.parse(path_str))
+    except ValueError:
+        pass
     path = StablePath()
     # Strip leading slash
     stripped = path_str.strip("/")

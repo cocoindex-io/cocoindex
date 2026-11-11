@@ -29,9 +29,8 @@ async def app_main() -> None:
         pathlib.Path("./out_select"),
     )
     files = localfs.walk_dir(pathlib.Path("./in_select"))
-    await coco.mount_each(
-        coco.component_subpath("process"), process, files.items(), target
-    )
+    # No subpath: the items mount under the Symbol `process`.
+    await coco.mount_each(process, files.items(), target)
 
 
 app = coco.App(coco.AppConfig(name="SelectApp"), app_main)

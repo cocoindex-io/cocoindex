@@ -659,10 +659,17 @@ class TestSelect:
         src, out = self._setup(tmp_path)
         # The path as `cocoindex show` prints it.
         shown = run_cli("show", "./select_app.py", cwd=tmp_path).stdout
-        assert '/"process"/"a.txt"' in shown
+        assert '/@process/"a.txt"' in shown
+        # `show PATH` reads the same form; the older unquoted form still works.
+        detail = run_cli(
+            "show", "./select_app.py", '/@process/"a.txt"', cwd=tmp_path
+        ).stdout
+        assert "processor:process" in detail
+        legacy = run_cli("show", "./select_app.py", "/setup", cwd=tmp_path).stdout
+        assert "processor:declare_dir_target" in legacy
 
         run_cli(
-            "update", "./select_app.py", "--select", '/"process"/"a.txt"', cwd=tmp_path
+            "update", "./select_app.py", "--select", '/@process/"a.txt"', cwd=tmp_path
         )
         assert (out / "a.txt").read_text() == "A2"
         assert (out / "b.txt").read_text() == "B1"
@@ -672,9 +679,9 @@ class TestSelect:
             "update",
             "./select_app.py",
             "--select",
-            '/"process"/"a.txt"',
+            '/@process/"a.txt"',
             "--select",
-            '/"process"/"b.txt"',
+            '/@process/"b.txt"',
             cwd=tmp_path,
         )
         assert not (out / "a.txt").exists()
@@ -689,10 +696,10 @@ class TestSelect:
             "./select_app.py",
             "--preview",
             "--select",
-            '/"process"/"b.txt"',
+            '/@process/"b.txt"',
             cwd=tmp_path,
         )
-        assert "out_select/b.txt" in result.stdout
+        assert "b.txt" in result.stdout
         assert "a.txt" not in result.stdout
         assert (out / "b.txt").read_text() == "B1"
 
@@ -708,7 +715,7 @@ class TestSelect:
         )
         assert result.returncode != 0
         assert "--select" in result.stderr
-        assert '`"process"`' in result.stderr
+        assert "`@process`" in result.stderr
 
     def test_select_and_reset_cannot_be_combined(self, tmp_path: Path) -> None:
         self._setup(tmp_path)

@@ -1510,6 +1510,28 @@ impl<Prof: EngineProfile> Component<Prof> {
 
                 let build_output = match ret {
                     Some(ret) => {
+                        // Two cases leave this subtree owing work to a later
+                        // run, so a memo would wrongly tell the next update
+                        // that it is up to date: a selector left out a child
+                        // here or below (the outcome carries this up, so no
+                        // ancestor stores one either), or a child delete is
+                        // still owed. Drop the stored memo whether or not a
+                        // descendant failed: a failure only skips storing a
+                        // new one, and under `full_reprocess` the next update
+                        // has the same memo key and would hit the old one.
+                        children_outcome.left_out_children |=
+                            processor_context.left_out_children();
+                        if (children_outcome.left_out_children
+                            || submit_output.child_deletes == ChildDeletes::Pending)
+                            && memo_fp_to_store.is_some()
+                        {
+                            delete_component_memo(processor_context).await?;
+                            self.inner
+                                .last_stored_memos
+                                .lock()
+                                .unwrap()
+                                .forget(processor_context.app_store().write_scope());
+                        }
                         if !children_outcome.has_exception {
                             // Collect initial memo states on cache miss if processor has a state handler.
                             let memo_states: MemoStatesPayload<Prof> = if let Some(processor) =
@@ -1564,20 +1586,16 @@ impl<Prof: EngineProfile> Component<Prof> {
                                     processor_context.stable_path()
                                 );
                             }
-                            // Two cases store no memo and drop the previous one:
-                            // submit has replaced the target states, so an older
-                            // entry's return value must not be reused.
-                            // - The run observed one key in two states: no stored
-                            //   state can validate its output.
-                            // - A selector left out a child here or below: a memo
-                            //   would tell the next update that this subtree is
-                            //   up to date. The outcome carries this up, so no
-                            //   ancestor stores one either.
-                            children_outcome.left_out_children |=
-                                processor_context.left_out_children();
-                            let comp_memo = if data_dep_conflict.is_some()
-                                || children_outcome.left_out_children
-                            {
+                            // A run that observed one key in two states stores
+                            // no memo and drops the previous one: submit has
+                            // replaced the target states, so an older entry's
+                            // return value must not be reused, and no stored
+                            // state can validate its output. A run that left
+                            // out a child stores none either; its old one is
+                            // already dropped above.
+                            let comp_memo = if children_outcome.left_out_children {
+                                None
+                            } else if data_dep_conflict.is_some() {
                                 if memo_fp_to_store.is_some() {
                                     delete_component_memo(processor_context).await?;
                                     self.inner
