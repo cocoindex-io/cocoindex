@@ -8,15 +8,15 @@ tags: [vector-index, google-drive]
 
 ![Semantic Search over Google Drive with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/google-drive-embedding/cover.png)
 
-This is the [Semantic Search 101](/docs/examples/text-embedding/) example with exactly one thing swapped: instead of reading Markdown off your local disk, it reads documents straight from a **Google Drive** folder. Everything downstream — chunking, embedding, and storing the vectors in Postgres with pgvector — is identical, so this post spends its prose on the one piece that differs: the Drive connector.
+Use a Google Drive folder as the source for [Semantic Search 101](/docs/examples/text-embedding/). The chunking, embedding, and Postgres/pgvector target stay the same.
 
-The chunk-and-embed half is explained in full in the [base walkthrough](/docs/examples/text-embedding/); read that first if you want the line-by-line tour. Here we focus on wiring [Google Drive](/docs/connectors/google_drive/) as the source.
+Start with the [base walkthrough](/docs/examples/text-embedding/) for the chunk-and-embed implementation, then connect [Google Drive](/docs/connectors/google_drive/) as the source.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/gdrive_text_embedding)
 
 ## Flow overview
 
-![CocoIndex Google Drive embedding flow: read files from a Drive folder, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/google-drive-embedding/flow-v1.svg)
+![CocoIndex Google Drive embedding flow: read files from a Drive folder, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/google-drive-embedding/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -117,7 +117,7 @@ The most semantically similar chunks come back ranked — even when they share n
 Just like the [base example](/docs/examples/text-embedding/), CocoIndex does the **minimum work** to keep the index in sync. `@coco.fn(memo=True)` on `process_file` skips any Drive file whose content and the function's code are both unchanged, and `mount_table_target` derives each row's [`id`](/docs/common_resources/id_generation/) from its chunk text, so only the rows that actually changed are upserted and rows whose source is gone are deleted.
 
 - **A document is added to the folder** — only that file is chunked and embedded, and its rows are inserted.
-- **A document is edited** — it is re-chunked; unchanged chunks keep their `id` and embedding, genuinely new chunks are embedded and inserted, and chunks that no longer exist are deleted.
+- **A document is edited** — it is re-chunked; unchanged chunks keep their `id` and embedding, new chunks are embedded and inserted, and chunks that no longer exist are deleted.
 - **A document is removed from the folder** — its rows are removed from the target automatically.
 
 Because the Drive source is catch-up only, each `cocoindex update main` rescans the folders and applies exactly the difference.
@@ -125,5 +125,3 @@ Because the Drive source is catch-up only, each `cocoindex update main` rescans 
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/gdrive_text_embedding](https://github.com/cocoindex-io/cocoindex/tree/main/examples/gdrive_text_embedding). If you haven't yet, read [Semantic Search 101](/docs/examples/text-embedding/) for the line-by-line tour of chunking and embedding.
-
-Found this useful? [Star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex) and come say hi in our [Discord](https://discord.com/invite/zpA9S2DR7s).

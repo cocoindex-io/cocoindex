@@ -154,9 +154,11 @@ trustworthy.
 
 Under the hood the runner will:
 
-1. Build the Rust binary (`rust/`) in release mode.
-2. Create `.work/<scenario>/<profile>/<scale>/trial_NN/` with fresh dataset,
-   state, and output dirs.
+1. Build the Rust binary (`rust/`) in release mode, into `CARGO_TARGET_DIR`
+   when set, else `rust/target`.
+2. Create `.work/<scenario>/<profile>/<scale>/trial_NN/` (under
+   `BENCH_WORK_DIR` instead of `.work/` when set) with fresh dataset, state,
+   and output dirs.
 3. For each of `cold / warm / edit / shape`: run Rust, run Python, compare
    the output trees' hashes.
 4. Aggregate medians across trials and print a per-phase table.

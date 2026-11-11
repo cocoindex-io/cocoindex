@@ -16,8 +16,8 @@ const { headings, lastReviewed } = Astro.props;
 const rows = headings.filter((h) => h.depth >= 2 && h.depth <= 4);
 ---
 
-<aside class="toc">
-  <h6>On this page</h6>
+<aside class="toc" aria-label="Page outline">
+  <p class="toc-h">On this page</p>
   <ul>
     {rows.map((h) => (
       <li class={h.depth === 3 ? 'sub' : h.depth === 4 ? 'sub-sub' : ''} data-toc-item>
@@ -38,7 +38,7 @@ const rows = headings.filter((h) => h.depth >= 2 && h.depth <= 4);
     {lastReviewed && (
       <span class="edited">
         <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
-          <circle cx="8" cy="8" r="7" fill="var(--palm)" />
+          <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" />
           <path d="M4.5 8.3l2.3 2.2L11.5 5.8"
                 fill="none" stroke="var(--maroon-ink)"
                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
@@ -79,7 +79,11 @@ const rows = headings.filter((h) => h.depth >= 2 && h.depth <= 4);
     const visible = new Set<string>();
 
     const setActive = (id: string | null) => {
-      links.forEach((a, key) => a.classList.toggle('on', key === id));
+      links.forEach((a, key) => {
+        a.classList.toggle('on', key === id);
+        if (key === id) a.setAttribute('aria-current', 'location');
+        else a.removeAttribute('aria-current');
+      });
     };
 
     // Default to the first H2 before any intersection fires, so the rail

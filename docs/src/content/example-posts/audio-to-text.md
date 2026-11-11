@@ -8,15 +8,15 @@ tags: [transcription, litellm]
 
 ![Audio to Text with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/audio-to-text/cover.png)
 
-We'll take a folder of audio files — voice memos, meeting recordings, podcast clips — and turn each one into a searchable transcript. CocoIndex walks the directory, sends every file to a [LiteLLM](https://docs.litellm.ai/) transcription model, and writes the text to Postgres as one row per file, keyed by filename. The result is a plain table you can query, join, or feed into a downstream embedding pipeline.
+We'll take a folder of audio files (voice memos, meeting recordings, podcast clips) and turn each one into a searchable transcript. CocoIndex walks the directory, sends every file to a [LiteLLM](https://docs.litellm.ai/) transcription model, and writes the text to Postgres as one row per file, keyed by filename. The result is a plain table you can query, join, or feed into a downstream embedding pipeline.
 
-The whole thing is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only files that are new or changed get re-transcribed, and removed files have their rows cleaned up automatically.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and target management. As a result, only files that are new or changed get re-transcribed, and removed files have their rows cleaned up automatically.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/audio_to_text)
 
 ## Flow overview
 
-![CocoIndex audio-to-text flow: read audio files from a local directory, transcribe each with LiteLLM, and store one transcript row per file in Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/audio-to-text/flow-v1.svg)
+![CocoIndex audio-to-text flow: read audio files from a local directory, transcribe each with LiteLLM, and store one transcript row per file in Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/audio-to-text/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -51,7 +51,7 @@ You [declare the transformation logic](/docs/programming_guide/core_concepts/) w
 
 ## Define the data and shared resources
 
-[Apps](/docs/programming_guide/app/) are the top-level runnable unit in CocoIndex. Before the App, we set up the pieces the rest of the code builds on. `AudioTranscription` defines one row of the output table — each audio file becomes one row, with its filename and transcript text. `_transcriber` is the LiteLLM model, created once and reused. `coco_lifespan` provides the [shared resource](/docs/programming_guide/context/) every step needs — the Postgres connection pool — once at startup.
+[Apps](/docs/programming_guide/app/) are the top-level runnable unit in CocoIndex. Before the App, we set up the pieces the rest of the code builds on. `AudioTranscription` defines one row of the output table — each audio file becomes one row, with its filename and transcript text. `_transcriber` is the LiteLLM model, created once and reused. `coco_lifespan` provides the [shared resource](/docs/programming_guide/context/) every step needs (the Postgres connection pool) once at startup.
 
 ```python title="main.py"
 import os
@@ -87,11 +87,11 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
         yield
 ```
 
-[`LiteLLMTranscriber("whisper-1")`](/docs/ops/litellm/) wraps LiteLLM's transcription API, so you can swap in any model LiteLLM supports — `elevenlabs/scribe_v1`, a self-hosted endpoint, whatever — by changing that one string (and the matching credential).
+[`LiteLLMTranscriber("whisper-1")`](/docs/ops/litellm/) wraps LiteLLM's transcription API, so you can swap in any model LiteLLM supports (`elevenlabs/scribe_v1`, a self-hosted endpoint, whatever) by changing that one string (and the matching credential).
 
 ## Process a file
 
-![One processing component per file: each audio file is transcribed with LiteLLM, producing one AudioTranscription row written to Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/audio-to-text/stage-file-process.svg)
+![One processing component per file: each audio file is transcribed with LiteLLM, producing one AudioTranscription row written to Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/audio-to-text/stage-file-process-dark.svg)
 
 `process_file` runs once per file. It reads the audio, [transcribes it](/docs/ops/litellm/), and declares a single target row — no chunking, one row per file.
 
@@ -188,5 +188,3 @@ The same machinery covers **logic** changes too: swap the transcription model an
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/audio_to_text](https://github.com/cocoindex-io/cocoindex/tree/main/examples/audio_to_text). Once this clicks, [Semantic Search 101](/docs/examples/text-embedding/) is the natural next step — embed those transcripts and search them by meaning.
-
-If CocoIndex helps you, star us on [GitHub](https://github.com/cocoindex-io/cocoindex) and come say hi in our [Discord](https://discord.com/invite/zpA9S2DR7s).

@@ -6,11 +6,29 @@ description: >
   with prefix filters, path matchers, size limits, and stable S3FilePath for
   memoization.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 The `amazon_s3` connector provides utilities for reading objects from Amazon S3 buckets and S3-compatible services (e.g. MinIO, Tigris).
+
+{/* Rust: examples/rust/amazon_s3_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import amazon_s3
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::amazon_s3::{self, ListOptions, S3Client, S3File};
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 :::note[Installation]
 This connector requires the `aiobotocore` library. Install with:
@@ -20,15 +38,49 @@ pip install cocoindex[amazon_s3]
 ```
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+:::note[Installation]
+Enable the `amazon_s3` feature of the `cocoindex` crate:
+
+```toml
+cocoindex = { git = "https://github.com/cocoindex-io/cocoindex", features = ["amazon_s3"] }
+```
+
+The connector uses the official `aws-sdk-s3` crate, re-exported as `cocoindex::connectors::amazon_s3::aws_sdk_s3`, so you can create buckets and upload objects without a direct dependency.
+:::
+
+</Lang>
+
 ## As source
 
 The connector provides two ways to read from S3:
+
+<Lang only="python">
 
 - `list_objects()` — List and iterate over objects in a bucket (with optional prefix and filtering)
 - `get_object()` — Fetch a single object by its key
 - `read()` — Read object content directly by S3 URI
 
 Both require an aiobotocore S3 client, which you create and manage yourself:
+
+</Lang>
+
+<Lang only="rust">
+
+- `list_objects()` — List the objects in a bucket (with optional prefix and filtering)
+- `S3Client::get_object()` / `S3Client::get_object_uri()` — Fetch a single object by its key or `s3://` URI
+- `S3Client::read()` — Read an object's content
+
+All of them go through an `S3Client`, which you create and provide to the app as a context key:
+
+</Lang>
+
+{/* Rust: examples/rust/amazon_s3_embedding/src/main.rs; rust/sdk/cocoindex/src/connectors/amazon_s3.rs (S3Client) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import aiobotocore.session
@@ -53,9 +105,33 @@ async with session.create_client(
     ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+cocoindex::context_key!(static S3: S3Client);
+
+let s3 = S3Client::connect().await?;
+let app = Environment::builder()
+    .provide_key(&S3, s3)
+    .build()
+    .await?
+    .app("AmazonS3EmbeddingRust")
+    .await?;
+```
+
+`S3Client::connect()` reads the standard AWS environment: region, credentials and `AWS_ENDPOINT_URL`. When `AWS_ENDPOINT_URL` is set (for MinIO or Tigris), path-style addressing is enabled. For a client configured by hand, build an `aws_sdk_s3::Client` and wrap it with `S3Client::from_client(state_id, client)`, where `state_id` is the stable identity used in memo keys. An `S3Client` is `Clone` and has no `close()`.
+
+</Fragment>
+</LangTabs>
+
 ### list_objects
 
-List objects in an S3 bucket. Returns an `S3Walker` that supports async iteration.
+List objects in an S3 bucket. Returns an `S3Walker`<Lang only="python"> that supports async iteration</Lang>.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/amazon_s3.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def list_objects(
@@ -68,6 +144,36 @@ def list_objects(
 ) -> S3Walker
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn list_objects(
+    client: &S3Client,
+    bucket: impl Into<String>,
+    options: ListOptions,
+) -> S3Walker
+
+pub struct ListOptions {
+    /// Only list objects whose key starts with this prefix.
+    pub prefix: String,
+    /// Filter by relative path (after prefix stripping). Defaults to match-all.
+    pub path_matcher: Option<Arc<dyn FilePathMatcher>>,
+    /// Skip objects larger than this many bytes.
+    pub max_file_size: Option<u64>,
+}
+
+pub async fn S3Walker::list(&self) -> Result<Vec<S3File>>
+pub async fn S3Walker::items(&self) -> Result<Vec<(String, S3File)>>
+```
+
+The walker is not an iterator: `list()` returns every matching object, and `items()` the `(key, file)` pairs for `mount_each!`.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 **Parameters:**
 
 - `client` — An aiobotocore S3 client.
@@ -78,9 +184,33 @@ def list_objects(
 
 **Returns:** An `S3Walker` that can be used with `async for` loops.
 
+</Lang>
+
+<Lang only="rust">
+
+**Parameters:**
+
+- `client` — The `S3Client`.
+- `bucket` — The S3 bucket name.
+- `options.prefix` — Only list objects whose key starts with this prefix. The prefix and a `/` after it are stripped from the relative keys of the returned files.
+- `options.path_matcher` — Optional filter for files. Patterns are matched against the relative path (after prefix stripping). See [PatternFilePathMatcher](../common_resources/data_types#patternfilepathmatcher).
+- `options.max_file_size` — Skip objects larger than this size in bytes.
+
+**Returns:** An `S3Walker`; `list()` and `items()` list the bucket once each time you call them.
+
+</Lang>
+
+<RustNote>
+The prefix is passed to S3 as given, not read as a folder: `"data"` also matches `database.csv`. Name a folder with its trailing slash, `"data/"`, and select objects by the start of their name with `path_matcher`.
+</RustNote>
+
 ### Iterating files
 
-`list_objects()` returns an `S3Walker` that yields `S3File` objects (implementing the [`FileLike`](../common_resources/data_types#filelike) base class):
+`list_objects()` returns an `S3Walker` that <Lang only="python">yields</Lang><Lang only="rust">lists</Lang> `S3File` objects (implementing the [`FileLike`](../common_resources/data_types#filelike) base class):
+
+{/* Rust: rust/sdk/cocoindex/tests/amazon_s3_source.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import aiobotocore.session
@@ -93,20 +223,69 @@ async with session.create_client("s3") as client:
         ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let files = amazon_s3::list_objects(
+    &client,
+    "my-bucket",
+    ListOptions {
+        prefix: "data/".to_string(),
+        ..Default::default()
+    },
+)
+.list()
+.await?;
+for file in files {
+    let text = file.read_text().await?;
+    // ...
+}
+```
+
+A listed file carries the client, so `file.read_text()` works; `client.read_text(&file)` reads through a client you hold.
+
+</Fragment>
+</LangTabs>
+
 See [`FileLike`](../common_resources/data_types#filelike) for details on the file objects.
 
 ### Keyed iteration with `items()`
 
-`S3Walker.items()` yields `(str, S3File)` pairs, useful for associating each file with a stable string key: the object key relative to the prefix, exactly as stored. Keys are not normalized, so `a//b.txt` and `a/b.txt` are two items:
+<Lang only="python">`S3Walker.items()` yields `(str, S3File)` pairs</Lang><Lang only="rust">`S3Walker::items()` returns `(String, S3File)` pairs</Lang>, useful for associating each file with a stable string key: the object key relative to the prefix, exactly as stored. Keys are not normalized, so `a//b.txt` and `a/b.txt` are two items:
+
+{/* Rust: rust/sdk/cocoindex/tests/amazon_s3_source.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async for key, file in amazon_s3.list_objects(client, "my-bucket").items():
     content = await file.read()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let items = amazon_s3::list_objects(&client, "my-bucket", ListOptions::default())
+    .items()
+    .await?;
+for (key, file) in items {
+    let content = file.read().await?;
+    // ...
+}
+```
+
+</Fragment>
+</LangTabs>
+
 ### Filtering files
 
 Use `PatternFilePathMatcher` to filter which objects are included. Patterns are matched against the relative path (after prefix stripping):
+
+{/* Rust: examples/rust/amazon_s3_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import amazon_s3
@@ -118,9 +297,37 @@ async for file in amazon_s3.list_objects(client, "my-bucket", prefix="data/", pa
     process(file)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::resources::file::PatternFilePathMatcher;
+
+let files = amazon_s3::list_objects(
+    ctx.get_key(&S3)?,
+    &bucket,
+    ListOptions {
+        prefix,
+        path_matcher: Some(Arc::new(PatternFilePathMatcher::include(["**/*.md"])?)),
+        ..Default::default()
+    },
+)
+.items()
+.await?;
+```
+
+`PatternFilePathMatcher::new(included, excluded)` takes exclude patterns too.
+
+</Fragment>
+</LangTabs>
+
 ### Limiting file size
 
 Use `max_file_size` to skip objects that exceed a size threshold:
+
+{/* Rust: rust/sdk/cocoindex/tests/amazon_s3_source.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 # Skip objects larger than 10 MB
@@ -128,9 +335,33 @@ async for file in amazon_s3.list_objects(client, "my-bucket", max_file_size=10 *
     process(file)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Skip objects larger than 10 MB
+let small = amazon_s3::list_objects(
+    &client,
+    "my-bucket",
+    ListOptions {
+        max_file_size: Some(10 * 1024 * 1024),
+        ..Default::default()
+    },
+)
+.list()
+.await?;
+```
+
+</Fragment>
+</LangTabs>
+
 ### get_object
 
 Fetch a single object from an S3 bucket by its key.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/amazon_s3.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async def get_object(
@@ -140,15 +371,43 @@ async def get_object(
 ) -> S3File
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub async fn S3Client::get_object(&self, bucket: &str, key: &str) -> Result<S3File>
+pub async fn S3Client::get_object_uri(&self, uri: &str) -> Result<S3File>
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 **Parameters:**
 
 - `client` — An aiobotocore S3 client.
 - `bucket_name_or_uri` — Either a full S3 URI (`s3://bucket/key`) or the bucket name when `key` is supplied separately.
 - `key` — The full S3 object key. Required when `bucket_name_or_uri` is a bucket name; must be omitted when a URI is given.
 
-**Returns:** An `S3File` (FileLike) for the specified object.
+</Lang>
+
+<Lang only="rust">
+
+**Parameters:**
+
+- `bucket`, `key` — The bucket name and the full S3 object key, for `get_object`.
+- `uri` — A full S3 URI (`s3://bucket/key`), for `get_object_uri`.
+
+</Lang>
+
+**Returns:** An `S3File` (FileLike) for the specified object. Its relative path is the full key. It is an error if the object does not exist.
 
 **Example:**
+
+{/* Rust: rust/sdk/cocoindex/tests/amazon_s3_source.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import aiobotocore.session
@@ -165,9 +424,29 @@ async with session.create_client("s3") as client:
     data = await f.read()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+// Via S3 URI:
+let f = client.get_object_uri("s3://my-bucket/data/config.json").await?;
+let data = client.read(&f).await?;
+
+// Via bucket name + key:
+let f = client.get_object("my-bucket", "data/config.json").await?;
+let data = f.read().await?;
+```
+
+</Fragment>
+</LangTabs>
+
 ### read
 
-Read object content directly from an S3 URI, without fetching metadata first.
+<Lang only="python">Read object content directly from an S3 URI, without fetching metadata first.</Lang><Lang only="rust">Read an object's content through the client.</Lang>
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/amazon_s3.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async def read(
@@ -177,6 +456,26 @@ async def read(
 ) -> bytes
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub async fn S3Client::read(&self, file: &S3File) -> Result<Vec<u8>>
+pub async fn S3Client::read_range(&self, file: &S3File, len: u64) -> Result<Vec<u8>>
+pub async fn S3Client::read_text(&self, file: &S3File) -> Result<String>
+```
+
+`read_range` reads the first `len` bytes with a ranged request. `read_text` decodes the content as UTF-8 (BOM-aware, lossy on invalid UTF-8).
+
+</Fragment>
+</LangTabs>
+
+<RustNote>
+The client reads an `S3File`, not a URI: get the file with `get_object_uri` first, which costs one metadata request.
+</RustNote>
+
+<Lang only="python">
+
 **Parameters:**
 
 - `client` — An aiobotocore S3 client.
@@ -185,16 +484,36 @@ async def read(
 
 **Returns:** The object content as bytes.
 
+</Lang>
+
 **Example:**
+
+{/* Rust: rust/sdk/cocoindex/tests/amazon_s3_source.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async with session.create_client("s3") as client:
     data = await amazon_s3.read(client, "s3://my-bucket/data/config.json")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let f = client.get_object_uri("s3://my-bucket/data/config.json").await?;
+let data = client.read(&f).await?;
+let head = client.read_range(&f, 3).await?;
+```
+
+</Fragment>
+</LangTabs>
+
 ### S3FilePath
 
 Each file returned by the connector has an `S3FilePath` — a [`FilePath`](../common_resources/data_types#filepath) specialized for S3:
+
+<Lang only="python">
 
 - **Relative path** (`file.file_path.path`) — The object key relative to the walker prefix (or the full key if no prefix was used).
 - **Resolved path** (`file.file_path.resolve()`) — The full S3 object key.
@@ -206,7 +525,32 @@ For example, with `prefix="data/"` and an object key `"data/docs/readme.md"`:
 
 A derived path (`parent`, `/`, `with_name()`, `with_suffix()`) resolves to the object key of the new path in the same folder: `file.file_path.with_suffix(".txt").resolve()` → `"data/docs/readme.txt"`.
 
+</Lang>
+
+<Lang only="rust">
+
+- **Relative path** (`file.file_path().path()`, a `&str`) — The object key relative to the walker prefix (or the full key if no prefix was used). `file.key()` returns it as a `String`, the key for `mount_each!`.
+- **Resolved path** (`file.file_path().resolve()`) — The full S3 object key.
+- **Bucket** (`file.file_path().bucket()`).
+- **Identity** — The memo key is the bucket and the relative key.
+
+For example, with `prefix: "data/"` and an object key `"data/docs/readme.md"`:
+- `file.file_path().path()` → `"docs/readme.md"`
+- `file.file_path().resolve()` → `"data/docs/readme.md"`
+
+`S3File` has the public fields `size`, `modified_secs` and `etag`, plus `key()`, `read()`, `read_size(n)` and `read_text()`; it implements `FileLike` and `MemoInput`. Its memo key holds only stable metadata (the path, size, modified time and ETag), never the client.
+
+</Lang>
+
+<RustNote>
+`S3FilePath` has no derived-path methods (`parent`, `/`, `with_name()`, `with_suffix()`).
+</RustNote>
+
 ### Example
+
+{/* Rust: examples/rust/amazon_s3_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import aiobotocore.session
@@ -237,3 +581,45 @@ async def process_file(file: FileLike[str]) -> None:
     text = await file.read_text()
     # ... process the file content ...
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::sync::Arc;
+
+use cocoindex::connectors::amazon_s3::{self, ListOptions, S3Client, S3File};
+use cocoindex::prelude::*;
+use cocoindex::resources::file::PatternFilePathMatcher;
+
+cocoindex::context_key!(static S3: S3Client);
+
+#[cocoindex::function(memo)]
+async fn process_file(_ctx: &Ctx, file: S3File) -> Result<()> {
+    let text = file.read_text().await?;
+    // ... process the file content ...
+    Ok(())
+}
+
+async fn app_main(ctx: Ctx, bucket: String, prefix: String) -> Result<()> {
+    let files = amazon_s3::list_objects(
+        ctx.get_key(&S3)?,
+        &bucket,
+        ListOptions {
+            prefix,
+            path_matcher: Some(Arc::new(PatternFilePathMatcher::include(["**/*.md"])?)),
+            ..Default::default()
+        },
+    )
+    .items()
+    .await?;
+
+    mount_each!(files, |file| process_file(ctx, file)).await?;
+    Ok(())
+}
+```
+
+The full program, which chunks and embeds each object into Postgres, is `examples/rust/amazon_s3_embedding`.
+
+</Fragment>
+</LangTabs>

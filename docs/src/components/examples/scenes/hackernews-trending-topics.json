@@ -1,0 +1,10 @@
+{
+  "alt": "The latest HackerNews stories and their comment threads come in from the Algolia HN API; an LLM call through litellm turns each message into normalized topics (\"books for autistic kids\" becomes book, autistic and autistic kids), the topics are stored in the hn_topics and hn_messages tables in Postgres, and python main.py prints a ranked list of trending topics; a new story adds only its own rows.",
+  "needs": ["Docker (for Postgres)", "Python 3.11+", "GEMINI_API_KEY (or LLM_MODEL with its provider key)"],
+  "run": [
+    { "note": "Start Postgres", "cmd": "docker compose -f ../../dev/postgres.yaml up -d" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Fetch the latest threads and extract topics", "cmd": "cocoindex update main" },
+    { "note": "Show the top trending topics", "cmd": "python main.py" }
+  ]
+}

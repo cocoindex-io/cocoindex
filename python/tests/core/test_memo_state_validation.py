@@ -866,3 +866,99 @@ def test_recollect_after_run_rejected_for_component() -> None:
     _versions["x"] = 2
     with pytest.raises(Exception, match="recollect_after_run"):
         app.update_blocking()
+
+
+# ============================================================================
+# State changed, still reusable → the refreshed entry keeps its target states
+# and the entries it depends on across the commit
+# ============================================================================
+
+
+@dataclass
+class RefreshEntry:
+    """Key stays put; the state moves on every run but stays valid."""
+
+    name: str
+    state_value: int
+    content: str
+
+    def __coco_memo_key__(self) -> object:
+        return self.name
+
+    def __coco_memo_state__(self, prev_state: Any) -> coco.MemoStateOutcome:
+        return coco.MemoStateOutcome(
+            state=self.state_value, memo_valid=not coco.is_non_existence(prev_state)
+        )
+
+
+_refresh_data: dict[str, RefreshEntry] = {}
+_refresh_cfg = {"salt": 0}
+
+
+@coco.fn(memo=True)
+def _declare_refresh_inner(entry: RefreshEntry) -> None:
+    _metrics.increment("call.refresh_inner")
+    coco.declare_target_state(
+        GlobalDictTarget.target_state(f"{entry.name}/inner", f"inner: {entry.content}")
+    )
+
+
+@coco.fn(memo=True)
+def _declare_refresh_outer(entry: RefreshEntry, salt: int) -> None:
+    _metrics.increment("call.refresh_outer")
+    coco.declare_target_state(
+        GlobalDictTarget.target_state(entry.name, f"outer: {entry.content}")
+    )
+    _declare_refresh_inner(entry)
+
+
+@coco.fn
+def _declare_refresh_data() -> None:
+    for value in _refresh_data.values():
+        _declare_refresh_outer(value, _refresh_cfg["salt"])
+
+
+def test_state_refresh_keeps_targets_and_nested_entries() -> None:
+    GlobalDictTarget.store.clear()
+    _refresh_data.clear()
+    _metrics.clear()
+    _refresh_cfg["salt"] = 0
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_state_refresh_keeps_targets_and_nested_entries",
+            environment=coco_env,
+        ),
+        _declare_refresh_data,
+    )
+
+    # Run 1: cache miss — outer and inner execute and declare their targets.
+    _refresh_data["A"] = RefreshEntry(name="A", state_value=1, content="c1")
+    app.update_blocking()
+    assert _metrics.collect() == {"call.refresh_outer": 1, "call.refresh_inner": 1}
+    expected = {
+        "A": DictDataWithPrev(data="outer: c1", prev=[], prev_may_be_missing=True),
+        "A/inner": DictDataWithPrev(
+            data="inner: c1", prev=[], prev_may_be_missing=True
+        ),
+    }
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 2: the state moved (1 → 2) but stays valid, so outer's entry is
+    # refreshed without running. Its target states, and inner's, must survive
+    # the commit: the refreshed entry still carries them over.
+    _refresh_data["A"] = RefreshEntry(name="A", state_value=2, content="c1")
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == expected
+
+    # Run 3: outer's key moves (salt) so its body runs and probes inner. The
+    # nested entry survived run 2's flush, so inner hits (state 2 → 3, valid).
+    _refresh_cfg["salt"] = 1
+    _refresh_data["A"] = RefreshEntry(name="A", state_value=3, content="c1")
+    app.update_blocking()
+    assert _metrics.collect() == {"call.refresh_outer": 1}
+    assert {k: v.data for k, v in GlobalDictTarget.store.data.items()} == {
+        "A": "outer: c1",
+        "A/inner": "inner: c1",
+    }

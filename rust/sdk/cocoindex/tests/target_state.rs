@@ -1143,6 +1143,48 @@ async fn attachment_lifecycle_create_and_cleanup() {
     assert_eq!(drain_sorted(&att_log), vec!["delete idx"]);
 }
 
+/// Within one component's commit, the sink of an attachment (an index over
+/// rows, which may need the rows to build) applies after the sink of the
+/// target states it is attached to. Sink order is otherwise unspecified, so
+/// several runs make an unordered apply fail almost surely.
+#[tokio::test]
+async fn attachment_sinks_apply_after_their_parents_sink() {
+    let (app, _dir) = temp_app("attachment_order").await;
+    for run in 0..8 {
+        let log = new_log();
+        let run_log = log.clone();
+        app.update(move |ctx| {
+            let log = run_log.clone();
+            async move {
+                let provider = register_root_target_states_provider(
+                    &ctx,
+                    "test/ordered_main",
+                    MainHandler {
+                        sink: recording_sink(log.clone()),
+                        att_log: log,
+                    },
+                )?;
+                declare_target_state(&ctx, provider.target_state("row", format!("v{run}")))?;
+                let att: TargetStateProvider<String> = provider.attachment(&ctx, "index")?;
+                declare_target_state(&ctx, att.target_state("idx", format!("spec{run}")))?;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        let entries = std::mem::take(&mut *log.lock().unwrap());
+        let verb = if run == 0 { "create" } else { "update" };
+        assert_eq!(
+            entries,
+            vec![
+                format!("{verb} row=v{run}"),
+                format!("{verb} idx=spec{run}")
+            ],
+            "run {run}"
+        );
+    }
+}
+
 /// A main handler exposing two independent attachment types ("index", "tags").
 struct MultiAttachHandler {
     sink: TargetActionSink<RowAction>,

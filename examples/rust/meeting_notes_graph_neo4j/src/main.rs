@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use chrono::NaiveDate;
-use cocoindex::connectors::neo4j::{self, ColumnDef, TableSchema};
+use cocoindex::connectors::neo4j::{self, TableSchema};
 use cocoindex::prelude::*;
 use cocoindex::resources::fs;
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 // graph's stable identity in the target states.
 cocoindex::context_key!(static GRAPH: neo4j::Graph);
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::SchemaFields)]
 struct Meeting {
     id: i64,
     note_file: String,
@@ -19,12 +19,12 @@ struct Meeting {
     note: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::SchemaFields)]
 struct Person {
     name: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, cocoindex::SchemaFields)]
 struct Task {
     description: String,
 }
@@ -55,15 +55,6 @@ struct MeetingExtraction {
     organizer: String,
     participants: Vec<String>,
     task_assignees: Vec<(String, Vec<String>)>,
-}
-
-fn schema(columns: &[(&str, &str)], primary_key: &str) -> Result<TableSchema> {
-    TableSchema::new(
-        columns
-            .iter()
-            .map(|(name, ty)| ((*name).to_string(), ColumnDef::new(*ty))),
-        primary_key,
-    )
 }
 
 fn split_meetings(text: &str) -> Vec<String> {
@@ -158,35 +149,29 @@ fn canonical_person(name: &str) -> String {
 }
 
 async fn build_graph(ctx: &Ctx, input_dir: &str) -> Result<()> {
+    // Node table schemas are derived from the row structs.
     let meeting_table = neo4j::mount_table_target(
         ctx,
         &GRAPH,
         "Meeting",
-        schema(
-            &[
-                ("id", "INTEGER"),
-                ("note_file", "STRING"),
-                ("time", "DATE"),
-                ("note", "STRING"),
-            ],
-            "id",
-        )?,
+        TableSchema::from_row::<Meeting>("id")?,
     )
     .await?;
     let person_table = neo4j::mount_table_target(
         ctx,
         &GRAPH,
         "Person",
-        schema(&[("name", "STRING")], "name")?,
+        TableSchema::from_row::<Person>("name")?,
     )
     .await?;
     let task_table = neo4j::mount_table_target(
         ctx,
         &GRAPH,
         "Task",
-        schema(&[("description", "STRING")], "description")?,
+        TableSchema::from_row::<Task>("description")?,
     )
     .await?;
+    // Relations are schemaless: their ids are derived from the endpoints.
     let attended_rel =
         neo4j::mount_relation_target(ctx, &GRAPH, "ATTENDED", &person_table, &meeting_table)
             .await?;
@@ -199,7 +184,7 @@ async fn build_graph(ctx: &Ctx, input_dir: &str) -> Result<()> {
     let files = fs::walk(input_dir, &["**/*.md"])?;
     let mut meetings = Vec::new();
     let mut canonical_people = BTreeSet::new();
-    let mut id_gen = IdGenerator::new();
+    let id_gen = IdGenerator::new();
 
     for file in files {
         let note_file = file.relative_path().to_string_lossy().to_string();
@@ -295,8 +280,8 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| format!("{}/input", env!("CARGO_MANIFEST_DIR")));
     let uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
     let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
-    let password = std::env::var("NEO4J_PASSWORD")
-        .map_err(|_| Error::engine("NEO4J_PASSWORD is not set"))?;
+    let password =
+        std::env::var("NEO4J_PASSWORD").map_err(|_| Error::engine("NEO4J_PASSWORD is not set"))?;
     let database = std::env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".to_string());
     let graph = neo4j::Graph::connect(&uri, &user, &password, &database).await?;
     let app = Environment::builder()

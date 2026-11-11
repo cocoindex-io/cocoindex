@@ -1,0 +1,11 @@
+INVOICE 1041
+Vendor: Northwind Paper Co.
+Date: 2026-09-03
+Due: 2026-10-03
+Items:
+  - A4 paper, 20 boxes @ 24.00 = 480.00
+  - Toner, 2 @ 65.00 = 130.00
+Subtotal: 610.00
+Tax (8%): 48.80
+Total: 658.80 USD
+Status: paid

@@ -137,11 +137,11 @@ impl S3File {
         &self.file_path
     }
 
-    pub async fn read(&self) -> Result<Vec<u8>> {
+    pub async fn read(&self) -> Result<bytes::Bytes> {
         <Self as FileLike>::read(self).await
     }
 
-    pub async fn read_size(&self, size: usize) -> Result<Vec<u8>> {
+    pub async fn read_size(&self, size: usize) -> Result<bytes::Bytes> {
         <Self as FileLike>::read_size(self, size).await
     }
 
@@ -239,6 +239,15 @@ fn etag_fingerprint(etag: Option<&str>) -> Option<Fingerprint> {
 pub struct S3Client {
     inner: Arc<Client>,
     state_id: Arc<str>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for S3Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Client")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl S3Client {

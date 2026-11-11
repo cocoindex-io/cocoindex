@@ -1,0 +1,9 @@
+{
+  "alt": "A page of the sample PDF pdf_files/1706.03762v7.pdf (\"Attention Is All You Need\", its authors and abstract) is converted by docling's DocumentConverter into out/1706.03762v7.md, with the title, Abstract and 1 Introduction as Markdown headings; re-running after adding a PDF converts only the new file and skips the unchanged one.",
+  "needs": ["Python 3.11+"],
+  "run": [
+    { "note": "Install", "cmd": "pip install -e ." },
+    { "note": "Convert pdf_files/ into out/", "cmd": "cocoindex update main" },
+    { "note": "See the Markdown", "cmd": "ls out/ && head -40 out/1706.03762v7.md" }
+  ]
+}

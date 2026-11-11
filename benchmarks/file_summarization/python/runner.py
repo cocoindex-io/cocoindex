@@ -21,9 +21,13 @@ from common import (
 PY_DIR = Path(__file__).resolve().parent
 BENCH_ROOT = PY_DIR.parent
 RUST_MANIFEST = BENCH_ROOT / "rust" / "Cargo.toml"
-RUST_BIN = BENCH_ROOT / "rust" / "target" / "release" / "file_summarization"
+RUST_BIN = (
+    Path(os.environ.get("CARGO_TARGET_DIR", BENCH_ROOT / "rust" / "target"))
+    / "release"
+    / "file_summarization"
+)
 PYTHON_BIN = PY_DIR / "benchmark.py"
-WORK_ROOT = BENCH_ROOT / ".work"
+WORK_ROOT = Path(os.environ.get("BENCH_WORK_DIR", BENCH_ROOT / ".work"))
 PHASES = ("cold", "warm", "edit", "shape")
 
 

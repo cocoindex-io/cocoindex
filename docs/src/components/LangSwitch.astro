@@ -1,0 +1,83 @@
+---
+// Python | Rust switch at the top of the sidebar (and in the mobile sheet).
+// Each side is a plain link to the same page in that language's tree
+// (/docs/<slug>/ ⇄ /docs/rust/<slug>/), or to its counterpart, section index
+// or tree root when the page has no copy there. The click also stores the
+// choice for the docs home; nothing redirects on its own, so a shared link
+// always opens the language in its path.
+import { LANGS, LANG_LABEL, pageRegistry, type Lang } from '../lib/lang';
+
+interface Props {
+  lang: Lang;
+  /** Route of the current page; '' for a tree's root. */
+  route: string;
+}
+const { lang, route } = Astro.props;
+const reg = await pageRegistry();
+const links = LANGS.map((l) => ({
+  lang: l,
+  label: LANG_LABEL[l],
+  href: l === lang ? undefined : reg.switchTarget(lang, route, l),
+}));
+---
+
+<nav class="lang-switch" aria-label="SDK language">
+  {links.map((l) =>
+    l.href ? (
+      <a class="lang-opt" href={l.href} data-lang-choice={l.lang} hreflang="en">
+        <span class={`lang-dot ${l.lang}`} aria-hidden="true"></span>{l.label}
+      </a>
+    ) : (
+      <span class="lang-opt on" aria-current="true">
+        <span class={`lang-dot ${l.lang}`} aria-hidden="true"></span>{l.label}
+      </span>
+    ),
+  )}
+</nav>
+
+<script>
+  for (const a of document.querySelectorAll<HTMLAnchorElement>('[data-lang-choice]')) {
+    a.addEventListener('click', () => {
+      try {
+        localStorage.setItem('coco-docs-lang', a.dataset.langChoice ?? '');
+      } catch {
+        // Private mode or a full store: the link still navigates.
+      }
+    });
+  }
+</script>
+
+<style>
+  .lang-switch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+    padding: 3px;
+    margin: 0 0 10px;
+    background: #141414;
+    border: 1px solid var(--rule);
+    border-radius: var(--r-md, 9px);
+  }
+  .lang-opt {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 6px 0;
+    font-family: var(--sans);
+    font-size: 0.8125rem;
+    line-height: 1.2;
+    color: var(--muted);
+    text-decoration: none;
+    border-radius: var(--r-sm, 6px);
+  }
+  a.lang-opt:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+  .lang-opt.on {
+    color: var(--text);
+    background: #262626;
+    box-shadow: inset 0 0 0 1px var(--rule-strong);
+  }
+  .lang-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .lang-dot.python { background: var(--lang-python, #4b8bbe); }
+  .lang-dot.rust { background: var(--lang-rust, #e8743d); }
+</style>

@@ -1,0 +1,153 @@
+---
+// SEC filing hybrid search: the sample data download.py writes (two 10-K text
+// filings, two XBRL company-facts JSON files), the PII scrub and keyword tags
+// main.py applies (topics computed from the sample text; they match the
+// README), the Doris table filing_chunks with its ANN and inverted indexes,
+// and search.py's hybrid query. "AI" drops out of the keyword lane because
+// search.py keeps words of three letters or more. The Apple 10-K is the
+// edited filing (Δ): only its chunk is scrubbed, embedded and tagged again.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="se">
+    <div class="sc-row se-top">
+      <div class="sc-col se-src">
+        <span class="sc-cap">Filings in two formats</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span>data/filings/</div>
+          <div class="sc-panel-b">
+            <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>0000320193_2025-11-01_10-K.txt</span><span class="sc-dmark">Δ</span></div>
+            <div class="sc-li"><span class="sc-ico i-file"></span><span>0000789019_2025-10-15_10-K.txt</span></div>
+          </div>
+        </div>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span>data/company_facts/</div>
+          <div class="sc-panel-b">
+            <div class="sc-li"><span class="sc-ico i-json"></span><span>0000320193.json</span></div>
+            <div class="sc-li"><span class="sc-ico i-json"></span><span>0000789019.json</span></div>
+          </div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col se-doc">
+        <span class="sc-cap">Scrub PII, chunk, embed, tag</span>
+        <div class="sc-panel sc-delta">
+          <div class="sc-panel-h">APPLE INC. FORM 10-K · Item 1A. Risk Factors</div>
+          <div class="sc-panel-b se-text">
+            <p class="sc-quote sc-clip2"><b>Cybersecurity</b> threats are a material risk. A <b>data breach</b> or <b>ransomware</b> attack on our systems could disrupt operations…</p>
+            <p class="sc-quote sc-clip2">Our <b>supply chain</b> is concentrated in a few regions; <b>logistics</b> disruptions or component shortages…</p>
+            <p class="se-pii">Contact for investor relations: <span class="se-red">[EMAIL REDACTED]</span>, <span class="se-red">[PHONE REDACTED]</span>.</p>
+          </div>
+          <div class="se-tags">
+            <span class="sc-chip">RISK:CYBER</span><span class="sc-chip">RISK:CLIMATE</span><span class="sc-chip">RISK:SUPPLY</span><span class="sc-chip">RISK:REGULATORY</span><span class="sc-chip">TOPIC:AI</span>
+          </div>
+        </div>
+        <span class="sc-cap se-fine">PII is removed before chunking, so it never reaches the index.</span>
+      </div>
+    </div>
+
+    <div class="sc-col">
+      <span class="sc-cap">Apache Doris: one table, two indexes</span>
+      <div class="sc-panel">
+        <div class="sc-panel-h"><span class="sc-ico i-table"></span>filing_chunks<span class="se-model">all-MiniLM-L6-v2</span></div>
+        <table class="sc-table">
+          <thead><tr><th>doc_filename</th><th class="se-st">source_type</th><th class="se-tp">topics</th></tr></thead>
+          <tbody>
+            <tr class="sc-delta"><td>0000320193_2025-11-01_10-K.txt</td><td class="se-st">filing</td><td class="se-tp"><span class="sc-dtext">RISK:CYBER, RISK:CLIMATE, RISK:SUPPLY, RISK:REGULATORY, TOPIC:AI</span></td></tr>
+            <tr><td>0000789019_2025-10-15_10-K.txt</td><td class="sc-dim se-st">filing</td><td class="sc-dim se-tp">RISK:CYBER, RISK:REGULATORY, TOPIC:AI, TOPIC:CLOUD</td></tr>
+            <tr><td>0000320193.json</td><td class="sc-dim se-st">facts</td><td class="sc-dim se-tp">TOPIC:FINANCIAL</td></tr>
+            <tr><td>0000789019.json</td><td class="sc-dim se-st">facts</td><td class="sc-dim se-tp">TOPIC:FINANCIAL</td></tr>
+          </tbody>
+        </table>
+        <div class="se-idx">
+          <span class="se-ix"><span class="sc-mono">idx_vec_embedding</span><span class="sc-dim">ANN · l2_distance on embedding</span></span>
+          <span class="se-ix"><span class="sc-mono">idx_inv_text</span><span class="sc-dim">INVERTED · unicode parser on text</span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="se-search">
+      <span class="sc-cap">Hybrid search, fused with reciprocal rank fusion</span>
+      <div class="sc-query"><span class="sc-ico i-search"></span><span>python search.py "cloud computing and AI risk"</span></div>
+      <div class="sc-panel"><div class="se-lanes">
+        <span class="se-ln">Semantic rank</span><code class="se-sql">ROW_NUMBER() OVER (ORDER BY l2_distance(embedding, …))</code>
+        <span class="se-ln">Keyword rank</span><code class="se-sql">CASE WHEN text MATCH_ANY 'cloud computing and risk' …</code>
+        <span class="se-ln se-f">Fused</span><code class="se-sql se-f">1.0/(60 + s.rk) + 1.0/(60 + l.rk) AS rrf</code>
+      </div></div>
+      <div class="sc-panel"><div class="sc-panel-b se-hits">
+        <div class="sc-hit"><span class="r">1</span><span><span class="src">0000789019_2025-10-15_10-K.txt (filing) <span class="se-t">topics=[RISK:CYBER, RISK:REGULATORY, TOPIC:AI, TOPIC:CLOUD]</span></span><span class="sc-quote sc-clip2">Our <b>cloud computing</b> business (Azure) faces intense competition. Outages or a data breach in our cloud services could result in regulatory enforcement…</span></span></div>
+        <div class="sc-hit"><span class="r">2</span><span><span class="src">0000320193_2025-11-01_10-K.txt (filing) <span class="se-t">topics=[RISK:CYBER, RISK:CLIMATE, RISK:SUPPLY, RISK:REGULATORY, TOPIC:AI]</span></span><span class="sc-quote sc-clip2">Cybersecurity threats are a material risk. A data breach or ransomware attack on our systems could disrupt operations…</span></span></div>
+      </div></div>
+    </div>
+  </div>
+) : (
+  <div class="se-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel se-card-doc">
+        <div class="sc-panel-h"><span class="sc-ico i-file"></span>Item 1A. Risk Factors</div>
+        <div class="sc-panel-b">
+          <span class="sc-quote sc-clip2">Our cloud computing business (Azure) faces intense competition.</span>
+          <div class="se-card-tags"><span class="sc-chip">TOPIC:CLOUD</span><span class="sc-chip">TOPIC:AI</span></div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col se-card-q">
+        <div class="sc-query"><span class="sc-ico i-search"></span><span>"cloud computing and AI risk"</span></div>
+        <div class="se-card-lanes"><span class="sc-chip">vector</span><span class="se-plus">+</span><span class="sc-chip">full-text</span><span class="se-plus">→</span><span class="sc-chip is-strong">RRF</span></div>
+        <div class="sc-panel"><div class="sc-panel-b"><span class="sc-li"><span class="se-fn">0000789019_2025-10-15_10-K.txt</span><span class="sc-meta">filing</span></span></div></div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .se { display: flex; flex-direction: column; gap: 18px; }
+  .se-top { gap: 10px; }
+  .se-src { flex: 0.95 1 0; }
+  .se-doc { flex: 1.15 1 0; }
+  .se .sc-li { font-size: 12px; }
+  .se-fine { font-weight: 400; }
+  .se-text { gap: 6px; }
+  .se-text p { margin: 0; }
+  .se-pii { font-family: var(--sans); font-size: 12.5px; line-height: 1.45; color: var(--sc-muted); }
+  .se-red { font-family: var(--mono); font-size: 12px; color: var(--sc-ink); background: #1C1C1C; border: 1px solid var(--sc-line-2); border-radius: 4px; padding: 0 4px; white-space: nowrap; }
+  .se-tags { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 10px 10px; }
+  .se-tags .sc-chip { font-size: 11.5px; padding: 3px 6px; color: var(--sc-delta-text); border-color: var(--sc-delta-line); background: transparent; }
+
+  .se-model { margin-left: auto; padding-left: 8px; font-family: var(--sans); font-size: 11.5px; color: var(--sc-dim); }
+  .se-st { width: 96px; }
+  .se-tp { width: 42%; }
+  .sc-table td.se-tp { white-space: normal; line-height: 1.4; }
+  .se-idx { display: flex; gap: 8px 18px; flex-wrap: wrap; padding: 8px 10px; border-top: 1px solid var(--sc-line); }
+  .se-ix { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; }
+  .se-ix .sc-mono { font-size: 12px; color: var(--sc-ink); }
+
+  .se-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .se-lanes { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 6px 14px; padding: 9px 10px; }
+  .se-ln { font-family: var(--sans); font-size: 12px; color: var(--sc-dim); white-space: nowrap; }
+  .se-sql { display: block; min-width: 0; font-family: var(--mono); font-size: 12px; color: var(--sc-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: none; border: 0; padding: 0; }
+  .se-f { color: var(--sc-ink); }
+  .se-hits { gap: 0; }
+  .se-hits .src { white-space: normal; overflow-wrap: anywhere; }
+  .se-t { margin-left: 6px; color: var(--sc-dim); }
+
+  .se-card { height: 100%; display: flex; align-items: center; }
+  .se-card > .sc-row { width: 100%; }
+  .se-card-doc { flex: 0.9 1 0; contain: inline-size; }
+  .se-card-q { flex: 1.1 1 0; contain: inline-size; }
+  .se-card .sc-quote { font-size: 11px; }
+  .se-card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .se-card-lanes { display: flex; align-items: center; gap: 5px; }
+  .se-card .sc-query { align-items: flex-start; }
+  .se-card .sc-query > span:last-child { white-space: normal; }
+  .se-card .sc-panel .sc-li > span.se-fn { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .se-plus { font-family: var(--mono); font-size: 11px; color: var(--sc-dim); }
+  @container (max-width: 560px) {
+    .se-st, .se-model { display: none; }
+    .se-tp { width: 48%; }
+    .se-ix { flex-direction: column; gap: 0; }
+    .se-lanes { grid-template-columns: minmax(0, 1fr); gap: 1px; }
+    .se-lanes .se-ln:not(:first-child) { margin-top: 6px; }
+  }
+</style>

@@ -1,0 +1,13 @@
+MICROSOFT CORPORATION FORM 10-K ANNUAL REPORT
+
+Item 1A. Risk Factors
+
+Our cloud computing business (Azure) faces intense competition. Outages or a
+data breach in our cloud services could result in regulatory enforcement and
+loss of customer trust.
+
+We are subject to extensive regulation and compliance obligations worldwide;
+changes in regulation could increase costs.
+
+Artificial intelligence is central to our strategy; ethical, legal, and
+cybersecurity risks associated with AI could affect adoption.

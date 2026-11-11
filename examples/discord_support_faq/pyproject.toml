@@ -1,0 +1,15 @@
+[project]
+name = "discord-support-faq-v1"
+version = "0.1.0"
+description = "CocoIndex v1 example: turn Discord support threads into an FAQ, merging questions asked more than once."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[discord,sentence_transformers,entity_resolution_llm]>=1.2.0",
+    "instructor",
+    "litellm!=1.107.0",
+    "pydantic",
+    "python-dotenv>=1.0.1",
+]
+
+[tool.setuptools]
+packages = []

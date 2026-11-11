@@ -306,9 +306,48 @@ async def test_stats_group_report_to_stdout_plain(
     # Give the detached plain reporter a tick to flush its final block.
     await asyncio.sleep(0.2)
     out = capfd.readouterr().out
-    # Title-prefixed header (#3) and an explicit terminated marker (#4).
-    assert "[Stats: Indexing]" in out
-    assert "(terminated)" in out
+    # The group's title starts each status line (#3), and the final block
+    # says it is done (#4).
+    assert "Indexing · Running…" in out or "Indexing · Done in" in out
+    assert "✓ Indexing · Done in" in out
+
+
+@pytest.mark.asyncio
+async def test_a_group_that_succeeds_keeps_the_final_status_green(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    _reset()
+    app = coco.App(
+        coco.AppConfig(name="test_sg_final_status_green", environment=coco_env),
+        _main_report,
+    )
+    await coco.show_progress(app.update())
+    assert "✓ Done in" in capfd.readouterr().out
+
+
+@coco.fn()
+async def _fail_in_group() -> None:
+    raise ValueError("boom")
+
+
+@coco.fn
+async def _main_group_failure() -> None:
+    with coco.stats_group("Indexing"):
+        await coco.mount(coco.component_subpath("m"), _fail_in_group)
+
+
+@pytest.mark.asyncio
+async def test_failure_in_a_group_fails_the_final_status(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    app = coco.App(
+        coco.AppConfig(name="test_sg_final_status", environment=coco_env),
+        _main_group_failure,
+    )
+    await coco.show_progress(app.update())
+    out = capfd.readouterr().out
+    assert "✗ Done in" in out
+    assert "1 failed" in out
 
 
 # --- 11. live member: group readies + splits out, no hang ---
@@ -389,6 +428,5 @@ async def test_stats_group_report_to_stdout_interval(
     await handle.result()
     await asyncio.sleep(0.2)
     out = capfd.readouterr().out
-    # A custom refresh interval still produces the labeled group report.
-    assert "[Stats: Indexing]" in out
-    assert "(terminated)" in out
+    # A custom refresh interval still produces the titled group report.
+    assert "✓ Indexing · Done in" in out

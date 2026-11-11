@@ -1,11 +1,11 @@
-// Remark plugin: wrap every fenced code block in the design-guideline
-// `.code-figure` shell — three "traffic-light" dots on the left of a top
-// bar, optional filename (from ```lang title="..."` metadata) on the right.
-// Renders shiki's <pre> inside so syntax highlighting is unchanged.
+// Remark plugin: wrap every fenced code block in the `.code-figure` shell.
+// A fence with a `title="…"` gets a top bar carrying the file name and the
+// copy button; an untitled fence gets no bar, only the copy button floating
+// in its corner (the language is kept on `data-lang` for styling). Renders
+// shiki's <pre> inside so syntax highlighting is unchanged.
 //
-// Ported verbatim from cocoindex-io.github.io/scripts/remark-code-titles.mjs
-// so docs and blog code blocks share identical markup and can reuse the same
-// `.code-figure` styling.
+// Ported from cocoindex-io.github.io/scripts/remark-code-titles.mjs; the
+// `.code-figure` styling lives in src/styles/site.css §6.
 
 import { visit } from 'unist-util-visit';
 
@@ -18,7 +18,6 @@ const escapeHtml = (s) =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-const DOTS = '<span class="dots"><span></span><span></span><span></span></span>';
 
 // Copy button — plain <button> with two labels; JS swaps visibility on click.
 // Delegation handler lives in the layout/Topbar so a single listener serves
@@ -53,19 +52,14 @@ export default function remarkCodeTitles() {
         }
       }
 
-      const fileSlot = title
-        ? `<span class="file">${escapeHtml(title)}</span>`
-        : node.lang
-          ? `<span class="file">${escapeHtml(node.lang)}</span>`
-          : '<span class="file"></span>';
-
-      // [dots] ................ [copy · file]  — copy reveals on hover and
-      // sits just before the filename so the filename stays rightmost.
+      // Only a real file name earns a bar; the language alone is not a title.
+      const fileSlot = title ? `<span class="file">${escapeHtml(title)}</span>` : '';
       const right = `<div class="right">${COPY_BTN}${fileSlot}</div>`;
+      const lang = node.lang ? ` data-lang="${escapeHtml(node.lang)}"` : '';
 
       const open = {
         type: 'html',
-        value: `<figure class="code-figure"><div class="bar">${DOTS}${right}</div>`,
+        value: `<figure class="code-figure"${lang}><div class="bar">${right}</div>`,
       };
       const close = { type: 'html', value: '</figure>' };
       parent.children.splice(index, 1, open, node, close);

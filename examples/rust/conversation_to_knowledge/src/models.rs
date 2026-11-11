@@ -150,6 +150,31 @@ pub struct ProcessedSession {
 }
 
 // ---------------------------------------------------------------------------
+// Graph rows: each struct is a SurrealDB table's schema (`TableSchema::from_row`)
+// and the record written to it. The record id is passed separately.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Serialize, cocoindex::SchemaFields)]
+pub struct SessionRow {
+    pub youtube_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub transcript: String,
+    pub date: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, cocoindex::SchemaFields)]
+pub struct StatementRow {
+    pub statement: String,
+}
+
+/// A person, tech or org node.
+#[derive(Clone, Debug, Serialize, cocoindex::SchemaFields)]
+pub struct EntityRow {
+    pub name: String,
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

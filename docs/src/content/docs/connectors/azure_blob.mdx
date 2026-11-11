@@ -5,11 +5,31 @@ description: >
   Read blobs from Azure Blob Storage containers with prefix filters, path
   matchers, size limits, and stable AzureBlobFilePath values for memoization.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 The `azure_blob` connector provides utilities for reading blobs from Azure Blob Storage containers.
+
+{/* Rust: examples/rust/azure_blob_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import azure_blob
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::azure_blob::{
+    self, AzureBlobFile, ContainerClient, Credential, ListOptions,
+};
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 :::note[Installation]
 This connector uses the Azure async SDK. Install with:
@@ -19,6 +39,22 @@ pip install cocoindex[azure_blob]
 ```
 :::
 
+</Lang>
+
+<Lang only="rust">
+
+:::note[Installation]
+Enable the `azure_blob` feature of the `cocoindex` crate:
+
+```toml
+cocoindex = { git = "https://github.com/cocoindex-io/cocoindex", features = ["azure_blob"] }
+```
+
+The connector speaks the Blob service REST API directly; it does not depend on an Azure SDK crate.
+:::
+
+</Lang>
+
 ## As source
 
 The connector provides three read helpers:
@@ -27,16 +63,30 @@ The connector provides three read helpers:
 - `get_blob()` fetches a single blob by name.
 - `read()` reads blob content directly by name.
 
+<Lang only="python">
+
 All helpers take an async Azure `ContainerClient`. Create and close the client in your app lifespan.
+
+</Lang>
+
+<Lang only="rust">
+
+All helpers take the connector's own `azure_blob::ContainerClient`, a handle to one container built with `ContainerClient::new(account_url, container_name, credential)`.
+
+</Lang>
 
 ### Connection setup
 
-Use Azure's SDK authentication methods directly. For local development, `DefaultAzureCredential` can use your Azure CLI login:
+<Lang only="python">Use Azure's SDK authentication methods directly. For local development, `DefaultAzureCredential` can use your Azure CLI login:</Lang><Lang only="rust">The `credential` is a `Credential`: an Entra ID token the client gets and renews itself, a SAS token, a storage account access key, or a bearer token you obtained. For local development, `TokenCredential::Default` can use your Azure CLI login:</Lang>
 
 ```bash
 az login
 az account set --subscription "<subscription-name-or-id>"
 ```
+
+{/* Rust: examples/rust/azure_blob_embedding/src/main.rs; rust/sdk/cocoindex/src/connectors/azure_blob.rs (Credential) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from azure.identity.aio import DefaultAzureCredential
@@ -55,7 +105,29 @@ finally:
     await credential.close()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::connectors::azure_blob::{ContainerClient, Credential, TokenCredential};
+
+let client = ContainerClient::new(
+    "https://myaccount.blob.core.windows.net",
+    "docs",
+    Credential::TokenCredential(TokenCredential::Default),
+)?;
+```
+
+`TokenCredential::Default` takes the sources of the Azure SDK's `DefaultAzureCredential` that need no interactive sign-in. It uses the first source that is configured where the process runs, a service principal from `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`, the managed identity of the Azure resource the process runs on, or the account signed in with `az login`. `TokenCredential::ClientSecret { tenant_id, client_id, client_secret }`, `TokenCredential::ManagedIdentity { client_id }` (`None` for the system-assigned identity) and `TokenCredential::AzureCli` name one source. The client gets the token on the first request and renews it shortly before it expires. `Credential::BearerToken` takes an access token for the `https://storage.azure.com/` resource that you obtained yourself, such as the one `az account get-access-token --resource https://storage.azure.com/` prints, and does not renew it.
+
+</Fragment>
+</LangTabs>
+
 To use a SAS token:
+
+{/* Rust: rust/sdk/cocoindex/tests/azure_blob_source.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from azure.storage.blob.aio import ContainerClient
@@ -68,7 +140,27 @@ async with ContainerClient(
     ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let client = ContainerClient::new(
+    "https://myaccount.blob.core.windows.net",
+    "docs",
+    Credential::SasToken(sas_token),
+)?;
+```
+
+The SAS token is the query string Azure generates, with or without the leading `?`.
+
+</Fragment>
+</LangTabs>
+
 To use a storage account access key:
+
+{/* Rust: examples/rust/azure_blob_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from azure.storage.blob.aio import ContainerClient
@@ -81,11 +173,31 @@ async with ContainerClient(
     ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let client = ContainerClient::new(
+    "https://myaccount.blob.core.windows.net",
+    "docs",
+    Credential::AccountKey(account_key),
+)?;
+```
+
+A `ContainerClient` is `Clone` and has no `close()`; declare a key with `cocoindex::context_key!(static CONTAINER: ContainerClient)` and provide the client with `Environment::builder().provide_key(&CONTAINER, client)`. An account URL with a path, such as the Azurite emulator's `http://127.0.0.1:10000/devstoreaccount1`, names the account by the first path segment.
+
+</Fragment>
+</LangTabs>
+
 The identity must have permission to list and read blobs. With Azure role-based access control, `Storage Blob Data Reader` is enough for read-only indexing.
 
 ### list_blobs
 
-List blobs in an Azure Blob Storage container. Returns an `AzureBlobWalker` that supports async iteration.
+List blobs in an Azure Blob Storage container. Returns an `AzureBlobWalker`<Lang only="python"> that supports async iteration</Lang>.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/azure_blob.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 def list_blobs(
@@ -97,18 +209,46 @@ def list_blobs(
 ) -> AzureBlobWalker
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub fn list_blobs(client: &ContainerClient, options: ListOptions) -> AzureBlobWalker
+
+pub struct ListOptions {
+    /// Only list blobs in this folder.
+    pub prefix: String,
+    /// Filter by relative path (after prefix stripping). Defaults to match-all.
+    pub path_matcher: Option<Arc<dyn FilePathMatcher>>,
+    /// Skip blobs larger than this many bytes.
+    pub max_file_size: Option<u64>,
+}
+
+pub async fn AzureBlobWalker::list(&self) -> Result<Vec<AzureBlobFile>>
+pub async fn AzureBlobWalker::items(&self) -> Result<Vec<(String, AzureBlobFile)>>
+```
+
+`ListOptions::default()` lists the whole container. The walker is not an iterator: `list()` returns every matching blob, and `items()` the `(key, file)` pairs for `mount_each!`.
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
-- `container_client` - An async Azure `ContainerClient`.
+- `container_client` - <Lang only="python">An async Azure `ContainerClient`.</Lang><Lang only="rust">The `ContainerClient` (the argument is named `client`).</Lang>
 - `prefix` - Only list blobs in this folder. A prefix names a folder: `"docs"` and `"docs/"` both list the blobs under `docs/`, and neither lists `docsa.md`. The folder is stripped from relative paths in returned files. To select blobs by the start of their name (for example `2024-*.csv`), use `path_matcher`.
 - `path_matcher` - Optional filter for files. Patterns are matched against the relative path after prefix stripping. See [PatternFilePathMatcher](../common_resources/data_types#patternfilepathmatcher).
 - `max_file_size` - Skip blobs larger than this size in bytes.
 
-**Returns:** An `AzureBlobWalker` that can be used with `async for` loops.
+**Returns:** An `AzureBlobWalker` <Lang only="python">that can be used with `async for` loops.</Lang><Lang only="rust">whose `list()` and `items()` list the container once each time you call them.</Lang>
 
 ### Iterating files
 
-`list_blobs()` yields `AzureBlobFile` objects implementing [`FileLike`](../common_resources/data_types#filelike):
+`list_blobs()` <Lang only="python">yields</Lang><Lang only="rust">lists</Lang> `AzureBlobFile` objects implementing [`FileLike`](../common_resources/data_types#filelike):
+
+{/* Rust: rust/sdk/cocoindex/tests/azure_blob_source.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import azure_blob
@@ -118,18 +258,66 @@ async for file in azure_blob.list_blobs(client, prefix="docs/"):
     ...
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let files = azure_blob::list_blobs(
+    client,
+    ListOptions {
+        prefix: "docs/".to_string(),
+        ..Default::default()
+    },
+)
+.list()
+.await?;
+for file in files {
+    let text = file.read_text().await?;
+    // ...
+}
+```
+
+</Fragment>
+</LangTabs>
+
 ### Keyed iteration with `items()`
 
-`AzureBlobWalker.items()` yields `(str, AzureBlobFile)` pairs. The key is the blob name relative to the prefix, exactly as stored. Keys are not normalized, so `a//b.txt` and `a/b.txt` are two items:
+<Lang only="python">`AzureBlobWalker.items()` yields `(str, AzureBlobFile)` pairs.</Lang><Lang only="rust">`AzureBlobWalker::items()` returns `(String, AzureBlobFile)` pairs.</Lang> The key is the blob name relative to the prefix, exactly as stored. Keys are not normalized, so `a//b.txt` and `a/b.txt` are two items:
+
+{/* Rust: rust/sdk/SHOWCASE.md (Azure Blob), verified against rust/sdk/cocoindex/src/connectors/azure_blob.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async for key, file in azure_blob.list_blobs(client, prefix="docs/").items():
     content = await file.read()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let files = azure_blob::list_blobs(
+    &client,
+    ListOptions { prefix: "docs".to_string(), ..Default::default() },
+)
+.items()
+.await?;
+mount_each!(files, |file| index_blob(ctx, file)).await?;
+```
+
+`file.key()` is the same relative blob name.
+
+</Fragment>
+</LangTabs>
+
 ### Filtering files
 
 Use `PatternFilePathMatcher` to include or exclude blobs by glob pattern. Patterns are matched against the relative path after prefix stripping:
+
+{/* Rust: examples/rust/azure_blob_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import azure_blob
@@ -141,18 +329,70 @@ async for file in azure_blob.list_blobs(client, prefix="docs/", path_matcher=mat
     process(file)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::resources::file::PatternFilePathMatcher;
+
+let files = azure_blob::list_blobs(
+    client,
+    ListOptions {
+        prefix,
+        path_matcher: Some(Arc::new(
+            PatternFilePathMatcher::include(["**/*.md"])
+                .map_err(|e| Error::engine(format!("matcher: {e}")))?,
+        )),
+        ..Default::default()
+    },
+)
+.list()
+.await?;
+```
+
+`PatternFilePathMatcher::new(included, excluded)` takes exclude patterns too.
+
+</Fragment>
+</LangTabs>
+
 ### Limiting file size
 
 Use `max_file_size` to skip blobs above a size threshold:
+
+{/* Rust: rust/sdk/cocoindex/tests/azure_blob_source.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async for file in azure_blob.list_blobs(client, max_file_size=10 * 1024 * 1024):
     process(file)
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let small = azure_blob::list_blobs(
+    client,
+    ListOptions {
+        max_file_size: Some(10 * 1024 * 1024),
+        ..Default::default()
+    },
+)
+.list()
+.await?;
+```
+
+</Fragment>
+</LangTabs>
+
 ### get_blob
 
 Fetch a single blob by name.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/azure_blob.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async def get_blob(
@@ -161,14 +401,28 @@ async def get_blob(
 ) -> AzureBlobFile
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub async fn get_blob(client: &ContainerClient, blob_name: &str) -> Result<AzureBlobFile>
+```
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
-- `container_client` - An async Azure `ContainerClient`.
+- `container_client` - <Lang only="python">An async Azure `ContainerClient`.</Lang><Lang only="rust">The `ContainerClient` (the argument is named `client`).</Lang>
 - `blob_name` - The full blob name in the container.
 
 **Returns:** An `AzureBlobFile` for the specified blob.
 
 **Example:**
+
+{/* Rust: rust/sdk/cocoindex/tests/azure_blob_source.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.connectors import azure_blob
@@ -177,9 +431,24 @@ file = await azure_blob.get_blob(client, "docs/readme.md")
 text = await file.read_text()
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let file = azure_blob::get_blob(client, "docs/readme.md").await?;
+let text = file.read_text().await?;
+```
+
+</Fragment>
+</LangTabs>
+
 ### read
 
 Read blob content directly by name, without fetching metadata first.
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/azure_blob.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 async def read(
@@ -189,23 +458,53 @@ async def read(
 ) -> bytes
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+pub async fn read(
+    client: &ContainerClient,
+    blob_name: &str,
+    size: Option<usize>,
+) -> Result<Vec<u8>>
+```
+
+</Fragment>
+</LangTabs>
+
 **Parameters:**
 
-- `container_client` - An async Azure `ContainerClient`.
+- `container_client` - <Lang only="python">An async Azure `ContainerClient`.</Lang><Lang only="rust">The `ContainerClient` (the argument is named `client`).</Lang>
 - `blob_name` - The full blob name in the container.
-- `size` - Number of bytes to read. If `-1`, read the entire blob.
+- `size` - Number of bytes to read. <Lang only="python">If `-1`, read the entire blob.</Lang><Lang only="rust">`None` reads the entire blob.</Lang>
 
 **Returns:** The blob content as bytes.
 
 **Example:**
 
+{/* Rust: rust/sdk/cocoindex/tests/azure_blob_source.rs */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 data = await azure_blob.read(client, "docs/readme.md")
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let data = azure_blob::read(client, "docs/readme.md", None).await?;
+```
+
+</Fragment>
+</LangTabs>
+
 ### AzureBlobFilePath
 
 Each file returned by the connector has an `AzureBlobFilePath`, a [`FilePath`](../common_resources/data_types#filepath) specialized for Azure Blob Storage:
+
+<Lang only="python">
 
 - **Relative path** (`file.file_path.path`) - The blob name relative to the walker prefix, or the full blob name if no prefix was used.
 - **Resolved path** (`file.file_path.resolve()`) - The full blob name in the container.
@@ -218,7 +517,33 @@ For example, with `prefix="docs/"` and blob name `"docs/readme.md"`:
 
 A derived path (`parent`, `/`, `with_name()`, `with_suffix()`) resolves to the blob name of the new path in the same folder: `file.file_path.with_suffix(".txt").resolve()` returns `"docs/readme.txt"`.
 
+</Lang>
+
+<Lang only="rust">
+
+- **Relative path** (`file.file_path().path()`, a `&str`) - The blob name relative to the walker prefix, or the full blob name if no prefix was used. `file.key()` returns it as a `String`, the key for `mount_each!`.
+- **Resolved path** (`file.file_path().resolve()`, also `blob_name()`) - The full blob name in the container.
+- **Account and container** (`account_name()`, `container_name()`).
+- **Identity** - The memo key is `(account_name, container_name, relative_path)`.
+
+For example, with `prefix: "docs/"` and blob name `"docs/readme.md"`:
+
+- `file.file_path().path()` returns `"readme.md"`
+- `file.file_path().resolve()` returns `"docs/readme.md"`
+
+`AzureBlobFile` has the public fields `size`, `modified_secs` and `etag`, plus `key()`, `read()`, `read_size(n)` and `read_text()`; it implements `FileLike` and `MemoInput`. Its memo key holds only stable metadata, never the client.
+
+</Lang>
+
+<RustNote>
+`AzureBlobFilePath` has no derived-path methods (`parent`, `/`, `with_name()`, `with_suffix()`).
+</RustNote>
+
 ### Example
+
+{/* Rust: examples/rust/azure_blob_embedding/src/main.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 import cocoindex as coco
@@ -241,4 +566,51 @@ async def process_file(file: FileLike[str]) -> None:
     # Process the file content.
 ```
 
-See `examples/azure_blob_embedding` for a runnable project.
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use std::sync::Arc;
+
+use cocoindex::connectors::azure_blob::{self, AzureBlobFile, ContainerClient, ListOptions};
+use cocoindex::prelude::*;
+use cocoindex::resources::file::PatternFilePathMatcher;
+
+cocoindex::context_key!(static CONTAINER: ContainerClient);
+
+#[cocoindex::function(memo)]
+async fn process_file(_ctx: &Ctx, file: AzureBlobFile) -> Result<()> {
+    let text = file.read_text().await?;
+    // Process the file content.
+    Ok(())
+}
+
+async fn app_main(ctx: Ctx, prefix: String) -> Result<()> {
+    let client = ctx.get_key(&CONTAINER)?;
+    let files = azure_blob::list_blobs(
+        client,
+        ListOptions {
+            prefix,
+            path_matcher: Some(Arc::new(
+                PatternFilePathMatcher::include(["**/*.md"])
+                    .map_err(|e| Error::engine(format!("matcher: {e}")))?,
+            )),
+            ..Default::default()
+        },
+    )
+    .list()
+    .await?;
+
+    mount_each!(
+        files.into_iter().map(|f| (f.key(), f)),
+        |file| process_file(ctx, file)
+    )
+    .await?;
+    Ok(())
+}
+```
+
+</Fragment>
+</LangTabs>
+
+See <Lang only="python">`examples/azure_blob_embedding`</Lang><Lang only="rust">`examples/rust/azure_blob_embedding`</Lang> for a runnable project.

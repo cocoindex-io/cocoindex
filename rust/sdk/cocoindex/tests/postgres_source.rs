@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::connectors::postgres;
 use cocoindex::{Ctx, Environment, Result};
+use futures::{StreamExt as _, TryStreamExt as _};
 use serde::{Deserialize, Serialize};
 
 cocoindex::context_key!(
@@ -104,7 +105,10 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
 
     // --- T1: typed read returns correct values + types ---
     {
-        let mut rows: Vec<SourceRow> = postgres::read_table(&db, &src_table).await?;
+        let mut rows: Vec<SourceRow> = postgres::read_table(&db, &src_table)
+            .await?
+            .try_collect()
+            .await?;
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].name, "Headphones");
@@ -117,6 +121,8 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
             &src_table,
             postgres::ReadTableOptions::new().columns(["name"]),
         )
+        .await?
+        .try_collect()
         .await?;
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(
@@ -158,6 +164,8 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
             "source_names",
             postgres::ReadTableOptions::new().pg_schema_name(src_schema.clone()),
         )
+        .await?
+        .try_collect()
         .await?;
         assert_eq!(
             rows,
@@ -188,7 +196,11 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
         .execute(db.pool())
         .await
         .map_err(pe)?;
+        // The read starts (the table exists); the unsupported column fails
+        // the stream at its first row.
         let err = postgres::read_table::<serde_json::Value>(&db, &unsupported_table)
+            .await?
+            .try_collect::<Vec<_>>()
             .await
             .unwrap_err();
         assert!(
@@ -238,9 +250,12 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
                             Some(&out_schema_name),
                         )
                         .await?;
-                        let rows: Vec<SourceRow> = postgres::read_table(db, &src_table).await?;
+                        let rows: Vec<SourceRow> = postgres::read_table(db, &src_table)
+                            .await?
+                            .try_collect()
+                            .await?;
                         let outs = ctx
-                            .mount_each(
+                            .use_mount_each(
                                 rows,
                                 |r| format!("{}|{}", r.category, r.name),
                                 |child, r| async move { process(&child, &r).await },
@@ -345,5 +360,159 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
     .execute(db.pool())
     .await
     .map_err(pe)?;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct IdRow {
+    id: i64,
+    v: Option<f64>,
+}
+
+async fn stream_test_table(test: &str) -> Result<Option<(postgres::Database, String, String)>> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres stream test; POSTGRES_URL is not set");
+        return Ok(None);
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_stream_{test}_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+    let pe = |e: sqlx::Error| cocoindex::Error::engine(format!("postgres: {e}"));
+    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+        .execute(db.pool())
+        .await
+        .map_err(pe)?;
+    sqlx::query(&format!(
+        "CREATE TABLE \"{schema}\".\"big\" AS SELECT g::bigint AS id, g::float8 AS v \
+         FROM generate_series(1, 20000) g"
+    ))
+    .execute(db.pool())
+    .await
+    .map_err(pe)?;
+    Ok(Some((db, schema, url)))
+}
+
+/// A stream over a large table reads one snapshot: rows inserted, updated and
+/// deleted by another connection while it reads don't show up in it.
+#[tokio::test]
+async fn read_table_streams_a_snapshot_under_concurrent_writes() -> Result<()> {
+    let Some((db, schema, _)) = stream_test_table("snapshot").await? else {
+        return Ok(());
+    };
+    let pe = |e: sqlx::Error| cocoindex::Error::engine(format!("postgres: {e}"));
+    let mut stream = Box::pin(
+        postgres::read_table_with_options::<IdRow>(
+            &db,
+            "big",
+            postgres::ReadTableOptions::new().pg_schema_name(&schema),
+        )
+        .await?,
+    );
+    let first = stream.try_next().await?.expect("a first row");
+    let mut ids = vec![first.id];
+    let mut sum = first.v.unwrap_or_default();
+    sqlx::raw_sql(&format!(
+        "DELETE FROM \"{schema}\".\"big\" WHERE id % 2 = 0; \
+         UPDATE \"{schema}\".\"big\" SET v = -1; \
+         INSERT INTO \"{schema}\".\"big\" SELECT g, 0 FROM generate_series(20001, 30000) g"
+    ))
+    .execute(db.pool())
+    .await
+    .map_err(pe)?;
+    while let Some(row) = stream.try_next().await? {
+        ids.push(row.id);
+        sum += row.v.unwrap_or_default();
+    }
+    ids.sort_unstable();
+    assert_eq!(ids, (1..=20000).collect::<Vec<i64>>());
+    assert_eq!(sum, (1..=20000).map(|i| i as f64).sum::<f64>());
+    sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(pe)?;
+    Ok(())
+}
+
+/// Dropping a stream part way releases its connection: a pool of one
+/// connection serves the next query, and the next stream, at once.
+#[tokio::test]
+async fn dropping_a_read_stream_releases_its_connection() -> Result<()> {
+    let Some((direct, schema, url)) = stream_test_table("drop").await? else {
+        return Ok(());
+    };
+    let pe = |e: sqlx::Error| cocoindex::Error::engine(format!("postgres: {e}"));
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect(&url)
+        .await
+        .map_err(pe)?;
+    let db = postgres::Database::from_pool("one_connection", pool);
+    for _ in 0..3 {
+        let mut stream = Box::pin(
+            postgres::read_table_with_options::<IdRow>(
+                &db,
+                "big",
+                postgres::ReadTableOptions::new().pg_schema_name(&schema),
+            )
+            .await?,
+        );
+        assert!(stream.try_next().await?.is_some());
+        drop(stream);
+        let one: i32 = sqlx::query_scalar("SELECT 1")
+            .fetch_one(db.pool())
+            .await
+            .map_err(pe)?;
+        assert_eq!(one, 1);
+    }
+    sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .execute(direct.pool())
+        .await
+        .map_err(pe)?;
+    Ok(())
+}
+
+/// A row that doesn't match the row type ends the stream with an error
+/// naming the problem (no panic); the stream yields nothing after it.
+#[tokio::test]
+async fn read_table_reports_rows_that_do_not_match_the_type() -> Result<()> {
+    let Some((db, schema, _)) = stream_test_table("mismatch").await? else {
+        return Ok(());
+    };
+    let pe = |e: sqlx::Error| cocoindex::Error::engine(format!("postgres: {e}"));
+    sqlx::query(&format!(
+        "UPDATE \"{schema}\".\"big\" SET v = 'NaN' WHERE id = 5"
+    ))
+    .execute(db.pool())
+    .await
+    .map_err(pe)?;
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    struct Strict {
+        id: i64,
+        v: f64,
+    }
+    let rows: Vec<Result<Strict>> = postgres::read_table_with_options::<Strict>(
+        &db,
+        "big",
+        postgres::ReadTableOptions::new().pg_schema_name(&schema),
+    )
+    .await?
+    .collect()
+    .await;
+    let errors: Vec<String> = rows
+        .iter()
+        .filter_map(|r| r.as_ref().err().map(ToString::to_string))
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("does not match"), "{}", errors[0]);
+    assert!(rows.last().unwrap().is_err(), "the error ends the stream");
+    sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(pe)?;
     Ok(())
 }

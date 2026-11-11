@@ -4,6 +4,52 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Declarative, incremental data pipelines: declare target states as a function of sources and CocoIndex keeps them in sync with minimal recomputation"
+readme = "README.md"
+repository = "https://github.com/cocoindex-io/cocoindex"
+homepage = "https://cocoindex.io"
+documentation = "https://docs.rs/cocoindex"
+keywords = ["incremental", "etl", "indexing", "pipeline", "embeddings"]
+categories = ["database", "asynchronous", "data-structures"]
+# The crate's own sources and docs. `tests/`, `benches/` and the showcase are
+# left out of the package: the tests need the workspace's fixtures and
+# services, and the benches need `bench-support`.
+include = ["/src", "/README.md", "/Cargo.toml"]
+
+[package.metadata.docs.rs]
+# Every feature whose build needs no network access (docs.rs blocks it). Left
+# out: `fastembed` (the ONNX Runtime binary is downloaded by `ort-sys`' build
+# script), `zvec` (`zvec-rust-sys` downloads the prebuilt `libzvec_c_api`) and
+# `bench-support` (internal hooks). `qdrant` needs `protoc`, which the docs.rs
+# build image ships.
+features = [
+    "fs_live",
+    "text",
+    "code_match",
+    "chrono",
+    "rust_decimal",
+    "embed_api",
+    "postgres",
+    "sqlite",
+    "doris",
+    "surrealdb",
+    "kafka",
+    "iggy",
+    "amazon_s3",
+    "google_drive",
+    "oci_object_storage",
+    "azure_blob",
+    "lancedb",
+    "qdrant",
+    "turbopuffer",
+    "bigquery",
+    "snowflake",
+    "neo4j",
+    "falkordb",
+    "valkey",
+    "testing",
+]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Live LocalFS directory watching (`fs::DirWalker::live`), via the `notify`
@@ -20,17 +66,16 @@ code_match = [
     "dep:cocoindex_ops_text",
 ]
 # Local sentence-transformer embeddings via fastembed (`ops::sentence_transformers`).
-fastembed = ["dep:fastembed"]
+fastembed = ["dep:fastembed", "dep:hf-hub", "dep:ureq"]
 # MemoInput leaves for ecosystem data types. Connector features below depend on
 # these public features rather than duplicating implementation cfg lists.
-serde_json = ["dep:serde_json"]
+# (`serde_json` is always available: the `__coco` CLI protocol needs it.)
 chrono = ["dep:chrono"]
 rust_decimal = ["dep:rust_decimal"]
 # Remote embeddings / transcription over an OpenAI-compatible HTTP API (`ops::api`).
-embed_api = ["serde_json", "dep:reqwest", "reqwest/multipart"]
-postgres = ["serde_json", "dep:sqlx", "chrono", "rust_decimal"]
+embed_api = ["dep:reqwest", "reqwest/multipart"]
+postgres = ["dep:sqlx", "chrono", "rust_decimal"]
 sqlite = [
-    "serde_json",
     "dep:sqlx",
     "sqlx/sqlite",
     "chrono",
@@ -39,7 +84,6 @@ sqlite = [
 # Apache Doris target: MySQL protocol (DDL/DELETE) via sqlx + Stream Load (row
 # ingestion) over HTTP via reqwest.
 doris = [
-    "serde_json",
     "dep:sqlx",
     "sqlx/mysql",
     "dep:reqwest",
@@ -48,36 +92,69 @@ doris = [
     "rust_decimal",
 ]
 surrealdb = [
-    "serde_json",
     "dep:surrealdb",
     "chrono",
     "rust_decimal",
 ]
-kafka = ["dep:rskafka", "dep:crc32fast", "chrono"]
+# SurrealDB's embedded in-memory engine (`Graph::connect("mem://", ..)`), which
+# the SDK's SurrealDB tests run on. It builds the SurrealDB engine itself
+# (`surrealdb-core`), which the WebSocket client alone does not need.
+surrealdb_mem = ["surrealdb", "surrealdb/kv-mem"]
+# Kafka source and target (pure-Rust `rskafka`); TLS via rustls with the
+# Mozilla roots, client-side PEM parsing via `rustls-pki-types`.
+kafka = [
+    "dep:rskafka",
+    "rskafka/transport-tls",
+    "dep:crc32fast",
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:webpki-roots",
+    "chrono",
+]
 iggy = ["dep:iggy"]
 amazon_s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+# Google Drive source: service accounts and a personal account signed in with
+# OAuth (`UserAccount`); `tokio/net` serves the sign-in's loopback redirect.
 google_drive = [
-    "serde_json",
     "dep:reqwest",
     "dep:rsa",
     "dep:sha2",
     "dep:base64",
     "chrono",
+    "tokio/net",
+    "tokio/io-util",
+    "tokio/time",
+    "tokio/macros",
 ]
 # OCI Object Storage source: REST API + RSA-SHA256 HTTP Signature request
 # signing (no official Oracle Rust SDK). Reuses the google_drive crypto/HTTP
 # crates; `chrono/clock` provides the request `date` header + timestamp parsing.
 oci_object_storage = [
-    "serde_json",
     "dep:reqwest",
     "dep:rsa",
+    "dep:pkcs8",
+    "dep:sha1",
     "dep:sha2",
     "dep:base64",
+    "dep:rand",
     "chrono",
     "chrono/clock",
 ]
+# Azure Blob Storage source: Blob service REST API over reqwest, with Shared
+# Key (HMAC-SHA256) request signing, SAS-token or bearer-token auth.
+azure_blob = [
+    "dep:reqwest",
+    "dep:hmac",
+    "dep:sha2",
+    "dep:base64",
+    "dep:quick-xml",
+    "chrono",
+    "chrono/clock",
+    # `TokenCredential::AzureCli` runs `az account get-access-token`.
+    "tokio/process",
+    "tokio/time",
+]
 lancedb = [
-    "serde_json",
     "dep:lancedb",
     "dep:arrow-array",
     "dep:arrow-schema",
@@ -86,27 +163,53 @@ lancedb = [
     "rust_decimal",
 ]
 qdrant = [
-    "serde_json",
     "dep:qdrant-client",
     "chrono",
     "rust_decimal",
 ]
 turbopuffer = [
-    "serde_json",
     "dep:reqwest",
     "chrono",
     "rust_decimal",
 ]
-neo4j = ["serde_json", "dep:neo4rs", "chrono"]
-falkordb = ["serde_json", "dep:redis", "chrono"]
-# Valkey/Redis (RediSearch) vector-search target. Reuses the `redis` crate.
-valkey = ["dep:redis", "serde_json"]
+# Google BigQuery target: v2 REST API over reqwest, with service-account JWT
+# signing (reuses the google_drive crypto crates) or Application Default
+# Credentials.
+bigquery = [
+    "dep:reqwest",
+    "dep:rsa",
+    "dep:sha2",
+    "dep:base64",
+    "chrono",
+    "rust_decimal",
+]
+# Snowflake target: the session + query-request HTTP protocol the official
+# connectors speak (password auth), over reqwest.
+snowflake = [
+    "dep:reqwest",
+    "dep:base64",
+    "chrono",
+    "rust_decimal",
+]
+neo4j = ["dep:neo4rs", "chrono"]
+falkordb = ["dep:redis", "chrono"]
+# Valkey/Redis (RediSearch) vector-search target. Reuses the `redis` crate,
+# with TLS (`ClientConfig::use_tls`, `rediss://` URIs).
+valkey = ["dep:redis", "redis/tokio-native-tls-comp"]
+# Zvec embedded vector-database target, through the `zvec-rust` bindings to the
+# zvec C API. Its build script downloads the prebuilt `libzvec_c_api`.
+zvec = ["dep:zvec-rust", "dep:base64", "chrono", "rust_decimal"]
+# Test helpers (`cocoindex::testing`): an `Environment` on a temporary
+# database path that is removed on drop. Pulls in `tempfile`.
+testing = ["dep:tempfile"]
 # Extra core store hooks for the `state_store_read` bench (its
 # `required-features`). Never enabled by production dependents.
 bench-support = ["cocoindex_core/bench-support"]
 
 [dependencies]
-cocoindex_macros = { path = "../cocoindex_macros" }
+cocoindex_macros = { path = "../cocoindex_macros", version = "0.1.0" }
+# Temporary database directories for `cocoindex::testing` (feature `testing`).
+tempfile = { version = "3", optional = true }
 cocoindex_core = { path = "../../core", package = "cocoindex_core" }
 cocoindex_utils = { path = "../../utils", package = "cocoindex_utils" }
 # Language registry + shared `CodeSource` handle (`ops::text`, `ops::code`).
@@ -118,15 +221,23 @@ cocoindex_code_match = { path = "../../code_match", optional = true }
 # Local sentence-transformer embeddings (`ops::sentence_transformers`); pulls in
 # the ONNX runtime, so it is gated behind the `fastembed` feature.
 fastembed = { version = "4", optional = true }
+# Downloads sentence-transformers ONNX exports that `fastembed`'s registry does
+# not list (`SentenceTransformerEmbedder::load` by Hugging Face repository name).
+# Same crate and version `fastembed` uses for its own downloads.
+hf-hub = { version = "0.4", optional = true, default-features = false, features = ["ureq"] }
+# `hf-hub`'s HTTP client, named only to tell a missing file (an HTTP status)
+# from a failed download in its errors.
+ureq = { version = "2", optional = true, default-features = false }
 thiserror = "2"
 bytes = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
-tokio = { version = "1", features = ["fs", "sync"] }
+# `rt-multi-thread` and `signal` back `#[cocoindex::main]` and the `__coco`
+# protocol child's Ctrl-C handling.
+tokio = { version = "1", features = ["fs", "sync", "time", "rt-multi-thread", "signal"] }
 futures = "0.3"
 tracing = "0.1"
 globset = "0.4"
-walkdir = "2"
 encoding_rs = "0.8"
 async-trait = "0.1"
 # Filesystem watcher for live LocalFS sources (feature `fs_live`).
@@ -136,7 +247,7 @@ rustc-hash = "2.1.1"
 # the engine's logic set at startup so transitive logic-change detection works.
 linkme = "0.3"
 uuid = { workspace = true }
-serde_json = { version = "1", optional = true }
+serde_json = "1"
 sqlx = { version = "0.8", default-features = false, optional = true, features = [
     "runtime-tokio",
     "tls-rustls",
@@ -149,6 +260,11 @@ rskafka = { version = "0.6", default-features = false, optional = true }
 # Key-to-partition hashing for the Kafka target, matching librdkafka's default
 # `consistent_random` partitioner used by the Python connector.
 crc32fast = { version = "1", optional = true }
+# TLS for the Kafka connection (`KafkaTls`): the rustls config rskafka takes,
+# the Mozilla root store, and PEM parsing for a private CA / client certificate.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
+rustls-pki-types = { version = "1", features = ["std"], optional = true }
+webpki-roots = { version = "1", optional = true }
 # Apache Iggy message-streaming target (pure-Rust client; TCP/QUIC/HTTP).
 iggy = { version = "0.10", optional = true }
 # Amazon S3 (and S3-compatible, e.g. MinIO) object source.
@@ -168,7 +284,18 @@ aws-sdk-s3 = { version = "1", optional = true, default-features = false, feature
 reqwest = { version = "0.12", features = ["json"], optional = true }
 rsa = { version = "0.9", features = ["sha2", "pem"], optional = true }
 sha2 = { version = "0.10", optional = true }
+# OCI: pass-phrase-protected PKCS#8 keys (`encryption` on the pkcs8 crate rsa
+# uses), the SHA-1 certificate fingerprint of a federation request, and the
+# session key pair of an instance principal.
+pkcs8 = { version = "0.10", features = ["encryption", "pem"], optional = true }
+sha1 = { version = "0.10", optional = true }
+rand = { version = "0.8", optional = true }
 base64 = { version = "0.22", optional = true }
+# Azure Blob Storage source: Shared Key signing and the List Blobs XML body.
+hmac = { version = "0.12", optional = true }
+quick-xml = { version = "0.42", optional = true, features = ["serialize"] }
+# Zvec target (safe bindings to the zvec C API).
+zvec-rust = { version = "0.8", optional = true }
 # Native LanceDB target (LanceDB core is Rust). Arrow versions track lancedb's.
 lancedb = { version = "0.26", default-features = false, optional = true }
 arrow-array = { version = "57", optional = true }
@@ -196,11 +323,24 @@ glob = "0.3"
 rskafka = { version = "0.6", default-features = false }
 # Hermetic mock HTTP server for the Google Drive source integration test.
 wiremock = "0.6"
+# The Azure Blob source test signs requests itself (Shared Key), to check the
+# connector's signature in its fake Blob service and to load Azurite.
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+httpdate = "1"
+reqwest = "0.12"
 # Generate an ephemeral RSA key for the OCI signing unit test.
 rand = "0.8"
+# The OCI test writes a pass-phrase-protected key.
+pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
 
 [[bench]]
 name = "sdk_microbench"
+harness = false
+
+[[bench]]
+name = "sdk_engine"
 harness = false
 
 [[bench]]
@@ -208,3 +348,33 @@ name = "state_store_read"
 harness = false
 # Run with: cargo bench -p cocoindex --features bench-support
 required-features = ["bench-support"]
+
+[[bench]]
+name = "entity_resolution"
+harness = false
+
+# These tests build their environment with `cocoindex::testing`, so they need
+# the `testing` feature; without it Cargo skips them instead of failing to
+# compile (`cargo check --all-targets` with no features). A self
+# dev-dependency would enable the feature too, but it links the crate twice
+# into its own unit tests and breaks the `linkme` registry (duplicate
+# `COCO_FN_LOGIC`).
+[[test]]
+name = "batching_runner"
+required-features = ["testing"]
+
+[[test]]
+name = "batching_edges"
+required-features = ["testing"]
+
+[[test]]
+name = "deadline"
+required-features = ["testing"]
+
+[[test]]
+name = "detailed_stats"
+required-features = ["testing"]
+
+[[test]]
+name = "mount"
+required-features = ["testing"]
