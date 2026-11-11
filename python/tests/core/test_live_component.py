@@ -10,7 +10,7 @@ import pytest
 import cocoindex as coco
 
 from tests import common
-from tests.common.target_states import GlobalDictTarget, DictDataWithPrev
+from tests.common.target_states import AtMost, GlobalDictTarget, DictDataWithPrev
 
 coco_env = common.create_test_env(__file__)
 
@@ -455,6 +455,224 @@ def test_live_component_incremental_update() -> None:
     assert GlobalDictTarget.store.data["new_key"].data == 99
 
 
+# ----------------------------------------------------------------------------
+# `update()` before any `update_full()`
+#
+# A live component has no Build of its own at mount time, so its existence
+# row is written at mount (`MountLivePending::complete`). Without it, the
+# first `update()` child's eager upsert fills the live component's path in
+# as a Directory, and the parent's commit — seeing Directory -> Component —
+# tombstones every child mounted so far.
+# ----------------------------------------------------------------------------
+
+
+def _stored() -> dict[str, int]:
+    return {k: v.data for k, v in GlobalDictTarget.store.data.items()}
+
+
+class _UpdateOnlyLiveComponent:
+    """LiveComponent that only ever calls `update()`, never `update_full()`.
+
+    The shape of a watch-only feed (e.g. a message-queue source).
+    """
+
+    async def process(self) -> None:
+        pass
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        for key, value in _source_data.items():
+            handle = await operator.update(
+                coco.component_subpath(key), _declare_item, key, value
+            )
+            await handle.ready()
+        await operator.mark_ready()
+
+
+def test_live_component_update_before_any_update_full_keeps_children() -> None:
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _UpdateOnlyLiveComponent)
+
+    app = coco.App(
+        coco.AppConfig(name="test_live_update_only_first_run", environment=coco_env),
+        _main,
+    )
+
+    # Run 1 (live mode): children added by `update()` before any `update_full()`
+    # survive the parent's first commit, and are never deleted along the way.
+    _source_data.update(a=1, b=2)
+    GlobalDictTarget.store.metrics.clear()
+    app.update_blocking(live=True)
+    assert _stored() == {"a": 1, "b": 2}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(2), "upsert": 2}
+
+    # Run 2 (one-shot): only `c` is sent. Without a full scan nothing is
+    # reconciled away, so the earlier children stay.
+    _source_data.clear()
+    _source_data.update(c=3)
+    GlobalDictTarget.store.metrics.clear()
+    app.update_blocking()
+    assert _stored() == {"a": 1, "b": 2, "c": 3}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
+
+
+def test_live_component_update_only_unmounted_on_next_run_is_gcd() -> None:
+    """The row written at mount is what makes the live component discoverable
+    to its parent's reconciliation: when a later run no longer mounts it, the
+    children it added with `update()` are cleaned up along with it."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    mount_live = True
+
+    async def _main() -> None:
+        if mount_live:
+            await coco.mount(coco.component_subpath("live"), _UpdateOnlyLiveComponent)
+
+    app = coco.App(
+        coco.AppConfig(name="test_live_update_only_gc", environment=coco_env),
+        _main,
+    )
+    _source_data.update(a=1, b=2)
+    app.update_blocking(live=True)
+    assert _stored() == {"a": 1, "b": 2}
+
+    mount_live = False
+    GlobalDictTarget.store.metrics.clear()
+    app.update_blocking()
+    assert _stored() == {}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(2), "delete": 2}
+
+
+async def _parent_of_update_only_live() -> None:
+    """Non-live parent that mounts the live component below a Directory
+    segment, i.e. at `/parent/src/live`."""
+    await coco.mount(coco.component_subpath("src", "live"), _UpdateOnlyLiveComponent)
+
+
+def test_live_component_update_only_under_nonroot_parent_and_directory() -> None:
+    """The mount-time write covers the ancestor chain too: `src` as a
+    Directory under the (non-root) parent, then `live` as a Component."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _source_data.update(a=1, b=2)
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("parent"), _parent_of_update_only_live)
+
+    app = coco.App(
+        coco.AppConfig(name="test_live_update_only_nested_path", environment=coco_env),
+        _main,
+    )
+    GlobalDictTarget.store.metrics.clear()
+    app.update_blocking(live=True)
+    assert _stored() == {"a": 1, "b": 2}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(2), "upsert": 2}
+
+
+class _OuterUpdateOnlyWithInnerLive:
+    """Outer live component that never calls `update_full()` and mounts an
+    update-only inner live component via `operator.update(LiveCompClass)`."""
+
+    async def process(self) -> None:
+        pass
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        handle = await operator.update(
+            coco.component_subpath("inner"), _UpdateOnlyLiveComponent
+        )
+        await handle.ready()
+        await operator.mark_ready()
+
+
+def test_live_component_nested_update_only_live_keeps_children() -> None:
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _source_data.update(a=1, b=2)
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("outer"), _OuterUpdateOnlyWithInnerLive)
+
+    app = coco.App(
+        coco.AppConfig(name="test_live_nested_update_only", environment=coco_env),
+        _main,
+    )
+    GlobalDictTarget.store.metrics.clear()
+    app.update_blocking(live=True)
+    assert _stored() == {"a": 1, "b": 2}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(2), "upsert": 2}
+
+
+def test_live_component_update_only_preview_plans_without_applying() -> None:
+    """A preview of an update-only live component plans its children's
+    upserts, applies nothing, and leaves no state behind for the real run."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _source_data.update(a=1, b=2)
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _UpdateOnlyLiveComponent)
+
+    app = coco.App(
+        coco.AppConfig(name="test_live_update_only_preview", environment=coco_env),
+        _main,
+    )
+    GlobalDictTarget.store.metrics.clear()
+    actions = app.update_blocking(preview=True)
+    assert isinstance(actions, list)
+    assert len(actions) == 2
+    assert GlobalDictTarget.store.data == {}
+    assert GlobalDictTarget.store.metrics.collect() == {}
+
+    app.update_blocking()
+    assert _stored() == {"a": 1, "b": 2}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(2), "upsert": 2}
+
+
+class _WatchOnlyFeed:
+    """A `LiveMapFeed` with `watch()` only: the message-queue source shape."""
+
+    async def watch(
+        self, subscriber: coco.LiveMapSubscriber[coco.StableKey, tuple[str, int]]
+    ) -> None:
+        for key, value in _source_data.items():
+            handle = await subscriber.update(key, (key, value))
+            await handle.ready()
+        await subscriber.mark_ready()
+
+
+def _declare_feed_item(item: tuple[str, int]) -> None:
+    coco.declare_target_state(GlobalDictTarget.target_state(item[0], item[1]))
+
+
+def test_mount_each_watch_only_feed_keeps_items_across_runs() -> None:
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _source_data.update(a=1, b=2)
+
+    async def _main() -> None:
+        await coco.mount_each(_declare_feed_item, _WatchOnlyFeed())
+
+    app = coco.App(
+        coco.AppConfig(name="test_mount_each_watch_only_feed", environment=coco_env),
+        _main,
+    )
+    GlobalDictTarget.store.metrics.clear()
+    app.update_blocking(live=True)
+    assert _stored() == {"a": 1, "b": 2}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(2), "upsert": 2}
+
+    # Restart: the feed only delivers `c`. There is no scan to reconcile
+    # against, so the items from the first run stay.
+    _source_data.clear()
+    _source_data.update(c=3)
+    GlobalDictTarget.store.metrics.clear()
+    app.update_blocking(live=True)
+    assert _stored() == {"a": 1, "b": 2, "c": 3}
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": AtMost(1), "upsert": 1}
+
+
 class _IncrementalDeleteDirectLiveComponent:
     """LiveComponent that tests direct deletion via operator.delete().
 
@@ -498,6 +716,51 @@ def test_live_component_incremental_delete_direct() -> None:
     # "a" should remain, "b" should be deleted
     assert "a" in GlobalDictTarget.store.data
     assert "b" not in GlobalDictTarget.store.data
+
+
+class _CreateThenDeleteAtOnceLiveComponent:
+    """Issues an update and a delete of the same new child without awaiting
+    the update first, for many children."""
+
+    async def process(self) -> None:
+        pass
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        handles = []
+        for i in range(50):
+            key = f"tmp{i}"
+            handles.append(
+                await operator.update(
+                    coco.component_subpath(key), _declare_item, key, i
+                )
+            )
+            handles.append(await operator.delete(coco.component_subpath(key)))
+        for handle in handles:
+            await handle.ready()
+        await operator.mark_ready()
+
+
+def test_live_component_delete_right_after_update_leaves_nothing() -> None:
+    """A delete issued while the same child's update is already running wins:
+    the update's target state does not survive it."""
+    GlobalDictTarget.store.clear()
+
+    async def _main() -> None:
+        await coco.mount(
+            coco.component_subpath("live"), _CreateThenDeleteAtOnceLiveComponent
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_live_delete_right_after_update", environment=coco_env
+        ),
+        _main,
+    )
+    app.update_blocking(live=True)
+
+    survivors = [k for k in GlobalDictTarget.store.data if str(k).startswith("tmp")]
+    assert survivors == []
 
 
 class _DeleteOnRequestLiveComponent:

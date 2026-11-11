@@ -16,7 +16,7 @@ Everything else stays the same: ordinary `async` Python and your own types, with
 
 ## Flow overview
 
-![CocoIndex flow: read Markdown, split into chunks, embed each chunk, and upsert the vectors into a Turbopuffer namespace](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-turbopuffer/flow-v1.svg)
+![CocoIndex flow: read Markdown, split into chunks, embed each chunk, and upsert the vectors into a Turbopuffer namespace](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-turbopuffer/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -26,7 +26,7 @@ From a high level, these are the steps:
 
 You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
-For the chunk-and-embed half of the pipeline — `process_file`, `RecursiveSplitter`, and `SentenceTransformerEmbedder` — read the [base walkthrough](/docs/examples/text-embedding/). Here we focus on the one part that differs: the Turbopuffer target.
+For the chunk-and-embed half of the pipeline (`process_file`, `RecursiveSplitter`, and `SentenceTransformerEmbedder`) read the [base walkthrough](/docs/examples/text-embedding/). Here we focus on the one part that differs: the Turbopuffer target.
 
 ## Set up the Turbopuffer client
 
@@ -149,4 +149,4 @@ The same machinery covers **logic** changes: tune the chunk size or swap the emb
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/text_embedding_turbopuffer](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_turbopuffer). To swap the store for self-hosted Postgres instead, see the [base Semantic Search 101 example](/docs/examples/text-embedding/). Questions? Come say hi in our [Discord](https://discord.com/invite/zpA9S2DR7s), and if this helped, a [star on GitHub](https://github.com/cocoindex-io/cocoindex) goes a long way.
+The full, runnable example is in the CocoIndex repo: [examples/text_embedding_turbopuffer](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_turbopuffer). To swap the store for self-hosted Postgres instead, see the [base Semantic Search 101 example](/docs/examples/text-embedding/).

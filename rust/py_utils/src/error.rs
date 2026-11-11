@@ -1,4 +1,4 @@
-use cocoindex_utils::error::{CError, CResult};
+use cocoindex_utils::error::{CError, CResult, ClientErrorKind};
 use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule, PyString};
@@ -6,6 +6,9 @@ use std::any::Any;
 use std::fmt::{Debug, Display};
 
 pyo3::create_exception!(cocoindex_py_utils, DeadlineExceededError, PyTimeoutError);
+// A `ValueError` subclass: every existing `except ValueError` keeps catching
+// it, and a caller that cares can branch on the type instead of the text.
+pyo3::create_exception!(cocoindex_py_utils, AlreadyDeclaredError, PyValueError);
 
 pub struct PythonExecutionContext {
     pub event_loop: Py<PyAny>,
@@ -90,7 +93,8 @@ impl cocoindex_utils::error::HostError for HostedPyErr {
 /// Tunneled Python exceptions (`HostedPyErr`) pass through as the original
 /// object, including type, traceback and `__cause__`. Engine-native errors
 /// map to `asyncio.CancelledError` / `DeadlineExceededError` / `ValueError`
-/// (client) / `RuntimeError` (internal).
+/// (client; `AlreadyDeclaredError` for a second declaration within one run) /
+/// `RuntimeError` (internal).
 pub fn cerror_to_pyerr(err: CError) -> PyErr {
     let inner = err.without_contexts();
     if let CError::HostLang(host_err) = inner {
@@ -128,8 +132,11 @@ pub fn cerror_to_pyerr(err: CError) -> PyErr {
     if err.is_deadline_exceeded() {
         return DeadlineExceededError::new_err(format!("{}", err));
     }
-    if let CError::Client { .. } = inner {
-        return PyValueError::new_err(format!("{}", err));
+    if let CError::Client { kind, .. } = inner {
+        return match kind {
+            ClientErrorKind::AlreadyDeclared => AlreadyDeclaredError::new_err(format!("{}", err)),
+            ClientErrorKind::Generic => PyValueError::new_err(format!("{}", err)),
+        };
     }
     PyRuntimeError::new_err(format!("{}", err))
 }
@@ -138,6 +145,10 @@ pub fn add_error_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "DeadlineExceededError",
         m.py().get_type::<DeadlineExceededError>(),
+    )?;
+    m.add(
+        "AlreadyDeclaredError",
+        m.py().get_type::<AlreadyDeclaredError>(),
     )
 }
 

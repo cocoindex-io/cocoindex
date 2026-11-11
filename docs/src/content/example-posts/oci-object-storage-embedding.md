@@ -14,7 +14,7 @@ This is the [Semantic Search 101](/docs/examples/text-embedding/) example with e
 
 ## Flow overview
 
-![CocoIndex OCI Object Storage flow: list Markdown objects from a bucket, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/oci-object-storage-embedding/flow-v1.svg)
+![CocoIndex OCI Object Storage flow: list Markdown objects from a bucket, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/oci-object-storage-embedding/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -49,7 +49,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
         yield
 ```
 
-Everything downstream of this — `DocEmbedding`, `process_file`, `process_chunk` — is the same chunk-and-embed code as the [base example](/docs/examples/text-embedding/), so we won't repeat it here. The one small difference is the source type: `process_file` takes an `oci_object_storage.OCIFile` and reads its text with `await file.read_text()`, just like the local `FileLike`.
+Everything downstream of this (`DocEmbedding`, `process_file`, `process_chunk`) is the same chunk-and-embed code as the [base example](/docs/examples/text-embedding/), so we won't repeat it here. The one small difference is the source type: `process_file` takes an `oci_object_storage.OCIFile` and reads its text with `await file.read_text()`, just like the local `FileLike`.
 
 ## List objects from the bucket
 
@@ -158,5 +158,3 @@ In catch-up mode CocoIndex discovers these by re-scanning the bucket; in live mo
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/oci_object_storage_embedding](https://github.com/cocoindex-io/cocoindex/tree/main/examples/oci_object_storage_embedding). If you're starting from a local folder instead of a bucket, [Semantic Search 101](/docs/examples/text-embedding/) is the same flow on the local filesystem.
-
-If this helped, [give CocoIndex a star on GitHub](https://github.com/cocoindex-io/cocoindex) and come say hi on [Discord](https://discord.com/invite/zpA9S2DR7s).

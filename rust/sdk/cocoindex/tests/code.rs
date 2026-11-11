@@ -10,7 +10,10 @@
 //! compile this file with `unresolved import cocoindex::ops::code`.
 #![cfg(feature = "code_match")]
 
-use cocoindex::ops::code::{CodeAst, CodePattern, FileMatch, index_terms, match_code};
+use cocoindex::ops::code::{
+    CodeAst, CodePattern, FileMatch, index_terms, match_code, render_match,
+};
+use cocoindex::{SegmentKind, SourceView};
 
 // ─── match_code (one-shot free function) ────────────────────────────────────
 
@@ -476,4 +479,90 @@ fn file_match_ast_can_split_and_index() {
     let terms = fm.ast.index_terms(3);
     assert!(terms.contains(&"add".to_string()), "terms: {terms:?}");
     assert!(terms.contains(&"mul".to_string()), "terms: {terms:?}");
+}
+
+// ─── render_match ────────────────────────────────────────────────────────────
+
+const NESTED_PY: &str = "class Greeter:\n    def greet(self, name):\n        prefix = \"hi\"\n        return prefix + name\n";
+
+fn text_of(view: &SourceView, seg_index: usize) -> &str {
+    let seg = &view.segments[seg_index];
+    let start = view
+        .text
+        .char_indices()
+        .nth(seg.rendered_start)
+        .map_or(view.text.len(), |(i, _)| i);
+    let end = view
+        .text
+        .char_indices()
+        .nth(seg.rendered_end)
+        .map_or(view.text.len(), |(i, _)| i);
+    &view.text[start..end]
+}
+
+#[test]
+fn render_match_frames_enclosing_scopes_and_keeps_the_match_verbatim() {
+    let ast = CodeAst::new(NESTED_PY, "python").unwrap();
+    let matches = ast.matches(r"return \X").unwrap();
+    assert_eq!(matches.len(), 1);
+    let view = render_match(&ast, &matches[0]);
+
+    // Frames are the head lines of the enclosing scopes, outermost first, then
+    // an elision cue for the skipped material before the match.
+    let frames: Vec<&str> = view
+        .segments
+        .iter()
+        .enumerate()
+        .filter(|(_, seg)| seg.kind == SegmentKind::Frame)
+        .map(|(i, _)| text_of(&view, i).trim_end())
+        .collect();
+    assert_eq!(
+        frames,
+        [
+            "class Greeter:",
+            "    def greet(self, name):",
+            "        ..."
+        ]
+    );
+    // The match itself is rendered exactly, without widening to the line start.
+    assert!(
+        view.text.ends_with("return prefix + name"),
+        "{:?}",
+        view.text
+    );
+    assert!(!view.text.contains("prefix = \"hi\""), "{:?}", view.text);
+
+    // The content span is the match's span, which is what a citation needs.
+    let m = &matches[0].chunks[0];
+    assert_eq!(view.start().unwrap(), m.start);
+    assert_eq!(view.end().unwrap(), m.end);
+    assert_eq!(view.start().unwrap().line, 4);
+}
+
+#[test]
+fn render_match_segments_partition_the_rendered_text() {
+    let ast = CodeAst::new(NESTED_PY, "python").unwrap();
+    let matches = ast.matches(r"return \X").unwrap();
+    let view = render_match(&ast, &matches[0]);
+
+    // Segments' renderings are contiguous and cover the whole text, so
+    // rendered offsets map the synthetic text back to source positions.
+    let mut cursor = 0;
+    for (i, seg) in view.segments.iter().enumerate() {
+        assert_eq!(
+            seg.rendered_start, cursor,
+            "segment {i} does not start where the previous ended"
+        );
+        assert!(seg.rendered_end >= seg.rendered_start);
+        let rendered = text_of(&view, i);
+        match &seg.summary {
+            Some(summary) => assert_eq!(rendered, summary),
+            None => assert_eq!(
+                rendered,
+                &NESTED_PY[seg.start.byte_offset..seg.end.byte_offset]
+            ),
+        }
+        cursor = seg.rendered_end;
+    }
+    assert_eq!(cursor, view.text.chars().count());
 }

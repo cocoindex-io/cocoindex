@@ -10,9 +10,9 @@ tags: [knowledge-graph, llm-extraction]
 
 Meeting notes are a graph pretending to be a folder of documents. Every note records who ran the meeting, who showed up, what got decided, and who owns each task — relationships between people, meetings, and tasks. But they're written as prose, scattered across a shared drive, so you can full-text search them and not much else. You can't ask *"what is Alice on the hook for across every meeting this quarter?"* or *"which meetings did the platform team actually attend?"*
 
-In this tutorial, we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that turns a Google Drive folder of Markdown meeting notes into a queryable knowledge graph in [Neo4j](https://neo4j.com/). An LLM extracts the organizer, participants, and tasks from each meeting; an embedding + LLM **entity-resolution** pass collapses the same person written five different ways into one node; and the result is a property graph you can query in Cypher.
+Build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that turns a Google Drive folder of Markdown meeting notes into a queryable knowledge graph in [Neo4j](https://neo4j.com/). An LLM extracts the organizer, participants, and tasks from each meeting; an embedding + LLM **entity-resolution** pass collapses the same person written five different ways into one node; and the result is a property graph you can query in Cypher.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed graph targets — runs in a Rust engine underneath, so editing one note re-extracts only that note, and the graph reconciles itself: no orphaned people, no stale edges, no cleanup scripts.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and graph target management. As a result, editing one note re-extracts only that note, and CocoIndex reconciles the graph nodes and edges.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph_neo4j)
 
@@ -25,7 +25,7 @@ We're modeling meeting notes as a **property graph** — the data model behind [
 
 That second idea is the whole point: in a property graph, "who is on the hook for what" stops being prose buried in a document and becomes an edge you can traverse in a query. The schema here is small — three node types, three relationship types:
 
-![Property graph schema: Person, Meeting, and Task nodes joined by ATTENDED (carrying is_organizer), DECIDED, and ASSIGNED_TO edges, with sample node and edge properties labeled](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/schema.png)
+![Property graph schema: Person, Meeting, and Task nodes joined by ATTENDED (carrying is_organizer), DECIDED, and ASSIGNED_TO edges, with sample node and edge properties labeled](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/schema-dark.svg)
 
 - **`Meeting`** nodes — one per meeting section, keyed by a stable integer id derived from `(note_file, date)`.
 - **`Person`** nodes — canonical organizers, participants, and task assignees, deduplicated by an embedding + LLM entity-resolution pass (so "Alice", "Alice Chen", and "alice c." collapse to a single node).
@@ -48,7 +48,7 @@ Extraction is [instructor](https://github.com/instructor-ai/instructor) over [Li
 
 ## Pipeline overview
 
-![CocoIndex flow: Google Drive meeting notes through three phases — per-note extraction declaring Meeting and Task nodes, person entity resolution, and a final person-relations pass — landing in a Neo4j property graph](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/flow-v1.svg)
+![CocoIndex flow: Google Drive meeting notes through three phases (per-note extraction declaring Meeting and Task nodes, person entity resolution, and a final person-relations pass) landing in a Neo4j property graph](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/flow-v1-dark.svg)
 
 The pipeline runs in three phases:
 
@@ -94,13 +94,13 @@ class AttendedRel:
 
 These dataclasses are the bridge between plain Python and the property graph. Each record you declare into a node table becomes a **node**, with its fields as properties; each relation you declare becomes a typed, directed **edge** between two nodes, with its payload (like `is_organizer`) as edge properties:
 
-![A meeting record becoming a Meeting node, and an attendance record becoming an ATTENDED edge from a Person node to a Meeting node carrying is_organizer](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/records-to-graph.png)
+![A meeting record becoming a Meeting node, and an attendance record becoming an ATTENDED edge from a Person node to a Meeting node carrying is_organizer](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/records-to-graph-dark.svg)
 
 So a `Meeting(note_file=…, time=…, note=…)` becomes a `Meeting` node carrying those fields, and an `ATTENDED` relation from a person to that meeting becomes a `Person -[:ATTENDED {is_organizer: true}]-> Meeting` edge. You declare the records and relations in Python; the [Neo4j connector](/docs/connectors/neo4j/) creates, updates, and removes the matching nodes and edges to match.
 
 ## Shared resources: the lifespan
 
-The [lifespan](/docs/programming_guide/context/) provides what every step needs — the graph connection factory, two LLM model ids, and the embedder — once at startup, via [context keys](/docs/programming_guide/context/):
+The [lifespan](/docs/programming_guide/context/) provides what every step needs (the graph connection factory, two LLM model ids, and the embedder) once at startup, via [context keys](/docs/programming_guide/context/):
 
 ```python title="main.py"
 KG_DB = coco.ContextKey[neo4j.ConnectionFactory]("kg_db")
@@ -186,7 +186,7 @@ async def extract_meeting(section_text: str) -> ExtractedMeeting:
 
 ## Phase 1: per-file extraction
 
-![Phase 1 — one process_file component per note: split into meetings, memoized LLM extraction, declare Meeting and Task nodes into Neo4j, and carry MeetingExtraction forward to phases 2 and 3](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/stage-phase1.svg)
+![Phase 1 — one process_file component per note: split into meetings, memoized LLM extraction, declare Meeting and Task nodes into Neo4j, and carry MeetingExtraction forward to phases 2 and 3](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/stage-phase1-dark.svg)
 
 `process_file` runs once per note. For each meeting section it extracts the structured meeting, declares the `Meeting` node, declares a `Task` node + `DECIDED` edge per task, and returns the raw (un-resolved) person names for phase 2:
 
@@ -194,9 +194,9 @@ async def extract_meeting(section_text: str) -> ExtractedMeeting:
 @coco.fn(memo=True)
 async def process_file(
     file: google_drive.DriveFile,
-    meeting_table: neo4j.TableTarget[Meeting],
-    task_table: neo4j.TableTarget[Task],
-    decided_rel: neo4j.RelationTarget[Any],
+    meeting_table: neo4j.NodeTarget[Meeting],
+    task_table: neo4j.NodeTarget[Task],
+    decided_rel: neo4j.RelationshipTarget[Any],
 ) -> list[MeetingExtraction]:
     text = await file.read_text()
     note_file = file.file_path.path.as_posix()
@@ -212,7 +212,7 @@ async def process_file(
         )
         for task in extracted.tasks:
             task_table.declare_record(row=Task(description=task.description))
-            decided_rel.declare_relation(from_id=meeting_id, to_id=task.description)
+            decided_rel.declare_relationship(from_id=meeting_id, to_id=task.description)
 
         extractions.append(MeetingExtraction(
             meeting_id=meeting_id,
@@ -245,7 +245,7 @@ Why a component per file? **Ownership.** The component at `("file", path_key)` o
 
 ## Phase 2: resolve people
 
-![Phase 2 — a single resolve_persons pass: the set of raw person names from every note is deduplicated by embedding similarity plus LLM confirmation into a canonical-name map](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/stage-phase2.svg)
+![Phase 2 — a single resolve_persons pass: the set of raw person names from every note is deduplicated by embedding similarity plus LLM confirmation into a canonical-name map](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/stage-phase2-dark.svg)
 
 This is the step that separates a useful graph from a messy one. We have a pile of raw names from every note — "Alice", "Alice Chen", "alice c." — and we want one `Person` node per actual person. CocoIndex's [`entity_resolution`](/docs/ops/entity_resolution/) op embeds each name, finds near-matches by vector similarity, and asks an LLM to confirm *only* the close pairs — cheap embeddings filter the field, the expensive model runs only where it's genuinely ambiguous:
 
@@ -278,7 +278,7 @@ Because it's a memoized component keyed by the name set, resolution only re-runs
 
 ## Phase 3: people, attendance, and assignments
 
-![Phase 3 — a single create_person_relations pass: MeetingExtraction from phase 1 and the resolved names from phase 2 are combined to declare Person nodes plus ATTENDED and ASSIGNED_TO edges into Neo4j](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/stage-phase3.svg)
+![Phase 3 — a single create_person_relations pass: MeetingExtraction from phase 1 and the resolved names from phase 2 are combined to declare Person nodes plus ATTENDED and ASSIGNED_TO edges into Neo4j](https://cocoindex.io/blobs/docs-v1/img/examples/meeting-notes-to-knowledge-graph/stage-phase3-dark.svg)
 
 With the canonical mapping in hand, one component declares the `Person` nodes and the two person-touching edge types — the cross-file part of the graph that no single note could own:
 
@@ -287,9 +287,9 @@ With the canonical mapping in hand, one component declares the `Person` nodes an
 async def create_person_relations(
     meetings: list[MeetingExtraction],
     persons: ResolvedEntities,
-    person_table: neo4j.TableTarget[Person],
-    attended_rel: neo4j.RelationTarget[Any],
-    assigned_rel: neo4j.RelationTarget[Any],
+    person_table: neo4j.NodeTarget[Person],
+    attended_rel: neo4j.RelationshipTarget[Any],
+    assigned_rel: neo4j.RelationshipTarget[Any],
 ) -> None:
     for canonical_name in persons.canonicals():
         person_table.declare_record(row=Person(name=canonical_name))
@@ -301,7 +301,7 @@ async def create_person_relations(
         for p in m.participants:
             attendees.setdefault(persons.canonical_of(p), False)
         for canonical, is_organizer in attendees.items():
-            attended_rel.declare_relation(
+            attended_rel.declare_relationship(
                 from_id=canonical, to_id=m.meeting_id,
                 record=AttendedRel(is_organizer=is_organizer),
             )
@@ -309,33 +309,33 @@ async def create_person_relations(
         # ASSIGNED_TO — dedup per (canonical person, task).
         for task_desc, assignees in m.task_assignees:
             for canonical in {persons.canonical_of(a) for a in assignees}:
-                assigned_rel.declare_relation(from_id=canonical, to_id=task_desc)
+                assigned_rel.declare_relationship(from_id=canonical, to_id=task_desc)
 ```
 
 Two details carry the correctness here. Resolution happens *before* aggregation, so two raw names that resolve to the same person collapse into one `ATTENDED` edge instead of two. And because the canonical names are the primary keys, re-asserting the same attendance or assignment from another note is a no-op, not a duplicate.
 
 ## Wire it up: app_main
 
-`app_main` mounts the targets and runs the three phases. Node tables come first, because relation targets are declared *between* two node tables — that's how the connector knows each edge's endpoint labels and keys:
+`app_main` mounts the targets and runs the three phases. Node tables come first, because relationship targets are declared *between* two node tables — that's how the connector knows each edge's endpoint labels and keys:
 
 ```python title="main.py"
 @coco.fn
 async def app_main() -> None:
-    meeting_table = await neo4j.mount_table_target(
+    meeting_table = await neo4j.mount_node_target(
         KG_DB, "Meeting",
         await neo4j.TableSchema.from_class(Meeting, primary_key="id"), primary_key="id")
-    person_table = await neo4j.mount_table_target(
+    person_table = await neo4j.mount_node_target(
         KG_DB, "Person",
         await neo4j.TableSchema.from_class(Person, primary_key="name"), primary_key="name")
-    task_table = await neo4j.mount_table_target(
+    task_table = await neo4j.mount_node_target(
         KG_DB, "Task",
         await neo4j.TableSchema.from_class(Task, primary_key="description"), primary_key="description")
 
     # ATTENDED carries is_organizer; DECIDED and ASSIGNED_TO carry no payload, so
     # they mount without a schema and the connector derives PKs from endpoints.
-    attended_rel = await neo4j.mount_relation_target(KG_DB, "ATTENDED", person_table, meeting_table)
-    decided_rel = await neo4j.mount_relation_target(KG_DB, "DECIDED", meeting_table, task_table)
-    assigned_rel = await neo4j.mount_relation_target(KG_DB, "ASSIGNED_TO", person_table, task_table)
+    attended_rel = await neo4j.mount_relationship_target(KG_DB, "ATTENDED", person_table, meeting_table)
+    decided_rel = await neo4j.mount_relationship_target(KG_DB, "DECIDED", meeting_table, task_table)
+    assigned_rel = await neo4j.mount_relationship_target(KG_DB, "ASSIGNED_TO", person_table, task_table)
 
     source = google_drive.GoogleDriveSource(
         service_account_credential_path=os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"],
@@ -426,7 +426,7 @@ This is where the declarative model pays for itself. You never compute a diff or
 - **Edit one note** — only that note's component re-runs and re-extracts its sections. Its `Meeting` / `Task` nodes are diffed; if it introduced or dropped a person, phase 2 reruns and phase 3 reconciles the edges. Every other note is served from the memo cache.
 - **Add a note** — one new component, a handful of extractions, plus the resolution and graph diff.
 - **Delete a note** — its component disappears, so its `Meeting` and `Task` nodes and `DECIDED` edges are cleaned up automatically; people only that note introduced fall out of the canonical set on the next resolution pass.
-- **Nothing changed** — the run completes in a fraction of a second with zero LLM calls.
+- **Nothing changed** — the run reuses cached work and makes zero LLM calls.
 
 **Logic changes** are reconciled the same way:
 
@@ -438,5 +438,3 @@ This is where the declarative model pays for itself. You never compute a diff or
 The full, runnable example is in the CocoIndex repo: [examples/meeting_notes_graph_neo4j](https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph_neo4j).
 
 This pipeline is the [docs knowledge graph](/docs/examples/docs-to-knowledge-graph/) plus an entity-resolution pass — the natural next step when the LLM names the same thing two ways. For a bigger end-to-end build (transcription, multi-entity schemas, polymorphic edges), see [Turn Podcasts into a Knowledge Graph](/docs/examples/podcast-to-knowledge-graph/).
-
-Got a shared drive full of meeting notes, standup logs, or design docs you want to turn into a graph? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

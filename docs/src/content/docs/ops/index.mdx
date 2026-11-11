@@ -5,27 +5,76 @@ description: >
   local and hosted embeddings, audio transcription, and entity resolution,
   with links to each operation module's reference.
 ---
+
+<Lang only="python">
+
 CocoIndex ships a set of built-in operations under the `cocoindex.ops` package.
 Each module is independently importable and composes with the rest of a pipeline.
+
+</Lang>
+
+<Lang only="rust">
+
+CocoIndex ships a set of built-in operations under the `cocoindex::ops` module,
+plus `cocoindex::entity_resolution`. Each module is independently usable and
+composes with the rest of a pipeline.
+
+</Lang>
+
+{/* Rust: module paths from rust/sdk/cocoindex/src/ops/mod.rs and src/lib.rs */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops import text, litellm, sentence_transformers, entity_resolution
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::entity_resolution;
+use cocoindex::ops::{api, sentence_transformers, text};
+```
+
+Each `cocoindex::ops` module sits behind a Cargo feature of the `cocoindex` crate, so the heavy dependencies (tree-sitter grammars, the ONNX runtime, an HTTP client) are only built when used. `cocoindex::entity_resolution` needs no feature.
+
+</Fragment>
+</LangTabs>
+
 ## Operation modules
+
+<Lang only="python">
 
 | Module | What it provides |
 |---|---|
-| [Text operations](/docs/ops/text/) | Code language detection, regex-based `SeparatorSplitter`, and syntax-aware `RecursiveSplitter` (tree-sitter) returning position-tracked [`Chunk`](/docs/common_resources/data_types/#chunk)s. |
-| [Sentence Transformers](/docs/ops/sentence_transformers/) | Local text embeddings via `sentence-transformers`, with model caching, thread-safe GPU access, and optional normalization. |
-| [LiteLLM](/docs/ops/litellm/) | Embeddings and audio transcription through LiteLLM's unified API across 100+ providers (OpenAI, Azure, Vertex AI, Bedrock, Cohere, and more). |
-| [Entity resolution](/docs/ops/entity_resolution/) | Deduplicate entity names via FAISS embedding similarity plus a pluggable LLM pair-resolver, with PINNED / PREFERRED canonical policies. |
+| [Text operations](./text) | Code language detection, regex-based `SeparatorSplitter`, and syntax-aware `RecursiveSplitter` (tree-sitter) returning position-tracked [`Chunk`](../common_resources/data_types#chunk)s. |
+| [Sentence Transformers](./sentence_transformers) | Local text embeddings via `sentence-transformers`, with model caching, thread-safe GPU access, and optional normalization. |
+| [LiteLLM](./litellm) | Embeddings and audio transcription through LiteLLM's unified API across 100+ providers (OpenAI, Azure, Vertex AI, Bedrock, Cohere, and more). |
+| [Entity resolution](./entity_resolution) | Deduplicate entity names via FAISS embedding similarity plus a pluggable LLM pair-resolver, with PINNED / PREFERRED canonical policies. |
+
+</Lang>
+
+<Lang only="rust">
+
+| Module | What it provides | Cargo feature |
+|---|---|---|
+| [Text operations](./text) | Code language detection, regex-based `SeparatorSplitter`, and syntax-aware `RecursiveSplitter` (tree-sitter) returning position-tracked [`Chunk`](../common_resources/data_types#chunk)s. `cocoindex::ops::text`. | `text` |
+| [Sentence Transformers](./sentence_transformers) | Local text embeddings from sentence-transformers ONNX models through `fastembed`, memoized and batched, on the GPU runner. `cocoindex::ops::sentence_transformers`. | `fastembed` |
+| [Model APIs](/docs/rust/ops/model_apis/) | Embeddings, audio transcription and JSON-mode chat (with typed `extract`) over any OpenAI-compatible HTTP API: `ApiEmbedder`, `ApiTranscriber`, `ApiChatClient`, `LlmPairResolver`. `cocoindex::ops::api`. | `embed_api` |
+| [Entity resolution](./entity_resolution) | Deduplicate entity names via embedding similarity plus a pluggable LLM pair-resolver, with `Pinned` / `Preferred` canonical policies. `cocoindex::entity_resolution`. | none; `LlmPairResolver` needs `embed_api` |
+
+</Lang>
 
 ## Most common: chunking code and text
 
 The most-used built-in is `RecursiveSplitter`. It does syntax-aware splitting that
 respects language structure (functions, classes, blocks) via tree-sitter, falling
 back to separator-based splitting for unsupported languages.
+
+{/* Rust: examples/rust/code_embedding/src/main.rs (process_file) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 from cocoindex.ops.text import RecursiveSplitter
@@ -41,9 +90,31 @@ chunks = splitter.split(
 )
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
+
+let splitter = RecursiveSplitter::new()?;
+
+let chunks = splitter.split_with(
+    &text,
+    RecursiveChunkConfig {
+        chunk_size: 1000,
+        min_chunk_size: Some(300),
+        chunk_overlap: Some(300),
+        language: Some("python".to_string()),
+    },
+);
+```
+
+</Fragment>
+</LangTabs>
+
 It tries to keep each output chunk between `min_chunk_size` and `chunk_size`, splitting
 at the highest-level boundary that fits and descending to finer boundaries when a piece
-is still too large. See [Text operations](/docs/ops/text/) for the full parameter reference,
+is still too large. See [Text operations](./text) for the full parameter reference,
 supported languages, and custom-language configuration.
 
 ## Embeddings
@@ -51,5 +122,18 @@ supported languages, and custom-language configuration.
 Two interchangeable embedding backends are available, both providing a
 `VectorSchemaProvider` so vector columns are configured automatically by connectors:
 
-- [Sentence Transformers](/docs/ops/sentence_transformers/) runs locally, no API key.
-- [LiteLLM](/docs/ops/litellm/) reaches hosted providers behind one API.
+<Lang only="python">
+
+- [Sentence Transformers](./sentence_transformers) runs locally, no API key.
+- [LiteLLM](./litellm) reaches hosted providers behind one API.
+
+</Lang>
+
+<Lang only="rust">
+
+- [`SentenceTransformerEmbedder`](./sentence_transformers) runs locally through `fastembed`, no API key.
+- [`ApiEmbedder`](/docs/rust/ops/model_apis/#embeddings) reaches any OpenAI-compatible endpoint.
+
+Both also implement the [`Embedder`](../common_resources/data_types#embedder) trait, so either one plugs into [entity resolution](./entity_resolution).
+
+</Lang>

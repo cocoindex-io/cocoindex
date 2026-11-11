@@ -12,9 +12,9 @@
 //!
 //! What the Rust SDK provides vs. what this example hand-rolls:
 //!   - walk / memo / mount_each / map / ContextKey / IdGenerator  -> from `cocoindex`
-//!   - entity resolution (candidate search + pair resolver)        -> from `cocoindex`
+//!   - entity resolution (embedder, candidate search, LLM pair resolver) -> from `cocoindex`
 //!   - SurrealDB TableTarget / RelationTarget sync                 -> from `cocoindex`
-//!   - LLM structured extraction + entity-pair confirmation        -> `reqwest` -> OpenAI JSON
+//!   - LLM structured extraction                                   -> `reqwest` -> OpenAI JSON
 //!   - audio download / diarized transcription                     -> `yt-dlp` + AssemblyAI REST
 //!
 //! Design note: costly per-session fetch+LLM work is memoized; graph writes are
@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use cocoindex::prelude::*;
 use serde::Deserialize;
 
-use clients::{Embedder, Graph, LlmClient};
+use clients::{ApiChatClient, Graph, LlmClient, SentenceTransformerEmbedder};
 use models::*;
 use pipeline::{collect_raw, create_knowledge_base, resolve_entities};
 
@@ -119,7 +119,7 @@ async fn app_main(ctx: Ctx, input_dir: PathBuf) -> Result<()> {
 
     // Phase 1: per-session fetch + extract (memoized, concurrent).
     let processed: Vec<ProcessedSession> =
-        mount_each!(sources.into_iter().map(|s| (s.key(), s)), |source| {
+        use_mount_each!(sources.into_iter().map(|s| (s.key(), s)), |source| {
             pipeline::process_session(ctx, source)
         })
         .await?;
@@ -167,11 +167,13 @@ async fn main() -> Result<()> {
     )
     .await?;
     let llm = LlmClient::new(env_or("LLM_MODEL", "gpt-4o-mini"))?;
-    let resolver_llm = LlmClient::new(env_or("RESOLUTION_LLM_MODEL", "gpt-4o-mini"))?;
-    let embedding_model = env_or("EMBEDDING_MODEL", "Snowflake/snowflake-arctic-embed-xs");
-    let embedder = tokio::task::spawn_blocking(move || Embedder::load(&embedding_model))
-        .await
-        .map_err(|e| Error::engine(format!("embedder load panicked: {e}")))??;
+    let resolver_llm = ApiChatClient::new(env_or("RESOLUTION_LLM_MODEL", "gpt-4o-mini"))
+        .with_base_url(clients::llm_base_url())
+        .with_api_key(clients::llm_api_key()?);
+    // A registry model or any sentence-transformers ONNX export on the Hub.
+    let embedder =
+        SentenceTransformerEmbedder::load(env_or("EMBEDDING_MODEL", "Snowflake/snowflake-arctic-embed-xs"))
+            .await?;
 
     let graph_for_report = graph.clone();
     let app = Environment::builder()

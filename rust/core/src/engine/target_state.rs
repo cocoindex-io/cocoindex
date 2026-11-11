@@ -571,6 +571,18 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
             .join("/")
     }
 
+    /// How many providers this one is below a root provider: 0 for a root,
+    /// one more for each child or attachment provider below it.
+    pub fn depth(&self) -> usize {
+        let mut depth = 0;
+        let mut current = self;
+        while let Some(parent) = &current.inner.parent_provider {
+            depth += 1;
+            current = parent;
+        }
+        depth
+    }
+
     pub fn stable_key_chain(&self) -> Vec<StableKey> {
         let mut chain = vec![self.inner.stable_key.clone()];
         let mut current = self;
@@ -748,7 +760,7 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
         provider: TargetStateProvider<Prof>,
     ) -> Result<()> {
         if self.providers.contains_key(&target_state_path) {
-            client_bail!(
+            already_declared_bail!(
                 "Target state provider already registered for path: {:?}",
                 target_state_path
             );

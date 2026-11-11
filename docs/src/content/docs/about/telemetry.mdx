@@ -3,6 +3,8 @@ title: Anonymous *usage telemetry*
 description: >
   What CocoIndex's anonymous usage tracking collects, what it doesn't, and how
   to opt out.
+# Reads the same in both SDK languages (src/lib/lang.ts).
+neutral: true
 ---
 
 CocoIndex sends a small number of anonymous events to help us understand how
@@ -65,8 +67,8 @@ wheels published to PyPI). Local development installs via `maturin develop`
 produce a debug build and never send any events — the check is compile-time,
 so the code path doesn't exist in debug binaries.
 
-Delivery is non-blocking: each event is dispatched on a background task with a
-5-second timeout. Failures are logged at INFO level and never affect your app.
+CocoIndex dispatches each event on a background task with a 5-second timeout,
+so delivery is non-blocking. It logs failures at INFO level without affecting your app.
 
 ## Opting out
 

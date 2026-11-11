@@ -23,6 +23,10 @@ pub struct PythonObjects {
     pub typed_target_handler_wrapper_fn: Py<PyAny>,
     pub non_existence: Py<PyAny>,
     pub target_state_codec: crate::target_state_codec::TargetStateCodec,
+    /// `data_dep.validate_stored_data_deps`: validates a stored memo's
+    /// data-dependency records with no processor (see
+    /// `EngineProfile::validate_data_deps`).
+    pub validate_data_deps_fn: PyCallback,
 }
 
 impl PythonObjects {
@@ -43,6 +47,9 @@ impl PythonObjects {
 
 static PY_OBJECTS: OnceLock<std::mem::ManuallyDrop<PythonObjects>> = OnceLock::new();
 
+// One call at import, with keyword arguments from Python; a struct for them
+// would be a pyclass with a single use.
+#[allow(clippy::too_many_arguments)]
 #[pyfunction]
 pub fn init_runtime(
     package_id: String,
@@ -52,6 +59,7 @@ pub fn init_runtime(
     typed_target_handler_wrapper_fn: Py<PyAny>,
     non_existence: Py<PyAny>,
     target_state_codec: Bound<'_, PyAny>,
+    validate_data_deps_fn: Py<PyAny>,
 ) -> PyResult<()> {
     let target_state_codec = crate::target_state_codec::TargetStateCodec::new(&target_state_codec)?;
     if pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()).is_err() {
@@ -67,6 +75,7 @@ pub fn init_runtime(
             typed_target_handler_wrapper_fn,
             non_existence,
             target_state_codec,
+            validate_data_deps_fn: PyCallback::Async(Arc::new(validate_data_deps_fn)),
         }))
         .map_err(|_| PyException::new_err("Failed to set Python objects: already initialized"))?;
     Ok(())

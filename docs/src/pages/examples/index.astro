@@ -1,73 +1,46 @@
 ---
-// Ports design_guidelines/CocoIndex Examples Listing.html into an Astro page
-// at /docs/examples. Reuses the shared Topbar from the docs site so the
-// header is identical across /docs and /docs/examples. All example cards
-// come from src/data/examples.ts — when you add a new example, update that
-// file and the card appears in its category automatically.
+// The examples catalog at /docs/examples: a filter rail (category, source,
+// target, model, level) beside category sections of cards. Every card and
+// every filter value comes from src/data/examples.ts, so adding an example
+// there is the whole job. Filters combine (AND), hold in the URL query, and
+// recount live; the phone and tablet toolbar mirrors the rail with chips and
+// native selects.
 import '../../styles/globals.css';
+import '../../styles/examples.css';
 import Topbar from '../../components/Topbar.astro';
 import MobileSheet from '../../components/MobileSheet.astro';
 import Analytics from '../../components/Analytics.astro';
 import ScarfPixel from '../../components/ScarfPixel.astro';
 import Foot from '../../components/Foot.astro';
 import ExampleCard from '../../components/examples/ExampleCard.astro';
-import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup, SCARF_PIXEL_ID, OG_IMAGE_EXAMPLES, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_EXAMPLES_ALT } from '../../consts';
-import {
-  examples,
-  byCategory,
-  CATEGORY_META,
-  SIDEBAR_TARGETS,
-  SIDEBAR_SOURCES,
-  SIDEBAR_LLMS,
-  POPULAR,
-  type Category,
-} from '../../data/examples';
-import { THEME_COLOR, titleText } from '../../consts';
+import { GITHUB_REPO, DISCORD_URL, SITE_URL, SCARF_PIXEL_ID, OG_IMAGE_EXAMPLES, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_EXAMPLES_ALT, THEME_COLOR, titleText } from '../../consts';
+import { examples, byCategory, CATEGORY_META, FACETS, facetValues, type Category } from '../../data/examples';
 import type { SidebarItem } from '../../data/docs-sidebar';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '';
 const exampleHref = (slug: string) => `${base}/examples/${slug}/`;
 
-// Category order and counts, computed from the data.
-// Ordered by outcome: the two search categories first, then the LLM-output
-// categories, then the data-movement plumbing last.
+// Category order: the two search shapes first, then LLM output, then plumbing.
 const CAT_ORDER: Category[] = ['search', 'image', 'llm', 'agents', 'ingest'];
 const catCount = (c: Category) => examples.filter((e) => e.category === c).length;
-// Categories with no examples yet (e.g. 'image') stay out of the chips and
-// side-nav — their grid sections already render nothing, so a chip or anchor
-// would point nowhere.
 const activeCats = CAT_ORDER.filter((c) => catCount(c) > 0);
+const facets = FACETS.map((f) => ({ ...f, values: facetValues(f.kind) }));
+// Long facet groups show their most common values first; the rest fold.
+const RAIL_TOP = 6;
 
-// Phone drawer mirror of the inline `.side-nav` browse aside. The aside
-// becomes a horizontal flex pill row at ≤1180px which is fine on tablet,
-// but on phones we hide it entirely and surface the same tree inside
-// MobileSheet — that's where the user already goes for navigation.
-const examplesSidebar: SidebarItem[] = CAT_ORDER
-  .map((c) => ({
-    cat: c,
-    items: examples.filter((e) => e.category === c),
-  }))
-  .filter((g) => g.items.length > 0)
-  .map((g) => ({
-    type: 'category',
-    label: `${titleText(CATEGORY_META[g.cat].label)}${CATEGORY_META[g.cat].em ?? ''}`,
-    items: g.items.map((it) => ({
-      type: 'doc',
-      slug: `examples/${it.slug}`,
-      label: titleText(it.title),
-    })),
-  }));
+// Phone drawer: the same tree the detail pages show in their rail.
+const examplesSidebar: SidebarItem[] = activeCats.map((c) => ({
+  type: 'category',
+  label: CATEGORY_META[c].label,
+  items: byCategory(c).map((it) => ({ type: 'doc', slug: `examples/${it.slug}`, label: titleText(it.title) })),
+}));
 
 const total = examples.length;
-const fullTitle = `Examples · CocoIndex Docs`;
-const description = 'Real pipelines you can clone, run, and bend to your data — codebase vector search, multi-repo LLM summarization, and custom PDF ingest.';
-// trailingSlash: 'always' — canonical must carry the slash to match the served URL.
+const fullTitle = 'Examples · CocoIndex Docs';
+const description = 'Working CocoIndex pipelines you can clone and run: semantic search, multimodal search, structured extraction, knowledge graphs, and ingest flows, filtered by source, target, and model.';
 const canonical = new URL(`${base}/examples/`, SITE_URL).toString();
 const ogImage = OG_IMAGE_EXAMPLES;
 
-// Structured data: a CollectionPage wrapping an ItemList of the examples (so
-// search engines and agents can read the catalog), plus a Docs › Examples
-// breadcrumb.
 const collectionLd = {
   '@context': 'https://schema.org',
   '@type': 'CollectionPage',
@@ -78,7 +51,7 @@ const collectionLd = {
   isPartOf: { '@type': 'WebSite', name: 'CocoIndex Docs', url: new URL(`${base}/`, SITE_URL).toString() },
   mainEntity: {
     '@type': 'ItemList',
-    numberOfItems: examples.length,
+    numberOfItems: total,
     itemListElement: examples.map((e, i) => ({
       '@type': 'ListItem',
       position: i + 1,
@@ -102,13 +75,12 @@ const breadcrumbLd = {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content={THEME_COLOR} />
     <title>{fullTitle}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
 
-    <!-- Open Graph / Twitter — link previews on social, Slack, iMessage, etc. -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="CocoIndex Docs" />
     <meta property="og:title" content={fullTitle} />
@@ -123,204 +95,261 @@ const breadcrumbLd = {
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImage} />
 
-    <!-- Structured data for search engines and agents. -->
     <script type="application/ld+json" set:html={JSON.stringify(collectionLd)} />
     <script type="application/ld+json" set:html={JSON.stringify(breadcrumbLd)} />
 
     <link rel="icon" href={`${base}/img/favicon.ico`} />
-    <!-- Fonts self-hosted via @fontsource in src/styles/globals.css (GUIDELINE §5.2). -->
   </head>
   <body class="ex-listing">
+    <a class="skip-link" href="#main-content">Skip to content</a>
     <Topbar mobileSheetId="mobileSheet" />
     <MobileSheet sidebarItems={examplesSidebar} />
 
     <div class="ex-wrap">
-      <!-- ═══════════ HERO ═══════════ -->
-      <section class="ex-hero">
-        <div class="hero-top">
-          <span class="t-eyebrow live"><span class="dt" aria-hidden="true"></span>{total} live examples · updated weekly</span>
-          <div class="stats">
-            <span><b>{total}</b> examples</span>
-            <span><b>{SIDEBAR_SOURCES.length}</b> sources</span>
-            <span><b>{SIDEBAR_TARGETS.length}</b> targets</span>
-            <span><b>{SIDEBAR_LLMS.length}</b> LLM providers</span>
-          </div>
-        </div>
+      <header class="ex-hero">
+        <h1 class="hero-h">Examples</h1>
+        <p class="hero-sub">
+          Working pipelines you can clone and run.{' '}<span class="hero-more">Each one reads a source, transforms it in a Python flow, and keeps a target in sync. Start from the closest one and change the parts that differ.</span>
+        </p>
+      </header>
 
-        <div class="hero-grid">
-          <div>
-            <h1 class="hero-h">Examples</h1>
-            <p class="hero-sub">
-              Real pipelines you can <b>clone, run, and bend</b> to your data. Each example is production-wired — one source, a declarative flow, a live target. Pick the one closest to what you need and change the parts that don't fit.
-            </p>
-
-            <div class="hero-filters" id="filters">
-              <button class="t-filter on" data-filter="all">All <span class="cnt">{total}</span></button>
+      <div class="ex-shell">
+        <aside class="ex-rail" aria-label="Filter examples">
+          <div class="ex-rail-group">
+            <h2>Category</h2>
+            <div role="group" aria-label="Category">
+              <button type="button" class="ex-f" data-facet="cat" data-value="" aria-pressed="true">All <span class="n">{total}</span></button>
               {activeCats.map((c) => (
-                <button class="t-filter" data-filter={c}>
-                  {CATEGORY_META[c].label}{CATEGORY_META[c].em ?? ''} <span class="cnt">{catCount(c)}</span>
+                <button type="button" class="ex-f" data-facet="cat" data-value={c} aria-pressed="false">
+                  {CATEGORY_META[c].label} <span class="n">{catCount(c)}</span>
                 </button>
               ))}
             </div>
           </div>
-
-        </div>
-      </section>
-
-      <!-- ═══════════ DOC LAYOUT ═══════════ -->
-      <div class="doc">
-        <aside class="side-nav" aria-label="Browse examples">
-          <div class="side-head">
-            <span>Browse</span>
-            <span class="ct">{total} examples</span>
-          </div>
-          <ol id="sideList">
-            {activeCats.map((c) => (
-              <li data-target={`#cat-${c}`}>
-                <a href={`#cat-${c}`} data-cat={c}>
-                  <span class="cat-dot"></span>
-                  {CATEGORY_META[c].label}{CATEGORY_META[c].em ?? ''}
-                  <span class="count">{catCount(c)}</span>
-                </a>
-              </li>
-            ))}
-          </ol>
-
-          <div class="side-group">
-            <h6>By target</h6>
-            <div class="tags-row">{SIDEBAR_TARGETS.map((t) => <button type="button" class="t-pill" data-facet="tgt" data-value={t}>{t}</button>)}</div>
-          </div>
-
-          <div class="side-group">
-            <h6>By source</h6>
-            <div class="tags-row">{SIDEBAR_SOURCES.map((t) => <button type="button" class="t-pill" data-facet="src" data-value={t}>{t}</button>)}</div>
-          </div>
-
-          <div class="side-group">
-            <h6>By LLM</h6>
-            <div class="tags-row">{SIDEBAR_LLMS.map((t) => <button type="button" class="t-pill" data-facet="llm" data-value={t}>{t}</button>)}</div>
-          </div>
-
-          <div class="side-group">
-            <h6>Popular</h6>
-            <div class="links">
-              {POPULAR.map((p) => (
-                <a href={exampleHref(p.slug)}>{p.label}<span class="c">{p.count}</span></a>
-              ))}
+          {facets.map((f) => (
+            <div class="ex-rail-group" data-group>
+              <h2>{f.label}</h2>
+              <div role="group" aria-label={f.label}>
+                {f.values.map((v, i) => (
+                  <button type="button" class={`ex-f${i >= RAIL_TOP ? ' is-more' : ''}`} data-facet={f.kind} data-value={v.label} aria-pressed="false">
+                    {v.label} <span class="n">{v.count}</span>
+                  </button>
+                ))}
+              </div>
+              {f.values.length > RAIL_TOP && (
+                <button type="button" class="ex-more" data-more aria-expanded="false">Show all {f.values.length}</button>
+              )}
             </div>
-          </div>
-
-          <div class="side-group">
-            <h6>Resources</h6>
-            <div class="links">
-              <a href={`${GITHUB_REPO}/tree/main/examples`}>↗ Source on GitHub</a>
-              <a href={`${base}/`}>↗ Documentation</a>
-              <a href={DISCORD_URL}>↗ Discord</a>
-            </div>
-          </div>
+          ))}
         </aside>
 
-        <div class="col-main">
-          <!-- ═══════════ CATEGORY SECTIONS ═══════════ -->
-          {CAT_ORDER.map((cat, ci) => {
-            const items = byCategory(cat);
-            return items.length === 0 ? null : (
-              <section class="cat" id={`cat-${cat}`} data-cat={cat}>
-                <div class="sec-head">
-                  <h2>
-                    {CATEGORY_META[cat].label}
-                    {CATEGORY_META[cat].em ? <em>{CATEGORY_META[cat].em}</em> : null}
-                  </h2>
-                  <p class="lead">{CATEGORY_META[cat].lead}</p>
-                </div>
+        <div class="ex-toolbar">
+          <div class="ex-chips" role="group" aria-label="Category">
+            <button type="button" class="t-filter" data-facet="cat" data-value="" aria-pressed="true">All <span class="cnt">{total}</span></button>
+            {activeCats.map((c) => (
+              <button type="button" class="t-filter" data-facet="cat" data-value={c} aria-pressed="false">
+                {CATEGORY_META[c].label} <span class="cnt">{catCount(c)}</span>
+              </button>
+            ))}
+          </div>
+          <div class="ex-selects">
+            {facets.map((f) => (
+              <label class="ex-select">
+                <span>{f.label}</span>
+                <select data-facet={f.kind} data-facet-label={f.label}>
+                  <option value="">{f.any}</option>
+                  {f.values.map((v) => <option value={v.label} data-label={v.label}>{v.label} ({v.count})</option>)}
+                </select>
+              </label>
+            ))}
+          </div>
+        </div>
 
-                <div class="cat-grid">
-                  {items.map((ex) => <ExampleCard ex={ex} href={exampleHref(ex.slug)} />)}
-                </div>
-              </section>
-            );
-          })}
+        <main class="ex-main" id="main-content" tabindex="-1">
+          <div class="ex-results" tabindex="-1">
+            <p aria-live="polite"><b data-count>{total}</b> <span data-count-noun>examples</span></p>
+            <button type="button" class="ex-clear" data-clear hidden>Clear filters</button>
+          </div>
 
-          <!-- ═══════════ CTA ═══════════ -->
-          <section class="cta-end">
-            <div class="cta-copy">
-              <h3 set:html={titleMarkup("Can't find the *shape* you need?")} />
-              <p>Clone the closest example, swap the source or the target, and keep the rest. Or request a new example — we ship the ones developers ask for.</p>
-              <div class="btns">
-                <a class="btn btn-coral" href={GITHUB_REPO}>Request on GitHub</a>
-                <a class="btn btn-primary" href={`${base}/`}>Build your own</a>
-                <a class="btn btn-outline-muted" href={DISCORD_URL}>Ask on Discord</a>
+          {activeCats.map((cat) => (
+            <section class="ex-sec" id={`cat-${cat}`} data-cat={cat}>
+              <div class="ex-sec-head">
+                <h2>{CATEGORY_META[cat].label}<span class="n" data-sec-count>{catCount(cat)}</span></h2>
+                <p>{CATEGORY_META[cat].lead}</p>
               </div>
+              <div class="ex-grid">
+                {byCategory(cat).map((ex) => <ExampleCard ex={ex} href={exampleHref(ex.slug)} />)}
+              </div>
+            </section>
+          ))}
+
+          <div class="ex-empty" data-empty hidden>
+            <p>No example matches every filter. Remove one, or request the pipeline you need below.</p>
+            <div class="btns" data-empty-actions></div>
+          </div>
+
+          <section class="ex-end" aria-labelledby="ex-end-h">
+            <div>
+              <h2 id="ex-end-h">Can't find the shape you need?</h2>
+              <p>Clone the closest example, swap the source or the target, and keep the rest. Or open an issue and describe the pipeline.</p>
+            </div>
+            <div class="btns">
+              <a class="btn btn-primary" href={`${base}/getting_started/quickstart/`}>Read the quickstart</a>
+              <a class="btn btn-outline-muted" href={`${GITHUB_REPO}/issues/new`}>Request an example</a>
+              <a class="btn btn-outline-muted" href={DISCORD_URL}>Ask on Discord</a>
             </div>
           </section>
-        </div>
+        </main>
       </div>
     </div>
 
     <script is:inline>
-      // Filters — category chips (top) toggle whole category sections; the side
-      // facet pills (By target / source / LLM) filter individual cards by tag and
-      // hide now-empty sections. Two modes; picking a facet resets category to All.
-      (function(){
-        const catChips = Array.from(document.querySelectorAll('#filters .t-filter'));
-        const facetPills = Array.from(document.querySelectorAll('.side-group .t-pill[data-facet]'));
-        const sections = Array.from(document.querySelectorAll('section.cat[data-cat]'));
-        const cards = Array.from(document.querySelectorAll('.ex-card'));
-        let cat = 'all';
-        let facet = null; // { facet: 'tgt'|'src'|'llm', value }
+      // Filters: one state object {cat, src, tgt, llm, lvl}; every control
+      // (rail buttons, toolbar chips, selects) reads and writes it, so the
+      // rail and the toolbar never disagree. Cards carry data-* facet lists;
+      // a card shows when it matches every set facet. Counts recompute per
+      // control against the other facets, so a row says how many results
+      // picking it would leave. State lives in the query string.
+      (function () {
+        var KEYS = ['cat', 'src', 'tgt', 'llm', 'lvl'];
+        var cards = Array.prototype.slice.call(document.querySelectorAll('.ex-card'));
+        var sections = Array.prototype.slice.call(document.querySelectorAll('section.ex-sec[data-cat]'));
+        var buttons = Array.prototype.slice.call(document.querySelectorAll('button[data-facet]'));
+        var selects = Array.prototype.slice.call(document.querySelectorAll('select[data-facet]'));
+        var clears = Array.prototype.slice.call(document.querySelectorAll('[data-clear]'));
+        var countEl = document.querySelector('[data-count]');
+        var nounEl = document.querySelector('[data-count-noun]');
+        var empty = document.querySelector('[data-empty]');
+        var emptyActions = document.querySelector('[data-empty-actions]');
+        var NAMES = { cat: 'Category', src: 'Source', tgt: 'Target', llm: 'Model', lvl: 'Level' };
+        var CAT_NAMES = {};
+        buttons.forEach(function (b) { if (b.getAttribute('data-facet') === 'cat' && b.getAttribute('data-value')) CAT_NAMES[b.getAttribute('data-value')] = b.firstChild.textContent.trim(); });
+        var state = {};
 
-        function render(){
-          if (facet){
-            cards.forEach((c) => {
-              const vals = (c.getAttribute('data-' + facet.facet) || '').split('|');
-              c.style.display = vals.indexOf(facet.value) > -1 ? '' : 'none';
-            });
-            sections.forEach((s) => {
-              const any = Array.from(s.querySelectorAll('.ex-card')).some((c) => c.style.display !== 'none');
-              s.style.display = any ? '' : 'none';
-            });
-          } else {
-            cards.forEach((c) => { c.style.display = ''; });
-            sections.forEach((s) => { s.style.display = (cat === 'all' || s.dataset.cat === cat) ? '' : 'none'; });
-          }
-          catChips.forEach((c) => c.classList.toggle('on', c.dataset.filter === cat));
-          facetPills.forEach((p) => p.classList.toggle('on', !!facet && p.dataset.facet === facet.facet && p.dataset.value === facet.value));
+        function values(card, key) {
+          var raw = card.getAttribute('data-' + key) || '';
+          return raw ? raw.split('|') : [];
         }
-
-        catChips.forEach((chip) => chip.addEventListener('click', () => { cat = chip.dataset.filter; facet = null; render(); }));
-        facetPills.forEach((pill) => pill.addEventListener('click', () => {
-          const same = facet && facet.facet === pill.dataset.facet && facet.value === pill.dataset.value;
-          facet = same ? null : { facet: pill.dataset.facet, value: pill.dataset.value };
-          if (facet) cat = 'all';
-          render();
-        }));
-        render();
-      })();
-
-      // Highlight the active category in the side nav based on scroll.
-      (function(){
-        const items = document.querySelectorAll('#sideList li[data-target]');
-        const map = new Map();
-        items.forEach((li) => {
-          const sel = li.getAttribute('data-target');
-          const el = document.querySelector(sel);
-          if (el) map.set(el, li);
-        });
-        if (!map.size) return;
-        const io = new IntersectionObserver((entries) => {
-          entries.forEach((e) => {
-            const li = map.get(e.target);
-            if (!li) return;
-            li.classList.toggle('active', e.isIntersecting);
+        function matches(card, st) {
+          for (var i = 0; i < KEYS.length; i++) {
+            var k = KEYS[i];
+            if (!st[k]) continue;
+            if (values(card, k).indexOf(st[k]) === -1) return false;
+          }
+          return true;
+        }
+        function readUrl() {
+          var q = new URLSearchParams(location.search);
+          state = {};
+          KEYS.forEach(function (k) { var v = q.get(k); if (v) state[k] = v; });
+        }
+        function writeUrl() {
+          var q = new URLSearchParams();
+          KEYS.forEach(function (k) { if (state[k]) q.set(k, state[k]); });
+          var s = q.toString();
+          history.pushState(null, '', location.pathname + (s ? '?' + s : ''));
+        }
+        function countWith(over) {
+          var probe = {};
+          KEYS.forEach(function (k) { probe[k] = state[k]; });
+          Object.keys(over).forEach(function (k) { probe[k] = over[k]; });
+          return cards.filter(function (c) { return matches(c, probe); }).length;
+        }
+        function render() {
+          var shown = 0;
+          cards.forEach(function (c) {
+            var on = matches(c, state);
+            c.hidden = !on;
+            if (on) shown++;
           });
-        }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
-        map.forEach((_, el) => io.observe(el));
+          sections.forEach(function (s) {
+            var n = s.querySelectorAll('.ex-card:not([hidden])').length;
+            s.hidden = n === 0;
+            var sc = s.querySelector('[data-sec-count]');
+            if (sc) sc.textContent = String(n);
+          });
+          var active = KEYS.some(function (k) { return !!state[k]; });
+          if (countEl) countEl.textContent = String(shown);
+          if (nounEl) nounEl.textContent = (shown === 1 ? 'example' : 'examples') + (active ? ' match' : '');
+          if (empty) empty.hidden = shown !== 0;
+          clears.forEach(function (b) { b.hidden = !active || shown === 0; });
+
+          buttons.forEach(function (b) {
+            var k = b.getAttribute('data-facet'), v = b.getAttribute('data-value');
+            var on = (state[k] || '') === v;
+            b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            var probe = {};
+            KEYS.forEach(function (kk) { probe[kk] = state[kk]; });
+            probe[k] = v || undefined;
+            var n = cards.filter(function (c) { return matches(c, probe); }).length;
+            var nEl = b.querySelector('.n, .cnt');
+            if (nEl) nEl.textContent = String(n);
+            b.classList.toggle('is-zero', n === 0 && !on);
+            b.classList.toggle('is-shown', on);
+          });
+          selects.forEach(function (s) {
+            var k = s.getAttribute('data-facet');
+            Array.prototype.forEach.call(s.options, function (o) {
+              if (!o.value) return;
+              var label = o.getAttribute('data-label');
+              var chosen = state[k] === o.value;
+              o.textContent = label + (chosen ? '' : ' (' + countWith(Object.fromEntries([[k, o.value]])) + ')');
+            });
+            s.value = state[k] || '';
+            s.parentNode.classList.toggle('is-set', !!state[k]);
+          });
+          if (emptyActions) {
+            emptyActions.textContent = '';
+            if (shown === 0) {
+              KEYS.forEach(function (k) {
+                if (!state[k]) return;
+                var n = countWith(Object.fromEntries([[k, undefined]]));
+                var b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'btn btn-outline-muted';
+                b.textContent = 'Remove ' + NAMES[k] + ': ' + (k === 'cat' ? (CAT_NAMES[state[k]] || state[k]) : state[k]) + ' (' + n + ')';
+                b.addEventListener('click', function () { set(k, ''); if (results) results.focus(); });
+                emptyActions.appendChild(b);
+              });
+            }
+          }
+        }
+        var results = document.querySelector('.ex-results');
+        function set(k, v) {
+          if (v) state[k] = v; else delete state[k];
+          writeUrl();
+          render();
+          // Filtering shortens the page; bring the results back into view.
+          if (results && results.getBoundingClientRect().top < 0) results.scrollIntoView({ block: 'start' });
+        }
+        Array.prototype.forEach.call(document.querySelectorAll('[data-more]'), function (m) {
+          m.addEventListener('click', function () {
+            var g = m.closest('[data-group]');
+            var open = !g.classList.contains('is-open');
+            g.classList.toggle('is-open', open);
+            m.setAttribute('aria-expanded', open ? 'true' : 'false');
+            m.textContent = open ? 'Show fewer' : 'Show all ' + g.querySelectorAll('.ex-f').length;
+          });
+        });
+
+        buttons.forEach(function (b) {
+          b.addEventListener('click', function () {
+            var k = b.getAttribute('data-facet'), v = b.getAttribute('data-value');
+            set(k, (state[k] || '') === v ? '' : v);
+          });
+        });
+        selects.forEach(function (s) {
+          s.addEventListener('change', function () { set(s.getAttribute('data-facet'), s.value); });
+        });
+        clears.forEach(function (b) {
+          b.addEventListener('click', function () { state = {}; writeUrl(); render(); if (results) results.focus(); });
+        });
+        window.addEventListener('popstate', function () { readUrl(); render(); });
+        readUrl();
+        render();
       })();
     </script>
 
-    <style is:global>
-      @import '@cocoindex/brand/examples.css';
-    </style>
     <Foot />
     <Analytics />
     <ScarfPixel pxid={SCARF_PIXEL_ID} />

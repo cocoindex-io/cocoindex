@@ -2,15 +2,17 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use futures::future::BoxFuture;
 
 use cocoindex_core::engine::app::{App as CoreApp, AppOpHandle, AppUpdateOptions};
 use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::environment::{Environment as CoreEnvironment, EnvironmentSettings};
 use cocoindex_core::engine::progress_display::{ProgressDisplayOptions, show_progress};
-use cocoindex_core::engine::stats::{ProcessingStats, TERMINATED_VERSION};
+use cocoindex_core::engine::stats::{ProcessingStats, ProcessingStatsGroup, TERMINATED_VERSION};
 use cocoindex_core::engine::target_state::{
     TargetStateProvider as CoreTargetStateProvider, TargetStateProviderRegistry,
 };
@@ -20,6 +22,7 @@ use tokio::sync::watch;
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
+use crate::live_component::{ExceptionContext, ExceptionHandler};
 use crate::profile::{Action, BoxedProcessor, RustProfile, Value};
 use crate::stats::{ComponentStats, RunStats, UpdateStats, UpdateStatus};
 use crate::target_state::STATIC_ROOT_PROVIDERS;
@@ -55,11 +58,39 @@ pub struct Environment {
 
 pub(crate) struct EnvironmentInner {
     core_env: CoreEnvironment<RustProfile>,
+    db_path: PathBuf,
     state: Arc<TypeMap>,
     context: Arc<ContextStore>,
     static_root_providers: StaticRootProviders,
     max_inflight_components: Option<usize>,
+    shutdown_hooks: Mutex<Vec<ShutdownHook>>,
+    exception_handler: Option<ExceptionHandler>,
 }
+
+/// A teardown step registered with [`EnvironmentBuilder::on_shutdown`].
+type ShutdownHook = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
+
+/// Environment variable naming the state db path when a lifespan sets none.
+/// Read by [`Environment::from_registered`] (the `cocoindex` CLI path), as the
+/// Python SDK does; [`EnvironmentBuilder::build`] reads no environment variables.
+pub const DB_PATH_ENV: &str = "COCOINDEX_DB";
+/// Environment variable for the LMDB maximum number of named databases when a
+/// lifespan sets none (read by [`Environment::from_registered`]).
+pub const LMDB_MAX_DBS_ENV: &str = "COCOINDEX_LMDB_MAX_DBS";
+/// Environment variable for the LMDB map size in bytes when a lifespan sets
+/// none (read by [`Environment::from_registered`]).
+pub const LMDB_MAP_SIZE_ENV: &str = "COCOINDEX_LMDB_MAP_SIZE";
+
+/// Environment variable for the number of components an app runs at once
+/// when the builder sets none, read when the app is created, as in Python.
+pub const MAX_INFLIGHT_COMPONENTS_ENV: &str = "COCOINDEX_MAX_INFLIGHT_COMPONENTS";
+
+/// LMDB maximum number of named databases when nothing sets it.
+pub const DEFAULT_LMDB_MAX_DBS: u32 = 1024;
+/// Components an app runs at once when nothing sets it (Python's default).
+pub const DEFAULT_MAX_INFLIGHT_COMPONENTS: usize = 1024;
+/// LMDB map size in bytes (4 GiB) when nothing sets it.
+pub const DEFAULT_LMDB_MAP_SIZE: usize = 0x1_0000_0000;
 
 /// The environment's registered [`StaticRootProvider`]s, by name.
 ///
@@ -73,6 +104,91 @@ impl Environment {
         EnvironmentBuilder::new()
     }
 
+    /// Build the environment the way the `cocoindex` CLI does: run every
+    /// `#[cocoindex::lifespan]` linked into this binary over a fresh builder,
+    /// then open the state db. This is the Rust analogue of Python's default
+    /// environment (`@coco.lifespan` + import): a user's own `main` and the
+    /// CLI initialize the identical environment.
+    ///
+    /// The db path must come from a lifespan (`builder.db_path(..)`) or from
+    /// the `COCOINDEX_DB` environment variable. `COCOINDEX_LMDB_MAX_DBS` and
+    /// `COCOINDEX_LMDB_MAP_SIZE` apply when a lifespan did not set them.
+    ///
+    /// # Errors
+    /// Returns an error if two `#[cocoindex::app]`s share a name, a lifespan
+    /// fails, no db path is configured, or the db cannot be opened.
+    pub async fn from_registered() -> Result<Environment> {
+        crate::registry::check_unique_app_names()?;
+        let mut builder = EnvironmentBuilder::new();
+        for lifespan in crate::registry::lifespans() {
+            builder = (lifespan.run)(builder).await.map_err(|e| {
+                Error::engine(format!(
+                    "lifespan {}::{} failed: {e}",
+                    lifespan.module, lifespan.name
+                ))
+            })?;
+        }
+        // The CLI-facing settings come from the environment, as in Python;
+        // a plain `build()` reads no environment variables.
+        if builder.db_path.is_none() {
+            let Some(db_path) = std::env::var_os(DB_PATH_ENV) else {
+                return Err(Error::engine(format!(
+                    "no state db path configured: call `builder.db_path(..)` in a \
+                     #[cocoindex::lifespan] or set the {DB_PATH_ENV} environment variable"
+                )));
+            };
+            builder.db_path = Some(PathBuf::from(db_path));
+        }
+        if builder.lmdb_max_dbs.is_none() {
+            builder.lmdb_max_dbs = env_setting(LMDB_MAX_DBS_ENV)?;
+        }
+        if builder.lmdb_map_size.is_none() {
+            builder.lmdb_map_size = env_setting(LMDB_MAP_SIZE_ENV)?;
+        }
+        builder.build().await
+    }
+
+    /// The directory of this environment's LMDB state db.
+    pub fn db_path(&self) -> &Path {
+        &self.inner.db_path
+    }
+
+    /// The engine environment, for `cocoindex::inspect`.
+    pub(crate) fn core(&self) -> &CoreEnvironment<RustProfile> {
+        &self.inner.core_env
+    }
+
+    /// Names of the apps that have persisted state in this environment's db.
+    pub(crate) async fn persisted_app_names(&self) -> Result<Vec<String>> {
+        Ok(cocoindex_core::inspect::db_inspect::list_app_names(&self.inner.core_env).await?)
+    }
+
+    /// Clear one app's state db namespace without reverting its target states
+    /// (the `cocoindex drop --db-only` operation). Use
+    /// [`App::drop_state`] to also revert targets.
+    pub(crate) async fn drop_app_db_only(&self, app_name: &str) -> Result<()> {
+        Ok(self.inner.core_env.storage().drop_app(app_name).await?)
+    }
+
+    /// Run the `on_shutdown` hooks (most recently registered first), then
+    /// close the state db. Hooks run once; a second call only closes.
+    /// Await every running update or drop before calling this. A live update
+    /// never ends on its own, and the SDK cannot stop one yet.
+    pub async fn shutdown(&self) {
+        // A poisoned lock still holds the hooks; run them anyway.
+        let hooks: Vec<ShutdownHook> = std::mem::take(
+            &mut *self
+                .inner
+                .shutdown_hooks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        for hook in hooks.into_iter().rev() {
+            hook().await;
+        }
+        self.inner.core_env.close().await;
+    }
+
     /// Create an app in this environment. Multiple apps may share one
     /// environment — each `name` is its own LMDB namespace and they share the
     /// environment's provided resources.
@@ -80,10 +196,18 @@ impl Environment {
     /// # Errors
     /// Returns an error if the app's state store cannot be created.
     pub async fn app(&self, name: &str) -> Result<App> {
+        // Resolved per app, as Python's `App.__init__` does: the builder's
+        // value, else the environment variable, else the default.
+        let max_inflight_components = match self.inner.max_inflight_components {
+            Some(limit) => limit,
+            None => {
+                env_setting(MAX_INFLIGHT_COMPONENTS_ENV)?.unwrap_or(DEFAULT_MAX_INFLIGHT_COMPONENTS)
+            }
+        };
         let core_app = CoreApp::new(
             name,
             self.inner.core_env.clone(),
-            self.inner.max_inflight_components,
+            Some(max_inflight_components),
         )
         .await
         .map_err(|e| Error::engine(format!("failed to create app: {e}")))?;
@@ -95,19 +219,18 @@ impl Environment {
                 state: self.inner.state.clone(),
                 context: self.inner.context.clone(),
                 static_root_providers: self.inner.static_root_providers.clone(),
+                exception_handler: self.inner.exception_handler.clone(),
             }),
         })
     }
 
     /// Create an app in this environment (blocking). Convenience for sync
-    /// callers — creates a tokio runtime internally and awaits [`Self::app`].
+    /// callers — awaits [`Self::app`] on the engine's runtime.
     ///
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
     pub fn app_blocking(&self, name: &str) -> Result<App> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.app(name))
+        block_on(self.app(name))
     }
 }
 
@@ -116,44 +239,84 @@ impl Environment {
 /// via [`Environment::app`].
 pub struct EnvironmentBuilder {
     db_path: Option<PathBuf>,
-    lmdb_max_dbs: u32,
-    lmdb_map_size: usize,
+    lmdb_max_dbs: Option<u32>,
+    lmdb_map_size: Option<usize>,
     max_inflight_components: Option<usize>,
     state: TypeMap,
     context: ContextStore,
+    shutdown_hooks: Vec<ShutdownHook>,
+    exception_handler: Option<ExceptionHandler>,
 }
 
 impl EnvironmentBuilder {
     fn new() -> Self {
         Self {
             db_path: None,
-            lmdb_max_dbs: 1024,
-            lmdb_map_size: 0x1_0000_0000,
+            lmdb_max_dbs: None,
+            lmdb_map_size: None,
             max_inflight_components: None,
             state: TypeMap::new(),
             context: ContextStore::default(),
+            shutdown_hooks: Vec::new(),
+            exception_handler: None,
         }
     }
 
-    /// Set the LMDB database directory. Default: `./coco_state`.
+    /// Set the LMDB database directory. Default: `./coco_state`
+    /// ([`Environment::from_registered`] falls back to `COCOINDEX_DB` instead).
     pub fn db_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.db_path = Some(path.into());
         self
     }
 
-    /// Set the LMDB maximum number of named databases.
+    /// Set the LMDB maximum number of named databases. Default: 1024
+    /// ([`Environment::from_registered`] reads `COCOINDEX_LMDB_MAX_DBS` first).
     pub fn lmdb_max_dbs(mut self, value: u32) -> Self {
-        self.lmdb_max_dbs = value;
+        self.lmdb_max_dbs = Some(value);
         self
     }
 
-    /// Set the LMDB map size in bytes.
+    /// Set the LMDB map size in bytes. Default: 4 GiB
+    /// ([`Environment::from_registered`] reads `COCOINDEX_LMDB_MAP_SIZE` first).
     pub fn lmdb_map_size(mut self, value: usize) -> Self {
-        self.lmdb_map_size = value;
+        self.lmdb_map_size = Some(value);
+        self
+    }
+
+    /// Register a teardown step for [`Environment::shutdown`]. Hooks run in
+    /// reverse registration order, before the state db is closed — the Rust
+    /// analogue of the code after `yield` in a Python lifespan.
+    pub fn on_shutdown<F, Fut>(mut self, hook: F) -> Self
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.shutdown_hooks.push(Box::new(move || Box::pin(hook())));
+        self
+    }
+
+    /// Route the failures of every background-mounted component in this
+    /// environment ([`Ctx::mount`], [`Ctx::mount_live`], `auto_refresh`, …)
+    /// through `handler`: the outermost handler of each component's chain,
+    /// which [`Ctx::with_exception_handler`] extends. The Rust analogue of
+    /// Python's `builder.set_exception_handler`. The handler returns `Ok(())`
+    /// to swallow a failure or `Err(_)` to propagate it to the mount's handle;
+    /// without one, a failure is logged.
+    ///
+    /// [`Ctx::mount`]: crate::Ctx::mount
+    /// [`Ctx::mount_live`]: crate::Ctx::mount_live
+    /// [`Ctx::with_exception_handler`]: crate::Ctx::with_exception_handler
+    pub fn exception_handler<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(&Error, &ExceptionContext) -> Result<()> + Send + Sync + 'static,
+    {
+        self.exception_handler = Some(Arc::new(handler));
         self
     }
 
     /// Limit the number of concurrently processing components (per app).
+    /// Default: the `COCOINDEX_MAX_INFLIGHT_COMPONENTS` environment variable
+    /// when the app is created, else 1024, as in Python.
     pub fn max_inflight_components(mut self, value: usize) -> Self {
         self.max_inflight_components = Some(value);
         self
@@ -204,11 +367,13 @@ impl EnvironmentBuilder {
         let db_path = self
             .db_path
             .unwrap_or_else(|| PathBuf::from("./coco_state"));
+        let lmdb_max_dbs = self.lmdb_max_dbs.unwrap_or(DEFAULT_LMDB_MAX_DBS);
+        let lmdb_map_size = self.lmdb_map_size.unwrap_or(DEFAULT_LMDB_MAP_SIZE);
 
         let settings = EnvironmentSettings {
-            db_path,
-            lmdb_max_dbs: self.lmdb_max_dbs,
-            lmdb_map_size: self.lmdb_map_size,
+            db_path: db_path.clone(),
+            lmdb_max_dbs,
+            lmdb_map_size,
         };
         let mut registry = TargetStateProviderRegistry::new(Default::default());
         let mut static_root_providers = HashMap::new();
@@ -228,10 +393,13 @@ impl EnvironmentBuilder {
         Ok(Environment {
             inner: Arc::new(EnvironmentInner {
                 core_env,
+                db_path,
                 state: Arc::new(self.state),
                 context: Arc::new(self.context),
                 static_root_providers: Arc::new(static_root_providers),
                 max_inflight_components: self.max_inflight_components,
+                shutdown_hooks: Mutex::new(self.shutdown_hooks),
+                exception_handler: self.exception_handler,
             }),
         })
     }
@@ -241,9 +409,29 @@ impl EnvironmentBuilder {
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
     pub fn build_blocking(self) -> Result<Environment> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.build())
+        block_on(self.build())
+    }
+}
+
+/// Run `fut` to completion on the engine's runtime, for the `*_blocking`
+/// wrappers. The runtime is shared by every app in the process (the engine
+/// spawns component tasks on it), so no wrapper builds a runtime of its own.
+///
+/// # Panics
+/// Panics if called from within an async runtime; use the async form there.
+fn block_on<F: Future>(fut: F) -> F::Output {
+    cocoindex_core::engine::runtime::get_runtime().block_on(fut)
+}
+
+/// Read an integer setting from the environment; `Ok(None)` when unset.
+fn env_setting<T: std::str::FromStr>(name: &str) -> Result<Option<T>> {
+    match std::env::var(name) {
+        Ok(raw) => raw
+            .trim()
+            .parse::<T>()
+            .map(Some)
+            .map_err(|_| Error::engine(format!("{name} must be an integer, got {raw:?}"))),
+        Err(_) => Ok(None),
     }
 }
 
@@ -299,9 +487,7 @@ impl AppBuilder {
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
     pub fn build_blocking(self) -> Result<App> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.build())
+        block_on(self.build())
     }
 }
 
@@ -328,6 +514,8 @@ pub(crate) struct AppInner {
     pub(crate) state: Arc<TypeMap>,
     pub(crate) context: Arc<ContextStore>,
     pub(crate) static_root_providers: StaticRootProviders,
+    /// The environment's handler, the root of every component's handler chain.
+    pub(crate) exception_handler: Option<ExceptionHandler>,
 }
 
 #[derive(Clone)]
@@ -357,7 +545,7 @@ impl App {
     }
 
     /// Convenience: synchronously open an app with a specific DB path. Same
-    /// as [`Self::open`] but blocks on a tokio runtime internally.
+    /// as [`Self::open`] but blocks on the engine's runtime.
     ///
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
@@ -442,6 +630,15 @@ impl App {
     ///
     /// Returns an error if the provided closure returns an error, or if internal engine
     /// orchestration fails.
+    ///
+    /// # Cancellation
+    ///
+    /// The update runs as a task on the engine's runtime. Dropping the
+    /// returned future (or the [`UpdateHandle`] of [`App::start_update`])
+    /// does not stop it: it runs to completion, and a live update runs until
+    /// the process exits. The same holds for [`App::run`],
+    /// [`App::update_with_options`], [`App::preview`] and
+    /// [`App::drop_state`].
     pub async fn update<F, Fut, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(Ctx) -> Fut + Send + 'static,
@@ -518,9 +715,7 @@ impl App {
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.preview(f))
+        block_on(self.preview(f))
     }
 
     /// Start an update and return a handle for progress/stat polling.
@@ -611,22 +806,18 @@ impl App {
     /// [`RunStats`] flattens away).
     pub(crate) fn update_stats_from_processing(processing_stats: &ProcessingStats) -> UpdateStats {
         let snapshot = processing_stats.snapshot();
+        let component_stats = |group: &ProcessingStatsGroup| ComponentStats {
+            num_execution_starts: group.num_execution_starts,
+            num_unchanged: group.num_unchanged,
+            num_adds: group.num_adds,
+            num_deletes: group.num_deletes,
+            num_reprocesses: group.num_reprocesses,
+            num_errors: group.num_errors,
+        };
         let by_component = snapshot
             .stats
             .iter()
-            .map(|(name, group)| {
-                (
-                    name.clone(),
-                    ComponentStats {
-                        num_execution_starts: group.num_execution_starts,
-                        num_unchanged: group.num_unchanged,
-                        num_adds: group.num_adds,
-                        num_deletes: group.num_deletes,
-                        num_reprocesses: group.num_reprocesses,
-                        num_errors: group.num_errors,
-                    },
-                )
-            })
+            .map(|(name, group)| (name.clone(), component_stats(group)))
             .collect();
         let status = if snapshot.ready {
             UpdateStatus::Ready
@@ -636,11 +827,12 @@ impl App {
         UpdateStats {
             by_component,
             status,
+            in_groups: component_stats(&snapshot.in_groups),
         }
     }
 
-    /// Run the pipeline (blocking). Convenience for sync callers — creates a
-    /// tokio runtime internally.
+    /// Run the pipeline (blocking). Convenience for sync callers — runs on
+    /// the engine's runtime.
     ///
     /// # Panics
     /// Panics if called from within an active tokio runtime (use `update`
@@ -651,9 +843,7 @@ impl App {
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.update(f))
+        block_on(self.update(f))
     }
 
     /// Run the pipeline once with explicit update options (blocking).
@@ -666,9 +856,7 @@ impl App {
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.update_with_options(options, f))
+        block_on(self.update_with_options(options, f))
     }
 
     /// Start dropping all persisted app state and return a handle.
@@ -691,9 +879,7 @@ impl App {
     /// # Panics
     /// Panics if called from within an async runtime; use the async form there.
     pub fn drop_state_blocking(&self) -> Result<()> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
-        rt.block_on(self.drop_state())
+        block_on(self.drop_state())
     }
 
     /// Get the app name.
@@ -802,7 +988,8 @@ impl std::fmt::Debug for PreviewAction {
     }
 }
 
-/// Handle returned by [`App::start_update`].
+/// Handle returned by [`App::start_update`]. Dropping it does not stop the
+/// update (see the cancellation notes on [`App::update`]).
 pub struct UpdateHandle<T> {
     core: AppOpHandle<Value>,
     preview_collector: Option<Arc<std::sync::Mutex<Vec<Action>>>>,
@@ -861,7 +1048,8 @@ where
     }
 }
 
-/// Handle returned by [`App::start_drop_state`].
+/// Handle returned by [`App::start_drop_state`]. Dropping it does not stop
+/// the drop (see the cancellation notes on [`App::update`]).
 pub struct DropHandle {
     core: AppOpHandle<()>,
 }

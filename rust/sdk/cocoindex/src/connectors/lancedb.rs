@@ -10,26 +10,30 @@
 //!
 //! Built on the native Rust `lancedb` crate (LanceDB's core is Rust) + Arrow.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::builder::{FixedSizeListBuilder, PrimitiveBuilder};
 use arrow_array::types::{ArrowPrimitiveType, Float16Type, Float32Type};
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
-    Int64Array, RecordBatch, RecordBatchIterator, StringArray,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float16Array, Float32Array, Float64Array,
+    Int8Array, Int16Array, Int32Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
+    UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cocoindex_utils::fingerprint::Fingerprint;
 use half::f16;
 use lancedb::Connection;
 use lancedb::query::{ExecutableQuery, QueryBase};
-use lancedb::table::NewColumnTransform;
+use lancedb::table::{NewColumnTransform, Table};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
+use tokio::sync::OnceCell;
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
+use crate::resources::schema::{VectorElementType, VectorSchemaProvider};
 use crate::statediff::{
     CompositeTrackingRecord, DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord,
     diff, diff_composite, resolve_system_transition,
@@ -51,11 +55,49 @@ pub struct LanceDatabase {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for LanceDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LanceDatabase")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Options for [`LanceDatabase::connect_with_options`], the connection options
+/// Python passes through `connect_async(uri, **options)` for a local or
+/// object-store database. (LanceDB Cloud, `db://`, is not built into the SDK's
+/// `lancedb` dependency.) Every field is optional; the default is a plain
+/// [`LanceDatabase::connect`].
+#[derive(Clone, Debug, Default)]
+pub struct ConnectOptions {
+    /// How long a table handle may serve reads from a stale version before it
+    /// checks for a newer one. `None` reads a table version once per handle;
+    /// `Duration::ZERO` checks on every read.
+    pub read_consistency_interval: Option<Duration>,
+    /// Object-store options (`aws_access_key_id`, `timeout`, ...) for a
+    /// cloud-storage URI.
+    pub storage_options: BTreeMap<String, String>,
+}
+
 impl LanceDatabase {
     /// Open (or create) a LanceDB database at `uri` (a local path like
-    /// `./lancedb_data`, or a cloud URI).
+    /// `./lancedb_data`, or an object-store URI like `s3://bucket/path`).
     pub async fn connect(uri: &str) -> Result<Self> {
-        let conn = lancedb::connect(uri)
+        Self::connect_with_options(uri, ConnectOptions::default()).await
+    }
+
+    /// [`connect`](Self::connect) with explicit [`ConnectOptions`]. The state
+    /// id stays the URI: the options may carry credentials.
+    pub async fn connect_with_options(uri: &str, options: ConnectOptions) -> Result<Self> {
+        let mut builder = lancedb::connect(uri);
+        if let Some(interval) = options.read_consistency_interval {
+            builder = builder.read_consistency_interval(interval);
+        }
+        if !options.storage_options.is_empty() {
+            builder = builder.storage_options(options.storage_options);
+        }
+        let conn = builder
             .execute()
             .await
             .map_err(|e| Error::engine(format!("lancedb connect {uri:?}: {e}")))?;
@@ -84,9 +126,15 @@ impl LanceDatabase {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ColumnType {
     Bool,
+    Int8,
     Int16,
     Int32,
     Int64,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+    Float16,
     Float32,
     Float64,
     Text,
@@ -103,9 +151,15 @@ impl ColumnType {
     fn arrow_data_type(&self) -> DataType {
         match self {
             ColumnType::Bool => DataType::Boolean,
+            ColumnType::Int8 => DataType::Int8,
             ColumnType::Int16 => DataType::Int16,
             ColumnType::Int32 => DataType::Int32,
             ColumnType::Int64 => DataType::Int64,
+            ColumnType::UInt8 => DataType::UInt8,
+            ColumnType::UInt16 => DataType::UInt16,
+            ColumnType::UInt32 => DataType::UInt32,
+            ColumnType::UInt64 => DataType::UInt64,
+            ColumnType::Float16 => DataType::Float16,
             ColumnType::Float32 => DataType::Float32,
             ColumnType::Float64 => DataType::Float64,
             ColumnType::Text | ColumnType::Json => DataType::Utf8,
@@ -203,7 +257,49 @@ impl TableSchema {
     }
 
     /// Resolve or override the dimension of a vector field derived from a row.
-    pub fn with_vector_dim(mut self, field_name: &str, dim: usize) -> Result<Self> {
+    pub fn with_vector_dim(self, field_name: &str, dim: usize) -> Result<Self> {
+        self.set_vector_column(field_name, dim, None)
+    }
+
+    /// Resolve a vector field derived from a row from a
+    /// [`VectorSchemaProvider`], typically the embedder that fills it (Python's
+    /// `column_specs={"embedding": embedder}`). The column is a fixed-size
+    /// list of `f16` for `f16` elements and of `f32` otherwise. For an embedder
+    /// held in the context, pass `ctx.get_key(&EMBEDDER)?`.
+    pub async fn with_vector_schema(
+        self,
+        field_name: &str,
+        provider: &(impl VectorSchemaProvider + ?Sized),
+    ) -> Result<Self> {
+        let schema =
+            crate::row_schema::provided_vector_schema("LanceDB", field_name, provider).await?;
+        let half = match schema.element_type {
+            VectorElementType::Float16 => true,
+            VectorElementType::Float32 | VectorElementType::Float64 => false,
+        };
+        self.set_vector_column(field_name, schema.size, Some(half))
+    }
+
+    /// Replace the type of one column of a schema derived from a row (Python's
+    /// `column_specs={"col": LanceType(…)}`), keeping its nullability.
+    pub fn with_column_type(mut self, field_name: &str, col_type: ColumnType) -> Result<Self> {
+        let (_, def) = self
+            .columns
+            .iter_mut()
+            .find(|(name, _)| name == field_name)
+            .ok_or_else(|| crate::row_schema::unknown_column_error("LanceDB", field_name))?;
+        def.col_type = col_type;
+        Ok(self)
+    }
+
+    /// Set the dimension of the vector column `field_name`, and whether its
+    /// elements are half precision when `half` is given.
+    fn set_vector_column(
+        mut self,
+        field_name: &str,
+        dim: usize,
+        half: Option<bool>,
+    ) -> Result<Self> {
         if dim == 0 || i32::try_from(dim).is_err() {
             return Err(crate::row_schema::vector_dimension_error(
                 "LanceDB",
@@ -216,16 +312,20 @@ impl TableSchema {
             .iter_mut()
             .find(|(name, _)| name == field_name)
             .ok_or_else(|| crate::row_schema::unknown_vector_field_error("LanceDB", field_name))?;
-        match &mut def.col_type {
-            ColumnType::Vector(current_dim) | ColumnType::HalfVector(current_dim) => {
-                *current_dim = dim;
-            }
+        let current_half = match def.col_type {
+            ColumnType::Vector(_) => false,
+            ColumnType::HalfVector(_) => true,
             _ => {
                 return Err(crate::row_schema::not_vector_field_error(
                     "LanceDB", field_name,
                 ));
             }
-        }
+        };
+        def.col_type = if half.unwrap_or(current_half) {
+            ColumnType::HalfVector(dim)
+        } else {
+            ColumnType::Vector(dim)
+        };
         Ok(self)
     }
 
@@ -300,17 +400,25 @@ fn lancedb_column_def(field: &crate::row_schema::SchemaField) -> Result<ColumnDe
 
 /// A declarative LanceDB table target — a handle to declare rows on. See the
 /// [module docs](self).
-#[derive(Clone)]
+///
+/// As a `mount_each!` / `use_mount!` or memoized function argument it
+/// fingerprints by its stable key, the database key and table name; the schema,
+/// managed-by flag, and runtime provider are not part of the identity.
+#[derive(Clone, Serialize)]
 pub struct LanceTableTarget {
+    db_key: Arc<str>,
     table_name: Arc<str>,
+    #[serde(skip)]
     table_schema: TableSchema,
+    #[serde(skip)]
     managed_by: ManagedBy,
+    #[serde(skip)]
     rows: TargetStateProvider<RowState>,
 }
 
 /// Build a composable [`TargetState`] for a LanceDB table (the spec constructor).
 /// Pass it to [`declare_table_target`]/[`mount_table_target`] or the generic
-/// [`declare_target_state_with_child`]/[`mount_target`]. System-managed.
+/// [`crate::declare_target_state_with_child`]/[`mount_target`]. System-managed.
 pub fn table_target(
     ctx: &Ctx,
     db: &ContextKey<LanceDatabase>,
@@ -365,14 +473,26 @@ pub fn declare_table_target(
     table_name: impl Into<String>,
     table_schema: TableSchema,
 ) -> Result<LanceTableTarget> {
-    let table_name = table_name.into();
-    let target_state = table_target_with_options(
+    declare_table_target_with_options(
         ctx,
         db,
-        table_name.clone(),
+        table_name,
         table_schema,
         ManagedTargetOptions::default(),
-    )?;
+    )
+}
+
+/// [`declare_table_target`] with explicit [`ManagedTargetOptions`] (`managed_by`).
+pub fn declare_table_target_with_options(
+    ctx: &Ctx,
+    db: &ContextKey<LanceDatabase>,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    options: ManagedTargetOptions,
+) -> Result<LanceTableTarget> {
+    let table_name = table_name.into();
+    let target_state =
+        table_target_with_options(ctx, db, table_name.clone(), table_schema, options)?;
     let spec = target_state.value().clone();
     let schema_fp = Fingerprint::from(&table_tracking_record(&spec)).map_err(Error::from)?;
     declare_target_state(ctx, target_state)?;
@@ -391,6 +511,7 @@ pub fn declare_table_target(
         RowHandler::new(db.name().to_string(), spec.clone(), BTreeSet::new()),
     )?;
     Ok(LanceTableTarget {
+        db_key: Arc::from(db.name()),
         table_name: Arc::from(table_name),
         table_schema: spec.table_schema,
         managed_by: spec.managed_by,
@@ -432,6 +553,7 @@ pub async fn mount_table_target_with_options(
     let spec = target_state.value().clone();
     let rows = mount_target::<TableSpec, RowState>(ctx, target_state).await?;
     Ok(LanceTableTarget {
+        db_key: Arc::from(db.name()),
         table_name: Arc::from(table_name),
         table_schema: spec.table_schema,
         managed_by: spec.managed_by,
@@ -853,7 +975,7 @@ async fn open_table_for_index(
     db: &LanceDatabase,
     table_name: &str,
     create_from: Option<&TableSpec>,
-) -> Result<Option<lancedb::table::Table>> {
+) -> Result<Option<Table>> {
     if !table_exists(db, table_name).await? {
         let Some(spec) = create_from else {
             return Ok(None);
@@ -957,6 +1079,10 @@ struct RowHandler {
     /// row-batches so the table is optimized every
     /// [`TRANSACTIONS_BEFORE_OPTIMIZE`] batches (see [`apply_rows`]).
     optimize_counter: Arc<std::sync::atomic::AtomicU64>,
+    /// The table handle, opened (and for a system-managed table, ensured) by
+    /// the first row batch of the run and reused by every later one (see
+    /// [`open_table_for_rows`]).
+    table: Arc<OnceCell<Table>>,
     null_backfilled_columns: BTreeSet<String>,
 }
 
@@ -966,6 +1092,7 @@ impl RowHandler {
             db_key,
             spec,
             optimize_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            table: Arc::new(OnceCell::new()),
             null_backfilled_columns,
             sink: SinkCache::default(),
         }
@@ -1087,11 +1214,13 @@ impl RowHandler {
         let db_key = self.db_key.clone();
         let spec = self.spec.clone();
         let optimize_counter = self.optimize_counter.clone();
+        let table = self.table.clone();
         TargetActionSink::from_async_fn_with_ctx(
             move |host_ctx, actions: Vec<TargetAction<RowAction>>| {
                 let db_key = db_key.clone();
                 let spec = spec.clone();
                 let optimize_counter = optimize_counter.clone();
+                let table = table.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
                     let mut upserts: Vec<Map<String, JsonValue>> = Vec::new();
@@ -1110,37 +1239,63 @@ impl RowHandler {
                             None => deletes.push(row.pk),
                         }
                     }
-                    apply_rows(&db, &spec, upserts, deletes, &optimize_counter).await
+                    if upserts.is_empty() && deletes.is_empty() {
+                        return Ok(());
+                    }
+                    let table = open_table_for_rows(&table, &db, &spec).await?;
+                    apply_rows(table, &spec, upserts, deletes, &optimize_counter).await
                 }
             },
         )
     }
 }
 
-async fn apply_rows(
+/// The table handle a row batch writes through: opened on the first call of
+/// the run and reused by the later ones. For a system-managed table the first
+/// call also ensures the table exists with the declared schema: the engine
+/// applies one commit's sinks in no fixed order, so with
+/// [`declare_table_target`] rows can arrive before the table sink runs.
+/// User-managed targets leave DDL to the caller and let `open_table` surface
+/// a missing table.
+///
+/// A reused handle moves to the table's latest version first: a merge joins
+/// against the version its handle has checked out, and a handle does not
+/// reload by itself under the default read consistency. Another handle may have
+/// written since (an index sink, or the table sink recreating the table).
+async fn open_table_for_rows<'a>(
+    cache: &'a OnceCell<Table>,
     db: &LanceDatabase,
+    spec: &TableSpec,
+) -> Result<&'a Table> {
+    if let Some(table) = cache.get() {
+        table
+            .checkout_latest()
+            .await
+            .map_err(|e| Error::engine(format!("lancedb reload table: {e}")))?;
+        return Ok(table);
+    }
+    cache
+        .get_or_try_init(|| async {
+            if spec.managed_by.is_system() {
+                ensure_table(db, spec, false).await?;
+            }
+            db.conn
+                .open_table(&spec.table_name)
+                .execute()
+                .await
+                .map_err(|e| Error::engine(format!("lancedb open table: {e}")))
+        })
+        .await
+}
+
+async fn apply_rows(
+    table: &Table,
     spec: &TableSpec,
     upserts: Vec<Map<String, JsonValue>>,
     deletes: Vec<Vec<JsonValue>>,
     optimize_counter: &std::sync::atomic::AtomicU64,
 ) -> Result<()> {
     use std::sync::atomic::Ordering;
-
-    if upserts.is_empty() && deletes.is_empty() {
-        return Ok(());
-    }
-    // Rows imply the table exists for system-managed targets. User-managed
-    // targets intentionally leave DDL to the caller and let open_table surface
-    // missing/incompatible tables.
-    if spec.managed_by.is_system() {
-        ensure_table(db, spec, false).await?;
-    }
-    let table = db
-        .conn
-        .open_table(&spec.table_name)
-        .execute()
-        .await
-        .map_err(|e| Error::engine(format!("lancedb open table: {e}")))?;
 
     if !upserts.is_empty() {
         let schema = spec.table_schema.arrow_schema();
@@ -1161,8 +1316,10 @@ async fn apply_rows(
             .map_err(|e| Error::engine(format!("lancedb merge_insert: {e}")))?;
     }
 
-    for pk in &deletes {
-        let predicate = delete_predicate(&spec.table_schema.primary_key, pk)?;
+    // One delete (one table version) per chunk of keys rather than per key: a
+    // Lance delete is a commit, so a key-at-a-time loop costs a commit each.
+    for chunk in deletes.chunks(DELETE_KEYS_PER_FILTER) {
+        let predicate = delete_predicate(&spec.table_schema.primary_key, chunk)?;
         table
             .delete(&predicate)
             .await
@@ -1185,22 +1342,63 @@ async fn apply_rows(
     Ok(())
 }
 
-fn delete_predicate(primary_key: &[String], pk: &[JsonValue]) -> Result<String> {
-    let mut parts = Vec::with_capacity(primary_key.len());
-    for (name, value) in primary_key.iter().zip(pk) {
-        let rhs = match value {
-            JsonValue::String(s) => format!("'{}'", s.replace('\'', "''")),
-            JsonValue::Number(n) => n.to_string(),
-            other => {
-                return Err(Error::engine(format!(
-                    "unsupported LanceDB key value: {other}"
-                )));
-            }
-        };
+/// Keys per delete filter: bounds the filter's size while keeping the number
+/// of commits a large delete makes small.
+const DELETE_KEYS_PER_FILTER: usize = 1000;
+
+/// The filter matching the rows with any of `keys`: `pk IN (..)` for a
+/// single-column key, an `OR` of per-key `AND`s for a composite one.
+fn delete_predicate(primary_key: &[String], keys: &[Vec<JsonValue>]) -> Result<String> {
+    for name in primary_key {
         validate_identifier(name)?;
-        parts.push(format!("{name} = {rhs}"));
     }
-    Ok(parts.join(" AND "))
+    let key_mismatch = |pk: &[JsonValue]| {
+        Error::engine(format!(
+            "LanceDB key {pk:?} does not match the primary key {primary_key:?}"
+        ))
+    };
+    if let [name] = primary_key {
+        let values = keys
+            .iter()
+            .map(|pk| match pk.as_slice() {
+                [value] => sql_literal(value),
+                _ => Err(key_mismatch(pk)),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return Ok(format!("{name} IN ({})", values.join(", ")));
+    }
+    let conditions = keys
+        .iter()
+        .map(|pk| {
+            if pk.len() != primary_key.len() {
+                return Err(key_mismatch(pk));
+            }
+            let parts = primary_key
+                .iter()
+                .zip(pk)
+                .map(|(name, value)| Ok(format!("{name} = {}", sql_literal(value)?)))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(format!("({})", parts.join(" AND ")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(conditions.join(" OR "))
+}
+
+/// A key value as a Lance SQL literal.
+fn sql_literal(value: &JsonValue) -> Result<String> {
+    match value {
+        JsonValue::String(s) => Ok(format!("'{}'", s.replace('\'', "''"))),
+        // Lance parses the i64 minimum as a negated positive number, which
+        // overflows to a float that no longer matches the key; a cast from a
+        // string is exact (as in the Python connector).
+        JsonValue::Number(n) if n.as_i64() == Some(i64::MIN) => {
+            Ok(format!("CAST('{n}' AS BIGINT)"))
+        }
+        JsonValue::Number(n) => Ok(n.to_string()),
+        other => Err(Error::engine(format!(
+            "unsupported LanceDB key value: {other}"
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1221,11 +1419,63 @@ fn build_record_batch(
                     .map(|v| typed_value(name, def, v, "a boolean", JsonValue::as_bool))
                     .collect::<Result<Vec<_>>>()?,
             )),
+            ColumnType::Int8 => Arc::new(Int8Array::from(
+                values
+                    .map(|v| {
+                        typed_value(name, def, v, "an 8-bit integer", |v| {
+                            v.as_i64().and_then(|n| i8::try_from(n).ok())
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
             ColumnType::Int16 => Arc::new(Int16Array::from(
                 values
                     .map(|v| {
                         typed_value(name, def, v, "a 16-bit integer", |v| {
                             v.as_i64().and_then(|n| i16::try_from(n).ok())
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::UInt8 => Arc::new(UInt8Array::from(
+                values
+                    .map(|v| {
+                        typed_value(name, def, v, "an 8-bit unsigned integer", |v| {
+                            v.as_u64().and_then(|n| u8::try_from(n).ok())
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::UInt16 => Arc::new(UInt16Array::from(
+                values
+                    .map(|v| {
+                        typed_value(name, def, v, "a 16-bit unsigned integer", |v| {
+                            v.as_u64().and_then(|n| u16::try_from(n).ok())
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::UInt32 => Arc::new(UInt32Array::from(
+                values
+                    .map(|v| {
+                        typed_value(name, def, v, "a 32-bit unsigned integer", |v| {
+                            v.as_u64().and_then(|n| u32::try_from(n).ok())
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::UInt64 => Arc::new(UInt64Array::from(
+                values
+                    .map(|v| {
+                        typed_value(name, def, v, "a 64-bit unsigned integer", JsonValue::as_u64)
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            ColumnType::Float16 => Arc::new(Float16Array::from(
+                values
+                    .map(|v| {
+                        typed_value(name, def, v, "a 16-bit float", |v| {
+                            v.as_f64().map(f16::from_f64).filter(|n| n.is_finite())
                         })
                     })
                     .collect::<Result<Vec<_>>>()?,
@@ -1315,7 +1565,7 @@ fn build_record_batch(
                 def.nullable,
                 DataType::Float32,
                 values,
-                |value| value,
+                |value| value.is_finite().then_some(value),
             )?,
             ColumnType::HalfVector(dim) => build_vector_array::<Float16Type>(
                 name,
@@ -1323,7 +1573,7 @@ fn build_record_batch(
                 def.nullable,
                 DataType::Float16,
                 values,
-                f16::from_f32,
+                |value| Some(f16::from_f32(value)).filter(|h| h.is_finite()),
             )?,
         };
         arrays.push(array);
@@ -1338,7 +1588,7 @@ fn build_vector_array<'a, T: ArrowPrimitiveType>(
     nullable: bool,
     item_type: DataType,
     values: impl Iterator<Item = &'a JsonValue>,
-    convert: impl Fn(f32) -> T::Native,
+    convert: impl Fn(f32) -> Option<T::Native>,
 ) -> Result<ArrayRef> {
     let mut builder = FixedSizeListBuilder::new(PrimitiveBuilder::<T>::new(), dim as i32)
         .with_field(Arc::new(Field::new("item", item_type, true)));
@@ -1370,7 +1620,15 @@ fn build_vector_array<'a, T: ArrowPrimitiveType>(
             let f = v.as_f64().ok_or_else(|| {
                 Error::engine(format!("column {column:?} has non-numeric vector element"))
             })?;
-            builder.values().append_value(convert(f as f32));
+            // `convert` refuses a finite value that overflows the element type
+            // (an `f64` beyond the `f32` range, a value beyond the `f16` one),
+            // which would otherwise be stored as an infinity.
+            let element = convert(f as f32).ok_or_else(|| {
+                Error::engine(format!(
+                    "column {column:?} vector element {f} does not fit its element type"
+                ))
+            })?;
+            builder.values().append_value(element);
         }
         builder.append(true);
         count += 1;
@@ -1623,16 +1881,26 @@ impl Default for VectorIndexOptions {
 }
 
 /// Options for [`LanceTableTarget::declare_fts_index`].
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct FtsIndexOptions {
     /// Index name; defaults to `<column>_fts_idx`.
     pub name: Option<String>,
     /// Record token positions (enables phrase queries) at the cost of a larger
-    /// index. Defaults to `false`.
+    /// index. Defaults to `true`, as in the Python connector.
     pub with_position: bool,
     /// Stemming/stop-word language (e.g. `"English"`, `"French"`). `None` uses
     /// LanceDB's default (English), matching the Python connector.
     pub language: Option<String>,
+}
+
+impl Default for FtsIndexOptions {
+    fn default() -> Self {
+        Self {
+            name: None,
+            with_position: true,
+            language: None,
+        }
+    }
 }
 
 /// Spec for a LanceDB vector index (an attachment of a table). Used as both the
@@ -1850,7 +2118,7 @@ fn lance_distance_type(metric: &str) -> Result<lancedb::DistanceType> {
 
 /// Open the table and drop `name` if it currently exists (LanceDB errors when
 /// dropping an index that isn't there).
-async fn drop_index_if_exists(table: &lancedb::table::Table, name: &str) -> Result<()> {
+async fn drop_index_if_exists(table: &Table, name: &str) -> Result<()> {
     let indices = table
         .list_indices()
         .await
@@ -2384,13 +2652,33 @@ mod tests {
         assert_eq!(key, StableKey::Int(42));
         let pk = stable_key_to_pk(&key).unwrap();
         assert_eq!(
-            delete_predicate(&["id".to_string()], &pk).unwrap(),
-            "id = 42"
+            delete_predicate(&["id".to_string()], std::slice::from_ref(&pk)).unwrap(),
+            "id IN (42)"
+        );
+        assert_eq!(
+            delete_predicate(&["id".to_string()], &[vec![JsonValue::from(i64::MIN)]]).unwrap(),
+            "id IN (CAST('-9223372036854775808' AS BIGINT))"
         );
 
-        let pred = delete_predicate(&["name".to_string()], &[JsonValue::from("a'b")]).unwrap();
-        assert_eq!(pred, "name = 'a''b'");
-        assert!(delete_predicate(&["bad-name".to_string()], &pk).is_err());
+        let pred = delete_predicate(
+            &["name".to_string()],
+            &[vec![JsonValue::from("a'b")], vec![JsonValue::from("c")]],
+        )
+        .unwrap();
+        assert_eq!(pred, "name IN ('a''b', 'c')");
+        let pred = delete_predicate(
+            &["file".to_string(), "chunk".to_string()],
+            &[
+                vec![JsonValue::from("a"), JsonValue::from(1)],
+                vec![JsonValue::from("b"), JsonValue::from(2)],
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            pred,
+            "(file = 'a' AND chunk = 1) OR (file = 'b' AND chunk = 2)"
+        );
+        assert!(delete_predicate(&["bad-name".to_string()], &[pk]).is_err());
     }
 
     #[test]
@@ -2475,5 +2763,80 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("LanceDB target row"), "{err}");
+    }
+
+    /// The row batches of a run write through one table handle: the first
+    /// batch ensures and opens the table, every later batch reuses the handle
+    /// (no table listing, open or schema read per batch). The handle still sees
+    /// what another handle wrote, and a table recreated under it.
+    #[tokio::test]
+    async fn row_batches_of_a_run_share_one_table_handle() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let db = LanceDatabase::connect(tempdir.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let spec = TableSpec {
+            table_name: "docs".to_string(),
+            table_schema: schema(),
+            managed_by: ManagedBy::System,
+        };
+        let handler = RowHandler::new("db".to_string(), spec.clone(), BTreeSet::new());
+        assert!(!table_exists(&db, "docs").await.unwrap());
+
+        let first = open_table_for_rows(&handler.table, &db, &spec)
+            .await
+            .unwrap();
+        assert!(
+            table_exists(&db, "docs").await.unwrap(),
+            "first batch ensures"
+        );
+        let first = Arc::clone(first.base_table());
+        let counter = std::sync::atomic::AtomicU64::new(0);
+        for id in 1..=3 {
+            let table = open_table_for_rows(&handler.table, &db, &spec)
+                .await
+                .unwrap();
+            assert!(
+                Arc::ptr_eq(&first, table.base_table()),
+                "batch {id} reuses the handle"
+            );
+            let mut row = Map::new();
+            row.insert("id".into(), JsonValue::from(id));
+            row.insert("name".into(), JsonValue::from("n"));
+            row.insert("embedding".into(), JsonValue::from(vec![0.1, 0.2, 0.3]));
+            apply_rows(table, &spec, vec![row], vec![], &counter)
+                .await
+                .unwrap();
+        }
+        assert_eq!(first.count_rows(None).await.unwrap(), 3);
+
+        let row = |id: i64, name: &str| {
+            let mut row = Map::new();
+            row.insert("id".into(), JsonValue::from(id));
+            row.insert("name".into(), JsonValue::from(name));
+            row.insert("embedding".into(), JsonValue::from(vec![0.1, 0.2, 0.3]));
+            row
+        };
+        let batch = async |rows: Vec<Map<String, JsonValue>>| {
+            let table = open_table_for_rows(&handler.table, &db, &spec)
+                .await
+                .unwrap();
+            apply_rows(table, &spec, rows, vec![], &counter)
+                .await
+                .unwrap();
+            table.count_rows(None).await.unwrap()
+        };
+
+        // A row another handle wrote is matched, not inserted a second time.
+        let other = db.conn.open_table("docs").execute().await.unwrap();
+        apply_rows(&other, &spec, vec![row(4, "other")], vec![], &counter)
+            .await
+            .unwrap();
+        assert_eq!(batch(vec![row(4, "cached")]).await, 4);
+
+        // A table recreated under the handle receives the next batch.
+        drop_table(&db, "docs").await.unwrap();
+        create_empty_table(&db, &spec).await.unwrap();
+        assert_eq!(batch(vec![row(9, "new")]).await, 1);
     }
 }

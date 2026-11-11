@@ -254,7 +254,7 @@ async fn main() -> cocoindex::Result<()> {
         .run(move |ctx| async move {
             let collections = discover_collections(&dataset)?;
             let summaries: Vec<CollectionSummary> = ctx
-                .mount_each(collections, |collection| collection.name.clone(), {
+                .use_mount_each(collections, |collection| collection.name.clone(), {
                     let scenario = scenario.clone();
                     move |project_ctx, collection| {
                         let scenario = scenario.clone();
@@ -323,7 +323,7 @@ async fn process_collection(
         .fetch_add(files.len() as u64, Ordering::Relaxed);
 
     let extracted: Vec<Vec<SectionInput>> = ctx
-        .mount_each(
+        .use_mount_each(
             files,
             |file| file.key(),
             |file_ctx, file| async move {

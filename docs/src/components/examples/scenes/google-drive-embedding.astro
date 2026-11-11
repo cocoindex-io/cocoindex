@@ -1,0 +1,128 @@
+---
+// Semantic search over Google Drive: the hero is the shared folder. The
+// example ships no Drive files, so rows show what the connector does with each
+// kind of file (google_drive/_source.py _EXPORT_MIME_BY_TYPE: Docs →
+// text/markdown, Sheets → text/csv, Slides → text/plain, anything else
+// downloaded as-is; subfolders walked recursively). Access is a service
+// account the folder is shared with; folder ids come from
+// GOOGLE_DRIVE_ROOT_FOLDER_IDS. The target row here has no chunk offsets:
+// DocEmbedding is id, filename, text, embedding in
+// coco_examples_v1.doc_embeddings. No live mode for google_drive. The edited
+// Doc (Δ) is caught by its modifiedTime on the next catch-up run. Its rows'
+// Drive name path and chunk text are illustrative (captioned so); ids come
+// from IdGenerator and are elided rather than invented.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="gd">
+    <div class="sc-row">
+      <div class="sc-col gd-drive">
+        <span class="sc-cap">Google Drive folder</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span>GOOGLE_DRIVE_ROOT_FOLDER_IDS</div>
+          <div class="gd-th"><span>In the folder</span><span>Read as</span></div>
+          <div class="gd-r sc-delta"><span class="gd-k"><span class="sc-ico i-file"></span><span>Google Doc</span><span class="sc-dmark">Δ</span></span><span class="gd-v sc-dtext">text/markdown</span></div>
+          <div class="gd-r"><span class="gd-k"><span class="sc-ico i-table"></span><span>Google Sheet</span></span><span class="gd-v">text/csv</span></div>
+          <div class="gd-r"><span class="gd-k"><span class="sc-ico i-image"></span><span>Google Slides</span></span><span class="gd-v">text/plain</span></div>
+          <div class="gd-r"><span class="gd-k"><span class="sc-ico i-file"></span><span>Any other file</span></span><span class="gd-v">as-is</span></div>
+          <div class="gd-r"><span class="gd-k"><span class="sc-ico i-folder"></span><span>Subfolders</span></span><span class="gd-v gd-sans">walked recursively</span></div>
+        </div>
+        <div class="sc-row sc-keep gd-auth"><span class="sc-chip"><span class="sc-ico i-person"></span>service-account.json</span><span class="gd-note">the folder is shared with this account's email</span></div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col gd-dst">
+        <span class="sc-cap">Chunk, embed, store</span>
+        <div class="sc-stack gd-ops">
+          <span class="sc-chip"><span class="sc-ico i-code"></span>GoogleDriveSource</span>
+          <span class="sc-chip"><span class="sc-ico i-code"></span>RecursiveSplitter</span>
+          <span class="sc-chip"><span class="sc-ico i-model"></span>all-MiniLM-L6-v2</span>
+        </div>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>coco_examples_v1.doc_embeddings</div>
+          <dl class="gd-schema">
+            <dt>id</dt><dd>from the chunk text</dd>
+            <dt>filename</dt><dd>the file's Drive name path</dd>
+            <dt>text</dt><dd>one chunk</dd>
+            <dt>embedding</dt><dd>its vector</dd>
+          </dl>
+          <div class="gd-rows-h"><span class="gd-rows-t">Edited Doc's rows, re-derived</span><span class="sc-cap gd-ill">Illustrative</span></div>
+          <div class="gd-fnl">filename = <span class="sc-dtext">"Attention notes"</span></div>
+          <table class="sc-table gd-rows">
+            <thead><tr><th class="gd-id">id</th><th>text</th></tr></thead>
+            <tbody>
+              <tr class="sc-delta"><td class="sc-dim gd-id">…</td><td><span class="sc-dtext"># Self-attention Each token attends to …</span></td></tr>
+              <tr class="sc-delta"><td class="sc-dim gd-id">…</td><td><span class="sc-dtext">## Multi-head attention Several heads …</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="gd-search">
+      <span class="sc-cap">Search your Drive by meaning</span>
+      <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py "what is self-attention?"</span></div>
+      <p class="gd-foot">Nearest chunks by pgvector cosine distance. No live mode for Drive: re-run <code>cocoindex update main</code> and a changed modifiedTime marks which files to read again.</p>
+    </div>
+  </div>
+) : (
+  <div class="gd-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel gd-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-folder"></span>Shared Drive folder</div>
+        <div class="sc-panel-b">
+          <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>Google Doc</span><span class="sc-meta">markdown</span></div>
+          <div class="sc-li"><span class="sc-ico i-table"></span><span>Google Sheet</span><span class="sc-meta">csv</span></div>
+          <div class="sc-li"><span class="sc-ico i-image"></span><span>Google Slides</span><span class="sc-meta">text</span></div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col gd-card-dst">
+        <div class="sc-query"><span class="sc-ico i-search"></span><span>"what is self-attention?"</span></div>
+        <span class="sc-chip"><span class="sc-ico i-table"></span>doc_embeddings</span>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .gd { display: flex; flex-direction: column; gap: 18px; }
+  .gd > .sc-row { gap: 10px; }
+  .gd-drive { flex: 1.25 1 0; }
+  .gd-dst { flex: 1 1 0; }
+  .gd-th, .gd-r { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; margin: 0 6px; padding: 5px 6px; border: 1px solid transparent; }
+  .gd-th { font-family: var(--sans); font-size: 11.5px; font-weight: 500; color: var(--sc-dim); }
+  .gd-r { border-top-color: var(--sc-line); font-family: var(--mono); font-size: 12px; }
+  .gd-r:last-child { margin-bottom: 6px; }
+  .gd-r.sc-delta { border-radius: 6px; }
+  .gd-k { display: flex; align-items: center; gap: 8px; min-width: 0; font-family: var(--sans); font-size: 12.5px; color: var(--sc-ink); }
+  .gd-k > span:not(.sc-ico):not(.sc-dmark) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gd-v { color: var(--sc-muted); white-space: nowrap; }
+  .gd-v.sc-dtext { color: var(--sc-delta-text); }
+  .gd-sans { font-family: var(--sans); color: var(--sc-dim); }
+  .gd-auth { gap: 8px; align-items: center; }
+  .gd-note { min-width: 0; font-size: 12px; color: var(--sc-dim); }
+  .gd-ops { align-items: flex-start; }
+  .gd-schema { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 12px; row-gap: 4px; margin: 0; padding: 8px 10px; border-bottom: 1px solid var(--sc-line); }
+  .gd-schema dt { font-family: var(--mono); font-size: 12px; color: var(--sc-ink); }
+  .gd-schema dd { margin: 0; min-width: 0; font-size: 12px; color: var(--sc-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gd-rows-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 8px 10px 0; }
+  .gd-rows-t { font-size: 12px; color: var(--sc-muted); }
+  .gd-ill { font-weight: 400; }
+  .gd-rows { table-layout: fixed; }
+  .gd-rows .gd-id { width: 30px; }
+  .gd-fnl { padding: 4px 10px 2px; font-family: var(--mono); font-size: 12px; color: var(--sc-dim); }
+  .gd-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .gd-foot { margin: 0; font-size: 12px; line-height: 1.45; color: var(--sc-dim); }
+  .gd-foot code { font-family: var(--mono); font-size: 12px; color: var(--sc-muted); }
+
+  .gd-card { height: 100%; display: flex; align-items: center; }
+  .gd-card { min-width: 0; contain: inline-size; }
+  .gd-card > .sc-row { width: 100%; min-width: 0; align-items: center; }
+  .gd-card-src { flex: 1.2 1 0; }
+  .gd-card-dst { flex: 1 1 0; }
+  .gd-card-dst .sc-chip { align-self: flex-start; }
+  .gd-card .sc-query { align-items: flex-start; }
+  .gd-card .sc-query > span:last-child { white-space: normal; }
+  .gd-card .sc-li > span:nth-child(2) { font-family: var(--sans); }
+</style>
