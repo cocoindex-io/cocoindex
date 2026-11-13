@@ -482,7 +482,7 @@ struct WalkFrame<'t, 's: 't> {
     header: Option<NodeHeader>,
     /// The content of that syntax node, trimmed, if it is the body of a node
     /// that does not fit, or all of such a body's text: it may fit, but is not
-    /// kept whole (see `node_frame`).
+    /// kept whole (see `push_node_frame`).
     unfitting_body: Option<TextRange>,
     /// The outermost `fitting_node` of this frame and the frames it is in.
     /// Frames nest, so it contains every other one: a position inside any of
@@ -495,16 +495,19 @@ struct WalkFrame<'t, 's: 't> {
 }
 
 impl<'t, 's: 't> WalkFrame<'t, 's> {
-    /// A frame that walks text split by regex, inside `parent` if any.
-    fn text(iter: ChunkIterator<'t, 's>, parent: Option<&WalkFrame<'t, 's>>) -> Self {
-        WalkFrame {
+    /// Pushes onto `frames` a frame that walks text split by regex, inside
+    /// the frame on top, if any.
+    fn push_text(frames: &mut Vec<WalkFrame<'t, 's>>, iter: ChunkIterator<'t, 's>) {
+        let parent = frames.last();
+        let frame = WalkFrame {
             iter,
             fitting_node: None,
             header: None,
             unfitting_body: None,
             outermost_fitting_node: parent.and_then(|parent| parent.outermost_fitting_node),
             header_frame: parent.and_then(|parent| parent.header_frame),
-        }
+        };
+        frames.push(frame);
     }
 }
 
@@ -534,8 +537,9 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
         TextRange::new(start, range.start + text.trim_end().len())
     }
 
-    /// The frame that walks inside `node`, to be pushed on `frames`: a child
-    /// of the frame on top, if any.
+    /// Pushes onto `frames` the frame that walks inside `node`, a child of the
+    /// frame on top, if any. Pushing here keeps `header_frame` right: a frame
+    /// with a header names its own index in `frames`.
     ///
     /// The body of a node that does not fit is not kept whole, even if it fits
     /// on its own: the unit is the header with its body, and keeping the body
@@ -545,13 +549,13 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
     /// the `inline` text of a Markdown paragraph, which splits at sentences.
     /// A body with a header of its own, such as a decorated `def`, is a unit
     /// itself and stays whole where it fits.
-    fn node_frame(
+    fn push_node_frame(
         &self,
+        frames: &mut Vec<WalkFrame<'t, 's>>,
         iter: ChunkIterator<'t, 's>,
         node: tree_sitter::Node<'_>,
         splits_as_text: bool,
-        frames: &[WalkFrame<'t, 's>],
-    ) -> WalkFrame<'t, 's> {
+    ) {
         let parent = frames.last();
         let range = TextRange::new(node.start_byte(), node.end_byte());
         let content = self.trimmed(range);
@@ -567,7 +571,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
         } else {
             self.fitting_node(range)
         };
-        WalkFrame {
+        let frame = WalkFrame {
             iter,
             fitting_node,
             header,
@@ -580,7 +584,8 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
             } else {
                 parent.and_then(|parent| parent.header_frame)
             },
-        }
+        };
+        frames.push(frame);
     }
 
     /// The cost of cutting at `pos`, the first content of an atom, given the
@@ -620,6 +625,31 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
         {
             cost += CUT_FITTING_NODE_COST;
         }
+        debug_assert_eq!(cost, Self::boundary_cut_cost_by_scan(frames, pos));
+        cost
+    }
+
+    /// `boundary_cut_cost` computed by scanning every frame, without the
+    /// cumulative `outermost_fitting_node` and `header_frame`: debug builds,
+    /// and so every test, check that the two agree. It is not behind
+    /// `cfg(debug_assertions)`, as `debug_assert_eq!` type-checks its operands
+    /// in release builds too; there the check, and the call, compile away.
+    fn boundary_cut_cost_by_scan(frames: &[WalkFrame<'t, 's>], pos: usize) -> u32 {
+        let headers = || frames.iter().filter_map(|frame| frame.header);
+        let mut cost = if headers().any(|h| h.range.start < pos && pos < h.range.end) {
+            CUT_INSIDE_HEADER_COST
+        } else if headers().any(|h| pos == h.range.end) {
+            CUT_AFTER_HEADER_COST
+        } else {
+            0
+        };
+        if frames
+            .iter()
+            .filter_map(|frame| frame.fitting_node)
+            .any(|node| node.start < pos && pos < node.end)
+        {
+            cost += CUT_FITTING_NODE_COST;
+        }
         cost
     }
 
@@ -633,10 +663,11 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
             ChunkKind::RegexpSepChunk { .. } => None,
         };
         let root_iter = ChunkIterator::Once(std::iter::once(chunk));
-        let mut frames = vec![match root_node {
-            Some(node) => self.node_frame(root_iter, node, false, &[]),
-            None => WalkFrame::text(root_iter, None),
-        }];
+        let mut frames = Vec::new();
+        match root_node {
+            Some(node) => self.push_node_frame(&mut frames, root_iter, node, false),
+            None => WalkFrame::push_text(&mut frames, root_iter),
+        }
 
         while !frames.is_empty() {
             atom_collector.curr_level = frames.len();
@@ -667,8 +698,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                                         next_start_pos: current_chunk.range.start,
                                         end_pos: current_chunk.range.end,
                                     });
-                                    let frame = self.node_frame(iter, node, false, &frames);
-                                    frames.push(frame);
+                                    self.push_node_frame(&mut frames, iter, node, false);
                                     continue;
                                 }
                             }
@@ -682,8 +712,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                                     next_regexp_sep_id: 0,
                                 },
                             }));
-                            let frame = self.node_frame(iter, node, true, &frames);
-                            frames.push(frame);
+                            self.push_node_frame(&mut frames, iter, node, true);
                         }
                         ChunkKind::RegexpSepChunk {
                             lang_config,
@@ -700,8 +729,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                                     current_chunk.range,
                                     next_regexp_sep_id,
                                 ));
-                                let frame = WalkFrame::text(iter, frames.last());
-                                frames.push(frame);
+                                WalkFrame::push_text(&mut frames, iter);
                             }
                         }
                     }
