@@ -80,7 +80,10 @@ There's a bootstrapping problem: to attribute statements correctly, the LLM need
 **Step 1 — identify speakers and extract metadata.** Format the transcript with generic labels, give the LLM the YouTube metadata as context, and get back typed speaker identifications. The output is a Pydantic model, enforced by [instructor](https://github.com/instructor-ai/instructor) over [LiteLLM](/docs/ops/litellm/):
 
 ```python title="conv_knowledge/extract.py"
-@coco.fn(memo=True)
+@coco.fn(
+    memo=True,
+    deps={"prompt": METADATA_PROMPT, "schema": SessionMetadata.model_json_schema()},
+)
 async def extract_metadata(reformatted_transcript: str, transcript: SessionTranscript) -> SessionMetadata:
     client = instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON)
     return await client.chat.completions.create(
@@ -112,6 +115,19 @@ class RawStatement(pydantic.BaseModel):
     mentioned_tech: list[str]    # ["Large language model"]
     mentioned_org: list[str]     # ["OpenAI"]
 ```
+
+Step 2 follows the same pattern. Its prompt, `STATEMENTS_PROMPT`, is built from `ENTITY_TYPES`, so each entity type's description and examples are part of it:
+
+```python title="conv_knowledge/extract.py"
+@coco.fn(
+    memo=True,
+    deps={"prompt": STATEMENTS_PROMPT, "schema": StatementExtraction.model_json_schema()},
+)
+async def extract_statements(reformatted_transcript: str) -> StatementExtraction:
+    ...
+```
+
+**Why `deps=`:** CocoIndex fingerprints a function's source code, not the module-level values it reads. The prompts are module-level strings, and the Pydantic field descriptions reach the LLM through instructor's JSON schema. [`deps`](/docs/programming_guide/function/#deps) adds both to each step's logic fingerprint, so editing a prompt or the output schema re-runs that step on the next update. Without `deps=`, the edit has no effect on episodes already processed.
 
 Every name must be **self-contained** (the prompt forbids pronouns, speaker labels, or contextual references) because statements from different episodes get cross-referenced later, and a name like "he" or "the host" is meaningless outside its transcript.
 
@@ -218,9 +234,9 @@ This isn't a one-shot job — you'll add episodes over time and evolve the schem
 | Pipeline step | What happens | Why |
 |---|---|---|
 | Fetch transcript | **Reused** | Memoized, input unchanged |
-| Step 1: speaker identification | **Reused** | Prompt unchanged |
-| Step 2: statement extraction | **Re-runs** | Extraction prompt changed |
-| Entity resolution (person, tech, org) | **Reused** | Raw entities unchanged |
+| Step 1: speaker identification | **Reused** | Its prompt and schema are unchanged |
+| Step 2: statement extraction | **Re-runs** | `STATEMENTS_PROMPT`, a `deps` value, changed |
+| Entity resolution (person, tech, org) | **Mostly reused** | Names seen before hit cached embeddings and pair decisions |
 | Entity resolution (product) | **Runs fresh** | New type |
 | Knowledge base creation | **Re-declared** | New nodes + relationships |
 
