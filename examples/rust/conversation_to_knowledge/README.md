@@ -19,6 +19,7 @@ sessions, statements, persons, techs, orgs, and the relationships between them.
 | Entity resolution | `ops.entity_resolution` (faiss + LLM) | `cocoindex::entity_resolution` + `fastembed` Snowflake embeddings + LLM pair resolver |
 | Graph store | `surrealdb` connector (`TableTarget`/`RelationTarget`) | `cocoindex::connectors::surrealdb` targets over the native `surrealdb` crate |
 | Embedder change-detection | `ContextKey(..., detect_change=True)` | `context_key!(..., detect_change)` with type-owned `MemoInput` behavior |
+| Entity types in the Step 2 prompt | `deps={"prompt": STATEMENTS_PROMPT, ...}` | `deps = entity_prompt_lines()`, so editing `ENTITY_TYPES` or `entity_guidance` re-runs Step 2 |
 
 ### Design notes / where it differs
 
