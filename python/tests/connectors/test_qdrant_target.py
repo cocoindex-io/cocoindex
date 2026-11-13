@@ -505,6 +505,116 @@ def test_non_canonical_point_ids_survive_upgrade(
 
 
 # =============================================================================
+# End-to-end — a failed delete_collection fails the update
+# =============================================================================
+
+
+if HAS_QDRANT:
+    # QdrantClient is Any when qdrant-client is not installed (the CI type check).
+    class _FailingDeleteMemoryClient(QdrantClient):  # type: ignore[misc, unused-ignore]
+        """In-memory Qdrant whose delete_collection fails while
+        ``fail_delete`` is set, like a server that can't be reached."""
+
+        fail_delete = False
+
+        def __init__(self) -> None:
+            super().__init__(":memory:")
+
+        def delete_collection(self, *args: Any, **kwargs: Any) -> Any:
+            if self.fail_delete:
+                raise ConnectionError("injected delete_collection failure")
+            return super().delete_collection(*args, **kwargs)
+
+
+def _collection_drop_app(
+    client: "QdrantClient", collection_name: str
+) -> tuple[coco.App[[], None], dict[str, Any]]:
+    """An app that declares ``collection_name`` with ``state["size"]``-dim
+    vectors, or doesn't declare it when ``state["size"]`` is None."""
+    db_key = coco.ContextKey[QdrantClient](f"test_qdrant_drop_{uuid.uuid4().hex}")
+    env = common.create_test_env(__file__, suffix=collection_name)
+    env.context_provider.provide(db_key, client)
+    state: dict[str, Any] = {"size": 2}
+
+    @coco.fn
+    async def app_main() -> None:
+        if state["size"] is None:
+            return
+        await qdrant.mount_collection_target(
+            db_key,
+            collection_name,
+            await qdrant.CollectionSchema.create(
+                vectors=qdrant.QdrantVectorDef(
+                    schema=VectorSchema(dtype=np.dtype(np.float32), size=state["size"])
+                )
+            ),
+        )
+
+    app = coco.App(
+        coco.AppConfig(name="test_qdrant_collection_drop", environment=env), app_main
+    )
+    return app, state
+
+
+def _vector_size(client: "QdrantClient", collection_name: str) -> int:
+    vectors = client.get_collection(collection_name).config.params.vectors
+    assert isinstance(vectors, qdrant_models.VectorParams)
+    return int(vectors.size)
+
+
+@requires_qdrant
+def test_failed_collection_delete_is_retried() -> None:
+    """A collection no longer declared whose delete_collection fails is
+    still tracked, so the next run deletes it. (The engine logs a failed
+    cleanup rather than failing the update.)"""
+    client = _FailingDeleteMemoryClient()
+    collection_name = f"coco_drop_{uuid.uuid4().hex}"
+    app, state = _collection_drop_app(client, collection_name)
+
+    try:
+        app.update_blocking()
+        assert client.collection_exists(collection_name)
+
+        state["size"] = None
+        client.fail_delete = True
+        app.update_blocking()
+        assert client.collection_exists(collection_name)
+
+        client.fail_delete = False
+        app.update_blocking()
+        assert not client.collection_exists(collection_name)
+    finally:
+        client.fail_delete = False
+        client.delete_collection(collection_name=collection_name)
+
+
+@requires_qdrant
+def test_failed_collection_replace_reports_delete_error_and_is_retried() -> None:
+    """A replace whose delete_collection fails reports that failure, not the
+    create's "already exists", and the next run replaces the collection."""
+    client = _FailingDeleteMemoryClient()
+    collection_name = f"coco_replace_{uuid.uuid4().hex}"
+    app, state = _collection_drop_app(client, collection_name)
+
+    try:
+        app.update_blocking()
+        assert _vector_size(client, collection_name) == 2
+
+        state["size"] = 3
+        client.fail_delete = True
+        with pytest.raises(Exception, match="injected delete_collection failure"):
+            app.update_blocking()
+        assert _vector_size(client, collection_name) == 2
+
+        client.fail_delete = False
+        app.update_blocking()
+        assert _vector_size(client, collection_name) == 3
+    finally:
+        client.fail_delete = False
+        client.delete_collection(collection_name=collection_name)
+
+
+# =============================================================================
 # Live test — Qdrant service required
 # =============================================================================
 
