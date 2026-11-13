@@ -1891,12 +1891,93 @@ async def test_catch_up_update_beside_running_live_update() -> None:
         await _wait(applied)
         assert "late" in GlobalDictTarget.store.data
     finally:
-        await app.drop()
-        live_task.cancel()
         try:
-            await live_task
-        except BaseException:
-            pass
+            await app.drop()
+        finally:
+            live_task.cancel()
+            try:
+                await live_task
+            except BaseException:
+                pass
+
+
+@pytest.mark.asyncio
+async def test_live_update_during_catch_up_is_not_reconciled_away() -> None:
+    """A live `operator.update()` that lands while a catch-up update beside
+    it works from a source listing taken before the update must survive the
+    catch-up's commit: it queues behind the catch-up's `update_full` and is
+    applied after it, instead of being applied first and then reconciled
+    away."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _source_data["a"] = 1
+
+    calls = {"n": 0}
+    started = threading.Event()
+    catch_up_listed = threading.Event()
+    release_catch_up = threading.Event()
+    applied = threading.Event()
+
+    async def _wait(event: threading.Event) -> None:
+        for _ in range(1000):
+            if event.is_set():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("timed out")
+
+    class _Live:
+        async def process(self) -> None:
+            calls["n"] += 1
+            snapshot = dict(_source_data)
+            if calls["n"] == 2:  # the catch-up update's process()
+                catch_up_listed.set()
+                await _wait(release_catch_up)
+            for key, value in snapshot.items():
+                await coco.mount(coco.component_subpath(key), _declare_item, key, value)
+
+        async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+            await operator.update_full()
+            await operator.mark_ready()
+            if calls["n"] != 1:
+                return
+            started.set()
+            await _wait(catch_up_listed)
+            _source_data["x"] = 9
+            handle = await operator.update(
+                coco.component_subpath("x"), _declare_item, "x", 9
+            )
+            await handle.ready()
+            applied.set()
+            await asyncio.Event().wait()
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _Live)
+
+    app = coco.App(
+        coco.AppConfig(name="test_live_update_during_catch_up", environment=coco_env),
+        _main,
+    )
+    live_task = asyncio.create_task(app.update(live=True).result())
+    try:
+        await _wait(started)
+        catch_up = asyncio.create_task(app.update().result())
+        await _wait(catch_up_listed)
+        # Give the live update a moment to reach the engine.
+        await asyncio.sleep(0.3)
+        release_catch_up.set()
+        await asyncio.wait_for(catch_up, timeout=10.0)
+        await _wait(applied)
+        assert "x" in GlobalDictTarget.store.data
+    finally:
+        release_catch_up.set()
+        try:
+            await app.drop()
+        finally:
+            live_task.cancel()
+            try:
+                await live_task
+            except BaseException:
+                pass
 
 
 # ============================================================================

@@ -120,7 +120,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             && existing_state
                 .as_ref()
                 .is_some_and(|state| state.is_running_live());
-        if let Some(existing_state) = existing_state.filter(|_| !beside_running_live) {
+        if let Some(existing_state) = existing_state.as_ref().filter(|_| !beside_running_live) {
             let drain_fut = existing_state.cancel_and_drain();
             if tokio::time::timeout(
                 std::time::Duration::from_secs(LIVE_COMPONENT_DRAIN_TIMEOUT_SECS),
@@ -174,10 +174,16 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         let cancellation_token = parent_ctx.app_ctx().cancellation_token().child_token();
 
         // 5. Create LiveComponentState.
+        let beside = if beside_running_live {
+            existing_state.clone()
+        } else {
+            None
+        };
         let state = Arc::new(LiveComponentState::<Prof>::new(
             readiness_guard,
             cancellation_token,
             live,
+            beside,
         ));
 
         // 6. Install ordering (matters for drop_app race coverage):
@@ -350,6 +356,15 @@ pub struct LiveComponentState<Prof: EngineProfile> {
 
     /// Whether this incarnation was mounted by a live update.
     live: bool,
+
+    /// For a catch-up incarnation mounted beside a running live one: that
+    /// live incarnation. The catch-up's `update_full` also takes the live
+    /// one's `update_full_lock` and `update_full_active` gate and waits for
+    /// its drains, so a live `update()` cannot land between the catch-up's
+    /// source listing and its commit (which would reconcile it away). A
+    /// live `update()` that arrives meanwhile queues and runs after the
+    /// catch-up's commit.
+    beside: Option<Arc<LiveComponentState<Prof>>>,
 }
 
 impl<Prof: EngineProfile> LiveComponentState<Prof> {
@@ -357,6 +372,7 @@ impl<Prof: EngineProfile> LiveComponentState<Prof> {
         readiness_guard: ComponentBgChildReadinessChildGuard,
         cancellation_token: tokio_util::sync::CancellationToken,
         live: bool,
+        beside: Option<Arc<LiveComponentState<Prof>>>,
     ) -> Self {
         Self {
             update_full_lock: tokio::sync::Mutex::new(()),
@@ -370,13 +386,23 @@ impl<Prof: EngineProfile> LiveComponentState<Prof> {
             cancellation_token,
             live_task: Mutex::new(None),
             live,
+            beside,
         }
     }
 
-    /// Whether this is a live update's incarnation that has not been
-    /// cancelled: its `process_live` may still be following its source.
+    /// Whether this is a live update's incarnation whose `process_live`
+    /// may still be following its source: it is not cancelled, and its task
+    /// has not finished. (Before `start()` sets the task, a mounted live
+    /// incarnation is about to run, so it counts as running.)
     fn is_running_live(&self) -> bool {
-        self.live && !self.cancellation_token.is_cancelled()
+        self.live
+            && !self.cancellation_token.is_cancelled()
+            && !self
+                .live_task
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|task| task.is_finished())
     }
 
     pub fn cancellation_token(&self) -> &tokio_util::sync::CancellationToken {
@@ -632,6 +658,12 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         on_error: Option<OnError>,
     ) -> Result<()> {
         let _full_guard = self.state.update_full_lock.lock().await;
+        // A catch-up incarnation beside a running live one also holds the
+        // live one's lock (always after its own: one lock order).
+        let _beside_full_guard = match &self.state.beside {
+            Some(live) => Some(live.update_full_lock.lock().await),
+            None => None,
+        };
 
         // Step-1 cancellation gate (mirrors design.md Section "update_full
         // body, step 1"). Avoids paying drain cost on a cancelled controller.
@@ -643,12 +675,16 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // observing it know to gate themselves before promoting queued ops.
         // Use an RAII guard so we always clear it on every exit path.
         let _active_guard = UpdateFullActiveGuard::new(&self.state);
+        let _beside_active_guard = self.state.beside.as_deref().map(UpdateFullActiveGuard::new);
 
         // Wait until no subpath has `processing == true`. We allow queued
         // ops to remain — they'll be re-collapsed to `Superseded` once
         // process() completes, since `update_full` re-derives all subpaths
         // authoritatively.
         self.state.wait_until_quiescent().await;
+        if let Some(live) = &self.state.beside {
+            live.wait_until_quiescent().await;
+        }
 
         // Now run process() via run_in_background. Errors from process() are
         // routed via `on_error` (parent's exception handler chain), matching
