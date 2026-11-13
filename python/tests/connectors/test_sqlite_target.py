@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import struct
 import tempfile
@@ -74,6 +75,17 @@ def get_table_columns(
         return {row[1]: row[2] for row in cursor.fetchall()}
 
 
+def get_column_notnull(
+    managed_conn: sqlite.ManagedConnection, table_name: str, column_name: str
+) -> bool:
+    """Whether a column is declared NOT NULL."""
+    with managed_conn.readonly() as conn:
+        for row in conn.execute(f'PRAGMA table_info("{table_name}")'):
+            if row[1] == column_name:
+                return bool(row[3])
+    raise AssertionError(f"column {column_name!r} not found in table {table_name!r}")
+
+
 def decode_vector(blob: bytes, dim: int) -> list[float]:
     """Decode a sqlite-vec vector blob to a list of floats."""
     return list(struct.unpack(f"{dim}f", blob))
@@ -126,6 +138,26 @@ class ExtendedRow:
     name: str
     value: int
     extra: str
+
+
+@dataclass
+class NullableIntValueRow:
+    id: str
+    name: str
+    value: int | None
+
+
+@dataclass
+class NullableStrValueRow:
+    id: str
+    name: str
+    value: str | None
+
+
+@dataclass
+class NoValueRow:
+    id: str
+    name: str
 
 
 # =============================================================================
@@ -1560,6 +1592,246 @@ def test_unsupported_sqlite_migration_raises_error(
         # Database schema must remain consistent (unaltered)
         cols = get_table_columns(managed_conn, _table_name)
         assert "extra" not in cols
+    finally:
+        _source_rows = old_source_rows
+        _row_type = old_row_type
+        _table_name = old_table_name
+
+
+def test_column_type_change_blocked_by_index_raises_and_retries(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that a column type change whose DROP COLUMN fails raises instead of keeping the old type silently, and is retried once the blocker is gone."""
+    managed_conn, _ = sqlite_db
+    global _source_rows, _row_type, _table_name
+
+    old_source_rows = _source_rows
+    old_row_type = _row_type
+    old_table_name = _table_name
+    try:
+        _source_rows = [NullableIntValueRow(id="1", name="Alice", value=100)]
+        _row_type = NullableIntValueRow
+        _table_name = "test_type_change_blocked_by_index"
+
+        test_env = make_test_env(
+            managed_conn, "test_column_type_change_blocked_by_index_raises_and_retries"
+        )
+
+        async def declare_dynamic_schema() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                sqlite.declare_table_target,
+                SQLITE_DB,
+                _table_name,
+                await sqlite.TableSchema.from_class(_row_type, primary_key=["id"]),
+            )
+            for row in _source_rows:
+                table.declare_row(row=row)
+
+        app = coco.App(
+            coco.AppConfig(
+                name="test_column_type_change_blocked_by_index_raises_and_retries",
+                environment=test_env,
+            ),
+            declare_dynamic_schema,
+        )
+
+        # Initial update creates the column as INTEGER.
+        app.update_blocking()
+        assert get_table_columns(managed_conn, _table_name)["value"] == "INTEGER"
+
+        # SQLite cannot drop a column that an index references.
+        with managed_conn.transaction() as conn:
+            conn.execute(f'CREATE INDEX idx_value ON "{_table_name}" ("value")')
+
+        # Changing the type to TEXT must fail loudly instead of recording the new
+        # type while the table keeps the old one.
+        _row_type = NullableStrValueRow
+        _source_rows = [NullableStrValueRow(id="1", name="Alice", value="100")]
+        with pytest.raises(
+            RuntimeError, match="Failed to change the shape of column 'value'"
+        ):
+            app.update_blocking()
+
+        # Nothing was half-applied: the column is still INTEGER.
+        assert get_table_columns(managed_conn, _table_name)["value"] == "INTEGER"
+
+        # The failed run recorded nothing, so the next run retries the change
+        # rather than treating it as applied.
+        with pytest.raises(
+            RuntimeError, match="Failed to change the shape of column 'value'"
+        ):
+            app.update_blocking()
+        assert get_table_columns(managed_conn, _table_name)["value"] == "INTEGER"
+
+        # Once the blocking index is gone, the change applies and the value is
+        # preserved through the drop/re-add.
+        with managed_conn.transaction() as conn:
+            conn.execute("DROP INDEX idx_value")
+        app.update_blocking()
+
+        assert get_table_columns(managed_conn, _table_name)["value"] == "TEXT"
+        data = read_table_data(managed_conn, _table_name)
+        assert data == [{"id": "1", "name": "Alice", "value": "100"}]
+    finally:
+        _source_rows = old_source_rows
+        _row_type = old_row_type
+        _table_name = old_table_name
+
+
+def test_column_nullability_change_blocked_by_index_raises_and_retries(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that a nullable-only change is protected as well, since the tracking record carries nullability too."""
+    managed_conn, _ = sqlite_db
+    global _source_rows, _row_type, _table_name
+
+    old_source_rows = _source_rows
+    old_row_type = _row_type
+    old_table_name = _table_name
+    try:
+        _source_rows = [SimpleRow(id="1", name="Alice", value=100)]
+        _row_type = SimpleRow
+        _table_name = "test_nullability_change_blocked_by_index"
+
+        app_name = "test_column_nullability_change_blocked_by_index_raises_and_retries"
+        app = coco.App(
+            coco.AppConfig(
+                name=app_name, environment=make_test_env(managed_conn, app_name)
+            ),
+            declare_table_and_rows,
+        )
+
+        # The initial schema declares value as INTEGER NOT NULL.
+        app.update_blocking()
+        assert get_table_columns(managed_conn, _table_name)["value"] == "INTEGER"
+        assert get_column_notnull(managed_conn, _table_name, "value") is True
+
+        # SQLite cannot drop a column that an index references.
+        with managed_conn.transaction() as conn:
+            conn.execute(f'CREATE INDEX idx_value ON "{_table_name}" ("value")')
+
+        # Only the nullability changes, so the declared type still matches the
+        # desired one. Accepting the blocked replace on the type alone would
+        # record nullable while the column stays NOT NULL.
+        _row_type = NullableIntValueRow
+        _source_rows = [NullableIntValueRow(id="1", name="Alice", value=100)]
+        with pytest.raises(
+            RuntimeError, match="Failed to change the shape of column 'value'"
+        ):
+            app.update_blocking()
+
+        # Nothing was half-applied: the column is still NOT NULL.
+        assert get_column_notnull(managed_conn, _table_name, "value") is True
+
+        # No tracking record was committed, so the change is retried.
+        with pytest.raises(
+            RuntimeError, match="Failed to change the shape of column 'value'"
+        ):
+            app.update_blocking()
+        assert get_column_notnull(managed_conn, _table_name, "value") is True
+    finally:
+        _source_rows = old_source_rows
+        _row_type = old_row_type
+        _table_name = old_table_name
+
+
+def test_column_type_change_already_applied_is_accepted(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that a blocked replace is accepted when the column already has the desired shape."""
+    managed_conn, _ = sqlite_db
+    global _source_rows, _row_type, _table_name
+
+    old_source_rows = _source_rows
+    old_row_type = _row_type
+    old_table_name = _table_name
+    try:
+        _source_rows = [NullableIntValueRow(id="1", name="Alice", value=100)]
+        _row_type = NullableIntValueRow
+        _table_name = "test_type_change_already_applied"
+
+        app_name = "test_column_type_change_already_applied_is_accepted"
+        app = coco.App(
+            coco.AppConfig(
+                name=app_name, environment=make_test_env(managed_conn, app_name)
+            ),
+            declare_table_and_rows,
+        )
+
+        app.update_blocking()
+        assert get_table_columns(managed_conn, _table_name)["value"] == "INTEGER"
+
+        # Bring the column to the desired shape out of band, then pin it with an
+        # index so the replace's DROP COLUMN still fails.
+        with managed_conn.transaction() as conn:
+            conn.execute(f'ALTER TABLE "{_table_name}" DROP COLUMN "value"')
+            conn.execute(f'ALTER TABLE "{_table_name}" ADD COLUMN "value" TEXT')
+            conn.execute(f'CREATE INDEX idx_value ON "{_table_name}" ("value")')
+
+        _row_type = NullableStrValueRow
+        _source_rows = [NullableStrValueRow(id="1", name="Alice", value="100")]
+        app.update_blocking()
+
+        assert get_table_columns(managed_conn, _table_name)["value"] == "TEXT"
+        assert get_column_notnull(managed_conn, _table_name, "value") is False
+        data = read_table_data(managed_conn, _table_name)
+        assert data == [{"id": "1", "name": "Alice", "value": "100"}]
+    finally:
+        _source_rows = old_source_rows
+        _row_type = old_row_type
+        _table_name = old_table_name
+
+
+def test_dropped_column_that_cannot_be_dropped_warns(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test that a removed column an index pins is left in place with a warning naming it, and a NOT NULL leftover is called out."""
+    managed_conn, _ = sqlite_db
+    global _source_rows, _row_type, _table_name
+
+    old_source_rows = _source_rows
+    old_row_type = _row_type
+    old_table_name = _table_name
+    try:
+        _source_rows = [SimpleRow(id="1", name="Alice", value=100)]
+        _row_type = SimpleRow
+        _table_name = "test_dropped_column_blocked_by_index"
+
+        app_name = "test_dropped_column_that_cannot_be_dropped_warns"
+        app = coco.App(
+            coco.AppConfig(
+                name=app_name, environment=make_test_env(managed_conn, app_name)
+            ),
+            declare_table_and_rows,
+        )
+
+        app.update_blocking()
+        assert get_column_notnull(managed_conn, _table_name, "value") is True
+
+        with managed_conn.transaction() as conn:
+            conn.execute(f'CREATE INDEX idx_value ON "{_table_name}" ("value")')
+
+        # No rows are left to write, so the leftover NOT NULL column is only a
+        # hazard to report here, not something the run trips over.
+        _row_type = NoValueRow
+        _source_rows = []
+        with caplog.at_level(logging.WARNING):
+            app.update_blocking()
+
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if "could not drop removed column" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "'value'" in warnings[0]
+        assert repr(_table_name) in warnings[0]
+        assert "NOT NULL" in warnings[0]
+
+        # The DROP was tolerated, so the column is still there.
+        assert "value" in get_table_columns(managed_conn, _table_name)
     finally:
         _source_rows = old_source_rows
         _row_type = old_row_type
