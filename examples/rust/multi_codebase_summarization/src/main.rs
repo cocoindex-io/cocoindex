@@ -110,6 +110,15 @@ impl LlmClient {
     }
 }
 
+/// What the LLM steps depend on beyond their source: the model and the output
+/// schema (its field descriptions guide the LLM). Both live outside the
+/// functions' bodies, so `deps` folds them into the functions' logic and a
+/// change re-runs the extraction, unchanged files included. Evaluated once per
+/// process, after `init_llm()` has set the model.
+fn llm_deps() -> (String, serde_json::Value) {
+    (llm().model.clone(), CodebaseInfo::json_schema())
+}
+
 fn should_skip_python_file(file: &FileEntry) -> bool {
     file.relative_path()
         .components()
@@ -127,8 +136,9 @@ fn should_skip_python_file(file: &FileEntry) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Extract structured info from a single Python file via LLM.
-/// `memo` caches results by file fingerprint — unchanged files are skipped.
-#[cocoindex::function]
+/// Mounted as one component per file: the component is skipped while the file
+/// and this function's logic, `deps` included, are unchanged.
+#[cocoindex::function(deps = llm_deps())]
 async fn extract_file_info(_ctx: &Ctx, file: FileEntry) -> Result<CodebaseInfo> {
     let content = file.content_str()?;
     let file_path = file.key();
@@ -154,7 +164,7 @@ async fn extract_file_info(_ctx: &Ctx, file: FileEntry) -> Result<CodebaseInfo> 
 
 /// Aggregate per-file summaries into a project-level summary via LLM.
 /// `memo` caches the aggregation result until any file-level summary changes.
-#[cocoindex::function(memo)]
+#[cocoindex::function(memo, deps = llm_deps())]
 async fn aggregate_project_info(
     _ctx: &Ctx,
     project_name: String,

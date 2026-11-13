@@ -32,6 +32,20 @@ pub fn entity_guidance(kind: &str) -> (&'static str, &'static str) {
     }
 }
 
+/// The entity-type lines of the statement-extraction prompt, one per entry in
+/// `ENTITY_TYPES`. `extract_statements` lists this in `deps`: CocoIndex
+/// fingerprints a function's own body, not the constants and plain helpers it
+/// reads, so without it an edit here would leave old extractions cached.
+pub fn entity_prompt_lines() -> String {
+    ENTITY_TYPES
+        .iter()
+        .map(|kind| {
+            let (desc, examples) = entity_guidance(kind);
+            format!("  - {kind}: {desc} Examples: {examples}.\n")
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Transcript / source
 // ---------------------------------------------------------------------------
