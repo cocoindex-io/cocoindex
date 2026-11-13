@@ -35,7 +35,13 @@ _instructor_client = cast(
 )
 
 
-@coco.fn(memo=True)
+# `deps` puts the model and the output schema (whose field descriptions the LLM
+# also reads) into the function's logic, so changing either re-runs the
+# extraction. CocoIndex fingerprints the function's source, not module-level values.
+_LLM_DEPS = {"model": LLM_MODEL, "schema": CodebaseInfo.model_json_schema()}
+
+
+@coco.fn(memo=True, deps=_LLM_DEPS)
 async def extract_file_info(file: FileLike) -> CodebaseInfo:
     """Extract structured information from a single Python file using LLM."""
     content = await file.read_text()
@@ -65,7 +71,7 @@ Instructions:
     return CodebaseInfo.model_validate(result.model_dump())
 
 
-@coco.fn
+@coco.fn(deps=_LLM_DEPS)
 async def aggregate_project_info(
     project_name: str,
     file_infos: list[CodebaseInfo],

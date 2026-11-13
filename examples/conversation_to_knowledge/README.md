@@ -72,6 +72,7 @@ statement_mentions_rel = await surrealdb.mount_relation_target(
 - **Structured LLM extraction.** OpenAI (via LiteLLM) + Pydantic models pull speakers, thematic statements, and mentioned entities as *typed data* — not freeform text you have to re-parse.
 - **Entity resolution, built in.** [`resolve_entities`](https://cocoindex.io/docs/ops/entity_resolution/) collapses near-duplicate people, techs, and orgs using embedding similarity + LLM confirmation, so the graph has one canonical node per real-world thing.
 - **Incremental, per episode.** `@coco.fn(memo=True)` with one component per YouTube ID means adding an episode processes only that episode; unchanged sessions are skipped.
+- **Prompt edits re-run only what they touch.** Each extraction step lists its prompt and output schema in `deps=`, so editing `STATEMENTS_PROMPT` or adding an entity type re-runs statement extraction for every episode, and nothing else. Without `deps=`, an edit to a module-level prompt leaves the old results cached: CocoIndex fingerprints a function's source, not the values it reads.
 - **A real graph, declaratively.** Nodes and polymorphic relationships are declared as target states; CocoIndex syncs them into [SurrealDB](https://cocoindex.io/docs/connectors/) and cleans up what's gone — no migration scripts.
 - **Plain async Python, swappable parts.** Transcriber, LLM, embedder, and graph store are all yours to change.
 

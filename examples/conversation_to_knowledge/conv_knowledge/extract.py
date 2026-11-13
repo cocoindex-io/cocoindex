@@ -70,7 +70,16 @@ identify with their full name — omit any speaker you cannot identify. Do not g
 """
 
 
-@coco.fn(memo=True)
+# `deps` puts the prompt and the output schema (whose field descriptions the LLM
+# also reads) into the function's logic: editing either re-runs Step 1.
+# CocoIndex fingerprints the function's source, not module-level values.
+@coco.fn(
+    memo=True,
+    deps={
+        "prompt": METADATA_PROMPT,
+        "schema": SessionMetadata.model_json_schema(),
+    },
+)
 async def extract_metadata(
     reformatted_transcript: str, transcript: SessionTranscript
 ) -> SessionMetadata:
@@ -153,7 +162,15 @@ and factual assertions.
 STATEMENTS_PROMPT = _build_statements_prompt()
 
 
-@coco.fn(memo=True)
+# STATEMENTS_PROMPT is built from ENTITY_TYPES, so adding or editing an entity
+# type changes it and re-runs Step 2, as does an edit to the output schema.
+@coco.fn(
+    memo=True,
+    deps={
+        "prompt": STATEMENTS_PROMPT,
+        "schema": StatementExtraction.model_json_schema(),
+    },
+)
 async def extract_statements(
     reformatted_transcript: str,
 ) -> StatementExtraction:
