@@ -62,6 +62,13 @@ struct AppContextInner<Prof: EngineProfile> {
     live_components: parking_lot::Mutex<
         Vec<std::sync::Weak<crate::engine::live_component::LiveComponentState<Prof>>>,
     >,
+
+    /// Root target-state providers (with their attachment providers) that
+    /// this app's runs registered at run time, by path; the latest
+    /// registration of a path wins. Such a provider lives in its run's build
+    /// state only, not in the environment's registry, so `App::drop_app`
+    /// adds these to revert the target states they own.
+    run_root_providers: parking_lot::Mutex<HashMap<TargetStatePath, TargetStateProvider<Prof>>>,
 }
 
 #[derive(Clone)]
@@ -88,8 +95,28 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                     crate::engine::runtime::global_cancellation_token().child_token(),
                 ),
                 live_components: parking_lot::Mutex::new(Vec::new()),
+                run_root_providers: parking_lot::Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    /// Remember root providers a run registered; see `run_root_providers`.
+    pub(crate) fn remember_run_root_providers(
+        &self,
+        providers: impl IntoIterator<Item = (TargetStatePath, TargetStateProvider<Prof>)>,
+    ) {
+        self.inner.run_root_providers.lock().extend(providers);
+    }
+
+    /// The root providers this app's runs registered; see
+    /// `run_root_providers`.
+    pub(crate) fn run_root_providers(&self) -> Vec<(TargetStatePath, TargetStateProvider<Prof>)> {
+        self.inner
+            .run_root_providers
+            .lock()
+            .iter()
+            .map(|(path, provider)| (path.clone(), provider.clone()))
+            .collect()
     }
 
     /// Register a live component for shutdown drain coverage.

@@ -3378,6 +3378,74 @@ mod tests {
         );
     }
 
+    /// `drop_app` reverts the target states of a root provider that a run
+    /// registered at run time (in its build state, not in the environment's
+    /// registry): the handler sees a deletion for each of them, and its sink
+    /// applies it.
+    #[tokio::test]
+    async fn drop_app_reverts_a_root_provider_registered_at_run_time() {
+        let (app, _dir) = test_app("drop_run_time_provider").await;
+        let apply_calls = Arc::new(AtomicUsize::new(0));
+        let reconcile_calls = Arc::new(AtomicUsize::new(0));
+        let root = {
+            let (apply_calls, reconcile_calls) = (apply_calls.clone(), reconcile_calls.clone());
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&"drop_run_time_provider").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .without_memo()
+            .with_on_process(Arc::new(move |ctx| {
+                let sink = TargetActionSinkKeeper::new(NoopSink {
+                    apply_calls: apply_calls.clone(),
+                    children: None,
+                });
+                let reconcile_calls = reconcile_calls.clone();
+                Box::pin(async move {
+                    let provider = register_root_target_state_provider(
+                        &ctx,
+                        "target".to_string(),
+                        CountingHandler {
+                            reconcile_calls,
+                            sink,
+                            reject: false,
+                            change_only: true,
+                        },
+                    )?;
+                    for key in [0, 1] {
+                        declare_target_state(
+                            &ctx,
+                            &FnCallContext::default(),
+                            provider.clone(),
+                            StableKey::Int(key),
+                            (),
+                        )?;
+                    }
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            }))
+        };
+        let (handle, _) = app
+            .update(root, AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        handle.result().await.unwrap();
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(reconcile_calls.load(Ordering::SeqCst), 2);
+
+        app.drop_app(Arc::new(())).unwrap().result().await.unwrap();
+        assert_eq!(
+            reconcile_calls.load(Ordering::SeqCst),
+            4,
+            "drop reconciles both target states of the run-time provider away"
+        );
+        assert_eq!(
+            apply_calls.load(Ordering::SeqCst),
+            2,
+            "drop applies the deletions through the provider's sink"
+        );
+    }
+
     /// A re-run of an unmemoized component that declares the same target
     /// states, which its handler finds unchanged, writes nothing: neither its
     /// precommit nor its commit has a page to write, so no write txn commits
