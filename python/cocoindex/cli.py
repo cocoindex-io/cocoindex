@@ -1139,6 +1139,16 @@ async def _stop_all_environments() -> None:
     default=False,
     help="Compute target actions without applying them. Prints planned actions.",
 )
+@click.option(
+    "--fail-on-error/--no-fail-on-error",
+    "fail_on_error",
+    show_default=True,
+    default=True,
+    help=(
+        "Exit with a non-zero status when any component reports errors, so "
+        "schedulers (cron, CI) can detect a failed run. Ignored with --live."
+    ),
+)
 def update(
     app_target: str,
     force: bool,
@@ -1147,6 +1157,7 @@ def update(
     full_reprocess: bool,
     live: bool,
     preview: bool,
+    fail_on_error: bool,
 ) -> None:
     """
     Run an app in catch-up mode. With --live, run in live mode.
@@ -1210,6 +1221,33 @@ def update(
                 await show_progress(handle)
             else:
                 await handle.result()
+
+            # In catch-up mode, surface component errors in the exit status so
+            # schedulers (cron, CI) can detect a failed run. Live mode is
+            # excluded: cumulative errors do not describe current health.
+            # Components inside a `coco.stats_group` report to the group's own
+            # stats and are not covered by the root stats read here.
+            if not live:
+                stats = handle.stats()
+                failed = (
+                    sorted(
+                        (name, group.num_errors)
+                        for name, group in stats.by_component.items()
+                        if group.num_errors > 0
+                    )
+                    if stats is not None
+                    else []
+                )
+                if failed:
+                    summary = ", ".join(
+                        f"{name}: {num_errors} error(s)" for name, num_errors in failed
+                    )
+                    click.echo(
+                        f"Update finished with component errors ({summary}).",
+                        err=True,
+                    )
+                    if fail_on_error:
+                        sys.exit(1)
         finally:
             await _stop_all_environments()
 

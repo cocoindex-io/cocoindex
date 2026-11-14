@@ -81,8 +81,10 @@ def test_no_color_also_covers_engine_logs(tmp_path: Path) -> None:
 
 
 def test_debug_logs_keep_their_time_and_logger_name(tmp_path: Path) -> None:
+    # --no-fail-on-error: the debug-log format, not the exit status, is
+    # what this test checks.
     output = _run(
-        ["cocoindex", "update", f"{_APP}:Failures"],
+        ["cocoindex", "update", "--no-fail-on-error", f"{_APP}:Failures"],
         tmp_path,
         COCOINDEX_LOG_LEVEL="DEBUG",
     )
