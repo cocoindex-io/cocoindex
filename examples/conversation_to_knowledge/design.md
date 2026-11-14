@@ -233,7 +233,10 @@ def reformat_transcript(
 #### LLM Step 1: Extract Metadata + Identify Speakers
 
 ```python
-@coco.fn(memo=True)
+@coco.fn(
+    memo=True,
+    deps={"prompt": METADATA_PROMPT, "schema": SessionMetadata.model_json_schema()},
+)
 async def extract_metadata(reformatted_transcript: str, transcript: SessionTranscript) -> SessionMetadata:
     """Give LLM the reformatted transcript + all YouTube metadata to identify speakers."""
     client = instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON)
@@ -262,11 +265,16 @@ The identified speakers (those with non-None names) form the *person_session* re
 #### LLM Step 2: Extract Statements
 
 ```python
-@coco.fn(memo=True)
+@coco.fn(
+    memo=True,
+    deps={"prompt": STATEMENTS_PROMPT, "schema": StatementExtraction.model_json_schema()},
+)
 async def extract_statements(reformatted_transcript: str) -> StatementExtraction:
     """Extract statements and involved entities from the reformatted transcript."""
     ...
 ```
+
+`deps=` puts each step's prompt and output schema into its logic fingerprint, because CocoIndex fingerprints function source, not module-level values. `STATEMENTS_PROMPT` is built from `ENTITY_TYPES`, so adding or editing an entity type re-runs Step 2 for every session.
 
 The Step 2 prompt instructs the LLM to:
 - Extract thematic statements with speaker attributions and involved entities

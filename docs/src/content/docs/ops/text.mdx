@@ -143,7 +143,7 @@ Advanced text chunking with language awareness and syntax-aware splitting for co
 
 **Features:**
 - Supports many programming languages
-- Preserves code structure
+- Preserves code structure: a function, class or block that fits in `chunk_size` stays in one chunk, and a header, such as a `def` or `if` line or a Markdown heading, stays with the start of its body
 - Customizable chunk sizes and overlap
 - Returns [`Chunk`](../common_resources/data_types#chunk) objects with start/end positions (line, column, byte/char offsets)
 
@@ -203,7 +203,7 @@ for chunk in &chunks {
 let chunks = splitter.split("Short text.", 100);
 ```
 
-`RecursiveSplitter::new()` returns a `Result`. `split(text, chunk_size)` uses the defaults; `split_with(text, config)` takes a `RecursiveChunkConfig` with `chunk_size`, `min_chunk_size` (default `chunk_size / 2`), `chunk_overlap` and `language`. Sizes are in bytes.
+`RecursiveSplitter::new()` returns a `Result`. `split(text, chunk_size)` uses the defaults; `split_with(text, config)` takes a `RecursiveChunkConfig` with `chunk_size`, `min_chunk_size` (a soft floor, default `chunk_size / 2`), `chunk_overlap` and `language`. Sizes are in bytes.
 
 </Fragment>
 </LangTabs>
