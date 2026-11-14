@@ -500,7 +500,13 @@ Logic, arguments and context values are all known before a body runs. Some bodie
 <Fragment slot="python">
 
 ```python
-def _validate_file(key: str, prev: tuple[int, bytes]) -> coco.MemoStateOutcome:
+def _settled_mtime(st: os.stat_result) -> int | None:
+    # A rewrite in the same timestamp tick keeps the mtime, so only an mtime older than
+    # any filesystem's tick (FAT: 2 s) at the read can vouch for the content later.
+    return st.st_mtime_ns if time.time_ns() - st.st_mtime_ns >= 3_000_000_000 else None
+
+
+def _validate_file(key: str, prev: tuple[int | None, bytes]) -> coco.MemoStateOutcome:
     try:
         st = os.stat(key)
     except FileNotFoundError:
@@ -508,7 +514,7 @@ def _validate_file(key: str, prev: tuple[int, bytes]) -> coco.MemoStateOutcome:
     if st.st_mtime_ns == prev[0]:
         return coco.MemoStateOutcome(state=prev, memo_valid=True)
     digest = hashlib.sha256(Path(key).read_bytes()).digest()
-    return coco.MemoStateOutcome(state=(st.st_mtime_ns, digest), memo_valid=digest == prev[1])
+    return coco.MemoStateOutcome(state=(_settled_mtime(st), digest), memo_valid=digest == prev[1])
 
 
 # Module level, at import, after the validator it names.
@@ -521,7 +527,7 @@ async def session(task: Task) -> Outcome:
     # Stat *before* reading, so the recorded mtime is never newer than the bytes.
     st = os.stat(path)
     data = path.read_bytes()
-    coco.use_data_dep(FILE, key=str(path.resolve()), state=(st.st_mtime_ns, hashlib.sha256(data).digest()))
+    coco.use_data_dep(FILE, key=str(path.resolve()), state=(_settled_mtime(st), hashlib.sha256(data).digest()))
     ...
 ```
 

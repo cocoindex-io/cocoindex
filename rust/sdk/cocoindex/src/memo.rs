@@ -698,7 +698,8 @@ pub(crate) async fn collect_component_states(
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct FileMemoState {
-    modified_nanos: u128,
+    /// `None` when the mtime was too recent to vouch for the content when it was read.
+    modified_nanos: Option<u128>,
     content_fingerprint: Fingerprint,
 }
 
@@ -1171,23 +1172,41 @@ pub fn any_has_memo_state(children: &[&dyn MemoInput]) -> bool {
     children.iter().any(|child| child.has_memo_state())
 }
 
+/// How old a file's mtime must be, when its content is read for the memo state, to vouch
+/// for that content later. A rewrite in the same timestamp tick as the read keeps the old
+/// mtime: NTFS follows the system timer, HFS+ and ext3 keep whole seconds, FAT two. An
+/// equal mtime therefore only shows the content is unchanged if that mtime was already
+/// older than the coarsest tick, plus a margin for the filesystem's clock lagging the
+/// reader's, when the content was read. Like git's "racily clean" check, this assumes the
+/// file's timestamps and the reader's clock agree.
+const SETTLED_MTIME_AGE: Duration = Duration::from_secs(3);
+
 pub(crate) async fn file_memo_state(
     file: &dyn FileLike,
     prev: Option<&MemoStateValue>,
 ) -> Result<MemoStateDecision> {
+    let started_at = SystemTime::now();
     let metadata = file.metadata().await?;
     let modified_nanos = system_time_nanos(metadata.modified);
     let prev_state = prev.and_then(|value| value.deserialize::<FileMemoState>().ok());
 
+    // An equal mtime skips the fingerprint, unless the backend gives one for free.
     if let Some(ref prev_state) = prev_state
-        && prev_state.modified_nanos == modified_nanos
+        && prev_state.modified_nanos == Some(modified_nanos)
+        && metadata.content_fingerprint.is_none()
     {
         return MemoStateDecision::new(&prev_state, true);
     }
 
     let content_fingerprint = file.content_fingerprint().await?;
+    // The fingerprint may come from content read before this check started (both are
+    // cached), so the mtime's age is taken at the earlier of the two.
+    let read_at = match file.cache().full_content_read_at().await {
+        Some(read_at) => read_at.min(started_at),
+        None => started_at,
+    };
     let state = FileMemoState {
-        modified_nanos,
+        modified_nanos: settled_modified_nanos(metadata.modified, read_at),
         content_fingerprint,
     };
     let memo_valid = prev_state
@@ -1220,6 +1239,15 @@ macro_rules! impl_file_memo_input {
 }
 
 pub(crate) use impl_file_memo_input;
+
+/// `modified` as nanoseconds if it was already settled when the content was read at
+/// `read_at`. A future `modified` is not settled.
+fn settled_modified_nanos(modified: SystemTime, read_at: SystemTime) -> Option<u128> {
+    match read_at.duration_since(modified) {
+        Ok(age) if age >= SETTLED_MTIME_AGE => Some(system_time_nanos(modified)),
+        _ => None,
+    }
+}
 
 fn system_time_nanos(time: SystemTime) -> u128 {
     time.duration_since(UNIX_EPOCH)
@@ -1611,5 +1639,137 @@ mod tests {
             decimal: rust_decimal::Decimal::new(1234, 2),
         };
         let _ = fingerprint(&value);
+    }
+}
+
+#[cfg(test)]
+mod file_memo_state_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::resources::file::{FileContentCache, FileMetadata, FilePath};
+
+    struct TestFile {
+        cache: FileContentCache,
+        modified: SystemTime,
+        content: &'static [u8],
+        metadata_fingerprint: Option<Fingerprint>,
+        reads: AtomicUsize,
+    }
+
+    impl TestFile {
+        fn new(
+            modified: SystemTime,
+            content: &'static [u8],
+            metadata_fingerprint: Option<Fingerprint>,
+        ) -> Self {
+            Self {
+                cache: FileContentCache::new(),
+                modified,
+                content,
+                metadata_fingerprint,
+                reads: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl FileLike for TestFile {
+        fn file_path(&self) -> FilePath {
+            FilePath::new("test.txt")
+        }
+
+        fn cache(&self) -> &FileContentCache {
+            &self.cache
+        }
+
+        async fn fetch_metadata(&self) -> Result<FileMetadata> {
+            Ok(FileMetadata {
+                size: self.content.len() as u64,
+                modified: self.modified,
+                content_fingerprint: self.metadata_fingerprint,
+            })
+        }
+
+        async fn read_impl(&self, size: Option<usize>) -> Result<Vec<u8>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(match size {
+                Some(size) => self.content.iter().take(size).copied().collect(),
+                None => self.content.to_vec(),
+            })
+        }
+    }
+
+    fn settled() -> SystemTime {
+        SystemTime::now() - Duration::from_secs(3600)
+    }
+
+    async fn state_of(file: &TestFile, prev: Option<&MemoStateDecision>) -> MemoStateDecision {
+        file_memo_state(file, prev.map(|decision| &decision.state))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_equal_settled_mtime_reuses_without_reading() {
+        let modified = settled();
+        let first = state_of(&TestFile::new(modified, b"v1", None), None).await;
+        let file = TestFile::new(modified, b"v1", None);
+        let second = state_of(&file, Some(&first)).await;
+        assert!(second.memo_valid);
+        assert_eq!(file.reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_rewrite_in_the_tick_of_a_fresh_mtime_is_caught() {
+        // Read in the mtime's own tick, then rewritten in that tick: the mtime stays.
+        let modified = SystemTime::now();
+        let first = state_of(&TestFile::new(modified, b"v1", None), None).await;
+        let second = state_of(&TestFile::new(modified, b"v2", None), Some(&first)).await;
+        assert!(!second.memo_valid);
+    }
+
+    #[tokio::test]
+    async fn a_free_fingerprint_is_compared_on_an_equal_mtime() {
+        let modified = settled();
+        let fingerprint = |etag: &str| Some(Fingerprint::from(&etag).unwrap());
+        let first = state_of(&TestFile::new(modified, b"v1", fingerprint("e1")), None).await;
+        let second = state_of(
+            &TestFile::new(modified, b"v2", fingerprint("e2")),
+            Some(&first),
+        )
+        .await;
+        assert!(!second.memo_valid);
+    }
+
+    #[tokio::test]
+    async fn a_state_stored_before_unsettled_mtimes_still_validates() {
+        #[derive(Serialize)]
+        struct StoredFileMemoState {
+            modified_nanos: u128,
+            content_fingerprint: Fingerprint,
+        }
+        let modified = settled();
+        let stored = MemoStateValue::from_serializable(&StoredFileMemoState {
+            modified_nanos: system_time_nanos(modified),
+            content_fingerprint: Fingerprint::from(&b"v1".to_vec()).unwrap(),
+        })
+        .unwrap();
+        let file = TestFile::new(modified, b"v1", None);
+        let decision = file_memo_state(&file, Some(&stored)).await.unwrap();
+        assert!(decision.memo_valid);
+        assert_eq!(file.reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn the_mtime_age_counts_from_when_the_content_was_read() {
+        // Fresh when the content is read, settled by the time of the memo check.
+        let modified = SystemTime::now() - Duration::from_secs(2);
+        let file = TestFile::new(modified, b"v1", None);
+        file.read().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let first = state_of(&file, None).await;
+        let second = state_of(&TestFile::new(modified, b"v2", None), Some(&first)).await;
+        assert!(!second.memo_valid);
     }
 }

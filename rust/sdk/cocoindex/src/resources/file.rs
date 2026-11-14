@@ -246,6 +246,12 @@ pub struct FileMetadata {
     pub content_fingerprint: Option<Fingerprint>,
 }
 
+/// A file's full content, and when the read that produced it started.
+struct CachedContent {
+    bytes: Bytes,
+    read_at: SystemTime,
+}
+
 /// Per-file cache of metadata, full content and content fingerprint.
 ///
 /// The content is held as [`Bytes`], so every [`FileLike::read`] after the
@@ -253,7 +259,7 @@ pub struct FileMetadata {
 #[derive(Default)]
 pub struct FileContentCache {
     metadata: Mutex<Option<FileMetadata>>,
-    full_content: Mutex<Option<Bytes>>,
+    full_content: Mutex<Option<CachedContent>>,
     content_fingerprint: Mutex<Option<Fingerprint>>,
 }
 
@@ -268,6 +274,15 @@ impl FileContentCache {
             full_content: Mutex::new(None),
             content_fingerprint: Mutex::new(None),
         }
+    }
+
+    /// When the read of the cached full content started, if it has been read.
+    pub(crate) async fn full_content_read_at(&self) -> Option<SystemTime> {
+        self.full_content
+            .lock()
+            .await
+            .as_ref()
+            .map(|content| content.read_at)
     }
 }
 
@@ -299,12 +314,16 @@ pub trait FileLike: Send + Sync {
         {
             let guard = self.cache().full_content.lock().await;
             if let Some(content) = guard.as_ref() {
-                return Ok(content.clone());
+                return Ok(content.bytes.clone());
             }
         }
-        let content = Bytes::from(self.read_impl(None).await?);
-        *self.cache().full_content.lock().await = Some(content.clone());
-        Ok(content)
+        let read_at = SystemTime::now();
+        let bytes = Bytes::from(self.read_impl(None).await?);
+        *self.cache().full_content.lock().await = Some(CachedContent {
+            bytes: bytes.clone(),
+            read_at,
+        });
+        Ok(bytes)
     }
 
     /// The first `size` bytes: a slice of the cached content when the file
@@ -313,7 +332,7 @@ pub trait FileLike: Send + Sync {
         {
             let guard = self.cache().full_content.lock().await;
             if let Some(content) = guard.as_ref() {
-                return Ok(content.slice(..size.min(content.len())));
+                return Ok(content.bytes.slice(..size.min(content.bytes.len())));
             }
         }
         Ok(Bytes::from(self.read_impl(Some(size)).await?))
