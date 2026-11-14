@@ -298,6 +298,7 @@ cocoindex update [OPTIONS] APP_TARGET
 | `--full-reprocess` | Reprocess everything, bypassing all memoization caches: every component and memoized function executes again (external calls such as embeddings included). To force just one function's work to run again, bump its version= instead. |
 | `-L, --live` | Run in live mode (live components continue processing after initial update). |
 | `--preview` | Compute target actions without applying them. Prints planned actions. |
+| `--select PATH` | Run only the component at PATH and the components below it; repeat to run several. Write PATH as `cocoindex show` prints it, such as '/@process_file/"docs/a.md"'. Other components are not run and not treated as gone. |
 | `--help` | Show this message and exit. |
 
 ---

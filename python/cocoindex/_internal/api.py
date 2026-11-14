@@ -10,9 +10,11 @@ from typing import (
     Generic,
     Iterable,
     ParamSpec,
+    Protocol,
     TypeVar,
     cast,
     overload,
+    runtime_checkable,
 )
 
 from . import core, environment
@@ -312,6 +314,12 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
     return pyvalue.get(fn_ret_deserializer(processor_fn))
 
 
+def _skips_mount(parent_ctx: ComponentContext, child_path: core.StablePath) -> bool:
+    return core.skips_mount(
+        child_path, parent_ctx._core_processor_ctx, parent_ctx._core_fn_call_ctx
+    )
+
+
 async def _mount_live_component(
     parent_ctx: ComponentContext,
     child_path: core.StablePath,
@@ -327,12 +335,16 @@ async def _mount_live_component(
     """
     from .live_component import _process_live_wrapper
 
-    controller, readiness_handle = await core.mount_live_async(
+    mounted = await core.mount_live_async(
         child_path,
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
         parent_ctx._core_processor_ctx.live,
     )
+    if mounted is None:
+        # The update's component selector leaves this component out.
+        return ComponentMountHandle([])
+    controller, readiness_handle = mounted
 
     operator = LiveComponentOperator(controller, instance, parent_ctx._env, child_path)
 
@@ -401,6 +413,11 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
 
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
+
+    # Asked before anything is prepared: a live component's constructor and a
+    # memo key are user code, which an unselected component must not run.
+    if _skips_mount(parent_ctx, child_path):
+        return ComponentMountHandle([])
 
     if is_live_component_class(processor_fn):
         instance = processor_fn(*args, **kwargs)
@@ -503,6 +520,8 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     child_path = build_child_path(parent_ctx, subpath)
 
     if isinstance(items, LiveMapFeed):
+        if _skips_mount(parent_ctx, child_path):
+            return ComponentMountHandle([])
         # Live data source: the per-item `fn` (whether a plain function or a
         # LiveComponent class) is dispatched through `mount()` / `operator.update()`
         # inside `_MountEachLiveComponent`, both of which already handle live
@@ -520,6 +539,8 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
 
     async def _mount_one(key: StableKey, item: Any) -> None:
         item_path = child_path.concat(key)
+        if _skips_mount(parent_ctx, item_path):
+            return
         if fn_is_live:
             instance = fn(item, *extra_args, **kwargs)
             handle = await _mount_live_component(parent_ctx, item_path, instance)
@@ -542,13 +563,35 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         )
         core_handles.append(core_handle)
 
-    if isinstance(items, AsyncIterable):
+    # Under a selector that leaves out some keys, read only the ones it may
+    # run: none at all, or, from a source that reads by key, just those.
+    keys = core.mount_each_keys(
+        child_path, parent_ctx._core_processor_ctx, parent_ctx._core_fn_call_ctx
+    )
+    if keys is not None and (not keys or isinstance(items, _ReadableByKey)):
+        if keys:
+            async for key, item in items.__coco_items_for_keys__(keys):
+                await _mount_one(key, item)
+    elif isinstance(items, AsyncIterable):
         async for key, item in items:
             await _mount_one(key, item)
     else:
         for key, item in items:
             await _mount_one(key, item)
     return ComponentMountHandle(core_handles)
+
+
+@runtime_checkable
+class _ReadableByKey(Protocol):
+    """Items of a source that can read single keys, as well as list them all.
+    An update that runs only some components (``component_selector``) reads
+    just the keys it may run instead of listing everything."""
+
+    def __coco_items_for_keys__(
+        self, keys: list[StableKey], /
+    ) -> AsyncIterable[tuple[StableKey, Any]]:
+        """The items with these keys that the source holds, in any order."""
+        ...
 
 
 # Keep map task failures wrapped so a user function can return an Exception

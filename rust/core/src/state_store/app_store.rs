@@ -669,6 +669,29 @@ impl AppStore {
         Ok(())
     }
 
+    /// Whether a target state strictly below `container` has an owner for
+    /// which `pred` holds. Owner rows of a container's descendants are
+    /// adjacent: their keys extend the container's own key, short of the
+    /// final terminator byte of its path.
+    pub async fn any_owner_below_in_txn(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        container: &TargetStatePath,
+        mut pred: impl FnMut(&StablePath) -> bool,
+    ) -> Result<bool> {
+        let own_key = key_target_state_owner(container)?;
+        let prefix = &own_key[..own_key.len() - 1];
+        let mut found = false;
+        txn.for_each_prefix(self.db(), prefix, |raw_key, raw_value| {
+            if !found && raw_key != own_key.as_slice() {
+                let info: TargetStateOwnerInfo = from_msgpack_slice(raw_value)?;
+                found = pred(&info.component_path);
+            }
+            Ok(())
+        })?;
+        Ok(found)
+    }
+
     pub async fn delete_target_state_owner(
         &self,
         txn: &mut WriteTxn<'_>,

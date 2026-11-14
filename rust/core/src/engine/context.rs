@@ -12,11 +12,12 @@ use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
 use crate::prelude::*;
 
+use crate::state::component_selector::{ComponentSelection, ComponentSelector};
 use crate::state::stable_path::StableKey;
 
 pub(crate) static TARGET_ID_KEY: LazyLock<StableKey> =
     LazyLock::new(|| StableKey::Symbol("cocoindex/_internal/target_id".into()));
-use crate::state::stable_path_set::ChildStablePathSet;
+use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 use crate::state::target_state_path::{
     TargetProviderDeps, TargetStatePath, TargetStateProviderGeneration,
 };
@@ -772,6 +773,30 @@ pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     /// `mount_inner_live`'s self-built parent context).
     pub on_error: Option<crate::engine::component::OnError>,
     pub preview_collector: Option<PreviewActionCollector<Prof>>,
+    /// The selector this run is under, scoped by
+    /// [`ComponentSelector::scoped_to`]. See
+    /// [`ComponentProcessorContext::component_selector`].
+    pub component_selector: Option<ComponentSelector>,
+}
+
+/// A change a run refused because the update's selector leaves out components
+/// it would affect: the rebuild or removal of a container target state whose
+/// children the update does not run. The run fails, and the update fails with
+/// the same error when it ends, wherever the run was: a background component's
+/// failure alone only reaches its error handler, and a caller that previews a
+/// slice and then updates it must see the refusal from both.
+#[derive(Clone, Default)]
+pub(crate) struct UpdateRefusal(Arc<parking_lot::Mutex<Option<String>>>);
+
+impl UpdateRefusal {
+    /// Keep the first refusal: it is the one the update reports.
+    pub(crate) fn record(&self, message: &str) {
+        self.0.lock().get_or_insert_with(|| message.to_string());
+    }
+
+    pub(crate) fn take(&self) -> Option<String> {
+        self.0.lock().take()
+    }
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
@@ -810,6 +835,7 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
         live: bool,
         on_error: Option<crate::engine::component::OnError>,
         preview_collector: Option<PreviewActionCollector<Prof>>,
+        component_selector: Option<ComponentSelector>,
     ) -> Self {
         Self::Build(ComponentBuildContext {
             state: Mutex::new(Some(ComponentBuildingState {
@@ -825,6 +851,7 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
             live,
             on_error,
             preview_collector,
+            component_selector,
         })
     }
 
@@ -851,6 +878,16 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     /// This run's in-flight token and the lender its children borrow from;
     /// see [`crate::engine::admission`].
     admission: Admission,
+
+    /// Where a run of this update records that it refused a change for the
+    /// selector's sake (see [`UpdateRefusal`]). One per update: every context
+    /// of the update shares it, live components' runs included.
+    update_refusal: UpdateRefusal,
+
+    /// This run's selector left out a child it mounted or one the store holds,
+    /// so this subtree is not up to date when the run ends. Set by a mount, by
+    /// the commit's existence reconciliation and by its GC sweep.
+    left_out_children: Arc<AtomicBool>,
 
     /// Logic fingerprints accumulated from function calls and child components.
     logic_deps: Mutex<HashSet<Fingerprint>>,
@@ -934,6 +971,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             host_ctx,
             processing_action,
             app_store,
+            None,
         )
     }
 
@@ -942,6 +980,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// It borrows its in-flight token from `lender`, the run that mounted the
     /// live component, for as long as that run lasts, and reads and writes
     /// the store through `app_store`, that run's handle.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_borrowing_from(
         component: Component<Prof>,
         lender: Option<Lender>,
@@ -950,6 +989,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
         app_store: AppStore,
+        update_refusal: UpdateRefusal,
     ) -> Self {
         Self::from_parts(
             component,
@@ -959,9 +999,11 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             host_ctx,
             processing_action,
             app_store,
+            Some(update_refusal),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn from_parts(
         component: Component<Prof>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
@@ -970,7 +1012,13 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
         app_store: AppStore,
+        update_refusal: Option<UpdateRefusal>,
     ) -> Self {
+        let update_refusal = match (&parent_context, update_refusal) {
+            (Some(parent), _) => parent.update_refusal().clone(),
+            (None, Some(update_refusal)) => update_refusal,
+            (None, None) => UpdateRefusal::default(),
+        };
         let operation_generation = match &parent_context {
             Some(parent) => parent.operation_generation(),
             None => component.app_ctx().next_operation_generation(),
@@ -983,6 +1031,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 app_store,
                 operation_generation,
                 admission,
+                update_refusal,
+                left_out_children: Arc::new(AtomicBool::new(false)),
                 logic_deps: Mutex::new(HashSet::new()),
                 data_deps: Mutex::new(DataDeps::default()),
                 target_provider_deps: Mutex::new(TargetProviderDeps::new()),
@@ -1327,6 +1377,96 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
             ComponentProcessingAction::Delete(_) => None,
         }
+    }
+
+    /// The selector this run is under. A delete has none: it is reached only
+    /// for a path a selector covers, and removes everything below.
+    pub(crate) fn component_selector(&self) -> Option<&ComponentSelector> {
+        match self.processing_state() {
+            ComponentProcessingAction::Build(build_ctx) => build_ctx.component_selector.as_ref(),
+            ComponentProcessingAction::Delete(_) => None,
+        }
+    }
+
+    /// The update this run belongs to leaves some components out, wherever this
+    /// run is: inside a selected subtree too. A change this run makes can reach
+    /// those components through what they share, as a container target state.
+    /// A delete does not count: the component it removes is selected and gone,
+    /// so nothing can declare under its containers any more.
+    pub(crate) fn update_leaves_out_components(&self) -> bool {
+        self.component_selector()
+            .is_some_and(|selector| !selector.selects_everything())
+    }
+
+    pub(crate) fn update_refusal(&self) -> &UpdateRefusal {
+        &self.inner.update_refusal
+    }
+
+    pub(crate) fn mark_left_out_children(&self) {
+        self.inner.left_out_children.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn left_out_children(&self) -> bool {
+        self.inner.left_out_children.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn left_out_children_flag(&self) -> Arc<AtomicBool> {
+        self.inner.left_out_children.clone()
+    }
+
+    /// Record a mount at `path` that the selector leaves out. It counts as a
+    /// mount of this run, so a second mount at the path is an error as usual,
+    /// and a directory it lies under counts as declared.
+    pub(crate) fn record_skipped_mount(&self, path: &StablePath) -> Result<()> {
+        self.mark_left_out_children();
+        let sub_path = path.as_ref().strip_parent(self.stable_path().as_ref())?;
+        self.update_building_state(|building_state| {
+            building_state
+                .child_path_set
+                .add_child(sub_path, StablePathSet::Skipped)
+        })
+    }
+
+    /// Whether the selector leaves out a mount at `path`, without recording
+    /// anything: for a host that prepares a mount it would then hand to
+    /// [`Component::mount`], which records the skip itself.
+    pub fn selector_leaves_out(&self, path: &StablePath) -> bool {
+        self.component_selector()
+            .is_some_and(|selector| selector.classify(path) == ComponentSelection::Unselected)
+    }
+
+    /// Whether the selector leaves out a mount at `path`, recording it if so.
+    /// For a host that wants to know before it prepares the mount: building a
+    /// processor can run user code, and costs per item. [`Component::mount`]
+    /// and `mount_live_prepare` decide alike for one that does not ask.
+    pub fn skips_mount(&self, fn_ctx: &FnCallContext, path: &StablePath) -> Result<bool> {
+        let Some(selector) = self.component_selector() else {
+            return Ok(false);
+        };
+        if selector.classify(path) != ComponentSelection::Unselected {
+            return Ok(false);
+        }
+        // Even a skipped child rules out memoizing the function that mounted it.
+        fn_ctx.update(|inner| inner.has_child_components = true);
+        self.record_skipped_mount(path)?;
+        Ok(true)
+    }
+
+    /// The keys a mount of one component per key under `path` (`mount_each`)
+    /// can run: `None` for every key, else only these, which may be none. A
+    /// host that gets a list need not list its source in full: it can read
+    /// just these keys, and with an empty list it need not read at all. The
+    /// run records that it leaves the other keys out, as
+    /// [`Self::skips_mount`] records one skip.
+    pub fn mount_each_keys(
+        &self,
+        fn_ctx: &FnCallContext,
+        path: &StablePath,
+    ) -> Option<Vec<StableKey>> {
+        let keys = self.component_selector()?.selected_child_keys(path)?;
+        fn_ctx.update(|inner| inner.has_child_components = true);
+        self.mark_left_out_children();
+        Some(keys)
     }
 
     pub fn live(&self) -> bool {

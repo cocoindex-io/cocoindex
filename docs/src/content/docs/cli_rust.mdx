@@ -166,6 +166,7 @@ Run an app in catch-up mode. With `--live`, run in live mode.
 cocoindex update [APP_TARGET]
 cocoindex update -L [APP_TARGET]
 cocoindex update --preview [APP_TARGET]
+cocoindex update --select PATH [--select PATH ...] [APP_TARGET]
 ```
 
 Progress renders on stderr; the final `[Stats] ...` line prints on stdout.
@@ -178,6 +179,7 @@ Progress renders on stderr; the final `[Stats] ...` line prints on stdout.
 * `--full-reprocess`: Reprocess everything, bypassing all memoization caches.
 * `-L, --live`: Run in live mode (live components continue processing after initial update).
 * `--preview`: Compute target actions without applying them. Prints planned actions, and writes nothing to the state database. It cannot be combined with `--reset` or `--live`.
+* `--select PATH`: Run only the component at `PATH` and the components below it; repeat to run several. Write `PATH` as `cocoindex show` prints it, such as `'/"process_file"/"docs/a.md"'`. Other components are not run and not treated as gone. It cannot be combined with `--reset`. See [Updating part of an app](./programming_guide/app#updating-part-of-an-app).
 
 Ctrl-C stops the run: the CLI prints `Stopping...` and forwards the interrupt to the child; a second Ctrl-C kills it.
 

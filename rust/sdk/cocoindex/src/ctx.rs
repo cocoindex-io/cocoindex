@@ -1058,7 +1058,13 @@ impl Ctx {
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path, comp_ctx.live())
             .map_err(|e| Error::engine(format!("{e}")))?;
+        // Before the return below: a skipped mount still counts as a mount of
+        // the calling function, so it is not memoized.
         let _frame = self.frame_guard(fn_ctx);
+        let Some(pending) = pending else {
+            // The update's component selector leaves this component out.
+            return Ok(());
+        };
         let result = pending
             .complete()
             .await
@@ -1230,7 +1236,13 @@ impl Ctx {
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path.clone(), comp_ctx.live())
             .map_err(|e| Error::engine(format!("{e}")))?;
+        // Before the return below: a skipped mount still counts as a mount of
+        // the calling function, so it is not memoized.
         let _frame = self.frame_guard(fn_ctx);
+        let Some(pending) = pending else {
+            // The update's component selector leaves this component out.
+            return Ok(());
+        };
         let result = pending
             .complete()
             .await
@@ -1306,6 +1318,15 @@ impl Ctx {
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
         self.__mount_fp(key.into_stable_key(), None, f).await
+    }
+
+    /// The update's component selector leaves out a mount at `key`. `mount!`
+    /// asks before it computes the child's memo key, which is user code.
+    #[doc(hidden)]
+    pub fn __selector_leaves_out(&self, key: &StableKey) -> bool {
+        self.comp_ctx.as_ref().is_some_and(|comp_ctx| {
+            comp_ctx.selector_leaves_out(&self.child_path(comp_ctx, key.clone()))
+        })
     }
 
     /// Background mount with an explicit component-memo fingerprint. The
@@ -1578,6 +1599,9 @@ impl Ctx {
     /// All items are reported under one processor name, `mount_each`, in
     /// update stats and `cocoindex show -l`.
     ///
+    /// When the update's `component_selector` leaves out every child here,
+    /// `items` is not read at all: neither `key_fn` nor `f` runs.
+    ///
     /// # Errors
     ///
     /// Returns an error when `key_fn` yields the same key twice, or when a
@@ -1711,11 +1735,30 @@ impl Ctx {
                 deadline: self.deadline,
             });
         };
+        // A selector that leaves out every child here: the source is not read
+        // at all, so no item, key or closure of the caller's runs.
+        let mount_each_keys = {
+            let fn_ctx = Arc::new(FnCallContext::default());
+            let _frame = parent.frame_guard(fn_ctx.clone());
+            comp_ctx.mount_each_keys(&fn_ctx, &parent.mount_base_path(comp_ctx))
+        };
+        if mount_each_keys.is_some_and(|keys| keys.is_empty()) {
+            return Ok(ComponentMountHandle {
+                inner: MountHandleInner::Core(Vec::new()),
+                deadline: self.deadline,
+            });
+        }
         let mut handles = Vec::new();
         while let Some((key, value)) = items.next().await {
             parent.check_cancellation()?;
             check_unique_key(&mut keys, key.clone())?;
-            let memo = memo_of(&value)?;
+            // The memo key is user code, which a child the selector leaves out
+            // must not run. The mount below then skips the child itself.
+            let memo = if comp_ctx.selector_leaves_out(&parent.child_path(comp_ctx, key.clone())) {
+                None
+            } else {
+                memo_of(&value)?
+            };
             let body = body.clone();
             let handle = parent
                 .mount_background(comp_ctx, key, processor_name.clone(), memo, move |child| {

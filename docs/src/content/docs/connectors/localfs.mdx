@@ -338,6 +338,8 @@ The key is `FileEntry::key()`: the relative path with forward slashes.
 </Fragment>
 </LangTabs>
 
+<Lang only="python">In an update that runs only some components (see [Updating part of an app](../programming_guide/app#updating-part-of-an-app)), `mount_each()` reads only the selected keys from `items()`: it checks those files instead of walking the directory, and applies the same `recursive` and `path_matcher` rules as the walk.</Lang>
+
 ### Filtering files
 
 Use `PatternFilePathMatcher` to filter which files and directories are included:

@@ -254,10 +254,43 @@ impl<'a> std::fmt::Display for StablePathRef<'a> {
         }
         for part in self.0.iter() {
             f.write_str("/")?;
-            part.fmt(f)?;
+            fmt_path_part(part, f)?;
         }
         Ok(())
     }
+}
+
+/// A part of a path as [`StableKey`]'s `Display` writes it, except that a
+/// symbol that is not a plain name is quoted (`@"cocoindex/mount_target"`),
+/// so that the path parses back.
+fn fmt_path_part(key: &StableKey, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match key {
+        StableKey::Symbol(s) if !is_bare_symbol(s) => {
+            f.write_str("@\"")?;
+            f.write_str(s.escape_default().to_string().as_str())?;
+            f.write_char('"')
+        }
+        StableKey::Array(a) => {
+            f.write_char('[')?;
+            for (i, part) in a.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(",")?;
+                }
+                fmt_path_part(part, f)?;
+            }
+            f.write_char(']')
+        }
+        _ => std::fmt::Display::fmt(key, f),
+    }
+}
+
+/// A symbol that a path writes as `@name`: printable ASCII with none of the
+/// characters that end a key or start a quote.
+fn is_bare_symbol(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with('"')
+        && s.chars()
+            .all(|c| c.is_ascii_graphic() && !matches!(c, '/' | ',' | '[' | ']' | '\\'))
 }
 
 impl<'a> From<&'a [StableKey]> for StablePathRef<'a> {
@@ -341,6 +374,213 @@ impl StablePath {
     }
 }
 
+impl std::str::FromStr for StablePath {
+    type Err = Error;
+
+    /// Parses a path as [`Display`](std::fmt::Display) writes it, such as
+    /// `/@process/"docs/a.md"`: the text `cocoindex show` prints.
+    fn from_str(text: &str) -> Result<Self> {
+        let mut parser = KeyParser {
+            text,
+            chars: text.char_indices().peekable(),
+        };
+        let mut parts = Vec::new();
+        if text == "/" {
+            return Ok(StablePath::root());
+        }
+        while parser.chars.peek().is_some() {
+            parser.expect('/')?;
+            parts.push(parser.key()?);
+        }
+        if parts.is_empty() {
+            client_bail!("a component path starts with `/`, such as `/@process/\"a.md\"`");
+        }
+        Ok(StablePath(parts.into()))
+    }
+}
+
+struct KeyParser<'t> {
+    text: &'t str,
+    chars: std::iter::Peekable<std::str::CharIndices<'t>>,
+}
+
+impl<'t> KeyParser<'t> {
+    fn error(&mut self, what: &str) -> Error {
+        let at = self.chars.peek().map_or(self.text.len(), |(i, _)| *i);
+        client_error!(
+            "cannot parse component path `{}` at offset {at}: {what}. Write it as \
+             `cocoindex show` prints it, such as `/@process/\"a.md\"`",
+            self.text
+        )
+    }
+
+    fn expect(&mut self, c: char) -> Result<()> {
+        match self.chars.peek() {
+            Some((_, next)) if *next == c => {
+                self.chars.next();
+                Ok(())
+            }
+            _ => Err(self.error(&format!("expected `{c}`"))),
+        }
+    }
+
+    fn key(&mut self) -> Result<StableKey> {
+        match self.chars.peek().map(|(_, c)| *c) {
+            Some('"') => {
+                self.chars.next();
+                let s = self.quoted(false)?;
+                Ok(StableKey::Str(Arc::from(s)))
+            }
+            Some('b') if self.text[self.offset() + 1..].starts_with('"') => {
+                self.chars.next();
+                self.chars.next();
+                let s = self.quoted(true)?;
+                Ok(StableKey::Bytes(s.chars().map(|c| c as u8).collect()))
+            }
+            Some('[') => {
+                self.chars.next();
+                let mut items = Vec::new();
+                if self.chars.peek().is_some_and(|(_, c)| *c == ']') {
+                    self.chars.next();
+                    return Ok(StableKey::Array(items.into()));
+                }
+                loop {
+                    items.push(self.key()?);
+                    match self.chars.next().map(|(_, c)| c) {
+                        Some(',') => {}
+                        Some(']') => return Ok(StableKey::Array(items.into())),
+                        _ => return Err(self.error("expected `,` or `]`")),
+                    }
+                }
+            }
+            Some('@') => {
+                self.chars.next();
+                if self.chars.peek().is_some_and(|(_, c)| *c == '"') {
+                    self.chars.next();
+                    let name = self.quoted(false)?;
+                    return Ok(StableKey::Symbol(Arc::from(name)));
+                }
+                let name = self.token();
+                if name.is_empty() {
+                    return Err(self.error("expected a symbol name after `@`"));
+                }
+                Ok(StableKey::Symbol(Arc::from(name)))
+            }
+            Some('#') => {
+                self.chars.next();
+                let hex = self.token();
+                let mut bytes = [0u8; 16];
+                if hex.len() != 32 || !hex.is_ascii() {
+                    return Err(self.error("expected 32 hex digits after `#`"));
+                }
+                for (i, byte) in bytes.iter_mut().enumerate() {
+                    *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
+                        .map_err(|_| self.error("expected 32 hex digits after `#`"))?;
+                }
+                Ok(StableKey::Fingerprint(utils::fingerprint::Fingerprint(
+                    bytes,
+                )))
+            }
+            _ => {
+                let token = self.token();
+                match token {
+                    "" => Err(self.error("expected a key")),
+                    "null" => Ok(StableKey::Null),
+                    "true" => Ok(StableKey::Bool(true)),
+                    "false" => Ok(StableKey::Bool(false)),
+                    _ => {
+                        if let Ok(i) = token.parse::<i64>() {
+                            Ok(StableKey::Int(i))
+                        } else if let Ok(u) = uuid::Uuid::parse_str(token) {
+                            Ok(StableKey::Uuid(u))
+                        } else {
+                            Err(self.error(&format!(
+                                "`{token}` is not a key (quote a string, as in `\"{token}\"`, \
+                                 and write a symbol as `@{token}`)"
+                            )))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn offset(&mut self) -> usize {
+        self.chars.peek().map_or(self.text.len(), |(i, _)| *i)
+    }
+
+    /// A bare token: up to the next `/`, `,` or `]`.
+    fn token(&mut self) -> &'t str {
+        let start = self.offset();
+        while self
+            .chars
+            .peek()
+            .is_some_and(|(_, c)| !matches!(c, '/' | ',' | ']'))
+        {
+            self.chars.next();
+        }
+        let end = self.offset();
+        let text = self.text;
+        &text[start..end]
+    }
+
+    /// The rest of a quoted string or byte string, after its opening quote,
+    /// undoing the escapes that `escape_default` writes. A byte string comes
+    /// back with one char per byte.
+    fn quoted(&mut self, bytes: bool) -> Result<String> {
+        let mut out = String::new();
+        loop {
+            let Some((_, c)) = self.chars.next() else {
+                return Err(self.error("unterminated quote"));
+            };
+            match c {
+                '"' => return Ok(out),
+                '\\' => {
+                    let Some((_, e)) = self.chars.next() else {
+                        return Err(self.error("unterminated escape"));
+                    };
+                    match e {
+                        't' => out.push('\t'),
+                        'r' => out.push('\r'),
+                        'n' => out.push('\n'),
+                        '\'' | '"' | '\\' => out.push(e),
+                        'x' if bytes => {
+                            let hex: String = (0..2)
+                                .filter_map(|_| self.chars.next())
+                                .map(|(_, c)| c)
+                                .collect();
+                            let byte = u8::from_str_radix(&hex, 16)
+                                .map_err(|_| self.error("expected two hex digits after `\\x`"))?;
+                            out.push(byte as char);
+                        }
+                        'u' if !bytes => {
+                            self.expect('{')?;
+                            let mut hex = String::new();
+                            loop {
+                                match self.chars.next() {
+                                    Some((_, '}')) => break,
+                                    Some((_, h)) => hex.push(h),
+                                    None => return Err(self.error("unterminated `\\u{`")),
+                                }
+                            }
+                            let ch = u32::from_str_radix(&hex, 16)
+                                .ok()
+                                .and_then(char::from_u32)
+                                .ok_or_else(|| self.error("invalid `\\u{..}` escape"))?;
+                            out.push(ch);
+                        }
+                        _ => return Err(self.error(&format!("unknown escape `\\{e}`"))),
+                    }
+                }
+                c if bytes && !c.is_ascii() => {
+                    return Err(self.error("a byte string holds ASCII only"));
+                }
+                c => out.push(c),
+            }
+        }
+    }
+}
+
 impl<'a> From<StablePathRef<'a>> for StablePath {
     fn from(value: StablePathRef<'a>) -> Self {
         StablePath(value.0.to_owned().into())
@@ -381,6 +621,80 @@ impl<'a> storekey::Encode for StablePathPrefix<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_path_parses_back_from_its_display() {
+        use std::str::FromStr;
+        let paths = [
+            StablePath::root(),
+            StablePath(
+                vec![
+                    StableKey::Symbol(Arc::from("process")),
+                    StableKey::Symbol(Arc::from("cocoindex/mount_target")),
+                    StableKey::Symbol(Arc::from("a,b]\"c\u{e9} d")),
+                    StableKey::Str(Arc::from("docs/a \"b\".md\t\u{e9}\u{1F600}")),
+                    StableKey::Array(vec![StableKey::Symbol(Arc::from("x/y"))].into()),
+                ]
+                .into(),
+            ),
+            StablePath(
+                vec![
+                    StableKey::Null,
+                    StableKey::Bool(true),
+                    StableKey::Bool(false),
+                    StableKey::Int(-42),
+                    StableKey::Bytes(Arc::from(&b"a\x00/\"\xff"[..])),
+                    StableKey::Uuid(uuid::Uuid::from_u128(
+                        0x1234_5678_9abc_def0_1234_5678_9abc_def0,
+                    )),
+                    StableKey::Array(
+                        vec![
+                            StableKey::Int(1),
+                            StableKey::Str(Arc::from("x,]/")),
+                            StableKey::Array(Vec::new().into()),
+                        ]
+                        .into(),
+                    ),
+                    StableKey::Fingerprint(utils::fingerprint::Fingerprint([7; 16])),
+                    StableKey::Str(Arc::from("")),
+                ]
+                .into(),
+            ),
+        ];
+        for path in paths {
+            let text = path.to_string();
+            assert_eq!(StablePath::from_str(&text).unwrap(), path, "{text}");
+        }
+        let symbols = StablePath(
+            vec![
+                StableKey::Symbol(Arc::from("process_file")),
+                StableKey::Symbol(Arc::from("cocoindex/mount_target")),
+            ]
+            .into(),
+        );
+        assert_eq!(
+            symbols.to_string(),
+            "/@process_file/@\"cocoindex/mount_target\""
+        );
+    }
+
+    #[test]
+    fn a_path_that_is_not_as_displayed_does_not_parse() {
+        use std::str::FromStr;
+        for text in [
+            "",
+            "process",
+            "/process/a.md",
+            "/@",
+            "/\"a",
+            "/[1,2",
+            "/#12",
+            "/a//b",
+            "/1/",
+        ] {
+            assert!(StablePath::from_str(text).is_err(), "{text}");
+        }
+    }
     use super::*;
     use std::io::Cursor;
 

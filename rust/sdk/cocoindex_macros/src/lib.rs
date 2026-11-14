@@ -1555,7 +1555,7 @@ fn parse_grouped_call(expr: &Expr) -> syn::Result<(Path, Vec<Expr>)> {
 /// `key` (any `cocoindex::IntoStableKey`) if given, else the function's name.
 #[proc_macro]
 pub fn use_mount(input: TokenStream) -> TokenStream {
-    expand_single_mount(input, "use_mount", quote! { __use_mount_fp })
+    expand_single_mount(input, "use_mount", quote! { __use_mount_fp }, false)
 }
 
 /// `mount!(my_fn(ctx, a, b))` or `mount!(key, my_fn(ctx, a, b))`.
@@ -1569,12 +1569,17 @@ pub fn use_mount(input: TokenStream) -> TokenStream {
 /// `key` if given, else the function's name.
 #[proc_macro]
 pub fn mount(input: TokenStream) -> TokenStream {
-    expand_single_mount(input, "mount", quote! { __mount_fp })
+    expand_single_mount(input, "mount", quote! { __mount_fp }, true)
 }
 
 /// Shared expansion of `use_mount!` and `mount!`: the same grouped-call
 /// parse and component-memo fingerprint, dispatched to `Ctx::<method>`.
-fn expand_single_mount(input: TokenStream, name: &str, method: TokenStream2) -> TokenStream {
+fn expand_single_mount(
+    input: TokenStream,
+    name: &str,
+    method: TokenStream2,
+    may_be_left_out: bool,
+) -> TokenStream {
     let parsed = parse_macro_input!(input with Punctuated::<Expr, Token![,]>::parse_terminated);
     let elems: Vec<Expr> = parsed.into_iter().collect();
     let (key_expr, call) = match elems.as_slice() {
@@ -1616,20 +1621,37 @@ fn expand_single_mount(input: TokenStream, name: &str, method: TokenStream2) -> 
         },
     };
 
-    quote! {{
-        use ::cocoindex::mount::{ComponentArgViaMemoInput as _, ComponentArgViaSerialize as _};
-        let __coco_parent = &(#ctx_arg);
-        #(#arg_binds)*
-        let __coco_memo = ::cocoindex::mount::component_memo(
+    let memo_expr = quote! {
+        ::cocoindex::mount::component_memo(
             ::core::module_path!(),
             ::core::stringify!(#fn_ident),
             #hash_path,
             ::std::vec![ #(#fp_parts),* ],
-        )?;
+        )?
+    };
+    // A background child the selector leaves out computes no memo key: that is
+    // user code. A `use_mount!` child always runs, so it always needs one.
+    let memo_tokens = if may_be_left_out {
+        quote! {
+            if __coco_parent.__selector_leaves_out(&__coco_key) {
+                ::core::option::Option::None
+            } else {
+                ::core::option::Option::Some(#memo_expr)
+            }
+        }
+    } else {
+        quote! { ::core::option::Option::Some(#memo_expr) }
+    };
+
+    quote! {{
+        use ::cocoindex::mount::{ComponentArgViaMemoInput as _, ComponentArgViaSerialize as _};
+        let __coco_parent = &(#ctx_arg);
+        #(#arg_binds)*
         let __coco_key: ::cocoindex::StableKey = #key_tokens;
+        let __coco_memo = #memo_tokens;
         __coco_parent.#method(
             __coco_key,
-            ::core::option::Option::Some(__coco_memo),
+            __coco_memo,
             move |__coco_child| async move {
                 #path(&__coco_child, #(#arg_idents),*).await
             },
@@ -1646,7 +1668,9 @@ fn expand_single_mount(input: TokenStream, name: &str, method: TokenStream2) -> 
 /// `coco.mount_each`: evaluates to a `Result<ComponentMountHandle>` whose
 /// `ready().await` waits until every child's target states are synced; the
 /// children are mounted as `items` is consumed, and `my_fn` returns
-/// `Result<()>`. `use_mount_each!` is the form that returns the values.
+/// `Result<()>`. When the update's `component_selector` leaves out every
+/// child under the prefix, `items` is not read at all. `use_mount_each!` is
+/// the form that returns the values.
 ///
 /// The closure binds the item's **value**; inside the call, `ctx` → child
 /// scope, the bound `item` → that value, and any other arguments are captured

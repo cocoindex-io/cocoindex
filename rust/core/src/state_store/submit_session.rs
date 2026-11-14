@@ -73,6 +73,7 @@ use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::prelude::*;
+use crate::state::component_selector::{ComponentSelection, ComponentSelector};
 use crate::state::db_schema::{
     ChildExistenceInfo, StablePathEntryTrackingInfo, StablePathNodeType, StateKind,
 };
@@ -169,6 +170,9 @@ pub struct PrecommitWritePlan {
     /// For each preempted other-owner: their new tracking-info bytes
     /// (with the preempted item removed by the engine).
     pub preempted_owner_updates: BTreeMap<StablePath, Vec<u8>>,
+    /// The preempted owners the update does not run: their memos, and their
+    /// ancestors', are dropped with the takeover.
+    pub preempted_owners_left_out: Vec<StablePath>,
     /// Readable names for the provider segments of the declared
     /// target-state paths, keyed by lone segment fingerprint. Applied
     /// write-once (existing entries left untouched) so inspection can
@@ -439,6 +443,22 @@ impl AppStore {
                                 .write_tracking_info_raw(wtxn, &owner_path, &bytes)
                                 .await?;
                         }
+                        // An owner left out of the update no longer holds what
+                        // its memo, and each ancestor's, say it declares: a hit
+                        // in a later update would leave the target state to
+                        // whoever took it, and delete it with them.
+                        for owner_path in &plan.preempted_owners_left_out {
+                            let mut memo_path = owner_path.as_ref();
+                            loop {
+                                app_store
+                                    .delete_component_memo_in_txn(wtxn, &memo_path.into())
+                                    .await?;
+                                let Some((parent, _)) = memo_path.split_parent() else {
+                                    break;
+                                };
+                                memo_path = parent;
+                            }
+                        }
                         for (fp, segment_key) in &plan.segment_names {
                             app_store
                                 .write_target_segment_name_if_missing(wtxn, *fp, segment_key)
@@ -586,6 +606,11 @@ impl AppStore {
 /// at all (whole-component delete): every on-disk child is removed and
 /// every Component leaf below it tombstoned, cascading the delete.
 ///
+/// `selector` is the selector the component's run is under, if any. The run
+/// did not decide about an on-disk child the selector does not cover, so that
+/// child is neither removed nor tombstoned (see [`remove_undeclared_child`]).
+/// Returns whether any such child stayed: the subtree is then not up to date.
+///
 /// Used by [`AppStore::commit`]: the AppStore opens the commit txn,
 /// then invokes the engine-supplied [`ExistenceReconciler`] which in
 /// turn calls this function. Lives on the storage side because the
@@ -595,7 +620,9 @@ pub async fn reconcile_child_existence<'a>(
     app_store: &AppStore,
     component_path: &StablePath,
     child_path_set: Option<&'a ChildStablePathSet>,
-) -> Result<()> {
+    selector: Option<&ComponentSelector>,
+) -> Result<bool> {
+    let mut kept_unselected = false;
     let mut queue: VecDeque<Level<'a>> = VecDeque::new();
     queue.push_back(Level {
         path: component_path.clone(),
@@ -629,30 +656,32 @@ pub async fn reconcile_child_existence<'a>(
                 }
                 (None, Some(_)) => {
                     if let Some((key, info)) = existing_next.take() {
-                        app_store
-                            .delete_child_existence(wtxn, &level.path, &key)
-                            .await?;
-                        del_child(
+                        kept_unselected |= remove_undeclared_child(
+                            wtxn,
+                            app_store,
+                            selector,
                             &key,
                             &info,
                             &level.path,
                             component_path,
                             &mut queue,
                             &mut buffered_tombstones,
-                        )?;
+                        )
+                        .await?;
                     }
                     for (key, info) in existing_iter.by_ref() {
-                        app_store
-                            .delete_child_existence(wtxn, &level.path, &key)
-                            .await?;
-                        del_child(
+                        kept_unselected |= remove_undeclared_child(
+                            wtxn,
+                            app_store,
+                            selector,
                             &key,
                             &info,
                             &level.path,
                             component_path,
                             &mut queue,
                             &mut buffered_tombstones,
-                        )?;
+                        )
+                        .await?;
                     }
                     break;
                 }
@@ -670,17 +699,18 @@ pub async fn reconcile_child_existence<'a>(
                         let (key, info) = existing_next
                             .take()
                             .ok_or_else(|| internal_error!("invariance violation"))?;
-                        app_store
-                            .delete_child_existence(wtxn, &level.path, &key)
-                            .await?;
-                        del_child(
+                        kept_unselected |= remove_undeclared_child(
+                            wtxn,
+                            app_store,
+                            selector,
                             &key,
                             &info,
                             &level.path,
                             component_path,
                             &mut queue,
                             &mut buffered_tombstones,
-                        )?;
+                        )
+                        .await?;
                         existing_next = existing_iter.next();
                     }
                     Ordering::Equal => {
@@ -690,9 +720,26 @@ pub async fn reconcile_child_existence<'a>(
                         let (_, existing_info) = existing_next
                             .take()
                             .ok_or_else(|| internal_error!("invariance violation"))?;
+                        // A skipped mount: whatever the store holds here stays.
+                        if matches!(curr_path_set, StablePathSet::Skipped) {
+                            curr_next = curr_iter.next();
+                            existing_next = existing_iter.next();
+                            continue;
+                        }
                         let new_node_type = node_type_for(curr_path_set);
+                        // Declared as a directory only because a selected path
+                        // lies below, the component on disk is unselected: it
+                        // stays what it is, with no tombstone, and the next run
+                        // that covers it replaces it.
+                        let keeps_unselected_component = existing_info.node_type
+                            == StablePathNodeType::Component
+                            && new_node_type == StablePathNodeType::Directory
+                            && selector.is_some_and(|selector| {
+                                !selector.covers(&level.path.concat_part(curr_key.clone()))
+                            });
+                        kept_unselected |= keeps_unselected_component;
 
-                        if existing_info.node_type != new_node_type {
+                        if existing_info.node_type != new_node_type && !keeps_unselected_component {
                             app_store
                                 .write_child_existence(
                                     wtxn,
@@ -706,7 +753,9 @@ pub async fn reconcile_child_existence<'a>(
                         }
 
                         if let StablePathSet::Directory(curr_dir_set) = curr_path_set {
-                            if existing_info.node_type == StablePathNodeType::Component {
+                            if existing_info.node_type == StablePathNodeType::Component
+                                && !keeps_unselected_component
+                            {
                                 buffered_tombstones.push(
                                     relative_to(&level.path, component_path)?
                                         .concat_part(curr_key.clone()),
@@ -732,6 +781,11 @@ pub async fn reconcile_child_existence<'a>(
         }
 
         for (stable_key, path_set) in children_to_add {
+            // A mount the selector left out, or a directory of nothing else,
+            // leaves no trace in the store.
+            if !path_set.has_executed_component() {
+                continue;
+            }
             let node_type = node_type_for(path_set);
             app_store
                 .write_child_existence(
@@ -755,12 +809,66 @@ pub async fn reconcile_child_existence<'a>(
                 .await?;
         }
     }
-    Ok(())
+    Ok(kept_unselected)
 }
 
 struct Level<'a> {
     path: StablePath,
     child_path_set: Option<&'a ChildStablePathSet>,
+}
+
+/// An on-disk child the run did not declare: remove it, unless the run's
+/// selector says the run did not get to decide about it.
+///
+/// - Unselected: it stays, its row and everything below untouched. This is the
+///   source of "an unselected component is not treated as gone": it never gets
+///   a tombstone, so nothing deletes its target states.
+/// - Above a selected path: its row stays. A directory is walked, since selected
+///   components below it did go away. A component stays whole: what lies below
+///   it is its own to reconcile, and deleting it would delete unselected
+///   descendants too.
+///
+/// Returns whether the child stayed.
+#[allow(clippy::too_many_arguments)]
+async fn remove_undeclared_child<'a>(
+    wtxn: &mut WriteTxn<'_>,
+    app_store: &AppStore,
+    selector: Option<&ComponentSelector>,
+    stable_key: &StableKey,
+    info: &ChildExistenceInfo,
+    parent_path: &StablePath,
+    component_path: &StablePath,
+    queue: &mut VecDeque<Level<'a>>,
+    buffered_tombstones: &mut Vec<StablePath>,
+) -> Result<bool> {
+    if let Some(selector) = selector {
+        let path = parent_path.concat_part(stable_key.clone());
+        match selector.classify(&path) {
+            ComponentSelection::Selected => {}
+            ComponentSelection::Unselected => return Ok(true),
+            ComponentSelection::AncestorOfSelected => {
+                if info.node_type == StablePathNodeType::Directory {
+                    queue.push_back(Level {
+                        path,
+                        child_path_set: None,
+                    });
+                }
+                return Ok(true);
+            }
+        }
+    }
+    app_store
+        .delete_child_existence(wtxn, parent_path, stable_key)
+        .await?;
+    del_child(
+        stable_key,
+        info,
+        parent_path,
+        component_path,
+        queue,
+        buffered_tombstones,
+    )?;
+    Ok(false)
 }
 
 fn del_child<'a>(
@@ -789,7 +897,7 @@ fn del_child<'a>(
 fn node_type_for(path_set: &StablePathSet) -> StablePathNodeType {
     match path_set {
         StablePathSet::Directory(_) => StablePathNodeType::Directory,
-        StablePathSet::Component => StablePathNodeType::Component,
+        StablePathSet::Component | StablePathSet::Skipped => StablePathNodeType::Component,
     }
 }
 
