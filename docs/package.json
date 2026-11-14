@@ -21,7 +21,7 @@
     "@docsearch/js": "4.6.2",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
-    "astro": "^7.4.2",
+    "astro": "^7.4.12",
     "mdast-util-to-string": "^4.0.0",
     "mermaid": "^12.2.0",
     "mixpanel-browser": "^2.78.0",
