@@ -143,6 +143,7 @@ class DriveFile(file.FileLike[str]):
                 .get(
                     fileId=self._info.file_id,
                     fields="size, modifiedTime, md5Checksum",
+                    supportsAllDrives=True,
                 )
                 .execute(num_retries=_RETRIES)
             )
@@ -168,7 +169,9 @@ class DriveFile(file.FileLike[str]):
                 fileId=file_id, mimeType=export_mime
             )
         else:
-            request = self._service.files().get_media(fileId=file_id)
+            request = self._service.files().get_media(
+                fileId=file_id, supportsAllDrives=True
+            )
         content: bytes = request.execute(num_retries=_RETRIES)
         return content
 
@@ -254,6 +257,10 @@ def _list_children(service: Any, folder_id: str) -> list[DriveFileInfo]:
                     " files(id, name, mimeType, size, modifiedTime, md5Checksum)"
                 ),
                 pageToken=page_token,
+                # Without these, Drive lists no children of a folder that
+                # lives in a shared drive.
+                includeItemsFromAllDrives=True,
+                supportsAllDrives=True,
             )
             .execute(num_retries=_RETRIES)
         )
