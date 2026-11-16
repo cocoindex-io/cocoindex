@@ -56,17 +56,15 @@ pub async fn extract_metadata(
 }
 
 /// Step 2: extract thematic statements + the entities they involve.
-#[cocoindex::function(memo)]
+/// `deps` covers the entity-type lines, which come from `models.rs`, so adding
+/// or editing an entity type re-runs this step.
+#[cocoindex::function(memo, deps = entity_prompt_lines())]
 pub async fn extract_statements(
     ctx: &Ctx,
     reformatted_transcript: &String,
 ) -> Result<StatementExtraction> {
     let llm = ctx.get_key(&LLM)?;
-    let mut entity_lines = String::new();
-    for kind in ENTITY_TYPES {
-        let (desc, examples) = entity_guidance(kind);
-        entity_lines.push_str(&format!("  - {kind}: {desc} Examples: {examples}.\n"));
-    }
+    let entity_lines = entity_prompt_lines();
     let system = format!(
         "You are an expert knowledge extractor. Given a transcript where speakers are identified \
          by name, extract substantive thematic claims. Return a JSON object {{\"statements\": \

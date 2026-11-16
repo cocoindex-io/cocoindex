@@ -175,7 +175,7 @@ The two levels of memoization do different jobs:
 
 ## Phase 2: merge questions asked in other words
 
-![Phase 2: a single _resolve_questions pass; the set of extracted questions from every thread is deduplicated by embedding similarity plus LLM confirmation into a canonical-question map](https://cocoindex.io/blobs/docs-v1/img/examples/discord-support-faq/stage-phase2-dark.svg)
+![Phase 2: a single _resolve_questions pass; the set of extracted questions from every thread is grouped into a canonical-question map: embeddings find each question's close candidates, and an LLM picks the one it matches, if any](https://cocoindex.io/blobs/docs-v1/img/examples/discord-support-faq/stage-phase2-dark.svg)
 
 The seeded forum has three posts about long video uploads that never finish behind a proxy, each worded differently. [`resolve_entities`](/docs/ops/entity_resolution/) embeds every extracted question and, for each one, finds the close candidates within `max_distance`; `LlmPairResolver` then picks which candidate it matches, if any. The result maps every question to its group's canonical one.
 
@@ -364,7 +364,7 @@ To correct an answer, **reply with the correction rather than editing the messag
 ## Limits
 
 - **The answers are written by an LLM,** so they can lose details from individual posts, or be wrong. The links back let anyone check.
-- **Merging is the LLM's judgment too,** made on pairs of questions: each question is compared with a group's representative question, so a group held together by one post's wording can split when that post is deleted.
+- **Merging is the LLM's judgment too:** for each question, it sees the representative questions of the groups near it and picks the one that asks the same thing, if any. A question is compared only with those representatives, so a group held together by one post's wording can split when that post is deleted.
 - **One Markdown file suits a small knowledge base.** For a large one, the same pipeline can declare each entry as a row in a vector store or database instead of a section of `FAQ.md`.
 
 ## Run it
