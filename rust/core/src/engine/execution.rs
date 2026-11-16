@@ -491,12 +491,23 @@ pub fn register_root_target_state_provider<Prof: EngineProfile>(
     name: String,
     handler: Prof::TargetHdl,
 ) -> Result<TargetStateProvider<Prof>> {
-    comp_ctx.update_building_state(|building_state| {
-        building_state
-            .target_states
-            .provider_registry
-            .register_root(name, handler)
-    })
+    let (provider, added) = comp_ctx.update_building_state(|building_state| {
+        let registry = &mut building_state.target_states.provider_registry;
+        let before = registry.providers.clone();
+        let provider = registry.register_root(name, handler)?;
+        // The root provider and the attachment providers it registered.
+        let added: Vec<_> = registry
+            .providers
+            .iter()
+            .filter(|(path, _)| !before.contains_key(*path))
+            .map(|(path, provider)| (path.clone(), provider.clone()))
+            .collect();
+        Ok((provider, added))
+    })?;
+    // A provider registered by a run lives in that run's build state only;
+    // the app remembers it so `App::drop_app` can revert its target states.
+    comp_ctx.app_ctx().remember_run_root_providers(added);
+    Ok(provider)
 }
 
 pub fn declare_target_state_with_child<Prof: EngineProfile>(

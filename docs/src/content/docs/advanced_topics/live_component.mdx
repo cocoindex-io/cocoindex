@@ -161,6 +161,10 @@ Failures in the mounted child (or in the delete itself) are routed through the p
 
 Signals to the parent that the live component has caught up. The parent's <Lang only="python">`await handle.ready()`</Lang><Lang only="rust">`ctx.mount_live(...)` call</Lang> returns when `mark_ready()` is called. If `process_live()` returns without calling `mark_ready()`, it is called automatically.
 
+### A catch-up update beside a running live update
+
+A catch-up update of an app whose live update is still running leaves the live component running. The catch-up mounts its own instance of the component beside it, so two `process_live()` calls for one component can run at the same time: the live one, and the catch-up one, which ends at `mark_ready()`. Their full passes take turns, and an `update()` or `delete()` from the live one that arrives during the catch-up's full pass runs after that pass commits. If `process_live()` takes an exclusive resource (a lock, a port, a consumer group membership) before `mark_ready()`, the catch-up instance must be able to wait for it or do without it.
+
 <Lang only="python">
 
 ### `report_exception()`
