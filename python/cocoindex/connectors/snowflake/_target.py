@@ -8,6 +8,7 @@ This module provides a two-level target state system for Snowflake:
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import datetime
 import decimal
@@ -482,6 +483,11 @@ class _TableSpec:
 
     table_schema: TableSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # Set by `mount_table_target` when the table is not in Snowflake: if
+    # CocoIndex created it on an earlier run, it was dropped outside CocoIndex,
+    # so it is created again and all its rows are written again. Not part of
+    # the table's tracking record.
+    missing: bool = False
 
 
 class _PkColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
@@ -737,6 +743,21 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 managed_by=desired_state.managed_by,
             )
 
+        # A table CocoIndex created before that is gone now was dropped outside
+        # CocoIndex: create it as if new, and invalidate its rows, which went
+        # with it.
+        recreate_missing = (
+            not coco.is_non_existence(desired_state)
+            and desired_state.missing
+            and desired_state.managed_by == target.ManagedBy.SYSTEM
+            and any(
+                p.managed_by == target.ManagedBy.SYSTEM for p in prev_possible_records
+            )
+        )
+        if recreate_missing:
+            prev_possible_records = []
+            prev_may_be_missing = True
+
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
                 tracking_record,
@@ -758,9 +779,9 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     column_actions[sub_key] = action
 
         child_invalidation: Literal["destructive", "lossy"] | None = None
-        if main_action == "replace":
+        if recreate_missing or main_action == "replace":
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
+        elif any(statediff.may_lose_data(a) for a in column_actions.values()):
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -830,6 +851,23 @@ def table_target(
 
     Use with ``coco.mount_target()`` or the convenience wrappers below.
     """
+    key = _table_key(db, table_name, table_schema, database=database, schema=schema)
+    spec = _TableSpec(
+        table_schema=table_schema,
+        managed_by=managed_by,
+    )
+    return _table_provider.target_state(key, spec)
+
+
+def _table_key(
+    db: ContextKey[ConnectionConfig],
+    table_name: str,
+    table_schema: TableSchema[Any],
+    *,
+    database: str | None,
+    schema: str | None,
+) -> _TableKey:
+    """The table's key, with its names validated."""
     _validate_identifier(table_name, "table name")
     if database is not None:
         _validate_identifier(database, "database name")
@@ -837,18 +875,51 @@ def table_target(
         _validate_identifier(schema, "schema name")
     for col_name in table_schema.columns:
         _validate_identifier(col_name, "column name")
-
-    key = _TableKey(
+    return _TableKey(
         db_key=db.key,
         database=database,
         schema=schema,
         table_name=table_name,
     )
-    spec = _TableSpec(
-        table_schema=table_schema,
-        managed_by=managed_by,
-    )
-    return _table_provider.target_state(key, spec)
+
+
+# Snowflake's error number for an object that "does not exist or not
+# authorized".
+_OBJECT_DOES_NOT_EXIST_ERRNO = 2003
+
+
+def _show_tables_sql(key: _TableKey) -> str:
+    """The statement that lists the table, `SHOW TERSE TABLES`, which needs no
+    warehouse. Its scope is the qualifier of `_qualified_table_name`, so it
+    resolves as the table's DDL does (`IN SCHEMA` alone is the session's
+    current schema). `LIKE` matches without case and takes `_` for any
+    character, so `_table_exists` compares the listed names exactly, as the
+    quoted identifiers of the DDL do."""
+    scope = [
+        _quote_ident(part) for part in (key.database, key.schema) if part is not None
+    ]
+    _validate_identifier(key.table_name)
+    sql = f"SHOW TERSE TABLES LIKE '{key.table_name}' IN SCHEMA"
+    return f"{sql} {'.'.join(scope)}" if scope else sql
+
+
+def _table_exists(config: ConnectionConfig, key: _TableKey) -> bool:
+    """Whether the table exists. A database or schema that does not exist
+    holds no table."""
+    with _connect(config) as conn:
+        cursor = conn.cursor()
+        try:
+            try:
+                cursor.execute(_show_tables_sql(key))
+            except Exception as e:
+                # `snowflake.connector.errors.ProgrammingError`, by its number.
+                if getattr(e, "errno", None) == _OBJECT_DOES_NOT_EXIST_ERRNO:
+                    return False
+                raise
+            # `SHOW TERSE TABLES` lists `created_on`, `name`, `kind`, ...
+            return any(row[1] == key.table_name for row in cursor.fetchall())
+        finally:
+            cursor.close()
 
 
 def declare_table_target(
@@ -884,14 +955,18 @@ async def mount_table_target(
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> TableTarget[RowT]:
     """Mount a Snowflake table target and return a ready-to-use TableTarget."""
+    key = _table_key(db, table_name, table_schema, database=database, schema=schema)
+    # A system-managed table that is not in Snowflake: if CocoIndex created it
+    # on an earlier run, it was dropped outside CocoIndex.
+    missing = managed_by == target.ManagedBy.SYSTEM and not await asyncio.to_thread(
+        _table_exists, coco.use_context(db), key
+    )
     provider = await coco.mount_target(
-        table_target(
-            db,
-            table_name,
-            table_schema,
-            database=database,
-            schema=schema,
-            managed_by=managed_by,
+        _table_provider.target_state(
+            key,
+            _TableSpec(
+                table_schema=table_schema, managed_by=managed_by, missing=missing
+            ),
         )
     )
     return TableTarget(provider, table_schema)

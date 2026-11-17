@@ -37,6 +37,7 @@ except ImportError as e:
 
 import cocoindex as coco
 from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits._request_size import split_by_size
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import TypeChecker
 from cocoindex.resources import schema as res_schema
@@ -269,6 +270,17 @@ class _RowAction(NamedTuple):
     upsert: dict[str, Any] | None  # None means delete
 
 
+# The most bytes of rows and ids one write request carries. Turbopuffer refuses
+# an upsert request over 512 MB (https://turbopuffer.com/docs/limits); a batch
+# is split into requests of at most 32 MiB, about the per-namespace write
+# throughput it documents per second, which keeps each request's memory
+# bounded. A row larger than this goes in a request of its own.
+_MAX_WRITE_REQUEST_BYTES = 32 * 1024 * 1024
+
+# Sizes a row as JSON; a value msgspec cannot encode is sized by its text.
+_json_encoder = msgspec.json.Encoder(enc_hook=str)
+
+
 class _RowHandler(coco.TargetHandler[Row, _RowFingerprint]):
     _client: AsyncTurbopuffer
     _namespace_name: str
@@ -292,26 +304,27 @@ class _RowHandler(coco.TargetHandler[Row, _RowFingerprint]):
         if not actions:
             return
 
-        upserts: list[dict[str, Any]] = []
-        deletes: list[_RowId] = []
-
-        for action in actions:
-            if action.upsert is None:
-                deletes.append(action.row_id)
-            else:
-                upserts.append(action.upsert)
-
         ns = self._client.namespace(self._namespace_name)
-
-        kwargs: dict[str, Any] = {
-            "distance_metric": self._schema.distance,
-            "schema": _build_write_schema(self._schema),
-        }
-        if upserts:
-            kwargs["upsert_rows"] = upserts
-        if deletes:
-            kwargs["deletes"] = deletes
-        await ns.write(**kwargs)
+        write_schema = _build_write_schema(self._schema)
+        for group in split_by_size(
+            actions,
+            _MAX_WRITE_REQUEST_BYTES,
+            lambda a: (
+                len(_json_encoder.encode(a.row_id if a.upsert is None else a.upsert))
+                + 1
+            ),
+        ):
+            upserts = [a.upsert for a in group if a.upsert is not None]
+            deletes = [a.row_id for a in group if a.upsert is None]
+            kwargs: dict[str, Any] = {
+                "distance_metric": self._schema.distance,
+                "schema": write_schema,
+            }
+            if upserts:
+                kwargs["upsert_rows"] = upserts
+            if deletes:
+                kwargs["deletes"] = deletes
+            await ns.write(**kwargs)
 
     def reconcile(
         self,
@@ -361,6 +374,14 @@ _NAMESPACE_KEY_CHECKER = TypeChecker(tuple[str, str])
 class _NamespaceSpec:
     schema: NamespaceSchema
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # Set by `mount_namespace_target` when the namespace does not exist, which
+    # it does only while it holds a document. If CocoIndex wrote rows to it on
+    # an earlier run, they were deleted outside CocoIndex (with the namespace,
+    # or one by one), so all its rows are written again. A namespace that is
+    # empty because no row is declared in it is missing too, harmlessly: no
+    # component declared a row in it to run again. Not part of the namespace's
+    # tracking record.
+    missing: bool = False
 
 
 class _NamespaceTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
@@ -443,6 +464,21 @@ class _NamespaceHandler(
                 managed_by=desired_state.managed_by,
             )
 
+        # A namespace CocoIndex wrote to before that is gone now lost its rows
+        # outside CocoIndex: plan it as new (rows write it again), and
+        # invalidate its rows.
+        recreate_missing = (
+            not coco.is_non_existence(desired_state)
+            and desired_state.missing
+            and desired_state.managed_by == target.ManagedBy.SYSTEM
+            and any(
+                p.managed_by == target.ManagedBy.SYSTEM for p in prev_possible_records
+            )
+        )
+        if recreate_missing:
+            prev_possible_records = []
+            prev_may_be_missing = True
+
         transition = statediff.TrackingRecordTransition(
             tracking_record,
             prev_possible_records,
@@ -453,7 +489,7 @@ class _NamespaceHandler(
 
         # Namespace replacement clears all rows.
         child_invalidation: Literal["destructive"] | None = (
-            "destructive" if main_action == "replace" else None
+            "destructive" if recreate_missing or main_action == "replace" else None
         )
 
         return coco.TargetReconcileOutput(
@@ -535,8 +571,22 @@ def namespace_target(
         schema: NamespaceSchema defining vector fields and distance metric.
         managed_by: Whether the namespace is managed by the system or user.
     """
+    return _namespace_target_state(
+        db, namespace_name, schema, managed_by=managed_by, missing=False
+    )
+
+
+def _namespace_target_state(
+    db: ContextKey[AsyncTurbopuffer],
+    namespace_name: str,
+    schema: NamespaceSchema,
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> "coco.TargetState[_RowHandler]":
+    """`namespace_target`, with `missing` as in `_NamespaceSpec.missing`."""
     key = _NamespaceKey(db_key=db.key, namespace_name=namespace_name)
-    spec = _NamespaceSpec(schema=schema, managed_by=managed_by)
+    spec = _NamespaceSpec(schema=schema, managed_by=managed_by, missing=missing)
     return _namespace_provider.target_state(key, spec)
 
 
@@ -571,9 +621,20 @@ async def mount_namespace_target(
     """Mount a namespace target and return a ready-to-use ``NamespaceTarget``.
 
     Sugar over ``namespace_target()`` + ``coco.mount_target()`` + wrapping.
+
+    A system-managed namespace deleted outside CocoIndex is written again with
+    all its rows (one existence check per mount).
     """
+    # A system-managed namespace that does not exist: if CocoIndex wrote rows
+    # to it on an earlier run, they were deleted outside CocoIndex.
+    missing = (
+        managed_by == target.ManagedBy.SYSTEM
+        and not await coco.use_context(db).namespace(namespace_name).exists()
+    )
     provider = await coco.mount_target(
-        namespace_target(db, namespace_name, schema, managed_by=managed_by)
+        _namespace_target_state(
+            db, namespace_name, schema, managed_by=managed_by, missing=missing
+        )
     )
     return NamespaceTarget(provider)
 

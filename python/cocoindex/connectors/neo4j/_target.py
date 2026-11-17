@@ -564,7 +564,9 @@ class _SharedRecordApplier:
     (see ``coco.TargetActionSink``) and the engine batches their actions
     together. That is what lets one batch order node upserts → relation
     upserts → relation deletes → node deletes, so an edge is never written
-    before its endpoints exist.
+    before its endpoints exist, and a node undeclared together with its
+    relationships has none left when its delete runs (a node delete keeps a
+    node some relationship still touches, reduced to its key).
 
     Unlike FalkorDB which can't multi-statement transact, a batch is applied
     in Neo4j transactions of at most ``_MAX_ACTIONS_PER_TXN`` actions each, in
@@ -682,10 +684,11 @@ class _SharedRecordApplier:
 
     @staticmethod
     async def _apply_node_delete(tx: Any, action: _RecordAction) -> None:
-        cypher = _cypher.build_node_delete(
-            label=action.table_name, pk_fields=[action.pk_field]
-        )
-        await tx.run(cypher, key_0=action.record_id)
+        # A node a relationship still touches is reduced to its key, one none
+        # touches is deleted (see `_cypher.build_node_reduce_to_key`).
+        for build in (_cypher.build_node_reduce_to_key, _cypher.build_node_delete):
+            cypher = build(action.table_name, [action.pk_field])
+            await tx.run(cypher, key_0=action.record_id)
 
     @staticmethod
     async def _apply_relation_upsert(tx: Any, action: _RecordAction) -> None:
@@ -1239,7 +1242,7 @@ class _TableHandler(
         if main_action == "replace":
             # The table is rebuilt: its contents are deleted and re-declared.
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
+        elif any(statediff.may_lose_data(a) for a in column_actions.values()):
             # No incremental property DDL emitted in v1; treat column
             # changes as lossy so dependents re-upsert defensively.
             child_invalidation = "lossy"

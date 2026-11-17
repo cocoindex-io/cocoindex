@@ -888,6 +888,9 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         async with asyncio.TaskGroup() as tg:
             self._schedule_upserts(tg, upserts)
             self._schedule_deletes(tg, deletes)
+        await _restore_not_null(
+            self._pool, _qualified_table_name(self._table_name, self._schema_name)
+        )
 
     async def _resolve_unnest_upsert(self) -> _UnnestUpsert | None:
         """Build the `unnest` upsert statement, if every column's type allows it.
@@ -1107,6 +1110,11 @@ class _TableSpec:
 
     table_schema: TableSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # Set by `mount_table_target` when the table is not in the database: if
+    # CocoIndex created it on an earlier run, it was dropped outside CocoIndex,
+    # so it is created again and all its rows are written again. Not part of
+    # the table's tracking record.
+    missing: bool = False
 
 
 class _PkColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
@@ -1177,6 +1185,94 @@ class _TableAction(NamedTuple):
     column_actions: dict[str, statediff.DiffAction]
 
 
+# Declared NOT NULL columns that a system-managed table holds as nullable, by
+# pool and qualified table name. A column lands here when it is added (or re-added
+# after a failed type change) to a table with rows: PostgreSQL can't give it the
+# constraint until every row has a value, which the run's row rewrites provide.
+# After each row batch the row handler sets the constraint once no NULL is left
+# (`_restore_not_null`). The pool is kept with its entry, so its id is not reused
+# while the entry lives.
+_pending_not_null: dict[tuple[int, str], tuple[asyncpg.Pool, set[str]]] = {}
+
+
+def _set_pending_not_null(
+    pool: asyncpg.Pool, qualified_name: str, columns: set[str]
+) -> None:
+    key = (id(pool), qualified_name)
+    if columns:
+        _pending_not_null[key] = (pool, columns)
+    else:
+        _pending_not_null.pop(key, None)
+
+
+async def _try_set_not_null(
+    conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+    qualified_name: str,
+    col_name: str,
+) -> bool:
+    """Set NOT NULL on a column when it holds no NULL; whether it did."""
+    has_null = await conn.fetchval(
+        f'SELECT EXISTS (SELECT 1 FROM {qualified_name} WHERE "{col_name}" IS NULL)'
+    )
+    if has_null:
+        return False
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                f'ALTER TABLE {qualified_name} ALTER COLUMN "{col_name}" SET NOT NULL'
+            )
+    except asyncpg.NotNullViolationError:
+        # A NULL arrived after the check.
+        return False
+    return True
+
+
+async def _restore_not_null(pool: asyncpg.Pool, qualified_name: str) -> None:
+    """Give a table's pending NOT NULL columns their constraint once they hold no
+    NULL. A failure is logged, not raised: the rows are written, and a later batch
+    tries again."""
+    entry = _pending_not_null.get((id(pool), qualified_name))
+    if entry is None or entry[0] is not pool:
+        return
+    columns = entry[1]
+    for col_name in sorted(columns):
+        try:
+            async with pool.acquire() as conn:
+                restored = await _try_set_not_null(conn, qualified_name, col_name)
+        except asyncpg.PostgresError as e:
+            logger.warning(
+                f"Could not set NOT NULL on column {col_name!r} of {qualified_name}: {e}"
+            )
+            continue
+        if restored:
+            columns.discard(col_name)
+    if not columns:
+        _pending_not_null.pop((id(pool), qualified_name), None)
+
+
+async def _add_column(
+    conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+    qualified_name: str,
+    col_name: str,
+    col: ColumnDef,
+    *,
+    if_not_exists: bool,
+) -> bool:
+    """Add a column, NOT NULL when it is declared so and the table lets it be (no
+    row yet). Returns whether the column has its declared nullability."""
+    if_not_exists_sql = " IF NOT EXISTS" if if_not_exists else ""
+    add = f'ALTER TABLE {qualified_name} ADD COLUMN{if_not_exists_sql} "{col_name}" {col.type}'
+    if not col.nullable:
+        try:
+            async with conn.transaction():
+                await conn.execute(f"{add} NOT NULL")
+            return True
+        except asyncpg.NotNullViolationError:
+            pass
+    await conn.execute(add)
+    return col.nullable
+
+
 class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
     """Handler for table-level target states."""
 
@@ -1214,6 +1310,8 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         for action in actions:
             by_key.setdefault(action.key, []).append(action)
 
+        # Columns left nullable per table, recorded once their DDL commits.
+        pending_by_table: dict[tuple[asyncpg.Pool, str], set[str]] = {}
         for key, key_actions in by_key.items():
             pool = context_provider.get(key.db_key, asyncpg.Pool)
             async with pool.acquire() as conn:
@@ -1244,9 +1342,22 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
                         # Reconcile non-PK columns incrementally.
                         if action.column_actions:
-                            await self._apply_column_actions(
+                            pending = await self._apply_column_actions(
                                 conn, key, spec.table_schema, action.column_actions
                             )
+                            # A column with no NULL (an empty table) takes its
+                            # constraint now; the others wait for their rows.
+                            qualified_name = _qualified_table_name(
+                                key.table_name, key.pg_schema_name
+                            )
+                            for col_name in sorted(pending):
+                                if await _try_set_not_null(
+                                    conn, qualified_name, col_name
+                                ):
+                                    pending.discard(col_name)
+                            pending_by_table[(pool, qualified_name)] = pending
+        for (pool, qualified_name), pending in pending_by_table.items():
+            _set_pending_not_null(pool, qualified_name, pending)
 
     async def _drop_table(
         self,
@@ -1317,8 +1428,11 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         key: _TableKey,
         schema: TableSchema[Any],
         column_actions: dict[str, statediff.DiffAction],
-    ) -> None:
+    ) -> set[str]:
+        """Apply column changes; returns the declared NOT NULL columns left
+        nullable (added to a table with rows)."""
         qualified_name = _qualified_table_name(key.table_name, key.pg_schema_name)
+        pending: set[str] = set()
         pk_cols = set(schema.primary_key)
         non_pk_col_by_name = {
             n: c for n, c in schema.columns.items() if n not in pk_cols
@@ -1351,19 +1465,15 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 # it as a no-op here; "delete" should have been emitted.
                 continue
 
-            if action == "insert":
-                async with conn.transaction():
-                    await conn.execute(
-                        f"ALTER TABLE {qualified_name} "
-                        f'ADD COLUMN "{col_name}" {desired_col.type}'
-                    )
-                continue
-
-            if action == "upsert":
-                await conn.execute(
-                    f"ALTER TABLE {qualified_name} "
-                    f'ADD COLUMN IF NOT EXISTS "{col_name}" {desired_col.type}'
-                )
+            if action in ("insert", "upsert"):
+                if not await _add_column(
+                    conn,
+                    qualified_name,
+                    col_name,
+                    desired_col,
+                    if_not_exists=(action == "upsert"),
+                ):
+                    pending.add(col_name)
                 continue
 
             if action == "replace":
@@ -1388,10 +1498,15 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     await conn.execute(
                         f'ALTER TABLE {qualified_name} DROP COLUMN IF EXISTS "{col_name}"'
                     )
-                    await conn.execute(
-                        f"ALTER TABLE {qualified_name} "
-                        f'ADD COLUMN "{col_name}" {desired_col.type}'
-                    )
+                    if not await _add_column(
+                        conn,
+                        qualified_name,
+                        col_name,
+                        desired_col,
+                        if_not_exists=False,
+                    ):
+                        pending.add(col_name)
+        return pending
 
     def reconcile(
         self,
@@ -1418,6 +1533,21 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 managed_by=desired_state.managed_by,
             )
 
+        # A table CocoIndex created before that is gone now was dropped outside
+        # CocoIndex: create it as if new, and invalidate its rows, which went
+        # with it.
+        recreate_missing = (
+            not coco.is_non_existence(desired_state)
+            and desired_state.missing
+            and desired_state.managed_by == target.ManagedBy.SYSTEM
+            and any(
+                p.managed_by == target.ManagedBy.SYSTEM for p in prev_possible_records
+            )
+        )
+        if recreate_missing:
+            prev_possible_records = []
+            prev_may_be_missing = True
+
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
                 tracking_record,
@@ -1440,11 +1570,11 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
         # Determine child invalidation for row-level targets.
         child_invalidation: Literal["destructive", "lossy"] | None = None
-        if main_action == "replace":
+        if recreate_missing or main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
-            # Column schema changes (other than adding new columns) may lose data.
+        elif any(statediff.may_lose_data(a) for a in column_actions.values()):
+            # A column retyped or dropped may lose data.
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -1699,6 +1829,26 @@ def table_target(
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    return _table_target_state(
+        db,
+        table_name,
+        table_schema,
+        pg_schema_name=pg_schema_name,
+        managed_by=managed_by,
+        missing=False,
+    )
+
+
+def _table_target_state(
+    db: ContextKey[asyncpg.Pool],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    pg_schema_name: str | None,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> coco.TargetState[_RowHandler]:
+    """`table_target`, with `missing` as in `_TableSpec.missing`."""
     _validate_identifier(table_name, "table name")
     if pg_schema_name is not None:
         _validate_identifier(pg_schema_name, "schema name")
@@ -1713,8 +1863,21 @@ def table_target(
     spec = _TableSpec(
         table_schema=table_schema,
         managed_by=managed_by,
+        missing=missing,
     )
     return _table_provider.target_state(key, spec)
+
+
+async def _table_exists(
+    pool: asyncpg.Pool, table_name: str, pg_schema_name: str | None
+) -> bool:
+    # `to_regclass` resolves an unqualified name through `search_path`, as the
+    # table's own statements do.
+    found = await pool.fetchval(
+        "SELECT to_regclass($1) IS NOT NULL",
+        _qualified_table_name(table_name, pg_schema_name),
+    )
+    return bool(found)
 
 
 def declare_table_target(
@@ -1776,13 +1939,19 @@ async def mount_table_target(
     Returns:
         A TableTarget that can be used to declare rows.
     """
+    # A system-managed table that is not in the database: if CocoIndex created
+    # it on an earlier run, it was dropped outside CocoIndex.
+    missing = managed_by == target.ManagedBy.SYSTEM and not await _table_exists(
+        coco.use_context(db), table_name, pg_schema_name
+    )
     provider = await coco.mount_target(
-        table_target(
+        _table_target_state(
             db,
             table_name,
             table_schema,
             pg_schema_name=pg_schema_name,
             managed_by=managed_by,
+            missing=missing,
         )
     )
     return TableTarget(provider, table_name, table_schema)

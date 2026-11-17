@@ -538,8 +538,11 @@ def _execute_ddl_sync(config: DorisConnectionConfig, sql: str) -> None:
         conn.close()
 
 
-def _query_sync(config: DorisConnectionConfig, sql: str) -> list[tuple[Any, ...]]:
-    """Execute a query via MySQL protocol (synchronous)."""
+def _query_sync(
+    config: DorisConnectionConfig, sql: str, args: Sequence[Any] = ()
+) -> list[tuple[Any, ...]]:
+    """Execute a query via MySQL protocol (synchronous). `args` fill the `%s`
+    placeholders of `sql`, escaped by the client."""
     pymysql = _get_pymysql()
     conn = pymysql.connect(
         host=config.fe_host,
@@ -551,7 +554,7 @@ def _query_sync(config: DorisConnectionConfig, sql: str) -> list[tuple[Any, ...]
     )
     try:
         with conn.cursor() as cursor:
-            cursor.execute(sql)
+            cursor.execute(sql, tuple(args) or None)
             return list(cursor.fetchall())
     finally:
         conn.close()
@@ -1000,6 +1003,11 @@ class _TableSpec:
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
     vector_indexes: list[VectorIndexDef] | None = None
     inverted_indexes: list[InvertedIndexDef] | None = None
+    # Set by `mount_table_target` when the table is not in the database: if
+    # CocoIndex created it on an earlier run, it was dropped outside CocoIndex,
+    # so it is created again and all its rows are written again. Not part of
+    # the table's tracking record.
+    missing: bool = False
 
 
 class _PkColumnInfo(msgspec.Struct, frozen=True, array_like=True):
@@ -1286,6 +1294,21 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 for prev in prev_possible_records
             ]
 
+        # A table CocoIndex created before that is gone now was dropped outside
+        # CocoIndex: create it as if new, and invalidate its rows, which went
+        # with it.
+        recreate_missing = (
+            not coco.is_non_existence(desired_state)
+            and desired_state.missing
+            and desired_state.managed_by == target.ManagedBy.SYSTEM
+            and any(
+                p.managed_by == target.ManagedBy.SYSTEM for p in prev_possible_records
+            )
+        )
+        if recreate_missing:
+            prev_possible_records = []
+            prev_may_be_missing = True
+
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
                 tracking_record,
@@ -1308,11 +1331,11 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
         # Determine child invalidation for row-level targets.
         child_invalidation: Literal["destructive", "lossy"] | None = None
-        if main_action == "replace":
+        if recreate_missing or main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
-            # Column schema changes (other than adding new columns) may lose data.
+        elif any(statediff.may_lose_data(a) for a in column_actions.values()):
+            # A column retyped or dropped may lose data.
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -1347,14 +1370,58 @@ def table_target(
     vector_indexes: list[VectorIndexDef] | None = None,
     inverted_indexes: list[InvertedIndexDef] | None = None,
 ) -> coco.TargetState[_RowHandler]:
+    return _table_target_state(
+        db,
+        table_name,
+        table_schema,
+        managed_by=managed_by,
+        vector_indexes=vector_indexes,
+        inverted_indexes=inverted_indexes,
+        missing=False,
+    )
+
+
+def _table_target_state(
+    db: ContextKey[ManagedConnection],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    managed_by: target.ManagedBy,
+    vector_indexes: list[VectorIndexDef] | None,
+    inverted_indexes: list[InvertedIndexDef] | None,
+    missing: bool,
+) -> coco.TargetState[_RowHandler]:
+    """`table_target`, with `missing` as in `_TableSpec.missing`."""
     key = _TableKey(db_key=db.key, table_name=table_name)
     spec = _TableSpec(
         table_schema=table_schema,
         managed_by=managed_by,
         vector_indexes=vector_indexes,
         inverted_indexes=inverted_indexes,
+        missing=missing,
     )
     return _table_provider.target_state(key, spec)
+
+
+# Doris compares table names case-sensitively by default
+# (`lower_case_table_names = 0`), but a cluster set to `1` stores them
+# lower-cased, so the lower-cased name matches too: a table that is there is
+# never taken for a dropped one, which would write all its rows again on every
+# run.
+_TABLE_EXISTS_SQL = (
+    "SELECT 1 FROM information_schema.tables "
+    "WHERE table_schema = %s AND table_name IN (%s, %s)"
+)
+
+
+async def _table_exists(config: DorisConnectionConfig, table_name: str) -> bool:
+    rows = await asyncio.to_thread(
+        _query_sync,
+        config,
+        _TABLE_EXISTS_SQL,
+        (config.database, table_name, table_name.lower()),
+    )
+    return bool(rows)
 
 
 def declare_table_target(
@@ -1388,14 +1455,20 @@ async def mount_table_target(
     vector_indexes: list[VectorIndexDef] | None = None,
     inverted_indexes: list[InvertedIndexDef] | None = None,
 ) -> "DorisTableTarget[RowT]":
+    # A system-managed table that is not in the database: if CocoIndex created
+    # it on an earlier run, it was dropped outside CocoIndex.
+    missing = managed_by == target.ManagedBy.SYSTEM and not await _table_exists(
+        coco.use_context(db).config, table_name
+    )
     provider = await coco.mount_target(
-        table_target(
+        _table_target_state(
             db,
             table_name,
             table_schema,
             managed_by=managed_by,
             vector_indexes=vector_indexes,
             inverted_indexes=inverted_indexes,
+            missing=missing,
         )
     )
     return DorisTableTarget(provider, table_schema)

@@ -98,6 +98,13 @@ class IdGenerator(_coco.NotMemoKeyable):
     such as when splitting text into chunks where chunks may have identical
     content but still need unique IDs.
 
+    Calls with the same `dep` are numbered in the order they reach the
+    generator. Concurrent calls with the same `dep` (from `coco.map`,
+    `asyncio.gather` or threads) reach it in scheduling order: across runs they
+    get the same set of IDs, but which call gets which ID can change. When
+    a ID must stay attached to its item, give each concurrent call a `dep`
+    that identifies the item, or take the IDs before the concurrent work.
+
     Args:
         deps: Dependency value for distinguishing generators. Within the same
             processing component, use distinct `deps` values for different
@@ -161,6 +168,13 @@ class UuidGenerator(_coco.NotMemoKeyable):
     Use this when you need multiple UUIDs for potentially non-distinct inputs,
     such as when splitting text into chunks where chunks may have identical
     content but still need unique UUIDs.
+
+    Calls with the same `dep` are numbered in the order they reach the
+    generator. Concurrent calls with the same `dep` (from `coco.map`,
+    `asyncio.gather` or threads) reach it in scheduling order: across runs they
+    get the same set of UUIDs, but which call gets which UUID can change. When
+    a UUID must stay attached to its item, give each concurrent call a `dep`
+    that identifies the item, or take the UUIDs before the concurrent work.
 
     Args:
         deps: Dependency value for distinguishing generators. Within the same

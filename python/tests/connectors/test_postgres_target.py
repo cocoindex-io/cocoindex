@@ -1167,8 +1167,9 @@ async def test_schema_evolution_incompatible_fallback(
             for record in caplog.records
         )
 
-        # The column was recreated without data; NOT NULL cannot be preserved
-        # because existing rows get NULL for the new column.
+        # The column was recreated without data (nullable, as rows had no
+        # value); once the run's row changes leave no NULL, NOT NULL is back.
+        assert not await _column_is_nullable(pool, table_name, "incompat_col")
 
         # Type must have changed
         async with pool.acquire() as conn:
@@ -1180,6 +1181,71 @@ async def test_schema_evolution_incompatible_fallback(
             )
             assert val == "integer"
 
+    finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_not_null_restored_after_column_added_or_recreated(
+    pg_env: _PgEnv,
+) -> None:
+    """A NOT NULL column added to a table with rows, or recreated after a failed
+    cast, is added nullable (the rows have no value for it yet) and gets its NOT
+    NULL back once the run has rewritten the rows. Before, it stayed nullable."""
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("not_null_restore")
+    version = 1
+
+    def _schema() -> "postgres.TableSchema[dict[str, Any]]":
+        columns = {"id": postgres.ColumnDef("text", nullable=False)}
+        if version >= 2:
+            columns["n"] = postgres.ColumnDef(
+                "text" if version == 2 else "integer", nullable=False
+            )
+        return postgres.TableSchema(columns=columns, primary_key=["id"])
+
+    def _row(i: int) -> dict[str, Any]:
+        row: dict[str, Any] = {"id": f"r{i}"}
+        if version == 2:
+            row["n"] = f"text {i}"
+        elif version == 3:
+            row["n"] = i
+        return row
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                _schema(),
+            )
+            for i in range(3):
+                table.declare_row(row=_row(i))
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_nn_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+        await app.update()
+        # v2: a NOT NULL column added to a table with rows.
+        version = 2
+        await app.update()
+        assert not await _column_is_nullable(pool, table_name, "n")
+        # v3: its type changes and no cast converts the text: recreated.
+        version = 3
+        await app.update()
+        assert not await _column_is_nullable(pool, table_name, "n")
+        async with pool.acquire() as conn:
+            values = await conn.fetch(f'SELECT id, n FROM "{table_name}" ORDER BY id')
+        assert [(r["id"], r["n"]) for r in values] == [
+            ("r0", 0),
+            ("r1", 1),
+            ("r2", 2),
+        ]
     finally:
         await _drop_table(pool, table_name)
 
@@ -1759,5 +1825,71 @@ async def test_schema_evolution_under_full_reprocess(pg_env: _PgEnv) -> None:
                 f'SELECT "val" FROM "{table_name}" WHERE "id" = $1', "row1"
             )
         assert val == "data1"
+    finally:
+        await _drop_table(pool, table_name)
+
+
+_dropped_row_component_runs = 0
+
+
+@coco.fn(memo=True)
+async def _declare_text_row_in_component(
+    row: TextRow, table: postgres.TableTarget[TextRow]
+) -> None:
+    global _dropped_row_component_runs
+    _dropped_row_component_runs += 1
+    table.declare_row(row=row)
+
+
+@pytest.mark.asyncio
+async def test_postgres_table_dropped_outside_cocoindex_comes_back(
+    pg_env: _PgEnv,
+) -> None:
+    """A table dropped outside CocoIndex is created again on the next run, with
+    all its rows: the rows of child components that would otherwise be skipped
+    as unchanged too."""
+    pool = pg_env.pool
+    table_name = _unique_name("test_dropped_outside")
+    rows = [TextRow(id="1", content="one"), TextRow(id="2", content="two")]
+
+    async def declare_fn() -> None:
+        table = await postgres.mount_table_target(
+            _PG_DB_KEY,
+            table_name,
+            await postgres.TableSchema.from_class(TextRow, primary_key=["id"]),
+        )
+        await coco.mount_each(
+            _declare_text_row_in_component, [(row.id, row) for row in rows], table
+        )
+
+    async def fetch() -> list[tuple[str, str]]:
+        async with pool.acquire() as conn:
+            records = await conn.fetch(
+                f'SELECT id, content FROM "{table_name}" ORDER BY id'
+            )
+        return [(r["id"], r["content"]) for r in records]
+
+    app = coco.App(
+        coco.AppConfig(name=f"test_dropped_{table_name}", environment=pg_env.coco_env),
+        declare_fn,
+    )
+    expected = [("1", "one"), ("2", "two")]
+    try:
+        await app.update()
+        assert await fetch() == expected
+        assert _dropped_row_component_runs == 2
+        await app.update()
+        assert _dropped_row_component_runs == 2, "unchanged children are skipped"
+
+        await _drop_table(pool, table_name)
+        await app.update()
+        assert await fetch() == expected
+        assert _dropped_row_component_runs == 4, (
+            "the children run again to write their rows"
+        )
+
+        await app.update()
+        assert await fetch() == expected
+        assert _dropped_row_component_runs == 4
     finally:
         await _drop_table(pool, table_name)

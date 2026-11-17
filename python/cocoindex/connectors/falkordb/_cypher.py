@@ -17,6 +17,7 @@ from typing import Sequence
 __all__ = [
     "IDENTIFIER_RE",
     "build_node_upsert",
+    "build_node_reduce_to_key",
     "build_node_delete",
     "build_node_delete_all",
     "build_node_vector_index_list",
@@ -83,18 +84,35 @@ def build_node_upsert(
     return cypher
 
 
-def build_node_delete(label: str, pk_fields: Sequence[str]) -> str:
-    """``MATCH (n:`Label` {pk: $key_0, ...}) DETACH DELETE n``.
+def build_node_reduce_to_key(label: str, pk_fields: Sequence[str]) -> str:
+    """``MATCH (n:`Label` {pk: $key_0, ...}) WHERE (n)--() SET n = {pk: $key_0, ...}``.
 
-    DETACH DELETE removes any incident edges as a safety measure for nodes that
-    are also referenced as relationship endpoints — without it, the DELETE
-    would fail on nodes that still have edges.
+    The first half of a node delete (see :func:`build_node_delete`): a node a
+    relationship still touches stays, reduced to its key. A relationship upsert
+    MERGEs its endpoints, so that bare node is what a build from scratch has
+    for the endpoint of a declared relationship whose node is not declared.
+    """
+    if not pk_fields:
+        raise ValueError(
+            "build_node_reduce_to_key requires at least one primary key field"
+        )
+    key = _key_clause("key", pk_fields, "n")
+    return f"MATCH (n:{_quote(label)} {key}) WHERE (n)--() SET n = {key}"
+
+
+def build_node_delete(label: str, pk_fields: Sequence[str]) -> str:
+    """``MATCH (n:`Label` {pk: $key_0, ...}) WHERE NOT (n)--() DELETE n``.
+
+    Deletes the node only when no relationship touches it; run after
+    :func:`build_node_reduce_to_key`, which keeps a touched one as its key.
+    ``DETACH DELETE`` would take along relationships still declared, which are
+    not written again while their declaration is unchanged.
     """
     if not pk_fields:
         raise ValueError("build_node_delete requires at least one primary key field")
     return (
         f"MATCH (n:{_quote(label)} {_key_clause('key', pk_fields, 'n')}) "
-        f"DETACH DELETE n"
+        "WHERE NOT (n)--() DELETE n"
     )
 
 

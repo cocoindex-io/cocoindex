@@ -296,6 +296,99 @@ class TestInputValidation:
             _validate_name("", "index_name")
 
 
+class _UnusedProvider:
+    """A provider a test never reaches: the declaration fails before it."""
+
+    def target_state(self, *args: Any) -> Any:
+        raise AssertionError("the declaration should have been refused")
+
+
+@requires_glide
+class TestDocumentVectorCheck:
+    """A vector the search module could not index fails when declared: it
+    would be stored but never found."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("vector", "message"),
+        [
+            ([1.0, 2.0, 3.0], "has 3 elements but the index expects 4"),
+            ([1.0] * 5, "has 5 elements but the index expects 4"),
+            ([], "has 0 elements but the index expects 4"),
+            (np.ones((2, 2), dtype=np.float32), r"has shape \(2, 2\) elements"),
+            ([1.0, float("nan"), 0.0, 0.0], "holds a NaN, an infinity"),
+            ([1.0, float("inf"), 0.0, 0.0], "holds a NaN, an infinity"),
+            (np.array([1.0, 0.0, 0.0, 1e39]), "holds a NaN.* beyond the float32 range"),
+        ],
+    )
+    async def test_bad_vector_is_refused_at_declare(
+        self, vector: Any, message: str
+    ) -> None:
+        schema = await valkey.IndexSchema.create(
+            vectors=valkey.VectorDef(schema=_VECTOR_SCHEMA)
+        )
+        index = valkey.IndexTarget(_UnusedProvider(), schema)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match=f"Valkey document 'd1': vector {message}"):
+            index.declare_document(valkey.Document(id="d1", vector=vector))
+
+    def test_good_vector_passes(self) -> None:
+        from cocoindex.connectors.valkey._target import _check_vector
+
+        _check_vector("d1", [1.0, 2.0, 3.0, 4.0], 4)
+        _check_vector("d1", np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64), 4)
+
+
+@requires_glide
+class TestIndexDefinition:
+    """FT.CREATE declares the vector FLOAT32 whatever the schema's dtype, so a
+    dtype change alone keeps the index and its documents."""
+
+    @staticmethod
+    def _reconcile(prev_dtype: Any, prev_size: int, dtype: Any, size: int) -> Any:
+        from cocoindex.connectorkits import statediff
+        from cocoindex.connectors.valkey._target import (
+            _IndexHandler,
+            _IndexSpec,
+            _IndexTrackingRecordCore,
+            _ResolvedVectorDef,
+        )
+
+        def vectors(dtype: Any, size: int) -> Any:
+            return _ResolvedVectorDef(
+                schema=VectorSchema(dtype=np.dtype(dtype), size=size),
+                distance="cosine",
+                algorithm="hnsw",
+            )
+
+        # A record as stored before the fix: the declared dtype kept.
+        prev = statediff.MutualTrackingRecord(
+            tracking_record=_IndexTrackingRecordCore(
+                vectors=vectors(prev_dtype, prev_size), fields=()
+            ),
+            managed_by=statediff.ManagedBy.SYSTEM,
+        )
+        spec = _IndexSpec(schema=valkey.IndexSchema(vectors(dtype, size)))
+        return _IndexHandler().reconcile(("db", "docs"), spec, [prev], False)
+
+    @pytest.mark.parametrize(
+        ("prev_dtype", "dtype"),
+        [
+            (np.float32, np.float64),
+            (np.float64, np.float32),
+            (np.float32, np.float16),
+        ],
+    )
+    def test_dtype_change_keeps_the_index(self, prev_dtype: Any, dtype: Any) -> None:
+        output = self._reconcile(prev_dtype, 4, dtype, 4)
+        assert output.action.main_action is None
+        assert output.child_invalidation is None
+
+    def test_dimension_change_rebuilds_the_index(self) -> None:
+        output = self._reconcile(np.float32, 4, np.float64, 8)
+        assert output.action.main_action == "replace"
+        assert output.child_invalidation == "destructive"
+
+
 # =============================================================================
 # Integration tests — require running Valkey with search module
 # =============================================================================
@@ -382,6 +475,39 @@ async def test_payload_key_vector_is_rejected(valkey_env: _ValkeyEnv) -> None:
         declare_fn,
     )
     with pytest.raises(Exception, match="Payload key 'vector' is reserved"):
+        await app.update()
+    assert await valkey_env.client.hget(f"{index_name}:doc1", "vector") is None
+
+
+@requires_glide
+@requires_server
+@pytest.mark.asyncio
+async def test_wrong_length_vector_is_refused(valkey_env: _ValkeyEnv) -> None:
+    """A vector the index cannot read fails its declaration and is not stored;
+    the search module would otherwise keep it but never find it."""
+    index_name = _unique_name("test_wrong_length")
+
+    async def declare_fn() -> None:
+        index = await coco.use_mount(
+            coco.component_subpath("setup", "index"),
+            valkey.declare_index_target,
+            _VALKEY_DB_KEY,
+            index_name,
+            await valkey.IndexSchema.create(
+                vectors=valkey.VectorDef(schema=_VECTOR_SCHEMA),
+            ),
+        )
+        index.declare_document(
+            valkey.Document(id="doc1", vector=_make_vector(_DIM + 1, 1.0))
+        )
+
+    app = coco.App(
+        coco.AppConfig(name="test_wrong_length", environment=valkey_env.coco_env),
+        declare_fn,
+    )
+    with pytest.raises(
+        Exception, match="vector has 5 elements but the index expects 4"
+    ):
         await app.update()
     assert await valkey_env.client.hget(f"{index_name}:doc1", "vector") is None
 
@@ -1263,3 +1389,87 @@ async def test_mount_index_target(valkey_env: _ValkeyEnv) -> None:
     await app.update()
 
     assert await valkey_env.client.hget(f"{index_name}:m1", "k") in (b"v", "v")
+
+
+_dropped_doc_component_runs = 0
+
+
+if HAS_GLIDE:
+
+    @coco.fn(memo=True)
+    async def _declare_doc_in_component(
+        doc_id: str, index: "valkey.IndexTarget[coco.ResolvedS]"
+    ) -> None:
+        global _dropped_doc_component_runs
+        _dropped_doc_component_runs += 1
+        index.declare_document(
+            valkey.Document(id=doc_id, vector=_make_vector(_DIM, 1.0))
+        )
+
+
+@requires_glide
+@requires_server
+@pytest.mark.asyncio
+async def test_index_dropped_outside_cocoindex_comes_back(
+    valkey_env: _ValkeyEnv,
+) -> None:
+    """An index dropped outside CocoIndex is created again on the next run, and
+    its documents written again: those of child components that would
+    otherwise be skipped as unchanged too. Both when the documents went with it
+    (``FT.DROPINDEX … DD``) and when they stayed; a hash left under the prefix
+    that no component declares is purged."""
+    global _dropped_doc_component_runs
+    _dropped_doc_component_runs = 0
+    index_name = _unique_name("test_dropped_outside")
+    client = valkey_env.client
+    hash_keys = [f"{index_name}:a", f"{index_name}:b"]
+
+    async def declare_fn() -> None:
+        index = await valkey.mount_index_target(
+            _VALKEY_DB_KEY,
+            index_name,
+            await valkey.IndexSchema.create(
+                vectors=valkey.VectorDef(schema=_VECTOR_SCHEMA, distance="cosine"),
+            ),
+        )
+        await coco.mount_each(
+            _declare_doc_in_component, [(i, i) for i in ("a", "b")], index
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name=f"test_dropped_{index_name}", environment=valkey_env.coco_env
+        ),
+        declare_fn,
+    )
+    try:
+        await app.update()
+        assert _dropped_doc_component_runs == 2
+        await app.update()
+        assert _dropped_doc_component_runs == 2, "unchanged children are skipped"
+
+        # Dropped with its documents.
+        await client.custom_command(["FT.DROPINDEX", index_name, "DD"])
+        assert await client.exists(hash_keys) == 0
+        await app.update()
+        assert _dropped_doc_component_runs == 4, (
+            "the children run again to write their documents"
+        )
+        assert index_name in await _index_names(client)
+        assert await client.exists(hash_keys) == 2
+        await app.update()
+        assert _dropped_doc_component_runs == 4
+
+        # Dropped alone, beside a hash no component declares.
+        await client.custom_command(["FT.DROPINDEX", index_name])
+        stray = f"{index_name}:stray"
+        await client.hset(stray, {"text": "written out of band"})
+        await app.update()
+        assert _dropped_doc_component_runs == 6
+        assert index_name in await _index_names(client)
+        assert await client.exists([stray]) == 0, "the stray hash is purged"
+        assert await client.exists(hash_keys) == 2
+        await app.update()
+        assert _dropped_doc_component_runs == 6
+    finally:
+        await app.drop()

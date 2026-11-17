@@ -12,9 +12,11 @@ from typing import Annotated, Any, cast
 import pytest
 
 import cocoindex as coco
-from cocoindex.connectorkits import target
+from cocoindex.connectorkits import statediff, target
 from cocoindex.connectors import bigquery
 from cocoindex.connectors.bigquery import _target
+
+from tests import common
 
 BIGQUERY_DB = coco.ContextKey[bigquery.ConnectionConfig]("bigquery_test_db")
 
@@ -48,6 +50,17 @@ class FakeClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[_target.QueryParam, ...]]] = []
         self.close_count = 0
+        # `tables.get` finds every table but these.
+        self.missing_tables: set[str] = set()
+        self.table_gets: list[str] = []
+
+    def get_table(self, table_id: str) -> object:
+        from google.api_core.exceptions import NotFound
+
+        self.table_gets.append(table_id)
+        if table_id in self.missing_tables:
+            raise NotFound(f"Not found: Table {table_id}")  # type: ignore[no-untyped-call]
+        return object()
 
     def close(self) -> None:
         self.close_count += 1
@@ -359,6 +372,205 @@ def test_table_handler_creates_dataset_and_table(
         ),
     ]
     assert client.close_count == 1
+
+
+def _payload_schema() -> bigquery.TableSchema[Any]:
+    return bigquery.TableSchema(
+        columns={
+            "id": bigquery.ColumnDef(type="INT64", nullable=False),
+            "payload": bigquery.ColumnDef(type="JSON", use_parse_json=True),
+        },
+        primary_key=["id"],
+    )
+
+
+def test_table_exists_gets_the_table_and_takes_not_found_as_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("google.api_core.exceptions")
+    client = FakeClient()
+    monkeypatch.setattr(
+        _target, "_connect", lambda config: FakeConnectionContext(client)
+    )
+    key = _target._TableKey(
+        db_key=BIGQUERY_DB.key, project=None, dataset="analytics", table_name="Events"
+    )
+    config = _connection_config()
+
+    assert _target._table_exists(config, key)
+    client.missing_tables.add("analytics.Events")
+    assert not _target._table_exists(config, key)
+    assert _target._table_exists(config, key._replace(project="demo-project"))
+    # Without a project, the client's own project holds the table; names are
+    # exact.
+    assert client.table_gets == [
+        "analytics.Events",
+        "analytics.Events",
+        "demo-project.analytics.Events",
+    ]
+    assert client.close_count == 3
+
+
+def test_a_missing_system_table_is_created_and_its_rows_invalidated() -> None:
+    present = _target._TableSpec(table_schema=_payload_schema())
+    prev = statediff.MutualTrackingRecord(
+        tracking_record=_target._table_composite_tracking_record_from_spec(present),
+        managed_by=present.managed_by,
+    )
+    handler = _target._TableHandler()
+    key = (BIGQUERY_DB.key, None, "analytics", "events")
+
+    out = handler.reconcile(key, present, [prev], False)
+    assert out is not None
+    assert (out.action.main_action, out.child_invalidation) == (None, None)
+
+    out = handler.reconcile(
+        key, dataclasses.replace(present, missing=True), [prev], False
+    )
+    assert out is not None
+    assert out.action.main_action == "insert"
+    assert out.action.column_actions == {}
+    assert out.child_invalidation == "destructive"
+    # `missing` is not part of the tracking record.
+    assert out.tracking_record == prev
+
+    # A user-managed table is never created: `missing` changes nothing.
+    user_prev = statediff.MutualTrackingRecord(
+        tracking_record=prev.tracking_record, managed_by=target.ManagedBy.USER
+    )
+    out = handler.reconcile(
+        key,
+        dataclasses.replace(present, managed_by=target.ManagedBy.USER, missing=True),
+        [user_prev],
+        False,
+    )
+    assert out is not None
+    assert (out.action.main_action, out.child_invalidation) == (None, None)
+
+
+_row_component_runs = 0
+
+
+@coco.fn(memo=True)
+async def _declare_row_in_component(
+    row: dict[str, Any], table: bigquery.TableTarget[dict[str, Any]]
+) -> None:
+    global _row_component_runs
+    _row_component_runs += 1
+    table.declare_row(row=row)
+
+
+def test_a_table_dropped_outside_cocoindex_comes_back_with_its_rows(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """A table `tables.get` no longer finds is created again on the next run,
+    with all its rows: the rows of child components that would otherwise be
+    skipped as unchanged too."""
+    pytest.importorskip("google.api_core.exceptions")
+    client = FakeClient()
+    monkeypatch.setattr(
+        _target, "_connect", lambda config: FakeConnectionContext(client)
+    )
+    monkeypatch.setattr(
+        _target,
+        "_run_query",
+        lambda client, sql, params=(): client.calls.append((sql, tuple(params))),
+    )
+    env = common.create_test_env(__file__, suffix=request.node.name)
+    env.context_provider.provide(BIGQUERY_DB, _connection_config())
+    rows = [{"id": 1, "payload": {"v": 1}}, {"id": 2, "payload": {"v": 2}}]
+
+    @coco.fn
+    async def main() -> None:
+        table = await bigquery.mount_table_target(
+            BIGQUERY_DB, "events", _payload_schema(), dataset="analytics"
+        )
+        await coco.mount_each(
+            _declare_row_in_component, [(str(row["id"]), row) for row in rows], table
+        )
+
+    app = coco.App(coco.AppConfig(name="test_bigquery_dropped", environment=env), main)
+
+    def statements() -> tuple[list[str], int]:
+        ddl = [sql for sql, _ in client.calls if sql.startswith("CREATE")]
+        merged = sum(
+            len(params) // 2 for sql, params in client.calls if sql.startswith("MERGE")
+        )
+        return ddl, merged
+
+    created = [
+        "CREATE SCHEMA IF NOT EXISTS `analytics`",
+        "CREATE TABLE `analytics.events` (`id` INT64 NOT NULL, `payload` JSON, "
+        "PRIMARY KEY (`id`) NOT ENFORCED)",
+    ]
+
+    app.update_blocking()
+    assert statements() == (created, 2)
+    assert _row_component_runs == 2
+
+    client.calls.clear()
+    app.update_blocking()
+    assert statements() == ([], 0)
+    assert _row_component_runs == 2, "unchanged children are skipped"
+
+    client.missing_tables.add("analytics.events")
+    app.update_blocking()
+    assert statements() == (created, 2)
+    assert _row_component_runs == 4, "the children run again to write their rows"
+
+    client.missing_tables.clear()
+    client.calls.clear()
+    app.update_blocking()
+    assert statements() == ([], 0)
+    assert _row_component_runs == 4, "unchanged children are skipped again"
+
+
+def _reconcile_change(
+    old_columns: dict[str, bigquery.ColumnDef],
+    new_columns: dict[str, bigquery.ColumnDef],
+) -> Any:
+    def spec(columns: dict[str, bigquery.ColumnDef]) -> Any:
+        return _target._TableSpec(
+            table_schema=bigquery.TableSchema(columns=columns, primary_key=["id"]),
+            managed_by=target.ManagedBy.SYSTEM,
+        )
+
+    prev = statediff.MutualTrackingRecord(
+        tracking_record=_target._table_composite_tracking_record_from_spec(
+            spec(old_columns)
+        ),
+        managed_by=target.ManagedBy.SYSTEM,
+    )
+    return _target._TableHandler().reconcile(
+        (BIGQUERY_DB.key, "demo-project", "analytics", "events"),
+        spec(new_columns),
+        [prev],
+        False,
+    )
+
+
+def test_required_column_added_or_changed_recreates_the_table() -> None:
+    """BigQuery adds no REQUIRED column and makes none REQUIRED: a declared NOT
+    NULL column that is added or changed recreates the table (rows written again).
+    Before, `ADD COLUMN ... NOT NULL` failed every run."""
+    base = {
+        "id": bigquery.ColumnDef(type="INT64", nullable=False),
+        "a": bigquery.ColumnDef(type="STRING"),
+    }
+    for new in [
+        {**base, "b": bigquery.ColumnDef(type="INT64", nullable=False)},
+        {**base, "a": bigquery.ColumnDef(type="STRING", nullable=False)},
+    ]:
+        output = _reconcile_change(base, new)
+        assert output.action.main_action == "replace"
+        assert output.action.column_actions == {}
+        assert output.child_invalidation == "destructive"
+
+    # A nullable column is still added in place.
+    output = _reconcile_change(base, {**base, "b": bigquery.ColumnDef(type="INT64")})
+    assert output.action.main_action is None
+    assert output.action.column_actions == {"col:b": "insert"}
+    assert output.child_invalidation is None
 
 
 REQUIRED_BIGQUERY_ENV = [

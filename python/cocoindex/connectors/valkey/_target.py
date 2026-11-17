@@ -228,11 +228,41 @@ class _IndexAction(NamedTuple):
 class _IndexSpec:
     schema: IndexSchema
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # Set by `mount_index_target` when the search index is not on the server:
+    # if CocoIndex created it on an earlier run, it was dropped outside
+    # CocoIndex (`FT.DROPINDEX`, or a flush that took the documents too), so it
+    # is rebuilt: the documents left under its prefix, if any, are purged, and
+    # all declared documents are written again. Not part of the index's
+    # tracking record.
+    missing: bool = False
 
 
 class _IndexTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
     vectors: _ResolvedVectorDef
     fields: tuple[FieldDef, ...]
+
+
+_FLOAT32 = np.dtype(np.float32)
+
+
+def _index_definition(record: _IndexTrackingRecordCore) -> _IndexTrackingRecordCore:
+    """The record as the index definition sees it.
+
+    FT.CREATE always declares the vector FLOAT32 and documents always store
+    float32 vectors, so the schema's dtype does not shape the index: it is set
+    to float32 here, and a change to it alone rebuilds nothing. A record stored
+    with another dtype reads the same way.
+    """
+    schema = record.vectors.schema
+    if schema.dtype == _FLOAT32:
+        return record
+    return msgspec.structs.replace(
+        record,
+        vectors=msgspec.structs.replace(
+            record.vectors,
+            schema=res_schema.VectorSchema(dtype=_FLOAT32, size=schema.size),
+        ),
+    )
 
 
 _IndexTrackingRecord = statediff.MutualTrackingRecord[_IndexTrackingRecordCore]
@@ -267,6 +297,32 @@ def _check_not_vector_field_name(name: str, label: str) -> None:
         raise ValueError(
             f"{label} {name!r} is reserved: CocoIndex stores the document's vector "
             "in the hash field of that name. Use another name."
+        )
+
+
+def _check_vector(
+    doc_id: str,
+    vector: list[float] | np.ndarray,  # type: ignore[type-arg]
+    dimension: int,
+) -> None:
+    """Check a document's vector against the index, as it will be stored.
+
+    The search module skips a hash whose vector it cannot read, without an
+    error, so a document whose vector has the wrong length or holds a NaN or
+    an infinity would be stored but never found.
+    """
+    with np.errstate(over="ignore"):
+        stored = np.asarray(vector, dtype=np.float32)
+    if stored.ndim != 1 or stored.shape[0] != dimension:
+        length = stored.shape[0] if stored.ndim == 1 else f"shape {stored.shape}"
+        raise ValueError(
+            f"Valkey document {doc_id!r}: vector has {length} elements "
+            f"but the index expects {dimension}"
+        )
+    if not np.isfinite(stored).all():
+        raise ValueError(
+            f"Valkey document {doc_id!r}: vector holds a NaN, an infinity or a "
+            "value beyond the float32 range"
         )
 
 
@@ -579,20 +635,41 @@ class _IndexHandler(
             tracking_record = coco.NON_EXISTENCE
         else:
             tracking_record = statediff.MutualTrackingRecord(
-                tracking_record=_IndexTrackingRecordCore(
-                    vectors=desired_state.schema.vectors,
-                    fields=desired_state.schema.fields,
+                tracking_record=_index_definition(
+                    _IndexTrackingRecordCore(
+                        vectors=desired_state.schema.vectors,
+                        fields=desired_state.schema.fields,
+                    )
                 ),
                 managed_by=desired_state.managed_by,
             )
 
         transition = statediff.TrackingRecordTransition(
             tracking_record,
-            prev_possible_records,
+            [
+                statediff.MutualTrackingRecord(
+                    tracking_record=_index_definition(prev.tracking_record),
+                    managed_by=prev.managed_by,
+                )
+                for prev in prev_possible_records
+            ],
             prev_may_be_missing,
         )
         resolved = statediff.resolve_system_transition(transition)
         main_action = statediff.diff(resolved)
+        # An index CocoIndex created before that is gone now was dropped
+        # outside CocoIndex: rebuild it, as for a schema change. Whether its
+        # documents went with it or not, a rebuild leaves just the declared
+        # ones.
+        if (
+            not coco.is_non_existence(desired_state)
+            and desired_state.missing
+            and desired_state.managed_by == target.ManagedBy.SYSTEM
+            and any(
+                p.managed_by == target.ManagedBy.SYSTEM for p in prev_possible_records
+            )
+        ):
+            main_action = "replace"
 
         # Index replacement destroys all documents.
         child_invalidation: Literal["destructive"] | None = (
@@ -642,12 +719,15 @@ class IndexTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["IndexTarget"]):
     """
 
     _provider: coco.TargetStateProvider[Document, None, coco.MaybePendingS]
+    _schema: IndexSchema
 
     def __init__(
         self,
         provider: coco.TargetStateProvider[Document, None, coco.MaybePendingS],
+        schema: IndexSchema,
     ) -> None:
         self._provider = provider
+        self._schema = schema
 
     def declare_document(
         self: "IndexTarget[coco.ResolvedS]",
@@ -657,7 +737,14 @@ class IndexTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["IndexTarget"]):
 
         Args:
             document: Document with id, vector, and optional payload.
+
+        Raises:
+            ValueError: If the vector does not have the index's dimension, or
+                holds a NaN, an infinity or a value beyond the float32 range.
+                The search module would store such a document but never
+                find it.
         """
+        _check_vector(document.id, document.vector, self._schema.vectors.schema.size)
         coco.declare_target_state(self._provider.target_state(document.id, document))
 
     def __coco_memo_key__(self) -> str:
@@ -685,9 +772,23 @@ def index_target(
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    return _index_target_state(
+        db, index_name, schema, managed_by=managed_by, missing=False
+    )
+
+
+def _index_target_state(
+    db: ContextKey[GlideClient],
+    index_name: str,
+    schema: IndexSchema,
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> "coco.TargetState[_DocumentHandler]":
+    """`index_target`, with `missing` as in `_IndexSpec.missing`."""
     _validate_name(index_name, "index_name")
     key = _IndexKey(db_key=db.key, index_name=index_name)
-    spec = _IndexSpec(schema=schema, managed_by=managed_by)
+    spec = _IndexSpec(schema=schema, managed_by=managed_by, missing=missing)
     return _index_provider.target_state(key, spec)
 
 
@@ -712,7 +813,7 @@ def declare_index_target(
     provider = coco.declare_target_state_with_child(
         index_target(db, index_name, schema, managed_by=managed_by)
     )
-    return IndexTarget(provider)
+    return IndexTarget(provider, schema)
 
 
 async def mount_index_target(
@@ -735,10 +836,17 @@ async def mount_index_target(
     Returns:
         An IndexTarget for declaring documents.
     """
-    provider = await coco.mount_target(
-        index_target(db, index_name, schema, managed_by=managed_by)
+    # A system-managed index that is not on the server: if CocoIndex created it
+    # on an earlier run, it was dropped outside CocoIndex.
+    missing = managed_by == target.ManagedBy.SYSTEM and not await _index_exists(
+        coco.use_context(db), index_name
     )
-    return IndexTarget(provider)
+    provider = await coco.mount_target(
+        _index_target_state(
+            db, index_name, schema, managed_by=managed_by, missing=missing
+        )
+    )
+    return IndexTarget(provider, schema)
 
 
 def create_client_config(

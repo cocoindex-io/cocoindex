@@ -606,6 +606,11 @@ class _TableSpec:
     table_schema: TableSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
     virtual_table_def: Vec0TableDef | None = None
+    # Set by `table_target` when the table is not in the database: if
+    # CocoIndex created it on an earlier run, it was dropped outside CocoIndex,
+    # so it is created again and all its rows are written again. Not part of
+    # the table's tracking record.
+    missing: bool = False
 
 
 class _PkColumnInfo(msgspec.Struct, frozen=True, array_like=True):
@@ -634,6 +639,12 @@ _COL_SUBKEY_PREFIX: str = "col:"
 
 def _col_subkey(col_name: str) -> str:
     return f"{_COL_SUBKEY_PREFIX}{col_name}"
+
+
+def _rebuild_needed_for(spec: _TableSpec, sub_key: str) -> bool:
+    """Whether the column of `sub_key` is declared NOT NULL (see `reconcile`)."""
+    col = spec.table_schema.columns.get(sub_key[len(_COL_SUBKEY_PREFIX) :])
+    return col is not None and not col.nullable
 
 
 _TableSubTrackingRecord = _NonPkColumnTrackingRecord | None
@@ -1001,6 +1012,21 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 managed_by=desired_state.managed_by,
             )
 
+        # A table CocoIndex created before that is gone now was dropped outside
+        # CocoIndex: create it as if new, and invalidate its rows, which went
+        # with it.
+        recreate_missing = (
+            not coco.is_non_existence(desired_state)
+            and desired_state.missing
+            and desired_state.managed_by == target.ManagedBy.SYSTEM
+            and any(
+                p.managed_by == target.ManagedBy.SYSTEM for p in prev_possible_records
+            )
+        )
+        if recreate_missing:
+            prev_possible_records = []
+            prev_may_be_missing = True
+
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
                 tracking_record,
@@ -1021,13 +1047,30 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 if action is not None:
                     column_actions[sub_key] = action
 
+        # SQLite can't add a NOT NULL column to a table with rows, nor give an
+        # existing column the constraint: a declared NOT NULL column that is
+        # added or changed rebuilds the table instead, and the rows are written
+        # again (all of them change anyway: a new column changes every row, a
+        # changed one is lossy). Before, the change failed every run ("Cannot add a NOT NULL column with default value NULL").
+        if (
+            not coco.is_non_existence(desired_state)
+            and desired_state.managed_by == target.ManagedBy.SYSTEM
+            and any(
+                action in ("insert", "replace")
+                and _rebuild_needed_for(desired_state, sub_key)
+                for sub_key, action in column_actions.items()
+            )
+        ):
+            main_action = "replace"
+            column_actions = {}
+
         # Determine child invalidation for row-level targets.
         child_invalidation: Literal["destructive", "lossy"] | None = None
-        if main_action == "replace":
+        if recreate_missing or main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
-            # Column schema changes (other than adding new columns) may lose data.
+        elif any(statediff.may_lose_data(a) for a in column_actions.values()):
+            # A column retyped or dropped may lose data.
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -1141,6 +1184,16 @@ def _validate_vec0_config(
     invalid_aux = set(virtual_table_def.auxiliary_columns) - all_cols
     if invalid_aux:
         raise ValueError(f"Auxiliary columns not in schema: {invalid_aux}")
+    # vec0 parses its column list itself: it takes no quoted name (a reserved
+    # word is fine unquoted), no name starting with "_", and has hidden columns
+    # "k" and "distance" of its own.
+    for col_name in table_schema.columns:
+        if col_name.startswith("_") or col_name.lower() in ("k", "distance"):
+            raise ValueError(
+                f"vec0 virtual tables cannot have a column named {col_name!r}: vec0 "
+                "takes no column name that starts with '_', and reserves 'k' and "
+                "'distance'"
+            )
     if len(table_schema.primary_key) != 1:
         raise ValueError(
             f"vec0 virtual tables require exactly one primary key column, "
@@ -1183,8 +1236,8 @@ def table_target(
     for col_name in table_schema.columns:
         _validate_identifier(col_name, "column name")
 
+    managed_conn = coco.use_context(db)
     if isinstance(virtual_table_def, Vec0TableDef):
-        managed_conn = coco.use_context(db)
         _validate_vec0_config(table_schema, virtual_table_def, managed_conn)
 
     key = _TableKey(db_key=db.key, table_name=table_name)
@@ -1192,8 +1245,21 @@ def table_target(
         table_schema=table_schema,
         managed_by=managed_by,
         virtual_table_def=virtual_table_def,
+        # A system-managed table that is not in the database: if CocoIndex
+        # created it on an earlier run, it was dropped outside CocoIndex.
+        missing=managed_by == target.ManagedBy.SYSTEM
+        and not _table_exists(managed_conn, table_name),
     )
     return _table_provider.target_state(key, spec)
+
+
+def _table_exists(managed_conn: ManagedConnection, table_name: str) -> bool:
+    with managed_conn.readonly() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+    return row is not None
 
 
 def declare_table_target(

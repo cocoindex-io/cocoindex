@@ -12,9 +12,11 @@ from typing import Annotated, Any, cast
 import pytest
 
 import cocoindex as coco
-from cocoindex.connectorkits import target
+from cocoindex.connectorkits import statediff, target
 from cocoindex.connectors import snowflake
 from cocoindex.connectors.snowflake import _target
+
+from tests import common
 
 SNOWFLAKE_DB = coco.ContextKey[snowflake.ConnectionConfig]("snowflake_test_db")
 
@@ -43,13 +45,29 @@ class OverrideRow:
     vector: Annotated[list[float], snowflake.SnowflakeType("ARRAY")]
 
 
+class FakeObjectDoesNotExist(Exception):
+    """`snowflake.connector.errors.ProgrammingError` for a missing object."""
+
+    errno = 2003
+
+
 class FakeCursor:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[Any, ...] | None]] = []
         self.rows: list[tuple[Any, ...]] = []
+        # What `SHOW TERSE TABLES` lists: `None` lists the table asked for.
+        self.listed_tables: list[str] | None = None
+        self.show_error: Exception | None = None
 
     def execute(self, sql: str, params: tuple[Any, ...] | None = None) -> FakeCursor:
         self.calls.append((sql, params))
+        if sql.startswith("SHOW TERSE TABLES"):
+            if self.show_error is not None:
+                raise self.show_error
+            names = self.listed_tables
+            if names is None:
+                names = [sql.split("'")[1]]
+            self.rows = [("2026-01-01", name, "TABLE", "DB", "S") for name in names]
         return self
 
     def fetchall(self) -> list[tuple[Any, ...]]:
@@ -345,6 +363,173 @@ def test_table_handler_creates_database_schema_and_table(
         ),
     ]
     assert conn.commit_count == 1
+
+
+def _payload_schema() -> snowflake.TableSchema[Any]:
+    return snowflake.TableSchema(
+        columns={
+            "id": snowflake.ColumnDef(type="NUMBER", nullable=False),
+            "payload": snowflake.ColumnDef(type="VARIANT", use_parse_json=True),
+        },
+        primary_key=["id"],
+    )
+
+
+def _key(database: str | None, schema: str | None) -> _target._TableKey:
+    return _target._TableKey(
+        db_key=SNOWFLAKE_DB.key, database=database, schema=schema, table_name="events"
+    )
+
+
+def test_show_tables_is_scoped_like_the_qualified_table_name() -> None:
+    assert (
+        _target._show_tables_sql(_key("analytics", "public"))
+        == 'SHOW TERSE TABLES LIKE \'events\' IN SCHEMA "analytics"."public"'
+    )
+    assert (
+        _target._show_tables_sql(_key(None, "public"))
+        == "SHOW TERSE TABLES LIKE 'events' IN SCHEMA \"public\""
+    )
+    assert (
+        _target._show_tables_sql(_key(None, None))
+        == "SHOW TERSE TABLES LIKE 'events' IN SCHEMA"
+    )
+
+
+def test_table_exists_compares_listed_names_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = FakeConnection()
+    monkeypatch.setattr(_target, "_connect", lambda config: FakeConnectionContext(conn))
+    config = _connection_config()
+    key = _key("analytics", "public")
+
+    assert _target._table_exists(config, key)
+    # `LIKE` ignores case, but the quoted identifier is `events`.
+    conn.cursor_obj.listed_tables = ["EVENTS"]
+    assert not _target._table_exists(config, key)
+    # A dropped database or schema holds no table.
+    conn.cursor_obj.show_error = FakeObjectDoesNotExist("does not exist")
+    assert not _target._table_exists(config, key)
+    # Any other failure is not guessed at.
+    conn.cursor_obj.show_error = RuntimeError("no current warehouse")
+    with pytest.raises(RuntimeError):
+        _target._table_exists(config, key)
+    assert conn.close_count == 4
+
+
+def test_a_missing_system_table_is_created_and_its_rows_invalidated() -> None:
+    present = _target._TableSpec(table_schema=_payload_schema())
+    prev = statediff.MutualTrackingRecord(
+        tracking_record=_target._table_composite_tracking_record_from_spec(present),
+        managed_by=present.managed_by,
+    )
+    handler = _target._TableHandler()
+    key = tuple(_key("analytics", "public"))
+
+    out = handler.reconcile(key, present, [prev], False)
+    assert out is not None
+    assert (out.action.main_action, out.child_invalidation) == (None, None)
+
+    out = handler.reconcile(
+        key, dataclasses.replace(present, missing=True), [prev], False
+    )
+    assert out is not None
+    assert out.action.main_action == "insert"
+    assert out.action.column_actions == {}
+    assert out.child_invalidation == "destructive"
+    # `missing` is not part of the tracking record.
+    assert out.tracking_record == prev
+
+    # A user-managed table is never created: `missing` changes nothing.
+    user_prev = statediff.MutualTrackingRecord(
+        tracking_record=prev.tracking_record, managed_by=target.ManagedBy.USER
+    )
+    out = handler.reconcile(
+        key,
+        dataclasses.replace(present, managed_by=target.ManagedBy.USER, missing=True),
+        [user_prev],
+        False,
+    )
+    assert out is not None
+    assert (out.action.main_action, out.child_invalidation) == (None, None)
+
+
+_row_component_runs = 0
+
+
+@coco.fn(memo=True)
+async def _declare_row_in_component(
+    row: dict[str, Any], table: snowflake.TableTarget[dict[str, Any]]
+) -> None:
+    global _row_component_runs
+    _row_component_runs += 1
+    table.declare_row(row=row)
+
+
+def test_a_table_dropped_outside_cocoindex_comes_back_with_its_rows(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """A table `SHOW TERSE TABLES` no longer lists is created again on the next
+    run, with all its rows: the rows of child components that would otherwise
+    be skipped as unchanged too."""
+    conn = FakeConnection()
+    cursor = conn.cursor_obj
+    monkeypatch.setattr(_target, "_connect", lambda config: FakeConnectionContext(conn))
+    env = common.create_test_env(__file__, suffix=request.node.name)
+    env.context_provider.provide(SNOWFLAKE_DB, _connection_config())
+    rows = [{"id": 1, "payload": {"v": 1}}, {"id": 2, "payload": {"v": 2}}]
+
+    @coco.fn
+    async def main() -> None:
+        table = await snowflake.mount_table_target(
+            SNOWFLAKE_DB,
+            "events",
+            _payload_schema(),
+            database="analytics",
+            schema="public",
+        )
+        await coco.mount_each(
+            _declare_row_in_component, [(str(row["id"]), row) for row in rows], table
+        )
+
+    app = coco.App(coco.AppConfig(name="test_snowflake_dropped", environment=env), main)
+
+    def statements() -> tuple[list[str], int]:
+        ddl = [sql for sql, _ in cursor.calls if sql.startswith("CREATE")]
+        merged = sum(
+            len(params or ()) // 2
+            for sql, params in cursor.calls
+            if sql.startswith("MERGE")
+        )
+        return ddl, merged
+
+    created = [
+        'CREATE DATABASE IF NOT EXISTS "analytics"',
+        'CREATE SCHEMA IF NOT EXISTS "analytics"."public"',
+        'CREATE TABLE "analytics"."public"."events" '
+        '("id" NUMBER NOT NULL, "payload" VARIANT, PRIMARY KEY ("id"))',
+    ]
+
+    app.update_blocking()
+    assert statements() == (created, 2)
+    assert _row_component_runs == 2
+
+    cursor.calls.clear()
+    app.update_blocking()
+    assert statements() == ([], 0)
+    assert _row_component_runs == 2, "unchanged children are skipped"
+
+    cursor.listed_tables = []
+    app.update_blocking()
+    assert statements() == (created, 2)
+    assert _row_component_runs == 4, "the children run again to write their rows"
+
+    cursor.listed_tables = None
+    cursor.calls.clear()
+    app.update_blocking()
+    assert statements() == ([], 0)
+    assert _row_component_runs == 4, "unchanged children are skipped again"
 
 
 REQUIRED_SNOWFLAKE_ENV = [
