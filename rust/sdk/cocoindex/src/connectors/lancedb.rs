@@ -497,9 +497,12 @@ pub fn declare_table_target_with_options(
     let schema_fp = Fingerprint::from(&table_tracking_record(&spec)).map_err(Error::from)?;
     declare_target_state(ctx, target_state)?;
     // The row provider stays run-scoped (its handler holds the spec). Once a
-    // run stops declaring the table, or on `App::drop_state`, the table itself
-    // is dropped (taking its rows and indexes with it), so the engine only
-    // needs to prune this provider's unreachable row tracking, which it does.
+    // run stops declaring the table, the table itself is dropped (taking its
+    // rows and indexes with it), so the engine only needs to prune this
+    // provider's unreachable row tracking, which it does. `App::drop_state`
+    // also reverts the provider's rows, in no fixed order with the table drop
+    // (both are root providers); the row sink skips deletes on a table that is
+    // already gone (see [`open_table_for_rows`]).
     let rows = register_root_target_states_provider(
         ctx,
         format!(
@@ -1242,7 +1245,11 @@ impl RowHandler {
                     if upserts.is_empty() && deletes.is_empty() {
                         return Ok(());
                     }
-                    let table = open_table_for_rows(&table, &db, &spec).await?;
+                    let Some(table) =
+                        open_table_for_rows(&table, &db, &spec, upserts.is_empty()).await?
+                    else {
+                        return Ok(());
+                    };
                     apply_rows(table, &spec, upserts, deletes, &optimize_counter).await
                 }
             },
@@ -1262,17 +1269,28 @@ impl RowHandler {
 /// against the version its handle has checked out, and a handle does not
 /// reload by itself under the default read consistency. Another handle may have
 /// written since (an index sink, or the table sink recreating the table).
+///
+/// Returns `None` (nothing to do) for a batch of only deletes (`only_deletes`)
+/// on a missing table: the rows went with the table. On `App::drop_state` the
+/// table sink can drop the table before the row sink deletes its rows, and a
+/// delete must not create the table again. The table's existence is checked
+/// only when a delete-only batch has no handle yet or its handle fails to
+/// reload, so a batch on a live, cached handle still lists no tables.
 async fn open_table_for_rows<'a>(
     cache: &'a OnceCell<Table>,
     db: &LanceDatabase,
     spec: &TableSpec,
-) -> Result<&'a Table> {
+    only_deletes: bool,
+) -> Result<Option<&'a Table>> {
     if let Some(table) = cache.get() {
-        table
-            .checkout_latest()
-            .await
-            .map_err(|e| Error::engine(format!("lancedb reload table: {e}")))?;
-        return Ok(table);
+        return match table.checkout_latest().await {
+            Ok(()) => Ok(Some(table)),
+            Err(_) if only_deletes && !table_exists(db, &spec.table_name).await? => Ok(None),
+            Err(e) => Err(Error::engine(format!("lancedb reload table: {e}"))),
+        };
+    }
+    if only_deletes && !table_exists(db, &spec.table_name).await? {
+        return Ok(None);
     }
     cache
         .get_or_try_init(|| async {
@@ -1286,6 +1304,7 @@ async fn open_table_for_rows<'a>(
                 .map_err(|e| Error::engine(format!("lancedb open table: {e}")))
         })
         .await
+        .map(Some)
 }
 
 async fn apply_rows(
@@ -2783,8 +2802,9 @@ mod tests {
         let handler = RowHandler::new("db".to_string(), spec.clone(), BTreeSet::new());
         assert!(!table_exists(&db, "docs").await.unwrap());
 
-        let first = open_table_for_rows(&handler.table, &db, &spec)
+        let first = open_table_for_rows(&handler.table, &db, &spec, false)
             .await
+            .unwrap()
             .unwrap();
         assert!(
             table_exists(&db, "docs").await.unwrap(),
@@ -2793,8 +2813,9 @@ mod tests {
         let first = Arc::clone(first.base_table());
         let counter = std::sync::atomic::AtomicU64::new(0);
         for id in 1..=3 {
-            let table = open_table_for_rows(&handler.table, &db, &spec)
+            let table = open_table_for_rows(&handler.table, &db, &spec, false)
                 .await
+                .unwrap()
                 .unwrap();
             assert!(
                 Arc::ptr_eq(&first, table.base_table()),
@@ -2818,8 +2839,9 @@ mod tests {
             row
         };
         let batch = async |rows: Vec<Map<String, JsonValue>>| {
-            let table = open_table_for_rows(&handler.table, &db, &spec)
+            let table = open_table_for_rows(&handler.table, &db, &spec, false)
                 .await
+                .unwrap()
                 .unwrap();
             apply_rows(table, &spec, rows, vec![], &counter)
                 .await
@@ -2838,5 +2860,62 @@ mod tests {
         drop_table(&db, "docs").await.unwrap();
         create_empty_table(&db, &spec).await.unwrap();
         assert_eq!(batch(vec![row(9, "new")]).await, 1);
+    }
+
+    /// A batch of only row deletes on a table that is already gone does
+    /// nothing, with a cached handle or without one, and does not create the
+    /// table again: on `App::drop_state` the table sink can drop the table
+    /// before the row sink deletes the table's rows. A batch that upserts
+    /// still ensures the table.
+    #[tokio::test]
+    async fn row_deletes_on_a_dropped_table_are_skipped() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let db = LanceDatabase::connect(tempdir.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let spec = TableSpec {
+            table_name: "docs".to_string(),
+            table_schema: schema(),
+            managed_by: ManagedBy::System,
+        };
+
+        // A handle cached by an earlier batch of the run.
+        let cached = RowHandler::new("db".to_string(), spec.clone(), BTreeSet::new());
+        open_table_for_rows(&cached.table, &db, &spec, false)
+            .await
+            .unwrap()
+            .unwrap();
+        drop_table(&db, "docs").await.unwrap();
+        assert!(
+            open_table_for_rows(&cached.table, &db, &spec, true)
+                .await
+                .unwrap()
+                .is_none(),
+            "cached handle: deletes skipped"
+        );
+        assert!(!table_exists(&db, "docs").await.unwrap());
+
+        // No handle yet.
+        let fresh = RowHandler::new("db".to_string(), spec.clone(), BTreeSet::new());
+        assert!(
+            open_table_for_rows(&fresh.table, &db, &spec, true)
+                .await
+                .unwrap()
+                .is_none(),
+            "no handle: deletes skipped"
+        );
+        assert!(
+            !table_exists(&db, "docs").await.unwrap(),
+            "deletes do not create the table"
+        );
+
+        open_table_for_rows(&fresh.table, &db, &spec, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            table_exists(&db, "docs").await.unwrap(),
+            "upserts ensure the table"
+        );
     }
 }
