@@ -92,11 +92,31 @@ async def expensive_operation(data: str) -> Result:
     return await expensive_transform(data)
 ```
 
-**Key parameters:**
+**Key parameters for `@coco.fn`:**
 - `memo=True` -- Enable memoization (skip if inputs/code unchanged)
 - `version=1` -- Explicit version bump to force re-execution
-- `batching=True` -- Auto-batch concurrent calls (async only)
-- `runner=coco.GPU` -- Serialize GPU-bound execution
+
+For batching or a runner, use `@coco.fn.as_async`, even when the underlying
+function is already `async def`. Plain `@coco.fn` rejects `batching=True`,
+`max_batch_size`, and `runner` with `ValueError`.
+
+- `@coco.fn.as_async(batching=True, max_batch_size=32)` -- Auto-batch concurrent calls
+- `@coco.fn.as_async(runner=coco.GPU)` -- Run through the GPU runner
+
+A batched body receives a list and returns a list of the same length; callers
+pass one item and await one result:
+
+```python
+@coco.fn.as_async(batching=True, max_batch_size=32)
+async def uppercase(texts: list[str]) -> list[str]:
+    return [text.upper() for text in texts]
+
+result = await uppercase("hello")  # "HELLO", not a list
+```
+
+`@coco.fn.as_async` accepts both `def` and `async def` bodies. See the
+[function guide](https://cocoindex.io/docs/programming_guide/function/#batching)
+for batch concurrency limits and runner configuration.
 
 ### 3. Processing Components
 
