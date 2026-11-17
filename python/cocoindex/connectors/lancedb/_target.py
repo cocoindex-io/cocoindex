@@ -1054,11 +1054,26 @@ _TableTrackingRecord = statediff.MutualTrackingRecord[
 
 
 async def _table_exists(conn: LanceAsyncConnection, table_name: str) -> bool:
-    """Whether the table is in the database, across LanceDB API variants."""
+    """Whether the table is in the database, across LanceDB API variants. Both
+    list one page of names at a time, so every page is read: a table past the
+    first page is there too."""
     if hasattr(conn, "list_tables"):
-        response = await conn.list_tables()
-        return table_name in response.tables
-    return table_name in await conn.table_names()
+        page_token: str | None = None
+        while True:
+            response = await conn.list_tables(page_token=page_token)
+            if table_name in response.tables:
+                return True
+            page_token = response.page_token
+            if not page_token:
+                return False
+    start_after: str | None = None
+    while True:
+        names = list(await conn.table_names(start_after=start_after))
+        if table_name in names:
+            return True
+        if not names:
+            return False
+        start_after = names[-1]
 
 
 class _TableAction(NamedTuple):

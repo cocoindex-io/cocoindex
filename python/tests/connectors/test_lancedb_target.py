@@ -139,8 +139,9 @@ if HAS_LANCEDB:
             self.create_table_count = 0
             self.drop_table_count = 0
 
-        async def table_names(self) -> list[str]:
-            return ["test_table"] if self.table_exists else []
+        async def table_names(self, *, start_after: str | None = None) -> list[str]:
+            names = ["test_table"] if self.table_exists else []
+            return [n for n in names if start_after is None or n > start_after]
 
         async def open_table(self, table_name: str) -> _FakeAsyncTable:
             assert table_name == "test_table"
@@ -1695,3 +1696,18 @@ async def test_table_dropped_outside_cocoindex_comes_back_with_its_rows(
     await app.update()
     assert await table_rows() == rows
     assert _row_component_runs == 4, "unchanged children are skipped again"
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_table_exists_reads_every_page(lancedb_dir: Path) -> None:
+    """LanceDB lists table names a page (100) at a time: a table past the first
+    page is there too, and is not taken for one dropped outside CocoIndex."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    schema = pa.schema([pa.field("id", pa.int64())])
+    for i in range(105):
+        await conn.create_table(f"t{i:03d}", schema=schema)
+
+    assert await _target._table_exists(conn, "t000")
+    assert await _target._table_exists(conn, "t104")
+    assert not await _target._table_exists(conn, "t105")
