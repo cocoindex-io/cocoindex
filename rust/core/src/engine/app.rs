@@ -87,7 +87,7 @@ impl<T: Send + 'static> AppOpHandle<T> {
     /// before it clears the app's database leaves the database in place
     /// (component deletes already under way may still finish); dropping
     /// again finishes it.
-    pub(crate) fn cancellation_token(&self) -> &CancellationToken {
+    pub fn cancellation_token(&self) -> &CancellationToken {
         &self.cancellation_token
     }
 

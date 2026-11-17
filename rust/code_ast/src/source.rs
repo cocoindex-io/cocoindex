@@ -339,17 +339,12 @@ mod tests {
     #[test]
     fn error_recovery_over_a_long_unparsable_run_is_not_quadratic() {
         // tree-sitter before 0.26 copied every child of the error so far on
-        // each recovery: these 160 KB took over 15 s in a release build. Now
-        // a fraction of a second, in a debug build too.
+        // each recovery: these 160 KB took over 15 s in a release build. A
+        // parse that finishes within the read budget, which is linear in the
+        // text, is not quadratic; one that ran over it would fall back.
         let text = "a🦀".repeat(32_000);
         let src = CodeSource::with_language(text.as_str(), "rust");
-        let start = std::time::Instant::now();
         assert!(matches!(src.tree(), ParseOutcome::Parsed(_)));
-        let elapsed = start.elapsed();
-        assert!(
-            elapsed < std::time::Duration::from_secs(10),
-            "parse took {elapsed:?}"
-        );
     }
 
     #[test]

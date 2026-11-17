@@ -88,12 +88,19 @@ struct SimpleLanguageConfig {
     name: String,
     aliases: Vec<String>,
     separator_regex: Vec<Regex>,
-    /// Whether a separator's text up to its first whitespace, such as the `.`
-    /// of `". "`, stays at the end of the chunk before it. The built-in
-    /// separators keep sentence and clause punctuation that way; a custom
-    /// language's separators are dropped whole, as its regexes say what to
-    /// split on, not what to keep.
-    keeps_separator_punctuation: bool,
+    separator_punctuation: SeparatorPunctuation,
+}
+
+/// What happens to a separator's text at a split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeparatorPunctuation {
+    /// The text up to the separator's first whitespace, such as the `.` of
+    /// `". "`, stays at the end of the chunk before it. The built-in
+    /// separators keep sentence and clause punctuation that way.
+    KeepBeforeWhitespace,
+    /// The separator is dropped whole: a custom language's regexes say what
+    /// to split on, not what to keep.
+    Drop,
 }
 
 static DEFAULT_LANGUAGE_CONFIG: LazyLock<SimpleLanguageConfig> =
@@ -111,7 +118,7 @@ static DEFAULT_LANGUAGE_CONFIG: LazyLock<SimpleLanguageConfig> =
         .into_iter()
         .map(|s| Regex::new(s).unwrap())
         .collect(),
-        keeps_separator_punctuation: true,
+        separator_punctuation: SeparatorPunctuation::KeepBeforeWhitespace,
     });
 
 enum ChunkKind<'t> {
@@ -136,7 +143,7 @@ struct CharPiecesIter<'t, 's: 't> {
     next_start_pos: usize,
     end_pos: usize,
     piece_len: usize,
-    _kind: std::marker::PhantomData<ChunkKind<'t>>,
+    _kind: std::marker::PhantomData<&'t ()>,
 }
 
 impl<'t, 's: 't> Iterator for CharPiecesIter<'t, 's> {
@@ -205,10 +212,11 @@ impl<'t, 's: 't> Iterator for TextChunksIter<'t, 's> {
         let end_pos = match self.matches_iter.next() {
             Some(grp) => {
                 self.next_start_pos = Some(self.range.start + grp.end());
-                let kept = if self.lang_config.keeps_separator_punctuation {
-                    grp.as_str().find(char::is_whitespace).unwrap_or(grp.len())
-                } else {
-                    0
+                let kept = match self.lang_config.separator_punctuation {
+                    SeparatorPunctuation::KeepBeforeWhitespace => {
+                        grp.as_str().find(char::is_whitespace).unwrap_or(grp.len())
+                    }
+                    SeparatorPunctuation::Drop => 0,
                 };
                 self.range.start + grp.start() + kept
             }
@@ -1039,7 +1047,7 @@ impl RecursiveChunker {
                 name: lang.language_name,
                 aliases: lang.aliases,
                 separator_regex,
-                keeps_separator_punctuation: false,
+                separator_punctuation: SeparatorPunctuation::Drop,
             });
             if custom_languages
                 .insert(
