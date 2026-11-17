@@ -831,6 +831,15 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     # resolved means the table is upserted through multi-row VALUES.
     _unnest_upsert: _UnnestUpsert | None
     _unnest_upsert_resolved: bool
+    _qualified_name: str
+    # Declared NOT NULL columns of a system-managed table that the table holds
+    # as nullable. A column is added nullable (or re-added after a failed type
+    # change) to a table with rows: PostgreSQL can't give it the constraint until
+    # every row has a value, which the run's row rewrites provide. Read from the
+    # catalog on the first batch, so a run after a restart finds them too; after
+    # each batch, while any is left, the ones with no NULL get the constraint.
+    # None until read; always empty for a user-managed table.
+    _pending_not_null: set[str] | None
 
     def __init__(
         self,
@@ -838,11 +847,16 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         table_name: str,
         pg_schema_name: str | None,
         table_schema: TableSchema,
+        managed_by: target.ManagedBy,
     ) -> None:
         self._pool = pool
         self._table_name = table_name
         self._schema_name = pg_schema_name
         self._table_schema = table_schema
+        self._qualified_name = _qualified_table_name(table_name, pg_schema_name)
+        self._pending_not_null = (
+            None if managed_by == target.ManagedBy.SYSTEM else set()
+        )
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
         pk_cols = table_schema.primary_key
@@ -885,12 +899,24 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             self._unnest_upsert = await self._resolve_unnest_upsert()
             self._unnest_upsert_resolved = True
 
+        if self._pending_not_null is None:
+            self._pending_not_null = await _nullable_columns(
+                self._pool,
+                self._qualified_name,
+                [
+                    name
+                    for name, col in self._table_schema.columns.items()
+                    if not col.nullable and name not in self._table_schema.primary_key
+                ],
+            )
+
         async with asyncio.TaskGroup() as tg:
             self._schedule_upserts(tg, upserts)
             self._schedule_deletes(tg, deletes)
-        await _restore_not_null(
-            self._pool, _qualified_table_name(self._table_name, self._schema_name)
-        )
+        if self._pending_not_null:
+            await _restore_not_null(
+                self._pool, self._qualified_name, self._pending_not_null
+            )
 
     async def _resolve_unnest_upsert(self) -> _UnnestUpsert | None:
         """Build the `unnest` upsert statement, if every column's type allows it.
@@ -1182,26 +1208,6 @@ class _TableAction(NamedTuple):
     column_actions: dict[str, statediff.DiffAction]
 
 
-# Declared NOT NULL columns that a system-managed table holds as nullable, by
-# pool and qualified table name. A column lands here when it is added (or re-added
-# after a failed type change) to a table with rows: PostgreSQL can't give it the
-# constraint until every row has a value, which the run's row rewrites provide.
-# After each row batch the row handler sets the constraint once no NULL is left
-# (`_restore_not_null`). The pool is kept with its entry, so its id is not reused
-# while the entry lives.
-_pending_not_null: dict[tuple[int, str], tuple[asyncpg.Pool, set[str]]] = {}
-
-
-def _set_pending_not_null(
-    pool: asyncpg.Pool, qualified_name: str, columns: set[str]
-) -> None:
-    key = (id(pool), qualified_name)
-    if columns:
-        _pending_not_null[key] = (pool, columns)
-    else:
-        _pending_not_null.pop(key, None)
-
-
 async def _try_set_not_null(
     conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
     qualified_name: str,
@@ -1224,14 +1230,30 @@ async def _try_set_not_null(
     return True
 
 
-async def _restore_not_null(pool: asyncpg.Pool, qualified_name: str) -> None:
-    """Give a table's pending NOT NULL columns their constraint once they hold no
-    NULL. A failure is logged, not raised: the rows are written, and a later batch
-    tries again."""
-    entry = _pending_not_null.get((id(pool), qualified_name))
-    if entry is None or entry[0] is not pool:
-        return
-    columns = entry[1]
+async def _nullable_columns(
+    pool: asyncpg.Pool, qualified_name: str, columns: Sequence[str]
+) -> set[str]:
+    """Which of `columns` the table holds as nullable, read from the catalog.
+    The table resolves as in its DDL; a table that is not there has none."""
+    if not columns:
+        return set()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT attname FROM pg_attribute "
+            "WHERE attrelid = to_regclass($1) AND attnum > 0 "
+            "AND NOT attisdropped AND NOT attnotnull AND attname = ANY($2::text[])",
+            qualified_name,
+            list(columns),
+        )
+    return {row["attname"] for row in rows}
+
+
+async def _restore_not_null(
+    pool: asyncpg.Pool, qualified_name: str, columns: set[str]
+) -> None:
+    """Give `columns` (declared NOT NULL, held nullable) their constraint once
+    they hold no NULL, and drop them from `columns`. A failure is logged, not
+    raised: the rows are written, and a later batch tries again."""
     for col_name in sorted(columns):
         try:
             async with pool.acquire() as conn:
@@ -1243,8 +1265,6 @@ async def _restore_not_null(pool: asyncpg.Pool, qualified_name: str) -> None:
             continue
         if restored:
             columns.discard(col_name)
-    if not columns:
-        _pending_not_null.pop((id(pool), qualified_name), None)
 
 
 async def _add_column(
@@ -1260,6 +1280,8 @@ async def _add_column(
     if_not_exists_sql = " IF NOT EXISTS" if if_not_exists else ""
     add = f'ALTER TABLE {qualified_name} ADD COLUMN{if_not_exists_sql} "{col_name}" {col.type}'
     if not col.nullable:
+        # Try NOT NULL and let the violation say the table has rows: a separate
+        # emptiness check could race with a concurrent insert.
         try:
             async with conn.transaction():
                 await conn.execute(f"{add} NOT NULL")
@@ -1292,6 +1314,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
             table_name=key.table_name,
             pg_schema_name=key.pg_schema_name,
             table_schema=action.spec.table_schema,
+            managed_by=action.spec.managed_by,
         )
 
     async def _apply_actions(
@@ -1307,8 +1330,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         for action in actions:
             by_key.setdefault(action.key, []).append(action)
 
-        # Columns left nullable per table, recorded once their DDL commits.
-        pending_by_table: dict[tuple[asyncpg.Pool, str], set[str]] = {}
         for key, key_actions in by_key.items():
             pool = context_provider.get(key.db_key, asyncpg.Pool)
             async with pool.acquire() as conn:
@@ -1343,18 +1364,13 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                                 conn, key, spec.table_schema, action.column_actions
                             )
                             # A column with no NULL (an empty table) takes its
-                            # constraint now; the others wait for their rows.
+                            # constraint now; the others wait for their rows
+                            # (see `_RowHandler._pending_not_null`).
                             qualified_name = _qualified_table_name(
                                 key.table_name, key.pg_schema_name
                             )
                             for col_name in sorted(pending):
-                                if await _try_set_not_null(
-                                    conn, qualified_name, col_name
-                                ):
-                                    pending.discard(col_name)
-                            pending_by_table[(pool, qualified_name)] = pending
-        for (pool, qualified_name), pending in pending_by_table.items():
-            _set_pending_not_null(pool, qualified_name, pending)
+                                await _try_set_not_null(conn, qualified_name, col_name)
 
     async def _drop_table(
         self,

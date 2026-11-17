@@ -1250,6 +1250,90 @@ async def test_not_null_restored_after_column_added_or_recreated(
         await _drop_table(pool, table_name)
 
 
+_restart_failing_row: str | None = None
+
+
+@coco.fn(memo=True)
+async def _declare_row_or_fail(
+    row: dict[str, Any], table: "postgres.TableTarget[dict[str, Any]]"
+) -> None:
+    if row["id"] == _restart_failing_row:
+        raise RuntimeError(f"row {row['id']} fails")
+    table.declare_row(row=row)
+
+
+@pytest.mark.asyncio
+async def test_not_null_restored_after_a_restart(
+    pg_dsn: str, pg_env: _PgEnv, request: pytest.FixtureRequest
+) -> None:
+    """A NOT NULL column added to a table with rows waits, nullable, for its
+    rows. When the process stops between the DDL and the rewrite of every row,
+    the next process still gives the column its NOT NULL once the rows are
+    written: which columns wait is read from the catalog, not kept in memory."""
+    import asyncpg
+
+    global _restart_failing_row
+    pool = pg_env.pool
+    table_name = _unique_name("not_null_restart")
+    with_n = False
+
+    def _schema() -> "postgres.TableSchema[dict[str, Any]]":
+        columns = {"id": postgres.ColumnDef("text", nullable=False)}
+        if with_n:
+            columns["n"] = postgres.ColumnDef("integer", nullable=False)
+        return postgres.TableSchema(columns=columns, primary_key=["id"])
+
+    async def declare_fn() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            postgres.declare_table_target,
+            _PG_DB_KEY,
+            table_name,
+            _schema(),
+        )
+        rows: list[dict[str, Any]] = [
+            {"id": f"r{i}", **({"n": i} if with_n else {})} for i in range(3)
+        ]
+        await coco.mount_each(
+            _declare_row_or_fail, [(str(row["id"]), row) for row in rows], table
+        )
+
+    def _app(env: coco.Environment) -> coco.App[[], None]:
+        return coco.App(
+            coco.AppConfig(name=f"test_nn_{table_name}", environment=env), declare_fn
+        )
+
+    env = pg_env.coco_env
+    try:
+        await _app(env).update()
+        # The column is added; one row fails to be written again (its component
+        # fails, which is logged), so the column still holds a NULL when the
+        # process stops.
+        with_n = True
+        _restart_failing_row = "r1"
+        await _app(env).update()
+        assert await _column_is_nullable(pool, table_name, "n")
+        env.close()
+
+        # A new process, on the same state, with a pool of its own.
+        _restart_failing_row = None
+        env = common.create_test_env(__file__, suffix=request.node.name)
+        new_pool = await asyncpg.create_pool(pg_dsn)
+        try:
+            env.context_provider.provide(_PG_DB_KEY, new_pool)
+            await _app(env).update()
+        finally:
+            await new_pool.close()
+        assert not await _column_is_nullable(pool, table_name, "n")
+        async with pool.acquire() as conn:
+            values = await conn.fetch(f'SELECT id, n FROM "{table_name}" ORDER BY id')
+        assert [(r["id"], r["n"]) for r in values] == [("r0", 0), ("r1", 1), ("r2", 2)]
+    finally:
+        _restart_failing_row = None
+        env.close()
+        await _drop_table(pool, table_name)
+
+
 @pytest.mark.asyncio
 async def test_postgres_strips_nul_in_array_columns(pg_env: _PgEnv) -> None:
     """U+0000 (NUL) inside array element strings must be stripped before asyncpg
@@ -1456,7 +1540,11 @@ def _row_handler(
     pool: "asyncpg.Pool", table_name: str, schema: "postgres.TableSchema[Any]"
 ) -> Any:
     return postgres._target._RowHandler(
-        pool=pool, table_name=table_name, pg_schema_name=None, table_schema=schema
+        pool=pool,
+        table_name=table_name,
+        pg_schema_name=None,
+        table_schema=schema,
+        managed_by=ManagedBy.SYSTEM,
     )
 
 
