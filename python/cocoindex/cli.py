@@ -230,19 +230,19 @@ def _parse_app_target(specifier: str) -> AppSpecifier:
 
 
 def _get_persisted_app_names(env: Environment) -> set[str]:
-    """Get the set of app names persisted in the given environment's database."""
-    try:
-        names = _core.list_app_names(env._core_env)
-        return set(names) if names else set()
-    except Exception:
-        return set()
+    """Get the set of app names persisted in the given environment's database.
+
+    An open environment always has its database (opening one creates it), so
+    a failure here is a real database error: it is raised, not read as "no
+    apps"."""
+    return set(_core.list_app_names(env._core_env))
 
 
 def _require_persisted_app(env: Environment, app_name: str) -> None:
     """Fail unless the environment's database has persisted state for `app_name`:
     `show --db … --app-name …` of an app it lacks (a typo, the wrong database)
     is an error, not an empty listing."""
-    names = sorted(_core.list_app_names(env._core_env) or [])
+    names = sorted(_get_persisted_app_names(env))
     if app_name in names:
         return
     where = f"the database at {_format_db_path(env)}"
