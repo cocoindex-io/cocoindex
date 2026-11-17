@@ -72,7 +72,7 @@ impl<Prof: EngineProfile> Environment<Prof> {
     }
 
     /// The `db_path` the environment was opened with.
-    pub fn db_path(&self) -> &Path {
+    pub(crate) fn db_path(&self) -> &Path {
         &self.inner.db_path
     }
 

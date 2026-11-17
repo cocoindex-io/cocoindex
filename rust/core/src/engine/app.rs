@@ -87,7 +87,7 @@ impl<T: Send + 'static> AppOpHandle<T> {
     /// before it clears the app's database leaves the database in place
     /// (component deletes already under way may still finish); dropping
     /// again finishes it.
-    pub fn cancellation_token(&self) -> &CancellationToken {
+    pub(crate) fn cancellation_token(&self) -> &CancellationToken {
         &self.cancellation_token
     }
 
@@ -288,9 +288,8 @@ impl<Prof: EngineProfile> App<Prof> {
         // descendant deletes (see `specs/core/error_handling.md`).
         let raise_on_error: crate::engine::component::OnError =
             Arc::new(|err| Box::pin(async move { Err(err) }));
-        let context = self.root_component.new_processor_context_for_delete(
+        let context = self.root_component.new_processor_context_for_drop(
             providers,
-            None,
             processing_stats.clone(),
             host_ctx,
             Some(raise_on_error),

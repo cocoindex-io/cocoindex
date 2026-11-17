@@ -887,7 +887,6 @@ def _show_tables_sql(key: _TableKey) -> str:
     scope = [
         _quote_ident(part) for part in (key.database, key.schema) if part is not None
     ]
-    _validate_identifier(key.table_name)
     sql = f"SHOW TERSE TABLES LIKE '{key.table_name}' IN SCHEMA"
     return f"{sql} {'.'.join(scope)}" if scope else sql
 
@@ -895,14 +894,17 @@ def _show_tables_sql(key: _TableKey) -> str:
 def _table_exists(config: ConnectionConfig, key: _TableKey) -> bool:
     """Whether the table exists. A database or schema that does not exist
     holds no table."""
+    from snowflake.connector.errors import (  # type: ignore[import-not-found]
+        ProgrammingError,
+    )
+
     with _connect(config) as conn:
         cursor = conn.cursor()
         try:
             try:
                 cursor.execute(_show_tables_sql(key))
-            except Exception as e:
-                # `snowflake.connector.errors.ProgrammingError`, by its number.
-                if getattr(e, "errno", None) == _OBJECT_DOES_NOT_EXIST_ERRNO:
+            except ProgrammingError as e:
+                if e.errno == _OBJECT_DOES_NOT_EXIST_ERRNO:
                     return False
                 raise
             # `SHOW TERSE TABLES` lists `created_on`, `name`, `kind`, ...

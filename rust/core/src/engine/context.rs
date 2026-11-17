@@ -2,8 +2,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cocoindex_utils::fingerprint::Fingerprint;
+use tokio_util::sync::CancellationToken;
 
 use crate::engine::admission::{Admission, AdmissionPool, Lender, UpdateShare};
+use crate::engine::app_lock::{AppOpLock, AppOpLockSlot};
 use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup};
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::id_sequencer::IdSequencerManager;
@@ -50,7 +52,7 @@ struct AppContextInner<Prof: EngineProfile> {
     /// it can be replaced with a fresh child of the global token after a
     /// previous cancellation (e.g. after `App::drop_app` finishes), allowing
     /// the same `App` instance to be reused for subsequent operations.
-    cancellation_token: std::sync::Mutex<tokio_util::sync::CancellationToken>,
+    cancellation_token: std::sync::Mutex<CancellationToken>,
 
     /// Flat registry of all live components mounted under this app.
     /// `mount_live_async` registers (compacts then pushes) before returning;
@@ -73,7 +75,7 @@ struct AppContextInner<Prof: EngineProfile> {
 
     /// The cross-process lock an update or drop of this app holds; see
     /// [`crate::engine::app_lock`].
-    op_lock: crate::engine::app_lock::AppOpLockSlot,
+    op_lock: AppOpLockSlot,
 }
 
 #[derive(Clone)]
@@ -88,7 +90,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         app_reg: AppRegistration<Prof>,
         max_inflight_components: Option<usize>,
     ) -> Self {
-        let op_lock = crate::engine::app_lock::AppOpLockSlot::new(env.db_path(), app_reg.name());
+        let op_lock = AppOpLockSlot::new(env.db_path(), app_reg.name());
         Self {
             inner: Arc::new(AppContextInner {
                 env,
@@ -109,7 +111,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
     /// Take (or share this process's hold on) the cross-process lock on
     /// updating this app; see [`crate::engine::app_lock`].
-    pub(crate) fn acquire_op_lock(&self) -> Result<Arc<crate::engine::app_lock::AppOpLock>> {
+    pub(crate) fn acquire_op_lock(&self) -> Result<Arc<AppOpLock>> {
         self.inner.op_lock.acquire()
     }
 
@@ -200,7 +202,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     ///
     /// The clone stays valid even if the slot is later refreshed via
     /// `reset_cancellation_token_if_cancelled`.
-    pub fn cancellation_token(&self) -> tokio_util::sync::CancellationToken {
+    pub fn cancellation_token(&self) -> CancellationToken {
         self.inner.cancellation_token.lock().unwrap().clone()
     }
 
@@ -914,7 +916,7 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     /// See [`ComponentProcessorContext::operation_generation`].
     operation_generation: u64,
     /// See [`ComponentProcessorContext::cancellation_token`].
-    cancellation_token: tokio_util::sync::CancellationToken,
+    cancellation_token: CancellationToken,
 
     /// This run's in-flight token and the lender its children borrow from;
     /// see [`crate::engine::admission`].
@@ -977,6 +979,50 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
     ) -> Self {
+        // A child belongs to its parent's operation. A root update starts
+        // one, whose token is a child of the app's: dropping the app or
+        // cancelling every operation stops it.
+        let cancellation_token = match &parent_context {
+            Some(parent) => parent.cancellation_token().clone(),
+            None => component.app_ctx().cancellation_token().child_token(),
+        };
+        Self::new_in_operation(
+            component,
+            parent_context,
+            processing_stats,
+            host_ctx,
+            processing_action,
+            cancellation_token,
+        )
+    }
+
+    /// The root context of an app drop. A drop cancels the app's token to
+    /// stop the app's other operations, so its own token hangs off the global
+    /// one instead.
+    pub(crate) fn new_for_drop(
+        component: Component<Prof>,
+        processing_stats: ProcessingStats,
+        host_ctx: Arc<Prof::HostCtx>,
+        processing_action: ComponentProcessingAction<Prof>,
+    ) -> Self {
+        Self::new_in_operation(
+            component,
+            None,
+            processing_stats,
+            host_ctx,
+            processing_action,
+            crate::engine::runtime::global_cancellation_token().child_token(),
+        )
+    }
+
+    fn new_in_operation(
+        component: Component<Prof>,
+        parent_context: Option<ComponentProcessorContext<Prof>>,
+        processing_stats: ProcessingStats,
+        host_ctx: Arc<Prof::HostCtx>,
+        processing_action: ComponentProcessingAction<Prof>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         let (lender, share) = match &parent_context {
             Some(parent) => (
                 Some(parent.admission().lender().clone()),
@@ -1003,20 +1049,6 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                     component.app_ctx().persisting_app_store().clone()
                 }
             },
-        };
-        // A child belongs to its parent's operation. A root starts one: an
-        // update's token is a child of the app's, so dropping the app or
-        // cancelling every operation stops it. A root delete is a drop, which
-        // cancels the app's token itself to stop the app's other operations,
-        // so its own token hangs off the global one instead.
-        let cancellation_token = match (&parent_context, &processing_action) {
-            (Some(parent), _) => parent.cancellation_token().clone(),
-            (None, ComponentProcessingAction::Build(_)) => {
-                component.app_ctx().cancellation_token().child_token()
-            }
-            (None, ComponentProcessingAction::Delete(_)) => {
-                crate::engine::runtime::global_cancellation_token().child_token()
-            }
         };
         Self::from_parts(
             component,
@@ -1048,7 +1080,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         processing_action: ComponentProcessingAction<Prof>,
         app_store: AppStore,
         update_refusal: UpdateRefusal,
-        cancellation_token: tokio_util::sync::CancellationToken,
+        cancellation_token: CancellationToken,
     ) -> Self {
         Self::from_parts(
             component,
@@ -1073,7 +1105,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         processing_action: ComponentProcessingAction<Prof>,
         app_store: AppStore,
         update_refusal: Option<UpdateRefusal>,
-        cancellation_token: tokio_util::sync::CancellationToken,
+        cancellation_token: CancellationToken,
     ) -> Self {
         let update_refusal = match (&parent_context, update_refusal) {
             (Some(parent), _) => parent.update_refusal().clone(),
@@ -1438,7 +1470,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// mounted) and leaves the app's other operations running. Cancelling
     /// the app's token (`App::drop_app`) or the global one (`cancel_all`)
     /// cancels it too.
-    pub fn cancellation_token(&self) -> &tokio_util::sync::CancellationToken {
+    pub(crate) fn cancellation_token(&self) -> &CancellationToken {
         &self.inner.cancellation_token
     }
 

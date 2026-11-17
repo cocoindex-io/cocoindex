@@ -1787,17 +1787,34 @@ impl<Prof: EngineProfile> Component<Prof> {
         ))
     }
 
+    /// A delete of this component inside its parent's operation.
     pub fn new_processor_context_for_delete(
         &self,
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
-        parent_ctx: Option<&ComponentProcessorContext<Prof>>,
+        parent_ctx: &ComponentProcessorContext<Prof>,
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         on_error: Option<OnError>,
     ) -> ComponentProcessorContext<Prof> {
         ComponentProcessorContext::new(
             self.clone(),
-            parent_ctx.cloned(),
+            Some(parent_ctx.clone()),
+            processing_stats,
+            host_ctx,
+            ComponentProcessingAction::new_delete(providers, on_error),
+        )
+    }
+
+    /// The root delete of an app drop: an operation of its own.
+    pub(crate) fn new_processor_context_for_drop(
+        &self,
+        providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+        processing_stats: ProcessingStats,
+        host_ctx: Arc<Prof::HostCtx>,
+        on_error: Option<OnError>,
+    ) -> ComponentProcessorContext<Prof> {
+        ComponentProcessorContext::new_for_drop(
+            self.clone(),
             processing_stats,
             host_ctx,
             ComponentProcessingAction::new_delete(providers, on_error),

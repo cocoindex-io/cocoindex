@@ -45,12 +45,6 @@ class OverrideRow:
     vector: Annotated[list[float], snowflake.SnowflakeType("ARRAY")]
 
 
-class FakeObjectDoesNotExist(Exception):
-    """`snowflake.connector.errors.ProgrammingError` for a missing object."""
-
-    errno = 2003
-
-
 class FakeCursor:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[Any, ...] | None]] = []
@@ -399,6 +393,7 @@ def test_show_tables_is_scoped_like_the_qualified_table_name() -> None:
 def test_table_exists_compares_listed_names_exactly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    errors = pytest.importorskip("snowflake.connector.errors")
     conn = FakeConnection()
     monkeypatch.setattr(_target, "_connect", lambda config: FakeConnectionContext(conn))
     config = _connection_config()
@@ -409,13 +404,20 @@ def test_table_exists_compares_listed_names_exactly(
     conn.cursor_obj.listed_tables = ["EVENTS"]
     assert not _target._table_exists(config, key)
     # A dropped database or schema holds no table.
-    conn.cursor_obj.show_error = FakeObjectDoesNotExist("does not exist")
+    conn.cursor_obj.show_error = errors.ProgrammingError(
+        msg="does not exist or not authorized", errno=2003
+    )
     assert not _target._table_exists(config, key)
     # Any other failure is not guessed at.
-    conn.cursor_obj.show_error = RuntimeError("no current warehouse")
+    conn.cursor_obj.show_error = errors.ProgrammingError(
+        msg="no current warehouse", errno=606
+    )
+    with pytest.raises(errors.ProgrammingError):
+        _target._table_exists(config, key)
+    conn.cursor_obj.show_error = RuntimeError("connection reset")
     with pytest.raises(RuntimeError):
         _target._table_exists(config, key)
-    assert conn.close_count == 4
+    assert conn.close_count == 5
 
 
 def test_a_missing_system_table_is_created_and_its_rows_invalidated() -> None:
@@ -473,6 +475,8 @@ def test_a_table_dropped_outside_cocoindex_comes_back_with_its_rows(
     """A table `SHOW TERSE TABLES` no longer lists is created again on the next
     run, with all its rows: the rows of child components that would otherwise
     be skipped as unchanged too."""
+    # `_table_exists` tells a missing table by the connector's error type.
+    pytest.importorskip("snowflake.connector")
     conn = FakeConnection()
     cursor = conn.cursor_obj
     monkeypatch.setattr(_target, "_connect", lambda config: FakeConnectionContext(conn))
