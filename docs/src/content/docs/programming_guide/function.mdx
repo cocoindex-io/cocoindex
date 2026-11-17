@@ -1134,7 +1134,7 @@ Common use cases:
 
 ### Runner
 
-The `runner` <Lang only="python">parameter</Lang><Lang only="rust">argument</Lang> allows functions to execute in a specific context, such as a dedicated GPU runner that serializes GPU workloads.
+The `runner` <Lang only="python">parameter</Lang><Lang only="rust">argument</Lang> allows functions to execute in a specific context, such as the GPU runner, which limits how many calls share each GPU.
 
 <Lang only="python">
 
@@ -1149,7 +1149,7 @@ Like batching, a runner requires an async interface, so it is always set with `@
 ```python
 @coco.fn.as_async(runner=coco.GPU)
 def gpu_inference(data: bytes) -> bytes:
-    # Runs with GPU serialization
+    # Runs on the GPU runner
     return model.predict(data)
 
 # External usage: async
@@ -1184,9 +1184,22 @@ let result = whole_gpu(&ctx, item).await?;
 
 The `coco.GPU` runner:
 
-- By default, runs in-process with all functions sharing a queue for serial execution
-- Sync functions run on a dedicated GPU thread to avoid blocking the event loop
+- Takes a whole GPU per call by default; `coco.GPU(0.5)` asks for half of one, so two such calls can share a card. Inside the function, `coco.current_gpu()` returns the id of the GPU the call was given
+- Runs in-process by default. The GPU pool decides how many calls run at once: one at a time on a single GPU at the default fraction, more with several GPUs or a smaller fraction. Batched functions on the same runner also share one batch queue, so their batches follow the [`max_in_flight`](#batching) rule as well
+- Sync functions run on a dedicated GPU thread to avoid blocking the event loop. The thread cannot be interrupted, so a cancelled call keeps its GPU until the thread finishes
 - Set the environment variable `COCOINDEX_RUN_GPU_IN_SUBPROCESS=1` to run in a subprocess for GPU memory isolation
+
+:::caution[Subprocess mode]
+`coco.current_gpu()` reports the same assignment inside the subprocess as it does in-process.
+
+Each GPU gets its own workers. A call runs on an idle worker of its GPU, and a new worker starts only when all of that GPU's workers are busy, up to a cap; workers stay resident for the life of the process. Each is a separate interpreter with its own CUDA context, costing hundreds of MB of device memory before your model allocates anything, and with its own copy of any model your function caches and its own allocator cache. A fractional runner like `coco.GPU(0.25)`, which lets four calls share a card, can therefore end up with four of each on that card.
+
+`CUDA_VISIBLE_DEVICES` is not set per worker, so `cuda:{coco.current_gpu()}` names the same device as it does in-process, and a function that ignores `coco.current_gpu()` can still reach a GPU it was not assigned.
+
+Cancelling a call returns right away, but its GPU is not released until the worker finishes. A worker that has already started cannot be interrupted, so the capacity stays held; otherwise the next call would be admitted onto a card that is still busy. A worker that is still running also keeps the process from exiting until it finishes.
+
+A call whose worker dies fails with `BrokenProcessPool` and is not retried: the component fails, nothing is written or memoized for it, and the next `app.update()` retries it cleanly. Calls on other workers keep running. If a worker dies while idle, the next call on that GPU goes to another worker, unless it reaches the dead one in the moment before the death is noticed, in which case that call fails too.
+:::
 
 </Lang>
 
@@ -1232,7 +1245,7 @@ You can combine batching with a runner:
 ```python
 @coco.fn.as_async(batching=True, max_batch_size=16, runner=coco.GPU)
 def batch_gpu_embed(texts: list[str]) -> list[list[float]]:
-    # Batched execution with GPU serialization
+    # Batched execution on the GPU runner
     return gpu_model.encode(texts)
 
 # External usage: async
