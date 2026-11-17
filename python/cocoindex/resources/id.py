@@ -102,7 +102,7 @@ class IdGenerator(_coco.NotMemoKeyable):
     generator. Concurrent calls with the same `dep` (from `coco.map`,
     `asyncio.gather` or threads) reach it in scheduling order: across runs they
     get the same set of IDs, but which call gets which ID can change. When
-    a ID must stay attached to its item, give each concurrent call a `dep`
+    an ID must stay attached to its item, give each concurrent call a `dep`
     that identifies the item, or take the IDs before the concurrent work.
 
     Args:

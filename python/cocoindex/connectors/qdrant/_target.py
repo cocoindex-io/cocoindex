@@ -886,7 +886,7 @@ def _check_sparse_vector(vector: qdrant_models.SparseVector) -> str | None:
 
 def _check_point_vectors(
     point_id: _PointId,
-    vector: Any,
+    vector: qdrant_models.VectorStruct,
     vectors_def: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef,
 ) -> None:
     """Check a point's vectors against the collection schema, at declare time.
