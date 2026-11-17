@@ -382,6 +382,7 @@ dependencies = [
  "env_logger",
  "futures",
  "heed",
+ "hex",
  "indexmap 2.14.0",
  "nix",
  "page_size",
