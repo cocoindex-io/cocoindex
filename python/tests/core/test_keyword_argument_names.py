@@ -10,12 +10,19 @@ from __future__ import annotations
 import asyncio
 import datetime
 import inspect
+import itertools
+import typing
 from collections.abc import Callable
 from typing import Any
 
 import pytest
 
 import cocoindex as coco
+from cocoindex._internal.function import AsyncFunction, SyncFunction
+from cocoindex._internal.logic_propagated_to_callers import (
+    _AsyncPropagatedCallback,
+    _SyncPropagatedCallback,
+)
 from cocoindex._internal.runner import GPURunner
 
 from tests import common
@@ -233,3 +240,49 @@ def test_live_mount_each_passes_keyword_arguments_named_like_its_parameters() ->
     ).update_blocking(live=True)
 
     assert _MOUNTED == {"live mount_each": _MOUNT_KWARGS}
+
+
+def _forwarding_callables() -> dict[str, Callable[..., Any]]:
+    auto_refresh = coco.auto_refresh(_record_plain, interval=datetime.timedelta(1))
+    callables: dict[str, Callable[..., Any]] = {
+        "coco.map": coco.map,
+        "Runner.run": coco.Runner.run,
+        "Runner.run_sync_fn": coco.Runner.run_sync_fn,
+        "GPURunner.run": GPURunner.run,
+        "GPURunner.run_sync_fn": GPURunner.run_sync_fn,
+        "SyncFunction.__call__": SyncFunction.__call__,
+        "SyncFunction.as_async": SyncFunction.as_async,
+        "AsyncFunction.__call__": AsyncFunction.__call__,
+        "AsyncFunction.as_async": AsyncFunction.as_async,
+        "AsyncFunction._execute": AsyncFunction._execute,
+        "AsyncFunction._execute_orig_async_fn": AsyncFunction._execute_orig_async_fn,
+        "AsyncFunction._execute_orig_sync_fn": AsyncFunction._execute_orig_sync_fn,
+        "LiveComponentOperator.update": coco.LiveComponentOperator.update,
+        "logic_propagated_to_callers": _SyncPropagatedCallback.__call__,
+        "logic_propagated_to_callers, async": _AsyncPropagatedCallback.__call__,
+        "auto_refresh": auto_refresh.__init__,
+    }
+    for api in (coco.mount, coco.use_mount, coco.mount_each):
+        for i, overload in enumerate(typing.get_overloads(api)):
+            callables[f"coco.{api.__name__} overload {i}"] = overload
+    return callables
+
+
+def test_forwarding_callables_take_their_own_parameters_positionally() -> None:
+    """Every parameter ahead of the forwarded `*args` is positional-only.
+
+    The tests above call each path, but mypy accepts a call if any one overload
+    fits, so an overload missing its `/` would go unnoticed there.
+    """
+    nameable = {
+        name: [
+            param.name
+            for param in itertools.takewhile(
+                lambda p: p.kind is not p.VAR_POSITIONAL,
+                inspect.signature(fn).parameters.values(),
+            )
+            if param.kind is not param.POSITIONAL_ONLY
+        ]
+        for name, fn in _forwarding_callables().items()
+    }
+    assert {name: params for name, params in nameable.items() if params} == {}
