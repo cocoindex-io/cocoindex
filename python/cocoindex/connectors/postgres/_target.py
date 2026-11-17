@@ -46,7 +46,7 @@ except ImportError as e:
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
@@ -1110,10 +1110,7 @@ class _TableSpec:
 
     table_schema: TableSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
-    # Set by `mount_table_target` when the table is not in the database: if
-    # CocoIndex created it on an earlier run, it was dropped outside CocoIndex,
-    # so it is created again and all its rows are written again. Not part of
-    # the table's tracking record.
+    # See `_container.ContainerSpec`.
     missing: bool = False
 
 
@@ -1536,23 +1533,15 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         # A table CocoIndex created before that is gone now was dropped outside
         # CocoIndex: create it as if new, and invalidate its rows, which went
         # with it.
-        recreate_missing = (
-            not coco.is_non_existence(desired_state)
-            and desired_state.missing
-            and desired_state.managed_by == target.ManagedBy.SYSTEM
-            and any(
-                p.managed_by == target.ManagedBy.SYSTEM for p in prev_possible_records
-            )
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_possible_records, prev_may_be_missing
         )
-        if recreate_missing:
-            prev_possible_records = []
-            prev_may_be_missing = True
 
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
                 tracking_record,
-                prev_possible_records,
-                prev_may_be_missing,
+                recreated.prev_possible_records,
+                recreated.prev_may_be_missing,
             )
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
@@ -1570,10 +1559,10 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
         # Determine child invalidation for row-level targets.
         child_invalidation: Literal["destructive", "lossy"] | None = None
-        if recreate_missing or main_action == "replace":
+        if recreated.dropped or main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
-        elif any(statediff.may_lose_data(a) for a in column_actions.values()):
+        elif any(_container.may_lose_data(a) for a in column_actions.values()):
             # A column retyped or dropped may lose data.
             child_invalidation = "lossy"
 

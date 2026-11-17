@@ -27,7 +27,6 @@ __all__ = [
     "TrackingRecordTransition",
     "diff",
     "diff_composite",
-    "may_lose_data",
     "resolve_system_transition",
 ]
 
@@ -143,18 +142,6 @@ def resolve_system_transition(
         prev=[p.tracking_record for p in t.prev if p.managed_by == "system"],
         prev_may_be_missing=t.prev_may_be_missing,
     )
-
-
-def may_lose_data(action: DiffAction, /) -> bool:
-    """Whether applying `action` to a sub-state (a column) may lose data that
-    rows already written hold: a "replace" (a retype) or a "delete" may.
-
-    An "insert" adds what no row has written yet, and an "upsert" only ensures a
-    sub-state that the tracked rows were written with (it is planned when the
-    previous state may be missing, e.g. in a full reprocess or after an
-    interrupted run), so neither invalidates the rows.
-    """
-    return action in ("replace", "delete")
 
 
 def diff(t: TrackingRecordTransition[_TrackingRecordT] | None, /) -> DiffAction | None:

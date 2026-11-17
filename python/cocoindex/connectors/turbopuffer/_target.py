@@ -36,7 +36,7 @@ except ImportError as e:
     ) from e
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits._request_size import split_by_size
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import TypeChecker
@@ -374,13 +374,9 @@ _NAMESPACE_KEY_CHECKER = TypeChecker(tuple[str, str])
 class _NamespaceSpec:
     schema: NamespaceSchema
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
-    # Set by `mount_namespace_target` when the namespace does not exist, which
-    # it does only while it holds a document. If CocoIndex wrote rows to it on
-    # an earlier run, they were deleted outside CocoIndex (with the namespace,
-    # or one by one), so all its rows are written again. A namespace that is
-    # empty because no row is declared in it is missing too, harmlessly: no
-    # component declared a row in it to run again. Not part of the namespace's
-    # tracking record.
+    # See `_container.ContainerSpec`. A namespace exists only while it holds a
+    # document, so one emptied outside CocoIndex reads as missing too; one
+    # empty because no row is declared in it is missing harmlessly.
     missing: bool = False
 
 
@@ -467,29 +463,21 @@ class _NamespaceHandler(
         # A namespace CocoIndex wrote to before that is gone now lost its rows
         # outside CocoIndex: plan it as new (rows write it again), and
         # invalidate its rows.
-        recreate_missing = (
-            not coco.is_non_existence(desired_state)
-            and desired_state.missing
-            and desired_state.managed_by == target.ManagedBy.SYSTEM
-            and any(
-                p.managed_by == target.ManagedBy.SYSTEM for p in prev_possible_records
-            )
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_possible_records, prev_may_be_missing
         )
-        if recreate_missing:
-            prev_possible_records = []
-            prev_may_be_missing = True
 
         transition = statediff.TrackingRecordTransition(
             tracking_record,
-            prev_possible_records,
-            prev_may_be_missing,
+            recreated.prev_possible_records,
+            recreated.prev_may_be_missing,
         )
         resolved = statediff.resolve_system_transition(transition)
         main_action = statediff.diff(resolved)
 
         # Namespace replacement clears all rows.
         child_invalidation: Literal["destructive"] | None = (
-            "destructive" if recreate_missing or main_action == "replace" else None
+            "destructive" if recreated.dropped or main_action == "replace" else None
         )
 
         return coco.TargetReconcileOutput(

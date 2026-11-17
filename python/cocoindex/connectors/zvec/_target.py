@@ -53,7 +53,7 @@ except ImportError as e:
 import msgspec
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import (
@@ -754,10 +754,7 @@ class _CollectionKey(NamedTuple):
 class _CollectionSpec:
     schema: CollectionSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
-    # Set by `collection_target` when the collection's directory is not there:
-    # if CocoIndex created the collection on an earlier run, it was deleted
-    # outside CocoIndex, so it is created again and all its documents are
-    # written again. Not part of the collection's tracking record.
+    # See `_container.ContainerSpec`.
     missing: bool = False
 
 
@@ -923,21 +920,15 @@ class _CollectionHandler(
         # A collection CocoIndex created before that is gone now was deleted
         # outside CocoIndex: create it as if new, and invalidate its documents,
         # which went with it.
-        recreate_missing = (
-            not coco.is_non_existence(desired_state)
-            and desired_state.missing
-            and desired_state.managed_by == target.ManagedBy.SYSTEM
-            and any(
-                p.managed_by == target.ManagedBy.SYSTEM for p in prev_possible_records
-            )
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_possible_records, prev_may_be_missing
         )
-        if recreate_missing:
-            prev_possible_records = []
-            prev_may_be_missing = True
 
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
-                tracking_record, prev_possible_records, prev_may_be_missing
+                tracking_record,
+                recreated.prev_possible_records,
+                recreated.prev_may_be_missing,
             )
         )
         main_action = statediff.diff(resolved)
@@ -945,7 +936,7 @@ class _CollectionHandler(
         # v1 has no in-place schema evolution: any schema change rebuilds the
         # collection, which destroys all documents.
         child_invalidation: Literal["destructive"] | None = (
-            "destructive" if recreate_missing or main_action == "replace" else None
+            "destructive" if recreated.dropped or main_action == "replace" else None
         )
 
         return coco.TargetReconcileOutput(

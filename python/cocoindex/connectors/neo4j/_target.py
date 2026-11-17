@@ -76,7 +76,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits._graph_relationship_ids import (
     legacy_relation_id,
     relationship_id,
@@ -1242,7 +1242,7 @@ class _TableHandler(
         if main_action == "replace":
             # The table is rebuilt: its contents are deleted and re-declared.
             child_invalidation = "destructive"
-        elif any(statediff.may_lose_data(a) for a in column_actions.values()):
+        elif any(_container.may_lose_data(a) for a in column_actions.values()):
             # No incremental property DDL emitted in v1; treat column
             # changes as lossy so dependents re-upsert defensively.
             child_invalidation = "lossy"

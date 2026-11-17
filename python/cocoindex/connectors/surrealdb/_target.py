@@ -57,7 +57,7 @@ import numpy as np
 from surrealdb.cbor import CBORTag as _CBORTag  # type: ignore[import-untyped]
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     MappingType,
@@ -1109,11 +1109,7 @@ class _TableSpec:
     from_tables: tuple[str, ...] | None  # sorted table names for FROM clause
     to_tables: tuple[str, ...] | None  # sorted table names for TO clause
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
-    # Set by `mount_table_target` and `mount_relation_target` when the table is
-    # not in the database: if CocoIndex defined it on an earlier run, it was
-    # removed outside CocoIndex, so it is defined again (with its fields and
-    # indexes) and all its records are written again. Not part of the table's
-    # tracking record.
+    # See `_container.ContainerSpec`.
     missing: bool = False
 
 
@@ -1247,21 +1243,15 @@ class _TableHandler(
         # A table CocoIndex defined before that is gone now was removed outside
         # CocoIndex: define it as if new (with all its fields), and invalidate
         # its records, which went with it, and its indexes.
-        recreate_missing = (
-            not coco.is_non_existence(desired_state)
-            and desired_state.missing
-            and desired_state.managed_by == target.ManagedBy.SYSTEM
-            and any(
-                p.managed_by == target.ManagedBy.SYSTEM for p in prev_possible_records
-            )
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_possible_records, prev_may_be_missing
         )
-        if recreate_missing:
-            prev_possible_records = []
-            prev_may_be_missing = True
 
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
-                tracking_record, prev_possible_records, prev_may_be_missing
+                tracking_record,
+                recreated.prev_possible_records,
+                recreated.prev_may_be_missing,
             )
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
@@ -1286,9 +1276,9 @@ class _TableHandler(
             return None
 
         child_invalidation: Literal["destructive", "lossy"] | None = None
-        if recreate_missing or main_action == "replace":
+        if recreated.dropped or main_action == "replace":
             child_invalidation = "destructive"
-        elif any(statediff.may_lose_data(a) for a in column_actions.values()):
+        elif any(_container.may_lose_data(a) for a in column_actions.values()):
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(

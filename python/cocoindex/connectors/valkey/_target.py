@@ -49,7 +49,7 @@ except ImportError as e:
     ) from e
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
@@ -228,12 +228,8 @@ class _IndexAction(NamedTuple):
 class _IndexSpec:
     schema: IndexSchema
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
-    # Set by `mount_index_target` when the search index is not on the server:
-    # if CocoIndex created it on an earlier run, it was dropped outside
-    # CocoIndex (`FT.DROPINDEX`, or a flush that took the documents too), so it
-    # is rebuilt: the documents left under its prefix, if any, are purged, and
-    # all declared documents are written again. Not part of the index's
-    # tracking record.
+    # See `_container.ContainerSpec`. A dropped index is rebuilt: the documents
+    # left under its prefix, if any, are purged.
     missing: bool = False
 
 
@@ -661,14 +657,7 @@ class _IndexHandler(
         # outside CocoIndex: rebuild it, as for a schema change. Whether its
         # documents went with it or not, a rebuild leaves just the declared
         # ones.
-        if (
-            not coco.is_non_existence(desired_state)
-            and desired_state.missing
-            and desired_state.managed_by == target.ManagedBy.SYSTEM
-            and any(
-                p.managed_by == target.ManagedBy.SYSTEM for p in prev_possible_records
-            )
-        ):
+        if _container.was_dropped(desired_state, prev_possible_records):
             main_action = "replace"
 
         # Index replacement destroys all documents.
