@@ -186,6 +186,8 @@ pub use app::{
     Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle, UpdateOptions,
 };
 pub use batched::Batched;
+pub use cocoindex_core::state::component_selector::ComponentSelector;
+pub use cocoindex_core::state::stable_path::StablePath;
 pub use ctx::{ComponentMountHandle, ContextKey, Ctx};
 pub use deps::{DataDep, LogicDep, PropagatedCallback};
 pub use entity_resolution::{

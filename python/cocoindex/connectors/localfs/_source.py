@@ -169,7 +169,7 @@ class DirWalker:
         """
         if self._live:
             return _LiveDirItems(self)
-        return self._items_iter()
+        return _DirItems(self)
 
     async def _items_iter(self) -> AsyncIterator[tuple[str, File]]:
         """Async iterate over (key, file) pairs (catch-up path)."""
@@ -177,12 +177,104 @@ class DirWalker:
         async for file in self:
             yield (file.file_path.path.relative_to(root_path).as_posix(), file)
 
+    def _read_keys_sync(self, keys: list[object]) -> list[tuple[str, File]]:
+        """The files the walk would yield under these keys, found without
+        walking: each key is a path relative to the root, as the walk writes
+        it. A key the walk would not yield is left out."""
+        root_resolved = self._root_path.resolve()
+        if not root_resolved.is_dir():
+            raise ValueError(f"Path is not a directory: {root_resolved}")
+        root_stat = root_resolved.stat()
+        # The entry names of each directory read so far: a part must name an
+        # entry exactly, as the walk would list it. A case-insensitive file
+        # system would otherwise find `a.md` under the key `A.md`.
+        names: dict[Path, set[str]] = {}
+        out: list[tuple[str, File]] = []
+        for key in keys:
+            if not isinstance(key, str):
+                continue
+            relative_path = pathlib.PurePosixPath(key)
+            parts = relative_path.parts
+            if (
+                not parts
+                or relative_path.is_absolute()
+                or relative_path.as_posix() != key
+                or ".." in parts
+                or (len(parts) > 1 and not self._recursive)
+            ):
+                continue
+            file = self._read_one_sync(root_resolved, root_stat, parts, names)
+            if file is not None:
+                out.append((key, file))
+        return out
+
+    def _read_one_sync(
+        self,
+        root_resolved: Path,
+        root_stat: os.stat_result,
+        parts: tuple[str, ...],
+        names: dict[Path, set[str]],
+    ) -> File | None:
+        # Paths are built as the walk builds them (`relative_to` the resolved
+        # root), so that a file's memo key is the walk's: a Path pickles its
+        # raw segments on Python 3.13+, and `Path("a", "b")` differs there
+        # from `Path("a/b")`.
+        relative_path = root_resolved.joinpath(*parts).relative_to(root_resolved)
+        # Each directory on the way must be one the walk enters: included, and
+        # not one of its own ancestors (a symlink cycle).
+        ancestor_ids = {(root_stat.st_dev, root_stat.st_ino)}
+        current = root_resolved
+        try:
+            for i, part in enumerate(parts):
+                if current not in names:
+                    names[current] = set(os.listdir(current))
+                if part not in names[current]:
+                    return None
+                if i == len(parts) - 1:
+                    break
+                current = current / part
+                if not current.is_dir() or not self._path_matcher.is_dir_included(
+                    current.relative_to(root_resolved)
+                ):
+                    return None
+                stat = current.stat()
+                entry_id = (stat.st_dev, stat.st_ino)
+                if entry_id in ancestor_ids:
+                    return None
+                ancestor_ids.add(entry_id)
+            entry = root_resolved / relative_path
+            if not entry.is_file() or not self._path_matcher.is_file_included(
+                relative_path
+            ):
+                return None
+            stat = entry.stat()
+        except OSError:
+            return None
+        return File(self._root_path / relative_path, _stat=stat)
+
     async def __aiter__(self) -> AsyncIterator[File]:
         """Asynchronously iterate over files, yielding File objects."""
         from cocoindex.connectorkits.async_adapters import sync_to_async_iter
 
         async for file in sync_to_async_iter(lambda: self._walk_sync()):
             yield file
+
+
+class _DirItems(_AsyncIterable[tuple[str, File]]):
+    """The ``(relative_path, File)`` pairs of a walk. An update that runs only
+    some components reads just their files instead of walking the tree."""
+
+    def __init__(self, walker: DirWalker) -> None:
+        self._walker = walker
+
+    def __aiter__(self) -> AsyncIterator[tuple[str, File]]:
+        return self._walker._items_iter()
+
+    async def __coco_items_for_keys__(
+        self, keys: list[object]
+    ) -> AsyncIterator[tuple[str, File]]:
+        for item in await asyncio.to_thread(self._walker._read_keys_sync, keys):
+            yield item
 
 
 def _stop_observer(observer: object, *, join_timeout: float = 5.0) -> None:

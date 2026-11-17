@@ -1,3 +1,4 @@
+pub mod component_selector;
 pub mod stable_path;
 pub mod target_state_path;
 

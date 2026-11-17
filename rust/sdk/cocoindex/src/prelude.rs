@@ -55,6 +55,8 @@ pub use crate::{
     PreviewValue, Progress, SchemaFields, StatsGroupHandle, StatsGroupOptions, UpdateHandle,
     UpdateOptions,
 };
+pub use cocoindex_core::state::component_selector::ComponentSelector;
+pub use cocoindex_core::state::stable_path::StablePath;
 
 pub use crate::{app, function, lifespan, main, mount, mount_each, use_mount, use_mount_each};
 

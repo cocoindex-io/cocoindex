@@ -834,13 +834,25 @@ def show(
         )
 
 
+def _parse_selected_path(text: str) -> StablePath:
+    try:
+        return StablePath(_core.StablePath.parse(text))
+    except ValueError as e:
+        raise click.BadParameter(str(e), param_hint="'--select'") from e
+
+
 def _parse_stable_path(path_str: str) -> StablePath:
     """Parse a CLI stable path string into a StablePath.
 
-    Accepts formats like:
-      /"files"/"file1.txt"   (quoted parts, as displayed by StablePath.__str__)
-      /files/file1.txt       (unquoted parts)
+    Reads the path as `cocoindex show` prints it, as `--select` does:
+      /@process_file/"docs/a.md"   (a Symbol, then a string)
+    Text that is not in that form is read the older way, every part a string:
+      /files/file1.txt
     """
+    try:
+        return StablePath(_core.StablePath.parse(path_str))
+    except ValueError:
+        pass
     path = StablePath()
     # Strip leading slash
     stripped = path_str.strip("/")
@@ -1139,6 +1151,19 @@ async def _stop_all_environments() -> None:
     default=False,
     help="Compute target actions without applying them. Prints planned actions.",
 )
+@click.option(
+    "--select",
+    "select",
+    multiple=True,
+    metavar="PATH",
+    callback=lambda _ctx, _param, value: [_parse_selected_path(v) for v in value],
+    help=(
+        "Run only the component at PATH and the components below it; repeat "
+        "to run several. Write PATH as `cocoindex show` prints it, such as "
+        "'/@process_file/\"docs/a.md\"'. Other components are not run and "
+        "not treated as gone."
+    ),
+)
 def update(
     app_target: str,
     force: bool,
@@ -1147,6 +1172,7 @@ def update(
     full_reprocess: bool,
     live: bool,
     preview: bool,
+    select: list[StablePath],
 ) -> None:
     """
     Run an app in catch-up mode. With --live, run in live mode.
@@ -1157,6 +1183,9 @@ def update(
         raise click.UsageError("--preview and --reset cannot be used together.")
     if preview and live:
         raise click.UsageError("--preview and --live cannot be used together.")
+    if select and reset:
+        raise click.UsageError("--select and --reset cannot be used together.")
+    component_selector = select or None
 
     app = _load_app(app_target)
 
@@ -1173,6 +1202,7 @@ def update(
                 handle = app.update(
                     full_reprocess=full_reprocess,
                     preview=True,
+                    component_selector=component_selector,
                 )
                 started = time.monotonic()
                 actions: list[Any] = await handle.result()
@@ -1205,6 +1235,7 @@ def update(
             handle = app.update(
                 full_reprocess=full_reprocess,
                 live=live,
+                component_selector=component_selector,
             )
             if not quiet:
                 await show_progress(handle)

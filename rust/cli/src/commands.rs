@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use cocoindex::StablePath;
 use cocoindex::app::DB_PATH_ENV;
 use cocoindex::cli::protocol::{AppInfo, Event, Outcome};
 use cocoindex::connectors::gdrive;
@@ -264,6 +265,8 @@ pub struct UpdateArgs {
     pub full_reprocess: bool,
     pub live: bool,
     pub preview: bool,
+    /// The `--select` paths: run only these components and those below them.
+    pub select: Vec<StablePath>,
     pub build: BuildOpts,
 }
 
@@ -276,6 +279,11 @@ pub async fn update(args: UpdateArgs) -> CliResult<()> {
     if args.preview && args.live {
         return Err(CliError::usage(
             "--preview and --live cannot be used together.",
+        ));
+    }
+    if !args.select.is_empty() && args.reset {
+        return Err(CliError::usage(
+            "--select and --reset cannot be used together.",
         ));
     }
     let target = parse_target(args.target.as_deref())?;
@@ -298,6 +306,9 @@ pub async fn update(args: UpdateArgs) -> CliResult<()> {
         if on {
             flags.push(flag.to_string());
         }
+    }
+    for path in &args.select {
+        flags.extend(["--select".to_string(), path.to_string()]);
     }
 
     let mut renderer = Renderer::new(args.quiet || args.preview, args.live);
