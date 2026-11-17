@@ -1232,19 +1232,20 @@ async fn concurrent_preview_leaves_the_live_component_running() {
     assert_eq!(outcome, (true, false, None));
 }
 
-/// An update that selects the live component replaces it, as a second plain
-/// mount does.
+/// A one-shot update that selects the live component runs its own instance
+/// beside the running one, as a plain one-shot update does.
 #[tokio::test]
-async fn concurrent_selective_update_selecting_the_live_component_ends_the_live_update() {
+async fn concurrent_selective_update_selecting_the_live_component_leaves_it_running() {
     let outcome = second_update_during_live("conc_reached_exact", select([p(&[s("live")])])).await;
-    assert_eq!(outcome, (false, true, Some(true)));
+    assert_eq!(outcome, (true, false, None));
 }
 
-/// The same without any selector: pre-existing behavior of a second mount.
+/// The same without any selector: a one-shot update leaves a running live
+/// update alone.
 #[tokio::test]
-async fn concurrent_full_update_reaching_the_live_component_ends_the_live_update() {
+async fn concurrent_full_update_reaching_the_live_component_leaves_it_running() {
     let outcome = second_update_during_live("conc_full", UpdateOptions::default()).await;
-    assert_eq!(outcome, (false, true, Some(true)));
+    assert_eq!(outcome, (true, false, None));
 }
 
 // ---------------------------------------------------------------------------

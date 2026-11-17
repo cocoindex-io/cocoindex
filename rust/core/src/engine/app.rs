@@ -237,7 +237,7 @@ impl<Prof: EngineProfile> App<Prof> {
 
         let processing_stats = ProcessingStats::default();
         let version_rx = processing_stats.subscribe();
-        let providers = self
+        let mut providers = self
             .app_ctx()
             .env()
             .target_states_providers()
@@ -245,6 +245,14 @@ impl<Prof: EngineProfile> App<Prof> {
             .unwrap()
             .providers
             .clone();
+        // Root providers this app's runs registered at run time are not in
+        // the environment's registry; add them so their target states are
+        // reverted too.
+        for (path, provider) in self.app_ctx().run_root_providers() {
+            if !providers.contains_key(&path) {
+                providers.insert_mut(path, provider);
+            }
+        }
 
         // Install a single on_error handler that always propagates: app.drop
         // is an explicit operation, so root-delete failures (and any

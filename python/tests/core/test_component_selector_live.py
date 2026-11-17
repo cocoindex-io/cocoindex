@@ -528,23 +528,44 @@ async def test_mount_each_over_a_live_map_feed_under_a_selector(
 
 
 @pytest.mark.asyncio
-async def test_update_that_selects_a_running_live_component_replaces_it(
+async def test_one_shot_update_that_selects_a_running_live_component_runs_beside_it(
     request: pytest.FixtureRequest,
 ) -> None:
-    # As a second plain update does. The replaced update ends without an error.
-    app, running = await _start_running_live(request, "replaced")
-    await app.update(component_selector=[coco.ROOT_PATH / "live"])
-    await asyncio.wait_for(running, 5)
+    # As a plain one-shot update does: the live update keeps running.
+    app, running = await _start_running_live(request, "beside")
+    try:
+        _source.update(a=2)
+        await app.update(component_selector=[coco.ROOT_PATH / "live"])
+        assert _stored()["a"] == 2
+        _QueueLive.queue.put_nowait(("update", "late", 3))
+        assert await _wait_for(lambda: "event_done:late" in _runs)
+        assert _stored()["late"] == 3
+        assert not running.done()
+        assert _QueueLive.cancelled == []
+    finally:
+        await _stop(app, running)
 
+
+@pytest.mark.asyncio
+async def test_live_update_that_selects_a_running_live_component_replaces_it(
+    request: pytest.FixtureRequest,
+) -> None:
+    # As a second plain live update does: the running instance is cancelled,
+    # and the new one handles the events from then on.
+    app, running = await _start_running_live(request, "replaced")
     _QueueLive.started = asyncio.Event()
-    running2 = asyncio.ensure_future(app.update(live=True).result())
+    running2 = asyncio.ensure_future(
+        app.update(live=True, component_selector=[coco.ROOT_PATH / "live"]).result()
+    )
     try:
         await asyncio.wait_for(_QueueLive.started.wait(), 10)
+        assert _QueueLive.cancelled == ["cancelled"]
         _QueueLive.queue.put_nowait(("update", "late", 3))
         assert await _wait_for(lambda: "event_done:late" in _runs)
         assert _stored()["late"] == 3
     finally:
         await _stop(app, running2)
+        await _stop(app, running)
 
 
 @pytest.mark.asyncio

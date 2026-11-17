@@ -119,16 +119,21 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             component_selector,
         } = self;
 
-        // A run that applies nothing, or runs this component only to reach
-        // selected paths below, does not stand in for what is already running:
-        // a preview from a UI must not end the live update of the app it looks
-        // at. Its controller runs beside that one, uninstalled.
-        let replaces_running = parent_ctx.preview_collector().is_none()
-            && !component_selector
-                .as_ref()
-                .is_some_and(ComponentSelector::can_leave_out_children);
-
-        // 2. If existing live state, cancel and drain it (with 30s timeout).
+        // 2. An existing incarnation at this path is left alone, and the new
+        //    one runs beside it, uninstalled, in two cases:
+        //    - A run that applies nothing (a preview), or runs this component
+        //      only to reach selected paths below (a selective update), does
+        //      not stand in for what is already running: a preview from a UI
+        //      must not end the live update of the app it looks at.
+        //    - A catch-up (non-live) mount — a catch-up or preview update run
+        //      while a live update of the same app is running — leaves a
+        //      running live incarnation alone: replacing it would stop the
+        //      live update's watcher with no notice to anyone.
+        //    An incarnation running beside a running live one takes turns
+        //    with it (see `LiveComponentState::beside`) and is not installed
+        //    as the component's live state, so a later mount still finds, and
+        //    replaces, the live one. Any other existing incarnation is
+        //    cancelled and drained, with a 30s timeout.
         //
         // Without a timeout, a prior incarnation wedged in non-yielding
         // synchronous Python compute would hold the parent's
@@ -140,7 +145,17 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         // `update_full` reconciles. This trades quiescence for liveness —
         // same trade `App::drop_app` makes (see "drop_app" contract in
         // specs/live_component/design.md).
-        if replaces_running && let Some(existing_state) = child.live_state() {
+        let replaces_running = parent_ctx.preview_collector().is_none()
+            && !component_selector
+                .as_ref()
+                .is_some_and(ComponentSelector::can_leave_out_children);
+        let existing_state = child.live_state();
+        let existing_runs_live = existing_state
+            .as_ref()
+            .is_some_and(|state| state.is_running_live());
+        let leaves_existing =
+            existing_state.is_some() && (!replaces_running || (!live && existing_runs_live));
+        if let Some(existing_state) = existing_state.as_ref().filter(|_| !leaves_existing) {
             let drain_fut = existing_state.cancel_and_drain();
             if tokio::time::timeout(
                 std::time::Duration::from_secs(LIVE_COMPONENT_DRAIN_TIMEOUT_SECS),
@@ -194,9 +209,16 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         let cancellation_token = parent_ctx.app_ctx().cancellation_token().child_token();
 
         // 5. Create LiveComponentState.
+        let beside = if leaves_existing && existing_runs_live {
+            existing_state.clone()
+        } else {
+            None
+        };
         let state = Arc::new(LiveComponentState::<Prof>::new(
             readiness_guard,
             cancellation_token,
+            live,
+            beside,
         ));
 
         // 6. Install ordering (matters for drop_app race coverage):
@@ -211,8 +233,9 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         // owner exists would die on `upgrade()`. With the strong owner held
         // by `child.live_state`, the Weak in `live_components` upgrades for
         // the lifetime of the live component (or until cancel-and-drain
-        // releases the strong ref).
-        if replaces_running || child.live_state().is_none() {
+        // releases the strong ref). An incarnation running beside an existing
+        // one (step 2) is anchored by its controller alone.
+        if !leaves_existing {
             child.set_live_state(state.clone());
         }
         parent_ctx
@@ -367,12 +390,26 @@ pub struct LiveComponentState<Prof: EngineProfile> {
 
     /// JoinHandle of the tokio task running `process_live`. Set by `start()`.
     live_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+
+    /// Whether this incarnation was mounted by a live update.
+    live: bool,
+
+    /// For a catch-up incarnation mounted beside a running live one: that
+    /// live incarnation. The catch-up's `update_full` also takes the live
+    /// one's `update_full_lock` and `update_full_active` gate and waits for
+    /// its drains, so a live `update()` cannot land between the catch-up's
+    /// source listing and its commit (which would reconcile it away). A
+    /// live `update()` that arrives meanwhile queues and runs after the
+    /// catch-up's commit.
+    beside: Option<Arc<LiveComponentState<Prof>>>,
 }
 
 impl<Prof: EngineProfile> LiveComponentState<Prof> {
     pub fn new(
         readiness_guard: ComponentBgChildReadinessChildGuard,
         cancellation_token: tokio_util::sync::CancellationToken,
+        live: bool,
+        beside: Option<Arc<LiveComponentState<Prof>>>,
     ) -> Self {
         Self {
             update_full_lock: tokio::sync::Mutex::new(()),
@@ -385,7 +422,24 @@ impl<Prof: EngineProfile> LiveComponentState<Prof> {
             ready_notify: tokio::sync::Notify::new(),
             cancellation_token,
             live_task: Mutex::new(None),
+            live,
+            beside,
         }
+    }
+
+    /// Whether this is a live update's incarnation whose `process_live`
+    /// may still be following its source: it is not cancelled, and its task
+    /// has not finished. (Before `start()` sets the task, a mounted live
+    /// incarnation is about to run, so it counts as running.)
+    fn is_running_live(&self) -> bool {
+        self.live
+            && !self.cancellation_token.is_cancelled()
+            && !self
+                .live_task
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|task| task.is_finished())
     }
 
     pub fn cancellation_token(&self) -> &tokio_util::sync::CancellationToken {
@@ -672,6 +726,12 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         on_error: Option<OnError>,
     ) -> Result<()> {
         let _full_guard = self.state.update_full_lock.lock().await;
+        // A catch-up incarnation beside a running live one also holds the
+        // live one's lock (always after its own: one lock order).
+        let _beside_full_guard = match &self.state.beside {
+            Some(live) => Some(live.update_full_lock.lock().await),
+            None => None,
+        };
 
         // Step-1 cancellation gate (mirrors design.md Section "update_full
         // body, step 1"). Avoids paying drain cost on a cancelled controller.
@@ -683,12 +743,16 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // observing it know to gate themselves before promoting queued ops.
         // Use an RAII guard so we always clear it on every exit path.
         let _active_guard = UpdateFullActiveGuard::new(&self.state);
+        let _beside_active_guard = self.state.beside.as_deref().map(UpdateFullActiveGuard::new);
 
         // Wait until no subpath has `processing == true`. We allow queued
         // ops to remain — they'll be re-collapsed to `Superseded` once
         // process() completes, since `update_full` re-derives all subpaths
         // authoritatively.
         self.state.wait_until_quiescent().await;
+        if let Some(live) = &self.state.beside {
+            live.wait_until_quiescent().await;
+        }
 
         // Now run process() via run_in_background. Errors from process() are
         // routed via `on_error` (parent's exception handler chain), matching
