@@ -26,7 +26,7 @@ coco_env = common.create_test_env(__file__)
 _KWARGS: dict[str, int] = {
     name: i
     for i, name in enumerate(
-        ["self", "fn", "async_ctx", "processor_fn", "items", "subpath", "env", "path"]
+        ["self", "fn", "async_ctx", "processor_fn", "items", "subpath"]
     )
 }
 
@@ -59,7 +59,9 @@ _FUNCTIONS: dict[str, Callable[[], Callable[..., Any]]] = {
     "sync, memo": lambda: coco.fn(memo=True)(_echo),
     "async": lambda: coco.fn(_aecho),
     "async, memo": lambda: coco.fn(memo=True)(_aecho),
-    "as_async": lambda: coco.fn.as_async(_echo),
+    "coco.fn.as_async": lambda: coco.fn.as_async(_echo),
+    "sync, .as_async()": lambda: coco.fn(_echo).as_async,
+    "async, .as_async()": lambda: coco.fn(_aecho).as_async,
     "GPU runner": lambda: coco.fn.as_async(runner=GPURunner(fraction=1.0))(_echo),
     "GPU runner, async": lambda: (
         coco.fn.as_async(runner=GPURunner(fraction=1.0))(_aecho)
@@ -205,3 +207,29 @@ def test_mount_apis_pass_keyword_arguments_named_like_their_parameters() -> None
         for api in ["use_mount", "mount", "mount_each", "map", "auto_refresh"]
     }
     assert returned == {"use_mount": _MOUNT_KWARGS, "map": [_MOUNT_KWARGS]}
+
+
+class _Feed:
+    """A `LiveMapFeed` that delivers one item, then is ready."""
+
+    async def watch(
+        self, subscriber: coco.LiveMapSubscriber[coco.StableKey, str]
+    ) -> None:
+        await (await subscriber.update("k", "live mount_each")).ready()
+        await subscriber.mark_ready()
+
+
+def test_live_mount_each_passes_keyword_arguments_named_like_its_parameters() -> None:
+    """A live feed's items go through `LiveComponentOperator.update`."""
+    _MOUNTED.clear()
+
+    async def _main() -> None:
+        await coco.mount_each(
+            _record, _Feed(), self=1, fn=2, items=3, processor_fn=4, subpath=5
+        )
+
+    coco.App(
+        coco.AppConfig(name="test_kwarg_names_live", environment=coco_env), _main
+    ).update_blocking(live=True)
+
+    assert _MOUNTED == {"live mount_each": _MOUNT_KWARGS}

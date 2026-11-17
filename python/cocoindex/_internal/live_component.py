@@ -323,6 +323,7 @@ class LiveComponentOperator:
         self,
         subpath: ComponentSubpath,
         processor_fn: AnyCallable[_P, Any],
+        /,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> Any:  # Returns ComponentMountHandle

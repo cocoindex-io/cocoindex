@@ -168,7 +168,6 @@ class Function(Protocol[P, R_co]):
         self: Function[P0, R_co],
         env: Environment,
         path: core.StablePath,
-        /,
         *args: P0.args,
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]: ...
@@ -1155,7 +1154,6 @@ class SyncFunction(Function[P, R_co]):
         self: SyncFunction[P0, R_co],
         env: Environment,
         path: core.StablePath,
-        /,
         *args: P0.args,
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]:
@@ -1224,11 +1222,11 @@ class _BoundSyncMethod(Generic[SelfT]):
     def __reduce__(self) -> tuple[Any, ...]:
         return _BoundSyncMethod, (self._func, self._instance)
 
-    def __call__(self, /, *args: Any, **kwargs: Any) -> Any:
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(self._instance, *args, **kwargs)
 
     def _core_processor(
-        self, env: Environment, path: core.StablePath, /, *args: Any, **kwargs: Any
+        self, env: Environment, path: core.StablePath, *args: Any, **kwargs: Any
     ) -> core.ComponentProcessor[Any]:
         return self._func._core_processor(env, path, self._instance, *args, **kwargs)
 
@@ -1244,7 +1242,7 @@ class _BoundSyncMethod(Generic[SelfT]):
             env, path, (self._instance, *args), kwargs, deadline_context
         )
 
-    async def as_async(self, /, *args: Any, **kwargs: Any) -> Any:
+    async def as_async(self, *args: Any, **kwargs: Any) -> Any:
         """Call this bound sync method wrapped in async (runs via asyncio.to_thread)."""
         return await asyncio.to_thread(self, *args, **kwargs)
 
@@ -1313,11 +1311,11 @@ class _BoundAsyncMethod(Generic[SelfT]):
             pickle.dumps(self._instance, protocol=pickle.HIGHEST_PROTOCOL),
         )
 
-    async def __call__(self, /, *args: Any, **kwargs: Any) -> Any:
+    async def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return await self._func(self._instance, *args, **kwargs)
 
     def _core_processor(
-        self, env: Environment, path: core.StablePath, /, *args: Any, **kwargs: Any
+        self, env: Environment, path: core.StablePath, *args: Any, **kwargs: Any
     ) -> core.ComponentProcessor[Any]:
         return self._func._core_processor(env, path, self._instance, *args, **kwargs)
 
@@ -1333,14 +1331,14 @@ class _BoundAsyncMethod(Generic[SelfT]):
             env, path, (self._instance, *args), kwargs, deadline_context
         )
 
-    async def as_async(self, /, *args: Any, **kwargs: Any) -> Any:
+    async def as_async(self, *args: Any, **kwargs: Any) -> Any:
         """Call this bound async method (same as __call__)."""
         return await self(*args, **kwargs)
 
-    async def _execute_orig_async_fn(self, /, *args: Any, **kwargs: Any) -> Any:
+    async def _execute_orig_async_fn(self, *args: Any, **kwargs: Any) -> Any:
         return await self._func._execute_orig_async_fn(self._instance, *args, **kwargs)
 
-    def _execute_orig_sync_fn(self, /, *args: Any, **kwargs: Any) -> Any:
+    def _execute_orig_sync_fn(self, *args: Any, **kwargs: Any) -> Any:
         return self._func._execute_orig_sync_fn(self._instance, *args, **kwargs)
 
     @staticmethod
@@ -1962,7 +1960,6 @@ class AsyncFunction(Function[P, R_co]):
         self,
         env: Environment,
         path: core.StablePath,
-        /,
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> core.ComponentProcessor[R_co]:
