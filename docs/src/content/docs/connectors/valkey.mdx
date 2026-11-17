@@ -373,7 +373,7 @@ index.declare_document(
 
 - `document` — A `valkey.Document` containing:
   - `id` — Document ID (string)
-  - `vector` — Vector data (list of floats or numpy array)
+  - `vector` — Vector data (list of floats or numpy array), stored as float32. It must have the index's dimension and finite elements within the float32 range: the search module stores a hash whose vector it cannot read but never indexes it, so `declare_document` raises a `ValueError` instead.
   - `payload` — Optional metadata dict (values must be str, int, or float). The key `vector` is reserved for the vector field (see [Data storage](#data-storage)), so a payload with that key raises a `ValueError`.
 
 </Lang>
@@ -478,12 +478,12 @@ impl<'a> VectorDef<'a> {
 
 <Lang only="python">
 
-The `schema` field of `VectorDef` accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema` to specify the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
+The `schema` field of `VectorDef` accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema` to specify the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details. The index always stores float32 vectors, so a dtype change alone keeps the index and its documents.
 
 </Lang>
 <Lang only="rust">
 
-The `schema` field of `VectorDef` borrows a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider) to specify the vector dimension and dtype: an explicit `&VectorSchema::f32(n)` or a reference to an embedder. For an embedder held in the context, pass `ctx.get_key(&EMBEDDER)?`. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
+The `schema` field of `VectorDef` borrows a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider) to specify the vector dimension and dtype: an explicit `&VectorSchema::f32(n)` or a reference to an embedder. For an embedder held in the context, pass `ctx.get_key(&EMBEDDER)?`. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details. The index always stores `f32` vectors, so an element-type change alone keeps the index and its documents.
 
 </Lang>
 

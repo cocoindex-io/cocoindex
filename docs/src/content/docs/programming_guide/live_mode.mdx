@@ -53,6 +53,8 @@ handle.result().await?;
 
 `app.update_with_options(options, body).await?` is the form without a handle.
 
+To end a live update and keep what it synced, call `handle.cancel()` (or `handle.cancel_handle().cancel()` from another task): the watchers stop, `handle.result()` returns `Error::Cancelled`, and nothing is reverted, so the next update goes on from the stored state. Dropping the handle does not stop the update.
+
 </Fragment>
 </LangTabs>
 

@@ -178,29 +178,23 @@ The `neo4j` connector provides target state APIs for writing nodes to node table
 
 The record writes of all tables of one database are applied together, in batches. Within a batch, writes are ordered as **node upserts → relation upserts → relation deletes → node deletes** so dependent edges always see their endpoints. A batch is applied in Neo4j transactions of at most 1,000 record writes each, one after the other. A transaction that fails rolls back, and the components of the batch are retried; earlier transactions of the batch stay committed, which is safe because the writes are idempotent (`MERGE`). A transaction that fails with a transient error (typically a deadlock between concurrent writers merging edges onto the same nodes) is retried with backoff, up to 8 attempts, before the failure is reported. A transaction that goes over the server's transaction memory limit is split in two instead.
 
+A node that is no longer declared is deleted only when no relationship touches it. A node that a relationship still touches (one still declared, or one CocoIndex doesn't manage) stays, reduced to its primary key: its other properties are removed. That is the node a relationship upsert MERGEs for an endpoint no node declaration covers, so the graph stays what a fresh build of the current declarations would write. Declared again, the node gets its properties back, its relationships intact. As relation deletes run before node deletes, a node that goes together with the relationships touching it, in one processing component, is deleted outright. When a relationship goes in a later update than its endpoint, or in another processing component whose changes apply after the node's, the endpoint stays behind, holding only its primary key.
+
 <Lang only="rust">
 
 Within a transaction, the records of one statement shape (the node upserts of one label, the edge upserts of one relationship type and endpoint labels, and so on) are written by one `UNWIND $rows AS row …` statement.
 
 </Lang>
 
-<Lang only="python">
-
 :::note
 The node and relationship APIs below replace the table and relation APIs (`mount_table_target`, `mount_relation_target`, …), which are deprecated. To move an existing table over, see [Deprecated: table and relation APIs](#deprecated-table-and-relation-apis).
 :::
-
-</Lang>
-
-<RustNote>
-The Rust functions keep the names `mount_table_target` / `TableTarget` and `mount_relation_target` / `RelationTarget`. They have the semantics of Python's node and relationship APIs (`mount_node_target`, `mount_relationship_target`), not of Python's deprecated table and relation APIs: a node table and a relationship table live in separate key spaces, so a label and a relationship type may share a name, and a derived edge id has the length-prefixed form described under [Relationships](#relationships-child-states). The Rust SDK has no deprecated API.
-</RustNote>
 
 ### Declaring target states
 
 #### Node tables (parent state)
 
-Declares a node label as a target state. Returns a <Lang only="python">`NodeTarget`</Lang><Lang only="rust">`TableTarget`</Lang> for declaring nodes.
+Declares a node label as a target state. Returns a `NodeTarget` for declaring nodes.
 
 {/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro) */}
 <LangTabs>
@@ -221,23 +215,23 @@ def declare_node_target(
 <Fragment slot="rust">
 
 ```rust
-pub fn declare_table_target(
+pub fn declare_node_target(
     ctx: &Ctx,
     graph: &ContextKey<neo4j::Graph>,
     table_name: impl Into<String>,
     schema: TableSchema,
-) -> Result<TableTarget>
+) -> Result<NodeTarget>
 
-pub fn declare_table_target_with_options(
+pub fn declare_node_target_with_options(
     ctx: &Ctx,
     graph: &ContextKey<neo4j::Graph>,
     table_name: impl Into<String>,
     schema: TableSchema,
     options: ManagedTargetOptions,
-) -> Result<TableTarget>
+) -> Result<NodeTarget>
 ```
 
-`declare_table_target` declares the table in the current component; its records resolve when the component commits. `mount_table_target` and `mount_table_target_with_options` take the same arguments, are `async`, and return a target whose records can be declared at once.
+`declare_node_target` declares the table in the current component; its nodes resolve when the component commits. `mount_node_target` and `mount_node_target_with_options` take the same arguments, are `async`, and return a target whose nodes can be declared at once.
 
 </Fragment>
 </LangTabs>
@@ -263,7 +257,7 @@ pub fn declare_table_target_with_options(
 - `schema` — The table schema (see [Table schema: from a row struct](#table-schema-from-a-row-struct)). It names the single primary-key property; compound primary keys are not supported. `TableSchema::from_row::<Row>("id")?` derives the columns from a row struct, and `TableSchema::schemaless("id")?` declares no columns. The schema participates in CocoIndex's fingerprint (so two flows declaring the same label must agree); no per-property type DDL is emitted.
 - `options` — `ManagedTargetOptions::user_managed()` assumes the table exists; the default (`ManagedTargetOptions::default()`) lets CocoIndex manage its lifecycle.
 
-**Returns:** A `TableTarget`. A `TableTarget` serializes to its stable key (the graph's context key and the label), so it can be an argument of `mount!`, `use_mount!`, `mount_each!` and memoized functions.
+**Returns:** A `NodeTarget`. A `NodeTarget` serializes to its stable key (the graph's context key and the label), so it can be an argument of `mount!`, `use_mount!`, `mount_each!` and memoized functions.
 
 </Lang>
 
@@ -277,7 +271,7 @@ Once a `NodeTarget` is resolved, declare nodes to be upserted (translated to `ME
 
 <Lang only="rust">
 
-Once a `TableTarget` is resolved, declare nodes to be upserted (translated to `UNWIND $rows AS row MERGE (n:Label {pk: row.key}) SET n += row.props`):
+Once a `NodeTarget` is resolved, declare nodes to be upserted (translated to `UNWIND $rows AS row MERGE (n:Label {pk: row.key}) SET n += row.props`):
 
 </Lang>
 
@@ -297,17 +291,16 @@ def NodeTarget.declare_record(
 <Fragment slot="rust">
 
 ```rust
-pub fn TableTarget::declare_record<R: serde::Serialize>(
+pub fn NodeTarget::declare_record<R: serde::Serialize>(
     &self,
     ctx: &Ctx,
-    id: impl IntoStableKey,
     row: &R,
 ) -> Result<()>
 ```
 
-The node's primary-key value is passed as `id` (a `&str`, `String`, `i64` or `u64`) and the row serializes to the node's properties with serde.
+The row serializes to the node's properties with serde, and its primary-key field keys the node. The key must be a string or an integer: a row without it, or with a null, a float or any other value there, fails the declaration.
 
-A row that also carries the primary-key field must hold the same value as `id` (a null counts as absent), or the declaration fails. A property value must be a primitive or a list of primitives: a map, a list holding a null or a map, an integer beyond `i64`, or a NaN or infinite float fails the declaration before anything is written.
+A property value must be a primitive or a list of primitives: a map, a list holding a null or a map, an integer beyond `i64`, or a NaN or infinite float fails the declaration before anything is written.
 
 </Fragment>
 </LangTabs>
@@ -324,7 +317,7 @@ A row that also carries the primary-key field must hold the same value as `id` (
 
 #### Relationship tables (parent state)
 
-Declares a relationship type as a target state. Returns a <Lang only="python">`RelationshipTarget`</Lang><Lang only="rust">`RelationTarget`</Lang> for declaring edges.
+Declares a relationship type as a target state. Returns a `RelationshipTarget` for declaring edges.
 
 {/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro) */}
 <LangTabs>
@@ -347,35 +340,35 @@ def declare_relationship_target(
 <Fragment slot="rust">
 
 ```rust
-pub fn declare_relation_target(
+pub fn declare_relationship_target(
     ctx: &Ctx,
     graph: &ContextKey<neo4j::Graph>,
-    relation_name: impl Into<String>,
-    from_table: &TableTarget,
-    to_table: &TableTarget,
-) -> Result<RelationTarget>
+    table_name: impl Into<String>,
+    from_table: &NodeTarget,
+    to_table: &NodeTarget,
+) -> Result<RelationshipTarget>
 
-pub fn declare_relation_target_with_schema(
+pub fn declare_relationship_target_with_schema(
     ctx: &Ctx,
     graph: &ContextKey<neo4j::Graph>,
-    relation_name: impl Into<String>,
-    from_table: &TableTarget,
-    to_table: &TableTarget,
+    table_name: impl Into<String>,
+    from_table: &NodeTarget,
+    to_table: &NodeTarget,
     schema: TableSchema,
-) -> Result<RelationTarget>
+) -> Result<RelationshipTarget>
 
-pub fn declare_relation_target_with_options(
+pub fn declare_relationship_target_with_options(
     ctx: &Ctx,
     graph: &ContextKey<neo4j::Graph>,
-    relation_name: impl Into<String>,
-    from_table: &TableTarget,
-    to_table: &TableTarget,
+    table_name: impl Into<String>,
+    from_table: &NodeTarget,
+    to_table: &NodeTarget,
     schema: TableSchema,
     options: ManagedTargetOptions,
-) -> Result<RelationTarget>
+) -> Result<RelationshipTarget>
 ```
 
-Without a schema the relationship is schemaless and keyed by its `id` property. A schema names the primary key: `TableSchema::from_row::<Edge>("edge_id")?` or `TableSchema::schemaless("edge_id")?`. Each function has an `async` `mount_relation_target*` twin with the same arguments, whose edges can be declared at once.
+Without a schema the relationship is schemaless and keyed by its `id` property. A schema names the primary key: `TableSchema::from_row::<Edge>("edge_id")?` or `TableSchema::schemaless("edge_id")?`. Each function has an `async` `mount_relationship_target*` twin with the same arguments, whose edges can be declared at once.
 
 </Fragment>
 </LangTabs>
@@ -399,19 +392,19 @@ Without a schema the relationship is schemaless and keyed by its `id` property. 
 <Lang only="rust">
 
 - `graph` — The context key of the `neo4j::Graph`.
-- `relation_name` — The Cypher relationship type (e.g. `"ATTENDED"`). Same naming rule as a node label: no `__`, no trailing `_`. A node label and a relationship type may share a name.
+- `table_name` — The Cypher relationship type (e.g. `"ATTENDED"`). Same naming rule as a node label: no `__`, no trailing `_`. A node label and a relationship type may share a name.
 - `from_table` — The node table whose nodes are the *source* endpoints of edges in this relationship.
 - `to_table` — The node table whose nodes are the *target* endpoints of edges in this relationship.
 - `schema` — The schema for the relationship's own properties; its primary key uniquely identifies each edge. Without it, the edges are keyed by the `id` property.
 - `options` — `ManagedTargetOptions::user_managed()` assumes the relationship type exists; the default lets CocoIndex manage its lifecycle.
 
-**Returns:** A `RelationTarget`, which serializes to its stable key like a `TableTarget`.
+**Returns:** A `RelationshipTarget`, which serializes to its stable key like a `NodeTarget`.
 
 </Lang>
 
 #### Relationships (child states)
 
-Once a <Lang only="python">`RelationshipTarget`</Lang><Lang only="rust">`RelationTarget`</Lang> is resolved, declare edges. Each declaration MERGEs the source endpoint, the target endpoint, then the relationship.
+Once a `RelationshipTarget` is resolved, declare edges. Each declaration MERGEs the source endpoint, the target endpoint, then the relationship.
 
 {/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro) */}
 <LangTabs>
@@ -431,14 +424,14 @@ def RelationshipTarget.declare_relationship(
 <Fragment slot="rust">
 
 ```rust
-pub fn RelationTarget::declare_relation(
+pub fn RelationshipTarget::declare_relationship(
     &self,
     ctx: &Ctx,
     from_id: impl IntoStableKey,
     to_id: impl IntoStableKey,
 ) -> Result<()>
 
-pub fn RelationTarget::declare_relation_record<R: serde::Serialize>(
+pub fn RelationshipTarget::declare_relationship_record<R: serde::Serialize>(
     &self,
     ctx: &Ctx,
     from_id: impl IntoStableKey,
@@ -447,7 +440,7 @@ pub fn RelationTarget::declare_relation_record<R: serde::Serialize>(
 ) -> Result<()>
 ```
 
-`declare_relation` declares an edge without properties. `declare_relation_record` adds the properties of `record`; a record that carries the primary key is keyed by it (a string or an integer), otherwise the id is derived from the endpoints.
+`declare_relationship` declares an edge without properties. `declare_relationship_record` adds the properties of `record`; a record that carries the primary key is keyed by it (a string or an integer), otherwise the id is derived from the endpoints.
 
 </Fragment>
 </LangTabs>
@@ -456,15 +449,15 @@ pub fn RelationTarget::declare_relation_record<R: serde::Serialize>(
 
 - `from_id` — The source node's primary-key value. The connector MERGEs `(s:FromLabel {pk: $from_id})` so endpoints are auto-created if absent.
 - `to_id` — The target node's primary-key value. Same MERGE behavior.
-- `record` — <Lang only="python">Optional row object whose fields populate the relationship's properties.</Lang><Lang only="rust">The row whose fields populate the relationship's properties (`declare_relation_record` only).</Lang> Its primary key field, if present, is the edge's id.
+- `record` — <Lang only="python">Optional row object whose fields populate the relationship's properties.</Lang><Lang only="rust">The row whose fields populate the relationship's properties (`declare_relationship_record` only).</Lang> Its primary key field, if present, is the edge's id.
 
-If <Lang only="python">`record` is omitted</Lang><Lang only="rust">the edge is declared with `declare_relation`</Lang> or the record has no primary key value, the connector derives the edge id from its endpoints: the source label, source id, target label and target id, each written as `<UTF-8 byte length>:<value>;`. For example, an edge from `Person` `"alice"` to `Task` `42` gets the id `6:Person;5:alice;4:Task;2:42;`. A string id that reads as an integer, or that starts with `s:`, is written with an `s:` prefix, so the ids `1` and `"1"` never share an edge. <Lang only="python">Endpoint ids must then be `int` or `str`; for other types, pass a `record` that carries the primary key.</Lang>
+If <Lang only="python">`record` is omitted</Lang><Lang only="rust">the edge is declared with `declare_relationship`</Lang> or the record has no primary key value, the connector derives the edge id from its endpoints: the source label, source id, target label and target id, each written as `<UTF-8 byte length>:<value>;`. For example, an edge from `Person` `"alice"` to `Task` `42` gets the id `6:Person;5:alice;4:Task;2:42;`. A string id that reads as an integer, or that starts with `s:`, is written with an `s:` prefix, so the ids `1` and `"1"` never share an edge. <Lang only="python">Endpoint ids must then be `int` or `str`; for other types, pass a `record` that carries the primary key.</Lang>
 
 An edge id names one edge. When the endpoints of an edge with an explicit id change, the edge moves: the upsert deletes the relationship of this type with the same id between the old endpoints. To find it, every upsert looks the edge up by its primary key property. A system-managed relationship table has an index on it; for a user-managed table, create one yourself.
 
 #### Vector indexes (attachment)
 
-Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a <Lang only="python">`NodeTarget`</Lang><Lang only="rust">`TableTarget`</Lang>:
+Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `NodeTarget`:
 
 {/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro); usage in rust/sdk/cocoindex/tests/graph_target.rs */}
 <LangTabs>
@@ -485,7 +478,7 @@ def NodeTarget.declare_vector_index(
 <Fragment slot="rust">
 
 ```rust
-pub fn TableTarget::declare_vector_index(
+pub fn NodeTarget::declare_vector_index(
     &self,
     ctx: &Ctx,
     field: &str,
@@ -493,7 +486,7 @@ pub fn TableTarget::declare_vector_index(
     metric: VectorMetric,
 ) -> Result<()>
 
-pub fn TableTarget::declare_vector_index_named(
+pub fn NodeTarget::declare_vector_index_named(
     &self,
     ctx: &Ctx,
     name: &str,
@@ -509,7 +502,7 @@ For example, from the graph target test:
 people.declare_vector_index_named(ctx, "person_embedding", "embedding", 3, VectorMetric::Cosine)?;
 ```
 
-`VectorMetric::Cosine` and `VectorMetric::Euclidean` are the Neo4j metrics; `VectorMetric::InnerProduct` is FalkorDB-only and fails on Neo4j. The Rust `TableTarget` also has `declare_node_index(ctx, &["name"])`, which declares a plain secondary index on the listed properties.
+`VectorMetric::Cosine` and `VectorMetric::Euclidean` are the Neo4j metrics; `VectorMetric::InnerProduct` is FalkorDB-only and fails on Neo4j. The Rust `NodeTarget` also has `declare_node_index(ctx, &["name"])`, which declares a plain secondary index on the listed properties.
 
 </Fragment>
 </LangTabs>
@@ -785,15 +778,15 @@ use cocoindex::connectors::neo4j::{ColumnDef, TableSchema};
 
 let schema = TableSchema::new(
     [
-        ("filename", ColumnDef::new("STRING")),
-        ("title", ColumnDef::new("STRING")),
-        ("summary", ColumnDef::new("STRING").nullable()),
+        ("filename", ColumnDef::new("STRING").not_null()),
+        ("title", ColumnDef::new("STRING").not_null()),
+        ("summary", ColumnDef::new("STRING")),
     ],
     "filename",
 )?;
 ```
 
-`ColumnDef::new(cypher_type)` takes the Neo4j type string (metadata only; see the table above). A column is `NOT NULL` unless `.nullable()` is called.
+`ColumnDef::new(cypher_type)` takes the Neo4j type string (metadata only; see the table above). A column is nullable, as in Python, unless `.not_null()` is called.
 
 </Fragment>
 </LangTabs>
@@ -828,7 +821,7 @@ A system-managed table owns its label or relationship type, the way a Postgres t
 
 The same teardown happens when a table's identity changes — its primary key field, or a relationship table's endpoint tables or their primary keys: the table is destroyed and recreated, and the components that declared its records are reprocessed. Its vector indexes are dropped and created again. Attaching a schema or changing a property type does not rebuild the table; at most the records are re-upserted.
 
-When <Lang only="python">`managed_by="user"` is set</Lang><Lang only="rust">a table is user-managed</Lang>, the connector skips DDL entirely (you're responsible for creating and dropping the schema) and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.<Lang only="rust"> Pass `ManagedTargetOptions::user_managed()` to `mount_table_target_with_options` or `mount_relation_target_with_options`.</Lang>
+When <Lang only="python">`managed_by="user"` is set</Lang><Lang only="rust">a table is user-managed</Lang>, the connector skips DDL entirely (you're responsible for creating and dropping the schema) and never bulk-deletes: when the table is no longer declared or the app is dropped, its nodes or relationships are left as-is (see [Destroy vs. Abandon](../programming_guide/target_state#how-cocoindex-syncs-target-states)). Record-level upserts and deletes still work while the table is declared.<Lang only="rust"> Pass `ManagedTargetOptions::user_managed()` to `mount_node_target_with_options` or `mount_relationship_target_with_options`.</Lang>
 
 ### Example: Node tables
 
@@ -904,7 +897,7 @@ struct Meeting {
 
 async fn build_graph(ctx: &Ctx, input_dir: &str) -> Result<()> {
     // Node table schemas are derived from the row structs.
-    let meeting_table = neo4j::mount_table_target(
+    let meeting_table = neo4j::mount_node_target(
         ctx,
         &GRAPH,
         "Meeting",
@@ -912,9 +905,9 @@ async fn build_graph(ctx: &Ctx, input_dir: &str) -> Result<()> {
     )
     .await?;
     let meeting_id = 1;
+    // The row's `id` field keys the node.
     meeting_table.declare_record(
         ctx,
-        meeting_id,
         &Meeting {
             id: meeting_id,
             note_file: "2024-01-10.md".to_string(),
@@ -1020,63 +1013,78 @@ struct AttendedRel {
 }
 
 async fn build_graph(ctx: &Ctx, input_dir: &str) -> Result<()> {
-    let meeting_table = neo4j::mount_table_target(
+    let meeting_table = neo4j::mount_node_target(
         ctx,
         &GRAPH,
         "Meeting",
         TableSchema::from_row::<Meeting>("id")?,
     )
     .await?;
-    let person_table = neo4j::mount_table_target(
+    let person_table = neo4j::mount_node_target(
         ctx,
         &GRAPH,
         "Person",
         TableSchema::from_row::<Person>("name")?,
     )
     .await?;
-    let task_table = neo4j::mount_table_target(
+    let task_table = neo4j::mount_node_target(
         ctx,
         &GRAPH,
         "Task",
         TableSchema::from_row::<Task>("description")?,
     )
     .await?;
-    // Relations are schemaless: their ids are derived from the endpoints.
+    // Relationship tables are schemaless: their ids are derived from the endpoints.
     let attended_rel =
-        neo4j::mount_relation_target(ctx, &GRAPH, "ATTENDED", &person_table, &meeting_table)
+        neo4j::mount_relationship_target(ctx, &GRAPH, "ATTENDED", &person_table, &meeting_table)
             .await?;
     let assigned_rel =
-        neo4j::mount_relation_target(ctx, &GRAPH, "ASSIGNED_TO", &person_table, &task_table)
+        neo4j::mount_relationship_target(ctx, &GRAPH, "ASSIGNED_TO", &person_table, &task_table)
             .await?;
 
     // populate ...
-    person_table.declare_record(ctx, "Alice Chen", &Person { name: "Alice Chen".to_string() })?;
-    task_table.declare_record(
-        ctx,
-        "Write the roadmap",
-        &Task { description: "Write the roadmap".to_string() },
-    )?;
-    attended_rel.declare_relation_record(
+    person_table.declare_record(ctx, &Person { name: "Alice Chen".to_string() })?;
+    task_table.declare_record(ctx, &Task { description: "Write the roadmap".to_string() })?;
+    attended_rel.declare_relationship_record(
         ctx,
         "Alice Chen",
         meeting_id,
         &AttendedRel { is_organizer: true },
     )?;
-    assigned_rel.declare_relation(ctx, "Alice Chen", "Write the roadmap")?;
+    assigned_rel.declare_relationship(ctx, "Alice Chen", "Write the roadmap")?;
     Ok(())
 }
 ```
 
-An edge with properties of its own is declared with `declare_relation_record`; one without is declared with `declare_relation`. To key edges by a property, mount the relation with `mount_relation_target_with_schema(ctx, &GRAPH, "KNOWS", &people, &people, TableSchema::from_row::<Knows>("edge_id")?)` and put the `edge_id` in the record.
+An edge with properties of its own is declared with `declare_relationship_record`; one without is declared with `declare_relationship`. To key edges by a property, mount the relationship table with `mount_relationship_target_with_schema(ctx, &GRAPH, "KNOWS", &people, &people, TableSchema::from_row::<Knows>("edge_id")?)` and put the `edge_id` in the record.
 
 </Fragment>
 </LangTabs>
 
-<Lang only="python">The `Entity` table is declared up-front (via `mount_node_target`) so its uniqueness constraint is reconciled before any `RELATIONSHIP` edge MERGEs entity endpoints.</Lang><Lang only="rust">The `Person` and `Task` tables are declared up-front (via `mount_table_target`) so their uniqueness constraints are reconciled before any edge MERGEs their endpoints.</Lang> The relationship's three-MERGE pattern (source endpoint → target endpoint → edge) means missing endpoints are auto-created — but it's good practice to declare them explicitly so deletion-cascade behavior stays predictable.
-
-<Lang only="python">
+<Lang only="python">The `Entity` table is declared up-front (via `mount_node_target`) so its uniqueness constraint is reconciled before any `RELATIONSHIP` edge MERGEs entity endpoints.</Lang><Lang only="rust">The `Person` and `Task` tables are declared up-front (via `mount_node_target`) so their uniqueness constraints are reconciled before any edge MERGEs their endpoints.</Lang> The relationship's three-MERGE pattern (source endpoint → target endpoint → edge) means missing endpoints are auto-created, holding only their primary key; declare them to give them properties.
 
 ## Deprecated: table and relation APIs
+
+<Lang only="rust">
+
+The table and relation APIs are deprecated: they are marked `#[deprecated]`, so the compiler warns where they are used, and otherwise work as before. Each is an alias of its replacement:
+
+| Deprecated | Replacement |
+|---|---|
+| `table_target`, `declare_table_target`, `mount_table_target` (and `_with_options`; return `TableTarget`) | `node_target`, `declare_node_target`, `mount_node_target` (and `_with_options`; return `NodeTarget`) |
+| `relation_target`, `declare_relation_target`, `mount_relation_target` (and `_with_schema`, `_with_options`; return `RelationTarget`) | `relationship_target`, `declare_relationship_target`, `mount_relationship_target` (and `_with_schema`, `_with_options`; return `RelationshipTarget`) |
+| `TableTarget::declare_record(ctx, id, row)` | `NodeTarget::declare_record(ctx, row)` |
+| `RelationTarget::declare_relation`, `declare_relation_record` | `RelationshipTarget::declare_relationship`, `declare_relationship_record` |
+
+The two differ in one call: `TableTarget::declare_record` takes the node's key apart from the row, and `NodeTarget::declare_record` reads it from the row's primary-key field.
+
+Unlike Python's, the Rust deprecated APIs never had other keys or edge ids than their replacements: a deprecated table and its replacement are the same target state, and their handles fingerprint the same as memoized function arguments. Switching is a rename, in one update: replace the calls, and put the key in each row that lacked it. Nothing in the database changes, and no memoized function reruns. A node whose row lacked its key is written once more, with the same properties.
+
+A `RelationshipTarget` takes `NodeTarget` endpoints, so switch a relation table together with its endpoint tables.
+
+</Lang>
+
+<Lang only="python">
 
 The table and relation APIs are deprecated. They emit a `DeprecationWarning` and otherwise work as before. Each has a replacement with the same parameters:
 

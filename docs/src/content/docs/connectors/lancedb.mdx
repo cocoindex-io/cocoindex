@@ -217,7 +217,7 @@ let app = Environment::builder()
 
 #### Tables (parent state)
 
-Declares a table as a target state. Returns a <Lang only="python">pending `TableTarget`</Lang><Lang only="rust">`LanceTableTarget` handle</Lang> for declaring rows.
+Declares a table as a target state. Returns a <Lang only="python">pending `TableTarget`</Lang><Lang only="rust">`TableTarget` handle</Lang> for declaring rows.
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/lancedb.rs */}
 <LangTabs>
@@ -242,14 +242,14 @@ pub async fn mount_table_target(
     db: &ContextKey<LanceDatabase>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
-) -> Result<LanceTableTarget>
+) -> Result<TableTarget>
 
 pub fn declare_table_target(
     ctx: &Ctx,
     db: &ContextKey<LanceDatabase>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
-) -> Result<LanceTableTarget>
+) -> Result<TableTarget>
 
 pub fn table_target(
     ctx: &Ctx,
@@ -307,13 +307,13 @@ def table_target(
 
 - `ctx` — The component's `Ctx`.
 - `db` — The `ContextKey<LanceDatabase>` identifying the connection to use.
-- `table_name` — Name of the table. It must start with an ASCII letter or `_` and contain only ASCII letters, digits and `_`.
+- `table_name` — Name of the table. LanceDB takes ASCII letters, digits, `_`, `-` and `.`; another name is an error when the table is declared.
 - `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-a-rust-struct)).
 - `options` — `_with_options` variants only. `ManagedTargetOptions::default()` lets CocoIndex manage the table lifecycle; `ManagedTargetOptions::user_managed()` assumes the table exists and never creates or drops it.
 
-**Returns:** `mount_table_target` and `declare_table_target` return a `LanceTableTarget`, ready for declaring rows. `mount_table_target` is the usual choice; `declare_table_target` is a sync form for declaring the table and its rows in the same component. `table_target` returns the raw `TargetState` for `mount_target` / `declare_target_state_with_child`.
+**Returns:** `mount_table_target` and `declare_table_target` return a `TableTarget`, ready for declaring rows. `mount_table_target` is the usual choice; `declare_table_target` is a sync form for declaring the table and its rows in the same component. `table_target` returns the raw `TargetState` for `mount_target` / `declare_target_state_with_child`.
 
-A `LanceTableTarget` is `Clone` and `Serialize`. It can be an argument of `mount!`, `use_mount!`, `mount_each!` or a memoized function: it fingerprints by its stable key, the context key name and the table name. The schema and `managed_by` are not part of that identity.
+A `TableTarget` is `Clone` and `Serialize`. It can be an argument of `mount!`, `use_mount!`, `mount_each!` or a memoized function: it fingerprints by its stable key, the context key name and the table name. The schema and `managed_by` are not part of that identity.
 
 {/* Rust: rust/sdk/cocoindex/tests/lancedb_target.rs (lancedb_table_target_is_a_mount_argument_keyed_by_its_table) */}
 
@@ -322,7 +322,7 @@ A `LanceTableTarget` is `Clone` and `Serialize`. It can be an argument of `mount
 async fn declare_row_in_component(
     ctx: &Ctx,
     id: i64,
-    table: lancedb::LanceTableTarget,
+    table: lancedb::TableTarget,
 ) -> Result<()> {
     table.declare_row(
         ctx,
@@ -343,26 +343,17 @@ cocoindex::use_mount_each!(vec![("1".to_string(), 1_i64)], |id| {
 
 </Lang>
 
-<Lang only="python">
-
 CocoIndex automatically runs LanceDB `table.optimize()` when durable table and index statistics
 cross internal maintenance thresholds, such as small fragments, deletion files, or unindexed
 index tails. This is stats-driven rather than transaction-count-driven, so it works across
 many short incremental runs as well as long-running updates.
 
-</Lang>
-
 <Lang only="rust">
 
-CocoIndex automatically runs LanceDB `table.optimize()` once every 50 applied row batches of a table
-target in a run. All row batches of a run write through one table handle, opened by the first batch
-and moved to the table's latest version before each later one.
+All row batches of a run write through one table handle, opened by the first batch and moved to
+the table's latest version before each later one.
 
 </Lang>
-
-<RustNote>
-Optimization is counted in row batches, not driven by table and index statistics as in Python. A run with fewer than 50 row batches does not optimize the table.
-</RustNote>
 
 Table optimization compacts small fragments, cleans up deletion files, and reindexes new data so
 the freshest rows are available through declared indexes; see LanceDB's
@@ -377,7 +368,7 @@ updating the table.
 
 #### Rows (child states)
 
-Once <Lang only="python">a `TableTarget` is resolved</Lang><Lang only="rust">you have a `LanceTableTarget`</Lang>, declare rows to be upserted:
+Once <Lang only="python">a `TableTarget` is resolved</Lang><Lang only="rust">you have a `TableTarget`</Lang>, declare rows to be upserted:
 
 {/* Rust: examples/rust/text_embedding_lancedb/src/main.rs */}
 <LangTabs>
@@ -395,7 +386,7 @@ def TableTarget.declare_row(
 <Fragment slot="rust">
 
 ```rust
-impl LanceTableTarget {
+impl TableTarget {
     pub fn declare_row<R: Serialize>(&self, ctx: &Ctx, row: &R) -> Result<()>
 }
 
@@ -421,7 +412,7 @@ table.declare_row(&ctx, row)?;
 
 #### Vector indexes (attachment)
 
-Declare a vector index on a vector column to accelerate similarity search. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a <Lang only="python">`TableTarget`</Lang><Lang only="rust">`LanceTableTarget`</Lang>:
+Declare a vector index on a vector column to accelerate similarity search. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a <Lang only="python">`TableTarget`</Lang><Lang only="rust">`TableTarget`</Lang>:
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/lancedb.rs */}
 <LangTabs>
@@ -447,7 +438,7 @@ def TableTarget.declare_vector_index(
 <Fragment slot="rust">
 
 ```rust
-impl LanceTableTarget {
+impl TableTarget {
     pub fn declare_vector_index(
         &self,
         ctx: &Ctx,
@@ -514,7 +505,7 @@ table.declare_vector_index(&ctx, "embedding", lancedb::VectorIndexOptions::defau
 
 #### FTS indexes (attachment)
 
-Declare a full-text search (FTS) index on a text column to enable keyword and phrase search. Like vector indexes, FTS indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a <Lang only="python">`TableTarget`</Lang><Lang only="rust">`LanceTableTarget`</Lang>:
+Declare a full-text search (FTS) index on a text column to enable keyword and phrase search. Like vector indexes, FTS indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a <Lang only="python">`TableTarget`</Lang><Lang only="rust">`TableTarget`</Lang>:
 
 {/* Rust: rust/sdk/cocoindex/src/connectors/lancedb.rs */}
 <LangTabs>
@@ -535,7 +526,7 @@ def TableTarget.declare_fts_index(
 <Fragment slot="rust">
 
 ```rust
-impl LanceTableTarget {
+impl TableTarget {
     pub fn declare_fts_index(
         &self,
         ctx: &Ctx,
@@ -670,9 +661,9 @@ Per-column overrides are builder calls on the derived schema: `with_vector_schem
 <Lang only="rust">
 
 - `T` — The row struct whose fields define table columns.
-- `primary_key` — Column names forming the primary key. A primary key value must serialize to a string or an integer.
+- `primary_key` — Column names forming the primary key. A primary key column must be `Text`, `Binary`, `Bool` or an integer type, and its name can't contain a backtick (`` ` ``); `from_row` returns an error for any other primary key column. A `UInt64` key value must be at most `i64::MAX`.
 
-Every column name must start with an ASCII letter or `_` and contain only ASCII letters, digits and `_`.
+A column name can be any non-empty text without a `.`, which LanceDB reserves for nested fields.
 
 </Lang>
 
@@ -884,11 +875,11 @@ impl TableSchema {
 
 impl ColumnDef {
     pub fn new(col_type: ColumnType) -> Self
-    pub fn nullable(self) -> Self
+    pub fn not_null(self) -> Self
 }
 ```
 
-`ColumnDef::new(col_type)` is not nullable; `.nullable()` opts in. `TableSchema::new` returns an error for an empty primary key, a primary key column that is not in `columns`, or a duplicate column.
+`ColumnDef::new(col_type)` is nullable, as in Python; `.not_null()` opts out. `TableSchema::new` returns an error for an empty primary key, a primary key column that is not in `columns` or of a type that can't be a key (see `from_row` above), a duplicate column, or a column name that is empty or contains a `.`.
 
 </Fragment>
 </LangTabs>
@@ -919,10 +910,10 @@ use cocoindex::connectors::lancedb::{ColumnDef, ColumnType, TableSchema};
 
 TableSchema::new(
     [
-        ("id", ColumnDef::new(ColumnType::Int64)),
-        ("text", ColumnDef::new(ColumnType::Text)),
-        ("summary", ColumnDef::new(ColumnType::Text).nullable()),
-        ("embedding", ColumnDef::new(ColumnType::Vector(3))),
+        ("id", ColumnDef::new(ColumnType::Int64).not_null()),
+        ("text", ColumnDef::new(ColumnType::Text).not_null()),
+        ("summary", ColumnDef::new(ColumnType::Text)),
+        ("embedding", ColumnDef::new(ColumnType::Vector(3)).not_null()),
     ],
     ["id"],
 )?

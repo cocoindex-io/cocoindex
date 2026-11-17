@@ -229,7 +229,9 @@ When you update an App, CocoIndex:
 
 Given the same logic and inputs, updates are repeatable. When logic or inputs change, only the affected parts re-execute.
 
-<Lang only="python">To watch progress beyond the `report_to_stdout` flag, the `UpdateHandle` returned by `app.update()` also exposes stats programmatically — poll with `handle.stats()` or stream with `handle.watch()`. For those structured APIs, and for splitting a run into separately-reported scopes with `coco.stats_group()`, see [Progress monitoring](../advanced_topics/progress_monitoring).</Lang><Lang only="rust">To watch progress beyond the `report_to_stdout` option, `app.start_update(app_main)` returns an `UpdateHandle` that exposes stats programmatically: poll with `handle.stats_snapshot()`, wait for a change with `handle.changed().await`, and take the value with `handle.result().await`. See [Progress monitoring](../advanced_topics/progress_monitoring).</Lang>
+<Lang only="python">To watch progress beyond the `report_to_stdout` flag, the `UpdateHandle` returned by `app.update()` also exposes stats programmatically — poll with `handle.stats()` or stream with `handle.watch()`. For those structured APIs, and for splitting a run into separately-reported scopes with `coco.stats_group()`, see [Progress monitoring](../advanced_topics/progress_monitoring).</Lang><Lang only="rust">To watch progress beyond the `report_to_stdout` option, `app.start_update(app_main)` returns an `UpdateHandle` that exposes stats programmatically: poll with `handle.stats_snapshot()`, wait for a change with `handle.changed().await`, and take the value with `handle.result().await`. See [Progress monitoring](../advanced_topics/progress_monitoring).
+
+The handle also stops the update. Call `handle.cancel()`, or `handle.cancel_handle().cancel()` from another task while one awaits `handle.result()`: the update's components and the live components it mounted stop, `result()` returns `Error::Cancelled`, and what the update already committed stays. Only that update stops; the app's other updates go on. Dropping the handle does not stop the update. A drop started with `app.start_drop_state()` stops the same way, with `DropHandle::cancel`: a drop cancelled before it clears the app's database leaves the database in place, and `app.drop_state()` finishes it later.</Lang>
 
 ### Updating part of an app
 
@@ -372,6 +374,8 @@ A plain `Environment::builder().build()` or `App::builder(name).build()` reads n
 </Fragment>
 </LangTabs>
 
+Several processes can open the same database: one can inspect it (`cocoindex ls`, `cocoindex show`) while another updates an app. Only one process at a time can update or drop a given app, though. While a process runs an update of an app (for a live update, until it stops) or drops it, an update or drop of the same app from another process fails at once with an error that names the app; it does not wait, since a live update may never end. Different apps in one database are independent, and a preview takes no lock. The lock lives in `app_locks/` under `db_path`, and the OS releases it when its process exits, crashed or not.
+
 For details on what the internal database stores and how to tune its LMDB settings (the database grows automatically; `map_size` only sets where it starts), see [Internal Storage](../advanced_topics/internal_storage).
 
 ## Lifespan (optional)
@@ -384,7 +388,7 @@ If you only need to set the database path, using the `COCOINDEX_DB` environment 
 
 ### Defining a lifespan
 
-<Lang only="python">Use the `@lifespan` decorator to register a lifespan function. By default, all apps share the same lifespan (unless you explicitly specify an app in a different [*Environment*](../advanced_topics/multiple_environments)). The function receives an `EnvironmentBuilder` for configuration and uses `yield` to separate setup from cleanup:</Lang><Lang only="rust">Mark an `async fn` with `#[cocoindex::lifespan]` to register a lifespan function. Every app opened from `Environment::from_registered()` shares the registered lifespans; an app opened from an `Environment` you build yourself is in a different [*Environment*](../advanced_topics/multiple_environments). The function receives an `EnvironmentBuilder`, configures it, and returns it:</Lang>
+<Lang only="python">Use the `@lifespan` decorator to register a lifespan function. By default, all apps share the same lifespan (unless you explicitly specify an app in a different [*Environment*](../advanced_topics/multiple_environments)). The function receives an `EnvironmentBuilder` for configuration and uses `yield` to separate setup from cleanup:</Lang><Lang only="rust">Mark an `async fn` (or a plain `fn`) with `#[cocoindex::lifespan]` to register a lifespan function. Every app opened from `Environment::from_registered()` shares the registered lifespans; an app opened from an `Environment` you build yourself is in a different [*Environment*](../advanced_topics/multiple_environments). The function receives an `EnvironmentBuilder`, configures it, and returns it:</Lang>
 
 {/* Rust: examples/rust/text_embedding/src/main.rs */}
 <LangTabs>
@@ -419,7 +423,7 @@ async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
 }
 ```
 
-Register cleanup with `builder.on_shutdown(..)`. The hooks run in reverse order of registration when the environment shuts down. `Environment::from_registered()` and the `cocoindex` CLI run every registered lifespan before they open the state database.
+A lifespan without `async` has the same signature and runs on a blocking thread, so it may block. Register cleanup with `builder.on_shutdown(..)`. The hooks run in reverse order of registration when the environment shuts down. After `Environment::shutdown`, call `Environment::from_registered()` again to start a new environment on the same state database: the lifespans run again. `Environment::from_registered()` and the `cocoindex` CLI run every registered lifespan before they open the state database.
 
 </Fragment>
 </LangTabs>
