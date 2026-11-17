@@ -4309,11 +4309,11 @@ mod tests {
     /// the app. A preview takes no lock.
     #[tokio::test]
     async fn an_update_holds_the_cross_process_app_lock() {
-        use crate::engine::app_lock::AppUpdateLockSlot;
+        use crate::engine::app_lock::AppOpLockSlot;
 
         let (app, dir) = test_app("locked_app").await;
         let db_path = dir.path().join("lmdb");
-        let other_process = AppUpdateLockSlot::new(&db_path, "locked_app");
+        let other_process = AppOpLockSlot::new(&db_path, "locked_app");
 
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let started = Arc::new(tokio::sync::Notify::new());

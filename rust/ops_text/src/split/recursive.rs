@@ -147,16 +147,11 @@ impl<'t, 's: 't> Iterator for CharPiecesIter<'t, 's> {
         if start >= self.end_pos {
             return None;
         }
-        let mut end = (start + self.piece_len).min(self.end_pos);
-        while !self.full_text.is_char_boundary(end) {
-            end -= 1;
-        }
+        let mut end = self
+            .full_text
+            .floor_char_boundary((start + self.piece_len).min(self.end_pos));
         if end == start {
-            end = start
-                + self.full_text[start..]
-                    .chars()
-                    .next()
-                    .map_or(1, char::len_utf8);
+            end = self.full_text.ceil_char_boundary(start + 1);
         }
         self.next_start_pos = end;
         Some(InternalChunk {

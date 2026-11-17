@@ -65,15 +65,11 @@ fn parse_within_read_budget(
         if offset >= bytes.len() || over_budget.get() {
             return &[];
         }
-        let mut end = (offset + PARSE_READ_CHUNK).min(bytes.len());
-        // End on a char boundary, so no chunk splits a UTF-8 sequence.
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
+        // End on a char boundary, so no chunk splits a UTF-8 sequence; a
+        // chunk shorter than one char takes that whole char.
+        let mut end = text.floor_char_boundary(offset + PARSE_READ_CHUNK);
         if end <= offset {
-            end = (offset + 1..=bytes.len())
-                .find(|&i| text.is_char_boundary(i))
-                .unwrap_or(bytes.len());
+            end = text.ceil_char_boundary(offset + 1);
         }
         read += end - offset;
         if read > budget {

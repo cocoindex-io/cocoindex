@@ -59,9 +59,9 @@ def test_second_process_update_of_the_same_app_fails_fast(
 
         env = coco.Environment(coco.Settings.from_env(db_path=db_path))
         app = coco.App(coco.AppConfig(name=_APP_NAME, environment=env), _main)
-        with pytest.raises(RuntimeError, match=f"app '{_APP_NAME}'.*another process"):
+        with pytest.raises(ValueError, match=f"app '{_APP_NAME}'.*another process"):
             app.update_blocking()
-        with pytest.raises(RuntimeError, match="another process"):
+        with pytest.raises(ValueError, match="another process"):
             app.drop_blocking()
         # Reads work while the other process updates.
         assert coco_inspect.list_stable_paths_sync(app) is not None

@@ -73,7 +73,7 @@ struct AppContextInner<Prof: EngineProfile> {
 
     /// The cross-process lock an update or drop of this app holds; see
     /// [`crate::engine::app_lock`].
-    update_lock: crate::engine::app_lock::AppUpdateLockSlot,
+    op_lock: crate::engine::app_lock::AppOpLockSlot,
 }
 
 #[derive(Clone)]
@@ -88,8 +88,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         app_reg: AppRegistration<Prof>,
         max_inflight_components: Option<usize>,
     ) -> Self {
-        let update_lock =
-            crate::engine::app_lock::AppUpdateLockSlot::new(env.db_path(), app_reg.name());
+        let op_lock = crate::engine::app_lock::AppOpLockSlot::new(env.db_path(), app_reg.name());
         Self {
             inner: Arc::new(AppContextInner {
                 env,
@@ -103,17 +102,15 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                 ),
                 live_components: parking_lot::Mutex::new(Vec::new()),
                 run_root_providers: parking_lot::Mutex::new(HashMap::new()),
-                update_lock,
+                op_lock,
             }),
         }
     }
 
     /// Take (or share this process's hold on) the cross-process lock on
     /// updating this app; see [`crate::engine::app_lock`].
-    pub(crate) fn acquire_update_lock(
-        &self,
-    ) -> Result<Arc<crate::engine::app_lock::AppUpdateLock>> {
-        self.inner.update_lock.acquire()
+    pub(crate) fn acquire_op_lock(&self) -> Result<Arc<crate::engine::app_lock::AppOpLock>> {
+        self.inner.op_lock.acquire()
     }
 
     /// Remember root providers a run registered; see `run_root_providers`.

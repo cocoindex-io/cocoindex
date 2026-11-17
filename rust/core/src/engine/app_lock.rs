@@ -26,16 +26,16 @@ use std::sync::Weak;
 
 /// Held while an update or drop of the app runs in this process; dropping the
 /// last clone releases the lock.
-pub(crate) struct AppUpdateLock {
+pub(crate) struct AppOpLock {
     _file: File,
 }
 
 /// The app's lock file and this process's hold on it, if any.
-pub(crate) struct AppUpdateLockSlot {
+pub(crate) struct AppOpLockSlot {
     app_name: String,
     db_path: PathBuf,
     path: PathBuf,
-    held: Mutex<Weak<AppUpdateLock>>,
+    held: Mutex<Weak<AppOpLock>>,
 }
 
 const LOCK_DIR: &str = "app_locks";
@@ -43,7 +43,7 @@ const LOCK_DIR: &str = "app_locks";
 /// The lock file of `app_name` under `db_path`. App names are free-form, so the
 /// file is named by a fingerprint of the name, after a sanitized prefix that
 /// keeps it recognizable.
-pub(crate) fn lock_file_path(db_path: &Path, app_name: &str) -> PathBuf {
+fn lock_file_path(db_path: &Path, app_name: &str) -> PathBuf {
     let prefix: String = app_name
         .chars()
         .map(|c| {
@@ -56,11 +56,11 @@ pub(crate) fn lock_file_path(db_path: &Path, app_name: &str) -> PathBuf {
         .take(64)
         .collect();
     let hash = Fingerprint::from_bytes(app_name.as_bytes());
-    let hex: String = hash.0.iter().map(|b| format!("{b:02x}")).collect();
+    let hex = hex::encode(hash.as_slice());
     db_path.join(LOCK_DIR).join(format!("{prefix}.{hex}.lock"))
 }
 
-impl AppUpdateLockSlot {
+impl AppOpLockSlot {
     pub(crate) fn new(db_path: &Path, app_name: &str) -> Self {
         Self {
             app_name: app_name.to_owned(),
@@ -72,7 +72,7 @@ impl AppUpdateLockSlot {
 
     /// Take the lock, or share this process's hold on it. Fails at once if
     /// another process holds it.
-    pub(crate) fn acquire(&self) -> Result<Arc<AppUpdateLock>> {
+    pub(crate) fn acquire(&self) -> Result<Arc<AppOpLock>> {
         let mut held = self.held.lock().unwrap();
         if let Some(lock) = held.upgrade() {
             return Ok(lock);
@@ -92,7 +92,7 @@ impl AppUpdateLockSlot {
                 let holder = read_holder_pid(&mut file)
                     .map(|pid| format!(" (pid {pid})"))
                     .unwrap_or_default();
-                internal_bail!(
+                client_bail!(
                     "app '{}' is being updated or dropped by another process{holder} \
                      using the database at '{}'; wait for that process to finish, \
                      or stop it, then try again",
@@ -108,7 +108,7 @@ impl AppUpdateLockSlot {
             .and_then(|()| file.seek(SeekFrom::Start(0)))
             .and_then(|_| write!(file, "{}", std::process::id()))
             .and_then(|()| file.flush());
-        let lock = Arc::new(AppUpdateLock { _file: file });
+        let lock = Arc::new(AppOpLock { _file: file });
         *held = Arc::downgrade(&lock);
         Ok(lock)
     }
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn a_held_lock_is_shared_in_process_and_refused_to_another_holder() {
         let dir = tempfile::tempdir().unwrap();
-        let slot = AppUpdateLockSlot::new(dir.path(), "app");
+        let slot = AppOpLockSlot::new(dir.path(), "app");
         let first = slot.acquire().unwrap();
         // A second operation in this process shares the hold.
         let second = slot.acquire().unwrap();
@@ -150,7 +150,7 @@ mod tests {
         // Another holder (here, a second slot with its own file description,
         // which `flock` treats like another process) is refused, and the
         // error names the app and the holder.
-        let other = AppUpdateLockSlot::new(dir.path(), "app");
+        let other = AppOpLockSlot::new(dir.path(), "app");
         let err = other.acquire().err().unwrap().to_string();
         assert!(err.contains("app 'app'"), "{err}");
         assert!(
@@ -158,7 +158,7 @@ mod tests {
             "{err}"
         );
         // A different app is not affected.
-        AppUpdateLockSlot::new(dir.path(), "other_app")
+        AppOpLockSlot::new(dir.path(), "other_app")
             .acquire()
             .unwrap();
 

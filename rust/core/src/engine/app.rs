@@ -146,8 +146,8 @@ impl<Prof: EngineProfile> App<Prof> {
     )> {
         crate::telemetry::track("app_update");
         // A preview writes nothing, so it needs no lock against other processes.
-        let update_lock = if preview_collector.is_none() {
-            Some(self.app_ctx().acquire_update_lock()?)
+        let op_lock = if preview_collector.is_none() {
+            Some(self.app_ctx().acquire_op_lock()?)
         } else {
             None
         };
@@ -205,7 +205,7 @@ impl<Prof: EngineProfile> App<Prof> {
                     root_component.wait_until_inactive().await;
                 }
                 stats_for_task.notify_terminated();
-                drop(update_lock);
+                drop(op_lock);
                 // A change refused for the selector's sake fails the update,
                 // wherever the run that refused it was (see `UpdateRefusal`).
                 match (result, update_refusal.take()) {
@@ -245,7 +245,7 @@ impl<Prof: EngineProfile> App<Prof> {
     #[instrument(name = "app.drop", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
     pub fn drop_app(&self, host_ctx: Arc<Prof::HostCtx>) -> Result<AppOpHandle<()>> {
         crate::telemetry::track("app_drop");
-        let update_lock = self.app_ctx().acquire_update_lock()?;
+        let op_lock = self.app_ctx().acquire_op_lock()?;
         // Refresh the app token if a prior operation cancelled it, so the
         // cancel below applies to a token shared with any concurrent update.
         self.app_ctx().reset_cancellation_token_if_cancelled();
@@ -308,7 +308,7 @@ impl<Prof: EngineProfile> App<Prof> {
                     _ = cancel_token.cancelled() => Err(internal_error!("Operation cancelled")),
                 };
                 stats_for_task.notify_terminated();
-                drop(update_lock);
+                drop(op_lock);
                 result
             }
             .instrument(span),
