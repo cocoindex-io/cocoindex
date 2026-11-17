@@ -30,7 +30,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cocoindex_core::engine::component::OnError;
+use cocoindex_core::engine::component::{OnError, RunCompleteness};
 use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::live_component::LiveComponentController;
 use cocoindex_core::state::stable_path::{StableKey, StablePath};
@@ -253,6 +253,14 @@ impl LiveComponentOperator {
     /// logged at error level and this returns `Ok(())`, as in the Python SDK.
     /// Register a handler that returns `Err` to make failures propagate.
     pub async fn update_full(&self) -> Result<()> {
+        self.update_full_to_completeness().await?;
+        Ok(())
+    }
+
+    /// [`Self::update_full`], returning whether the pass reached every
+    /// component under it: a failure the handlers absorbed, or one only
+    /// logged, makes it [`RunCompleteness::Incomplete`].
+    pub(crate) async fn update_full_to_completeness(&self) -> Result<RunCompleteness> {
         let instance = self.instance.clone();
         let state = self.state.clone();
         let chain = self.handler_chain.clone();
@@ -560,6 +568,11 @@ type ProcessItemFn<V> =
 pub struct LiveMapSubscriber<K, V> {
     operator: LiveComponentOperator,
     process_fn: ProcessItemFn<V>,
+    /// How the scan that ran before [`LiveMapFeed::watch`] ended; `None` when
+    /// the feed skipped it ([`LiveMapFeed::skip_initial_scan`]).
+    // Read only by feature-gated connectors (oci_object_storage today).
+    #[allow(dead_code)]
+    pub(crate) startup_scan: Option<RunCompleteness>,
     _key: PhantomData<fn() -> K>,
 }
 
@@ -783,13 +796,16 @@ where
         // A durable feed may skip the scan and replay from its committed cursor,
         // but only in live mode: in catch-up mode `watch` never runs, so a
         // skipped scan would leave every change since the last run unprocessed.
-        if !(operator.is_live() && self.feed.skip_initial_scan(&operator).await?) {
-            operator.update_full().await?;
-        }
+        let startup_scan = if operator.is_live() && self.feed.skip_initial_scan(&operator).await? {
+            None
+        } else {
+            Some(operator.update_full_to_completeness().await?)
+        };
         operator.mark_ready().await;
         let subscriber = LiveMapSubscriber {
             operator,
             process_fn: self.process_fn.clone(),
+            startup_scan,
             _key: PhantomData,
         };
         self.feed.watch(subscriber).await

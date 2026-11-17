@@ -41,6 +41,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use cocoindex_core::engine::component::RunCompleteness;
 use cocoindex_utils::fingerprint::Fingerprint;
 use rsa::RsaPrivateKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
@@ -1442,9 +1443,6 @@ pub struct OciLiveWalker {
     /// Opt-in version for skipping the startup scan on reruns (see
     /// [`OciLiveWalker::logic_version`]). `None` always scans.
     logic_version: Option<String>,
-    /// Decision recorded by `skip_initial_scan`, read by `watch` to know whether
-    /// the scan ran (so the event cutoff and version write can branch on it).
-    skip_scan: tokio::sync::Mutex<bool>,
 }
 
 /// Build a live view over an OCI bucket, driven by `events`: a [`LiveStream`]
@@ -1472,20 +1470,21 @@ pub fn list_objects_live(
         cutoff: tokio::sync::Mutex::new(0),
         watch_guard: SingleWatcherGuard::new("OciLiveWalker"),
         logic_version: None,
-        skip_scan: tokio::sync::Mutex::new(false),
     }
 }
 
 /// Committed-state key under which the live view records `logic_version` after a
-/// successful full scan, read back on a later run to decide whether the startup
-/// scan can be skipped.
+/// full scan that completed, read back on a later run to decide whether the
+/// startup scan can be skipped.
 const OCI_SCAN_VERSION_KEY: &str = "__coco_oci_scan_version__";
 
 impl OciLiveWalker {
     /// Opt into skipping the startup full scan on reruns. When set, the live view
-    /// records this version after a successful scan and, on a later run, skips the
-    /// scan if the recorded version matches — relying on the durable event stream
-    /// to replay the downtime backlog from its committed cursor.
+    /// records this version after a scan in which nothing failed (neither the
+    /// listing nor any object's processing, even when a handler absorbed the
+    /// failure) and, on a later run, skips the scan if the recorded version
+    /// matches — relying on the durable event stream to replay the downtime
+    /// backlog from its committed cursor.
     ///
     /// You MUST bump this whenever your processing logic changes (otherwise stale
     /// state is silently kept), and the stream MUST be durable (e.g. a Kafka
@@ -1607,18 +1606,18 @@ impl LiveMapFeed<String, OciFile> for OciLiveWalker {
             return Ok(false);
         };
         let stored: Option<String> = operator.read_committed_state(OCI_SCAN_VERSION_KEY).await?;
-        let skip = stored.as_deref() == Some(version.as_str());
-        *self.skip_scan.lock().await = skip;
-        Ok(skip)
+        Ok(stored.as_deref() == Some(version.as_str()))
     }
 
     async fn watch(&self, subscriber: LiveMapSubscriber<String, OciFile>) -> Result<()> {
         let _watch_token = self.watch_guard.enter()?;
-        let skip_scan = *self.skip_scan.lock().await;
-        // Record the version only after a real scan (which has already committed
-        // — `mark_ready` ran before `watch`), so a later run skips only when the
-        // bootstrap durably landed.
-        if !skip_scan && let Some(version) = &self.logic_version {
+        // Record the version only after a scan that completed (it has already
+        // committed — `mark_ready` ran before `watch`): a failure a handler
+        // absorbed leaves an object unprocessed, or unlisted, so a later run
+        // must scan again.
+        if subscriber.startup_scan == Some(RunCompleteness::Complete)
+            && let Some(version) = &self.logic_version
+        {
             subscriber
                 .write_committed_state(OCI_SCAN_VERSION_KEY, version)
                 .await?;
@@ -1626,7 +1625,7 @@ impl LiveMapFeed<String, OciFile> for OciLiveWalker {
         // In skip-scan mode there is no scan to dedupe against, so the wall-clock
         // cutoff must not fire — the durable stream replays the downtime backlog
         // and every replayed event must be processed. `i64::MIN` drops nothing.
-        let cutoff = if skip_scan {
+        let cutoff = if subscriber.startup_scan.is_none() {
             i64::MIN
         } else {
             *self.cutoff.lock().await

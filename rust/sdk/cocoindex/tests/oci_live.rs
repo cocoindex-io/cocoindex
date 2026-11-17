@@ -11,7 +11,9 @@
 //!   * an event older than the scan cutoff is dropped,
 //!   * a cross-bucket event is dropped (no `HEAD`),
 //!   * a malformed payload is skipped,
-//!   * every event is acknowledged to the stream once handled.
+//!   * every event is acknowledged to the stream once handled,
+//!   * with `logic_version`, a restart skips the scan only after one that
+//!     completed.
 //!
 //! The instance-principal tests stand in for the instance metadata service and
 //! the identity service's federation endpoint too.
@@ -26,7 +28,7 @@ use cocoindex::connectors::oci_object_storage::{
 };
 use cocoindex::resources::file::PatternFilePathMatcher;
 use cocoindex::{
-    App, LiveMapView, LiveStream, LiveStreamSubscriber, Result, UpdateOptions, async_trait,
+    App, Error, LiveMapView, LiveStream, LiveStreamSubscriber, Result, UpdateOptions, async_trait,
 };
 use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
@@ -457,6 +459,157 @@ async fn oci_live_view_scan_failure_propagates() -> Result<()> {
         result.is_err(),
         "a failed ListObjects scan should propagate as an error, got {result:?}"
     );
+    Ok(())
+}
+
+/// A `LiveStream` with no events that ends at once: a live view over it stops
+/// right after its startup (the scan or its skip, then the version write), so
+/// a test can run an app live and start it again on the same state.
+struct NoEvents;
+
+#[async_trait]
+impl LiveStream<Vec<u8>> for NoEvents {
+    async fn watch(&self, _subscriber: &dyn LiveStreamSubscriber<Vec<u8>>) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Serve a ListObjects response listing `names`.
+async fn mount_listing(server: &MockServer, names: &[&str]) {
+    let objects: Vec<_> = names
+        .iter()
+        .map(|name| json!({"name": name, "size": 1, "timeModified": "2020-01-01T00:00:00Z"}))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/n/ns/b/bucket/o"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "objects": objects })))
+        .mount(server)
+        .await;
+}
+
+/// Run `app` live over the bucket with `logic_version("v1")` until the view has
+/// started up, and return the objects processed, sorted. Processing `failing`
+/// fails, and with no handler registered the failure is logged and absorbed.
+async fn run_versioned_live(
+    app: &App,
+    client: &OciClient,
+    failing: Option<&'static str>,
+) -> Vec<String> {
+    let processed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let handle = app
+        .start_update_with_options(
+            UpdateOptions {
+                live: true,
+                ..UpdateOptions::default()
+            },
+            {
+                let processed = processed.clone();
+                let client = client.clone();
+                move |ctx| {
+                    let processed = processed.clone();
+                    let client = client.clone();
+                    async move {
+                        let feed = list_objects_live(
+                            &client,
+                            "ns",
+                            "bucket",
+                            ListOptions::default(),
+                            NoEvents,
+                        )
+                        .logic_version("v1");
+                        ctx.mount_each_live(&"objects", feed, move |_ctx, file: OciFile| {
+                            let processed = processed.clone();
+                            async move {
+                                let key = file.file_path().path().to_string();
+                                if failing == Some(key.as_str()) {
+                                    return Err(Error::engine(format!("processing {key} failed")));
+                                }
+                                processed.lock().unwrap().push(key);
+                                Ok(())
+                            }
+                        })
+                        .await
+                    }
+                }
+            },
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), handle.result())
+        .await
+        .expect("the live view did not stop after its startup")
+        .unwrap();
+    let mut processed = processed.lock().unwrap().clone();
+    processed.sort();
+    processed
+}
+
+async fn list_requests(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "GET" && r.url.path() == "/n/ns/b/bucket/o")
+        .count()
+}
+
+/// A scan in which an item fails, or the listing itself, records no version:
+/// the next start scans again and processes what the failed scan missed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oci_live_view_rescans_after_a_failed_scan() -> Result<()> {
+    let tmp = tempfile::tempdir().unwrap();
+
+    // An item fails.
+    let server = MockServer::start().await;
+    mount_listing(&server, &["a.txt", "b.txt"]).await;
+    let client = client_for(&server.uri(), &tmp.path().join("key.pem"));
+    let app = App::builder("OciLiveItemFails")
+        .db_path(tmp.path().join("item_db"))
+        .build()
+        .await?;
+    assert_eq!(
+        run_versioned_live(&app, &client, Some("b.txt")).await,
+        ["a.txt"]
+    );
+    assert_eq!(
+        run_versioned_live(&app, &client, None).await,
+        ["a.txt", "b.txt"]
+    );
+
+    // The listing fails, once.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/n/ns/b/bucket/o"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    mount_listing(&server, &["a.txt"]).await;
+    let client = client_for(&server.uri(), &tmp.path().join("key.pem"));
+    let app = App::builder("OciLiveListingFails")
+        .db_path(tmp.path().join("listing_db"))
+        .build()
+        .await?;
+    assert!(run_versioned_live(&app, &client, None).await.is_empty());
+    assert_eq!(run_versioned_live(&app, &client, None).await, ["a.txt"]);
+    Ok(())
+}
+
+/// After a scan that completed, the next start with the same version skips it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oci_live_view_skips_scan_after_a_clean_scan() -> Result<()> {
+    let server = MockServer::start().await;
+    mount_listing(&server, &["a.txt"]).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let client = client_for(&server.uri(), &tmp.path().join("key.pem"));
+    let app = App::builder("OciLiveClean")
+        .db_path(tmp.path().join("db"))
+        .build()
+        .await?;
+    assert_eq!(run_versioned_live(&app, &client, None).await, ["a.txt"]);
+    assert!(run_versioned_live(&app, &client, None).await.is_empty());
+    assert_eq!(list_requests(&server).await, 1);
     Ok(())
 }
 

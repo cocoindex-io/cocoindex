@@ -372,7 +372,7 @@ class LiveComponentController:
         self,
         processor: ComponentProcessor[Any],
         handler_callback: Callable[[BaseException], Awaitable[None]] | None = None,
-    ) -> Coroutine[Any, Any, None]: ...
+    ) -> Coroutine[Any, Any, bool]: ...
     def update_async(
         self,
         stable_path: StablePath,
