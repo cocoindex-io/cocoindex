@@ -2610,6 +2610,27 @@ def test_field_owners_refuse_a_second_owner() -> None:
         owners.claim("bob", None, {"id": "bob", "name": "Bob"})
     owners.claim("ann", "a", {})  # `a` gives `score` up
     owners.claim("ann", "c", {"score": 3})
+    # The records `1` and `"1"` are two records.
+    owners.claim(1, None, {"id": 1, "name": "One"})
+    owners.claim("1", "a", {"name": "one"})
+
+
+@requires_surrealdb
+def test_batch_response_of_an_unexpected_shape_is_refused() -> None:
+    from cocoindex.connectors.surrealdb._target import (  # type: ignore[import-untyped]
+        _moved_and_restore,
+    )
+
+    ok = {"result": [{"result": None}, {"result": [["m"], []]}, {"result": None}]}
+    assert _moved_and_restore(ok) == (["m"], [])
+    for res in [
+        {"result": [{"result": None}]},
+        {"result": [{"result": [["m"]]}, {"result": None}]},
+        {"result": [{"result": None}, {"result": None}]},
+        {"error": "boom"},
+    ]:
+        with pytest.raises(RuntimeError, match=r"unexpected shape"):
+            _moved_and_restore(res)
 
 
 # =============================================================================

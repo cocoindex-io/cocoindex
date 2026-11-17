@@ -680,6 +680,29 @@ FOR $r IN $rels {
     )
 
 
+def _moved_and_restore(res: Any) -> tuple[list[Any], list[Any]]:
+    """The ``[$moved, $restore]`` of a `_batch_surql` response: the value of its
+    statement before ``COMMIT``."""
+    statements = res.get("result") if isinstance(res, dict) else None
+    value = (
+        statements[-2].get("result")
+        if isinstance(statements, list)
+        and len(statements) >= 2
+        and isinstance(statements[-2], dict)
+        else None
+    )
+    if not (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(isinstance(v, list) for v in value)
+    ):
+        raise RuntimeError(
+            "SurrealDB answered the batch transaction with an unexpected shape; "
+            f"expected [$moved, $restore] before COMMIT, got: {res!r}"
+        )
+    return value[0], value[1]
+
+
 # The second transaction on SurrealDB 3.2: relate each moved edge (``$moved``)
 # and each edge of a deleted record (``$restore``), unless another writer
 # created it in between. A moved edge another writer created between other
@@ -832,8 +855,7 @@ class _SharedRecordApplier:
         )
         if recreate_in_transaction:
             return
-        # The value of the statement before `COMMIT`.
-        moved, restore = res["result"][-2]["result"]
+        moved, restore = _moved_and_restore(res)
         if moved or restore:
             await _query_with_retry(
                 conn, _RECREATE_EDGES_SURQL, {"moved": moved, "restore": restore}
@@ -1437,13 +1459,13 @@ class _FieldOwners:
 
     Every record declared through the target is in it, so it is kept small: a
     record's own fields as one of the few distinct field-name sets of the table,
-    keyed by a hash of the record id; the fields of field groups, which are
-    rarer, by record id.
+    shared between records. Both maps are keyed by the record id's encoding
+    (`_endpoint_id_fragment`), so ``1`` and ``"1"`` stay apart.
     """
 
     def __init__(self, table_name: str) -> None:
         self._table_name = table_name
-        self._record_fields: dict[int, frozenset[str]] = {}
+        self._record_fields: dict[str, frozenset[str]] = {}
         self._field_sets: dict[frozenset[str], frozenset[str]] = {}
         self._groups: dict[str, dict[str, frozenset[str]]] = {}
 
@@ -1453,7 +1475,7 @@ class _FieldOwners:
         names = frozenset(name for name in fields if name != "id")
         key = _endpoint_id_fragment(record_id)
         others: list[tuple[str, frozenset[str]]] = []
-        if group is not None and (own := self._record_fields.get(hash(key))):
+        if group is not None and (own := self._record_fields.get(key)):
             others.append(("the record's own declaration", own))
         for other, other_names in self._groups.get(key, {}).items():
             if other != group:
@@ -1472,7 +1494,7 @@ class _FieldOwners:
                     "when either stops declaring it"
                 )
         if group is None:
-            self._record_fields[hash(key)] = self._field_sets.setdefault(names, names)
+            self._record_fields[key] = self._field_sets.setdefault(names, names)
         else:
             self._groups.setdefault(key, {})[group] = names
 
