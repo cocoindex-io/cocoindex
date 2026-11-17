@@ -13,6 +13,10 @@ from aiomoto import mock_aws
 
 from cocoindex.connectors import amazon_s3
 from cocoindex.resources.file import PatternFilePathMatcher
+from tests.common.object_store_exclusions import (
+    EXCLUDED_DIRECTORY_CASES,
+    EXCLUSION_TEST_KEYS,
+)
 
 
 @pytest_asyncio.fixture
@@ -166,6 +170,32 @@ class TestAsyncListObjects:
         assert items[0][0] == "deep/file.txt"
         assert items[1][0] == "nested.json"
         assert isinstance(items[0][1], amazon_s3.S3File)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prefix", "excluded_patterns", "expected"), EXCLUDED_DIRECTORY_CASES
+)
+async def test_excluded_directory_excludes_the_objects_under_it(
+    prefix: str, excluded_patterns: list[str], expected: list[str]
+) -> None:
+    async with mock_aws():
+        sync_client = boto3.client("s3", region_name="us-east-1")
+        sync_client.create_bucket(Bucket="exclusion-test")
+        for key in EXCLUSION_TEST_KEYS:
+            sync_client.put_object(Bucket="exclusion-test", Key=key, Body=b"x")
+
+        session = aiobotocore.session.get_session()
+        async with session.create_client("s3", region_name="us-east-1") as client:
+            walker = amazon_s3.list_objects(
+                client,
+                "exclusion-test",
+                prefix=prefix,
+                path_matcher=PatternFilePathMatcher(
+                    excluded_patterns=excluded_patterns
+                ),
+            )
+            assert sorted([key async for key, _ in walker.items()]) == expected
 
 
 # ---------------------------------------------------------------------------

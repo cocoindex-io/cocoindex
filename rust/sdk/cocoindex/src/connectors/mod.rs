@@ -22,6 +22,12 @@ pub mod kafka;
 pub mod lancedb;
 #[cfg(feature = "neo4j")]
 pub mod neo4j;
+#[cfg(any(
+    feature = "amazon_s3",
+    feature = "azure_blob",
+    feature = "oci_object_storage"
+))]
+mod object_store;
 #[cfg(feature = "oci_object_storage")]
 pub mod oci_object_storage;
 #[cfg(any(feature = "kafka", feature = "iggy"))]

@@ -34,6 +34,7 @@ except ImportError as e:
 from cocoindex.connectorkits._object_store import (
     ObjectStoreFilePath,
     folder_prefix,
+    is_key_included,
     relative_key,
 )
 from cocoindex.resources import file
@@ -314,7 +315,7 @@ class S3Walker:
                     continue
 
                 # Apply path matcher
-                if not self._path_matcher.is_file_included(PurePath(rel_key)):
+                if not is_key_included(self._path_matcher, rel_key):
                     continue
 
                 obj_size: int = obj["Size"]

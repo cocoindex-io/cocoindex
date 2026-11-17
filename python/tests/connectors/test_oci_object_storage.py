@@ -207,6 +207,10 @@ from cocoindex.connectors.oci_object_storage._source import (  # noqa: E402
     _SCAN_VERSION_KEY,
 )
 from cocoindex.resources.file import PatternFilePathMatcher  # noqa: E402
+from tests.common.object_store_exclusions import (  # noqa: E402
+    EXCLUDED_DIRECTORY_CASES,
+    EXCLUSION_TEST_KEYS,
+)
 
 
 def _live_items(walker: OCIWalker) -> LiveMapView[str, OCIFile]:
@@ -1207,6 +1211,48 @@ async def test_oci_live_events_use_scan_keys(
     oci_client.remove("docs/sub/")
     await stream.send_event(_event("ns", "bucket", "docs/sub/"))
     assert sub.deletes == ["/a.md"]
+
+    stream.end()
+    await watch_task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prefix", "excluded_patterns", "expected"), EXCLUDED_DIRECTORY_CASES
+)
+async def test_oci_excluded_directory_excludes_the_objects_under_it(
+    oci_client: MockObjectStorageClient,
+    prefix: str,
+    excluded_patterns: list[str],
+    expected: list[str],
+) -> None:
+    """The scan and live events both skip the objects under an excluded directory."""
+    for name in EXCLUSION_TEST_KEYS:
+        oci_client.put(name, b"x")
+    stream = _ManualLiveStream()
+    walker = list_objects(
+        oci_client,
+        "ns",
+        "bucket",
+        prefix=prefix,
+        path_matcher=PatternFilePathMatcher(excluded_patterns=excluded_patterns),
+        live_stream=stream,
+    )
+    items = _live_items(walker)
+    assert sorted([key async for key, _ in items]) == expected
+
+    sub = _MockMapSubscriber()
+    watch_task = asyncio.create_task(items.watch(sub))  # type: ignore[arg-type]
+    await _drive_to_ready(stream, sub)
+
+    for name in EXCLUSION_TEST_KEYS:
+        await stream.send_event(_event("ns", "bucket", name))
+    assert sorted(key for key, _ in sub.updates) == expected
+
+    for name in EXCLUSION_TEST_KEYS:
+        oci_client.remove(name)
+        await stream.send_event(_event("ns", "bucket", name))
+    assert sorted(sub.deletes) == expected
 
     stream.end()
     await watch_task
