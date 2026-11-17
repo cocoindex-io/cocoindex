@@ -51,6 +51,7 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
+use crate::connectors::object_store::is_key_included;
 use crate::error::{Error, Result};
 use crate::live_component::{
     LiveComponentOperator, LiveMapFeed, LiveMapSubscriber, LiveMapView, LiveStream,
@@ -58,7 +59,7 @@ use crate::live_component::{
 };
 use crate::resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
-    MatchAllFilePathMatcher, decode_bytes, is_key_included,
+    MatchAllFilePathMatcher, decode_bytes,
 };
 
 /// Object metadata fields requested from the ListObjects API.

@@ -62,10 +62,11 @@ use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
+use crate::connectors::object_store::is_key_included;
 use crate::error::{Error, Result};
 use crate::resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
-    MatchAllFilePathMatcher, is_key_included,
+    MatchAllFilePathMatcher,
 };
 
 /// Blob service REST API version sent as `x-ms-version`. Bearer-token auth needs

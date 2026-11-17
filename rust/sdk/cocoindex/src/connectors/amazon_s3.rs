@@ -33,10 +33,11 @@ use serde::{Deserialize, Serialize};
 /// depending on `aws-sdk-s3` directly.
 pub use aws_sdk_s3;
 
+use crate::connectors::object_store::is_key_included;
 use crate::error::{Error, Result};
 use crate::resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
-    MatchAllFilePathMatcher, decode_bytes, is_key_included,
+    MatchAllFilePathMatcher, decode_bytes,
 };
 
 // ---------------------------------------------------------------------------
