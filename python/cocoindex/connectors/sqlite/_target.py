@@ -638,12 +638,6 @@ def _col_subkey(col_name: str) -> str:
     return f"{_COL_SUBKEY_PREFIX}{col_name}"
 
 
-def _rebuild_needed_for(spec: _TableSpec, sub_key: str) -> bool:
-    """Whether the column of `sub_key` is declared NOT NULL (see `reconcile`)."""
-    col = spec.table_schema.columns.get(sub_key[len(_COL_SUBKEY_PREFIX) :])
-    return col is not None and not col.nullable
-
-
 _TableSubTrackingRecord = _NonPkColumnTrackingRecord | None
 
 
@@ -1036,18 +1030,13 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 if action is not None:
                     column_actions[sub_key] = action
 
-        # SQLite can't add a NOT NULL column to a table with rows, nor give an
-        # existing column the constraint: a declared NOT NULL column that is
-        # added or changed rebuilds the table instead, and the rows are written
-        # again (all of them change anyway: a new column changes every row, a
-        # changed one is lossy). Before, the change failed every run ("Cannot add a NOT NULL column with default value NULL").
+        # SQLite can't add a NOT NULL column to a table with rows: rebuild it
+        # (see `_container.adds_not_null_column`).
         if (
             not coco.is_non_existence(desired_state)
             and desired_state.managed_by == target.ManagedBy.SYSTEM
-            and any(
-                action in ("insert", "replace")
-                and _rebuild_needed_for(desired_state, sub_key)
-                for sub_key, action in column_actions.items()
+            and _container.adds_not_null_column(
+                column_actions, desired_state.table_schema.columns, _COL_SUBKEY_PREFIX
             )
         ):
             main_action = "replace"

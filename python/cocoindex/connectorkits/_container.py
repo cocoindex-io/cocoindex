@@ -1,10 +1,11 @@
 """Shared reconcile logic for container target handlers (tables, collections,
-namespaces, indexes): a container dropped outside CocoIndex, and sub-state
-actions that invalidate the rows a container holds."""
+namespaces, indexes): a container dropped outside CocoIndex, sub-state
+actions that invalidate the rows a container holds, and a NOT NULL column that
+needs the table rebuilt."""
 
 from __future__ import annotations
 
-from typing import Collection, Generic, NamedTuple, Protocol, TypeVar
+from typing import Collection, Generic, Mapping, NamedTuple, Protocol, TypeVar
 
 from cocoindex._internal.typing import NonExistenceType, is_non_existence
 from cocoindex.connectorkits.statediff import DiffAction
@@ -89,3 +90,41 @@ def may_lose_data(action: DiffAction, /) -> bool:
     interrupted run), so neither invalidates the rows.
     """
     return action in ("replace", "delete")
+
+
+class _NullableColumn(Protocol):
+    @property
+    def nullable(self) -> bool: ...
+
+
+def _declared_not_null(
+    columns: Mapping[str, _NullableColumn], sub_key_prefix: str, sub_key: str
+) -> bool:
+    """Whether the column of `sub_key` is declared NOT NULL."""
+    if not sub_key.startswith(sub_key_prefix):
+        return False
+    col = columns.get(sub_key[len(sub_key_prefix) :])
+    return col is not None and not col.nullable
+
+
+def adds_not_null_column(
+    column_actions: Mapping[str, DiffAction],
+    columns: Mapping[str, _NullableColumn],
+    sub_key_prefix: str,
+) -> bool:
+    """Whether `column_actions` add a column declared NOT NULL, or change one.
+
+    For a database that can't add a NOT NULL column to a table with rows, nor
+    give an existing column the constraint (SQLite, BigQuery): when this holds,
+    the handler rebuilds the table instead ("replace"), and the rows are written
+    again. All of them change anyway: a new column changes every row, and a
+    changed one is lossy. Otherwise the change would fail on every run.
+
+    `columns` are the declared columns by name; a column's sub key is its name
+    after `sub_key_prefix`.
+    """
+    return any(
+        action in ("insert", "replace")
+        and _declared_not_null(columns, sub_key_prefix, sub_key)
+        for sub_key, action in column_actions.items()
+    )
