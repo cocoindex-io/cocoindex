@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 from cocoindex.connectorkits._object_store import (
     ObjectStoreFilePath,
     folder_prefix,
+    is_key_included,
     relative_key,
 )
 from cocoindex.resources import file
@@ -282,7 +283,7 @@ class AzureBlobWalker:
             if relative_name is None:
                 continue
 
-            if not self._path_matcher.is_file_included(PurePath(relative_name)):
+            if not is_key_included(self._path_matcher, relative_name):
                 continue
 
             blob_size = int(blob.size)

@@ -299,7 +299,7 @@ let files = walk_dir(sourcedir)
 **Parameters:**
 
 - `included_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files to include. Use `**/*.ext` to match at any depth. <Lang only="python">If `None`, all files are included.</Lang><Lang only="rust">An empty list includes all files.</Lang>
-- `excluded_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files/directories to exclude. Excluded directories are not traversed. A pattern prefixed with `!` negates the exclusion for matching paths (see below).
+- `excluded_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files/directories to exclude. Excluded directories are not traversed. In an object store (Amazon S3, Azure Blob Storage, OCI Object Storage), the folders of an object's key are its directories: excluding `logs` skips `logs/2024/a.txt`. A pattern prefixed with `!` negates the exclusion for matching paths (see below).
 
 :::note
 Patterns use [globset](https://docs.rs/globset) semantics: `*.py` matches only in the root directory; use `**/*.py` to match at any depth.
