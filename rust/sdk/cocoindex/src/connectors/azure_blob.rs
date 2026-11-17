@@ -65,7 +65,7 @@ use sha2::Sha256;
 use crate::error::{Error, Result};
 use crate::resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
-    MatchAllFilePathMatcher,
+    MatchAllFilePathMatcher, is_key_included,
 };
 
 /// Blob service REST API version sent as `x-ms-version`. Bearer-token auth needs
@@ -1219,7 +1219,7 @@ impl AzureBlobWalker {
                 let Some(relative) = relative_key(&blob_name, &self.folder) else {
                     continue;
                 };
-                if !self.path_matcher.is_file_included(&PathBuf::from(relative)) {
+                if !is_key_included(&*self.path_matcher, relative) {
                     continue;
                 }
                 let size = blob.properties.content_length;
@@ -1328,6 +1328,7 @@ struct ListedBlobProperties {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resources::file::PatternFilePathMatcher;
 
     #[test]
     fn folder_prefix_names_a_folder() {
@@ -1345,6 +1346,27 @@ mod tests {
         // A folder marker, and a blob outside the folder.
         assert_eq!(relative_key("docs/", "docs/"), None);
         assert_eq!(relative_key("docsa.md", "docs/"), None);
+    }
+
+    // An excluded directory excludes the blobs under it, matched below the folder.
+    #[test]
+    fn excluded_directory_excludes_the_blobs_under_it() {
+        let matcher = PatternFilePathMatcher::new(
+            std::iter::empty::<&str>(),
+            ["ignored", "outer/ignored", "**/.*", "!**/.github/**"],
+        )
+        .unwrap();
+        let listed = |blob_name: &str, folder: &str| {
+            relative_key(blob_name, folder).is_some_and(|rel| is_key_included(&matcher, rel))
+        };
+        assert!(!listed("docs/ignored/deep/hidden.txt", "docs/"));
+        assert!(!listed("docs/outer/ignored/hidden.txt", "docs/"));
+        assert!(!listed("docs/.cache/x.txt", "docs/"));
+        assert!(listed("docs/.github/workflows/ci.yml", "docs/"));
+        assert!(listed("docs/outer/kept.txt", "docs/"));
+        assert!(listed("docs/visible.txt", "docs/"));
+        // The folder's own path is not matched.
+        assert!(listed("ignored/visible.txt", "ignored/"));
     }
 
     #[test]

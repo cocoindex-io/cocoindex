@@ -58,7 +58,7 @@ use crate::live_component::{
 };
 use crate::resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
-    MatchAllFilePathMatcher, decode_bytes,
+    MatchAllFilePathMatcher, decode_bytes, is_key_included,
 };
 
 /// Object metadata fields requested from the ListObjects API.
@@ -1306,10 +1306,7 @@ impl OciWalker {
                     continue;
                 };
                 let size = obj.size.unwrap_or(0);
-                if !self
-                    .path_matcher
-                    .is_file_included(&PathBuf::from(&relative_key))
-                {
+                if !is_key_included(&*self.path_matcher, &relative_key) {
                     continue;
                 }
                 if self.max_file_size.is_some_and(|max| size > max) {
@@ -1540,10 +1537,7 @@ impl OciLiveWalker {
         let Some(relative_key) = relative_key(&self.prefix, &object_name) else {
             return Ok(ReadyHandle::immediate());
         };
-        if !self
-            .path_matcher
-            .is_file_included(&PathBuf::from(&relative_key))
-        {
+        if !is_key_included(&*self.path_matcher, &relative_key) {
             return Ok(ReadyHandle::immediate());
         }
         // Re-read: the live object state wins over the event type.
@@ -1933,5 +1927,26 @@ mod tests {
         assert!(matcher.is_file_included(&PathBuf::from("a/b.md")));
         assert!(!matcher.is_file_included(&PathBuf::from("a/b.txt")));
         assert!(!matcher.is_file_included(&PathBuf::from("skip/b.md")));
+    }
+
+    // An excluded directory excludes the objects under it, matched below the prefix.
+    #[test]
+    fn excluded_directory_excludes_the_objects_under_it() {
+        let matcher = PatternFilePathMatcher::new(
+            std::iter::empty::<&str>(),
+            ["ignored", "outer/ignored", "**/.*", "!**/.github/**"],
+        )
+        .unwrap();
+        let listed = |prefix: &str, name: &str| {
+            relative_key(prefix, name).is_some_and(|rel| is_key_included(&matcher, &rel))
+        };
+        assert!(!listed("data/", "data/ignored/deep/hidden.txt"));
+        assert!(!listed("data/", "data/outer/ignored/hidden.txt"));
+        assert!(!listed("data/", "data/.cache/x.txt"));
+        assert!(listed("data/", "data/.github/workflows/ci.yml"));
+        assert!(listed("data/", "data/outer/kept.txt"));
+        assert!(listed("data/", "data/visible.txt"));
+        // The prefix's own folders are not matched.
+        assert!(listed("ignored/", "ignored/visible.txt"));
     }
 }

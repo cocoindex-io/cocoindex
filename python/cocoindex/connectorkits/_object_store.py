@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from pathlib import PurePath
 
-from cocoindex.resources.file import FilePath
+from cocoindex.resources.file import FilePath, FilePathMatcher
 
 
 def folder_prefix(prefix: str) -> str:
@@ -33,6 +33,19 @@ def relative_key(object_key: str, folder: str) -> str | None:
     if object_key.endswith("/") or not object_key.startswith(folder):
         return None
     return object_key[len(folder) :]
+
+
+def is_key_included(path_matcher: FilePathMatcher, rel_key: str) -> bool:
+    """Return whether ``path_matcher`` includes the object with item key ``rel_key``.
+
+    The key is matched as a file, and each folder above it as a directory, so an
+    excluded directory excludes every object under it, as in a directory walk.
+    """
+    path = PurePath(rel_key)
+    # The last parent is "." (or the root), which names no folder of the key.
+    return path_matcher.is_file_included(path) and all(
+        path_matcher.is_dir_included(parent) for parent in path.parents[:-1]
+    )
 
 
 class ObjectStoreFilePath(FilePath[str]):
