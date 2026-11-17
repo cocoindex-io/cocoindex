@@ -292,12 +292,11 @@ class TestRoundtripPydantic:
         assert deserialize(data, HasPyd) == wrapped
 
     def test_pydantic_ipaddress_field(self) -> None:
-        """An ipaddress field round-trips after the dump-mode change.
+        """An ipaddress field round-trips via the JSON-mode dump.
 
-        mode="json" used to stringify ipaddress objects; mode="python" keeps
-        them as objects, so the classes are registered for safe unpickling
-        and ride the pickle-quarantine path instead of raising
-        NotImplementedError.
+        model_dump(mode="json") stringifies ipaddress objects, and
+        model_validate reconstructs them on the way back, so no unpickle
+        registration is needed for these fields.
         """
         pydantic = pytest.importorskip("pydantic")
 
@@ -310,6 +309,23 @@ class TestRoundtripPydantic:
         result = deserialize(data, WithIP)
         assert result == value
         assert isinstance(result.host, ipaddress.IPv4Address)
+
+    def test_pydantic_json_mode_fields_unchanged(self) -> None:
+        """Fields that JSON mode turns into strings round-trip as before."""
+        pydantic = pytest.importorskip("pydantic")
+
+        class Doc(pydantic.BaseModel):  # type: ignore[misc,name-defined]
+            url: pydantic.HttpUrl  # type: ignore[name-defined]
+            when: datetime.datetime
+
+        plus5 = datetime.timezone(datetime.timedelta(hours=5))
+        value = Doc(
+            url="https://example.com/a",
+            when=datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=plus5),
+        )
+        result = deserialize(serialize(value), Doc)
+        assert result == value
+        assert result.when.utcoffset() == datetime.timedelta(hours=5)
 
     def test_pydantic_mixed_types_roundtrip(self) -> None:
         """Guards the dump-mode change across every scalar the dump can emit."""
@@ -326,7 +342,6 @@ class TestRoundtripPydantic:
             u: uuid.UUID
             c: Color
             p: pathlib.Path
-            ip: ipaddress.IPv4Address
             s: set[int]
             tup: tuple[int, str]
 
@@ -338,7 +353,6 @@ class TestRoundtripPydantic:
             u=uuid.UUID(int=7),
             c=Color.RED,
             p=pathlib.Path("/a/b"),
-            ip=ipaddress.IPv4Address("1.2.3.4"),
             s={1, 2},
             tup=(1, "x"),
         )

@@ -3,7 +3,6 @@ import datetime
 import functools
 import inspect
 import io
-import ipaddress
 import pathlib
 import pickle
 import threading
@@ -59,12 +58,6 @@ _STDLIB_UNPICKLE_SAFE_TYPES: tuple[type, ...] = (
     datetime.time,
     datetime.timedelta,
     datetime.timezone,
-    ipaddress.IPv4Address,
-    ipaddress.IPv6Address,
-    ipaddress.IPv4Network,
-    ipaddress.IPv6Network,
-    ipaddress.IPv4Interface,
-    ipaddress.IPv6Interface,
 )
 
 
@@ -269,6 +262,19 @@ def _strict_pickle_dumps(value: Any) -> bytes:
     return pickle.dumps(value, 5)
 
 
+def _dump_pydantic(model: Any) -> Any:
+    """Dump a pydantic model to data msgspec can encode.
+
+    JSON mode turns every type pydantic knows (URLs, IP addresses, ...) into
+    plain data, but decodes ``bytes`` as UTF-8. Only when that fails, dump in
+    python mode, which keeps the bytes as bytes.
+    """
+    try:
+        return model.model_dump(mode="json")
+    except UnicodeDecodeError:
+        return model.model_dump(mode="python")
+
+
 # ---------------------------------------------------------------------------
 # Serialization hooks (cross-pollination bridge)
 # ---------------------------------------------------------------------------
@@ -284,7 +290,7 @@ def _enc_hook(obj: Any) -> Any:
         return msgspec.msgpack.Ext(100, _strict_pickle_dumps(obj))
     # B: Bridge Pydantic into msgspec
     if _is_pydantic_instance(obj):
-        return obj.model_dump(mode="python")
+        return _dump_pydantic(obj)
     raise NotImplementedError(f"Cannot serialize {type(obj).__name__}")
 
 
@@ -309,8 +315,9 @@ def _dec_hook(type_hint: Any, obj: Any) -> Any:
     Called when msgspec encounters a type it doesn't natively support.
     Only two cases reach here:
 
-    1. Pydantic models — enc_hook serialized via model_dump(mode="python"),
-       so *obj* is a dict that needs model_validate to reconstruct.
+    1. Pydantic models — enc_hook serialized via _dump_pydantic (JSON mode,
+       falling back to python mode only when JSON mode fails on non-UTF-8
+       bytes), so *obj* is a dict that needs model_validate to reconstruct.
     2. Pickle-quarantined values — ext_hook already reconstructed the
        correct object; just pass through.
     """
@@ -458,7 +465,7 @@ def serialize(value: Any) -> bytes:
     # B: Pydantic BaseModel
     if _is_pydantic_instance(value):
         payload = msgspec.msgpack.encode(
-            value.model_dump(mode="python"),
+            _dump_pydantic(value),
             enc_hook=_enc_hook,
         )
         return b"\x02" + payload
