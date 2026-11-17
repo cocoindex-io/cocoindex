@@ -1050,6 +1050,20 @@ def collection_target(
         managed_by: Whether CocoIndex manages the collection lifecycle
             ("system") or it must already exist ("user", documents only).
     """
+    return _collection_target_state(
+        db, collection_name, schema, managed_by=managed_by, missing=False
+    )
+
+
+def _collection_target_state(
+    db: ContextKey[ManagedConnection],
+    collection_name: str,
+    schema: CollectionSchema[RowT],
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> "coco.TargetState[_DocHandler]":
+    """`collection_target`, with `missing` as in `_container.ContainerSpec`."""
     _validate_collection_name(collection_name)
     for name in schema.columns:
         if name != schema.primary_key:
@@ -1065,15 +1079,7 @@ def collection_target(
         )
 
     key = _CollectionKey(db_key=db.key, collection_name=collection_name)
-    spec = _CollectionSpec(
-        schema=schema,
-        managed_by=managed_by,
-        # A system-managed collection whose directory is not there: if
-        # CocoIndex created it on an earlier run, it was deleted outside
-        # CocoIndex.
-        missing=managed_by == target.ManagedBy.SYSTEM
-        and not coco.use_context(db).collection_path(collection_name).exists(),
-    )
+    spec = _CollectionSpec(schema=schema, managed_by=managed_by, missing=missing)
     return _collection_provider.target_state(key, spec)
 
 
@@ -1099,8 +1105,16 @@ async def mount_collection_target(
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> "CollectionTarget[RowT]":
     """Mount a zvec collection target and return a ready-to-use CollectionTarget."""
+    # A system-managed collection whose directory is not there: if CocoIndex
+    # created it on an earlier run, it was deleted outside CocoIndex.
+    missing = (
+        managed_by == target.ManagedBy.SYSTEM
+        and not coco.use_context(db).collection_path(collection_name).exists()
+    )
     provider = await coco.mount_target(
-        collection_target(db, collection_name, schema, managed_by=managed_by)
+        _collection_target_state(
+            db, collection_name, schema, managed_by=managed_by, missing=missing
+        )
     )
     return CollectionTarget(provider, schema)
 

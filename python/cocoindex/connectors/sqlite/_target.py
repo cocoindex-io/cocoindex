@@ -1221,23 +1221,39 @@ def table_target(
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    return _table_target_state(
+        db,
+        table_name,
+        table_schema,
+        managed_by=managed_by,
+        virtual_table_def=virtual_table_def,
+        missing=False,
+    )
+
+
+def _table_target_state(
+    db: ContextKey[ManagedConnection],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    managed_by: target.ManagedBy,
+    virtual_table_def: Vec0TableDef | None,
+    missing: bool,
+) -> "coco.TargetState[_RowHandler]":
+    """`table_target`, with `missing` as in `_container.ContainerSpec`."""
     _validate_identifier(table_name, "table name")
     for col_name in table_schema.columns:
         _validate_identifier(col_name, "column name")
 
-    managed_conn = coco.use_context(db)
     if isinstance(virtual_table_def, Vec0TableDef):
-        _validate_vec0_config(table_schema, virtual_table_def, managed_conn)
+        _validate_vec0_config(table_schema, virtual_table_def, coco.use_context(db))
 
     key = _TableKey(db_key=db.key, table_name=table_name)
     spec = _TableSpec(
         table_schema=table_schema,
         managed_by=managed_by,
         virtual_table_def=virtual_table_def,
-        # A system-managed table that is not in the database: if CocoIndex
-        # created it on an earlier run, it was dropped outside CocoIndex.
-        missing=managed_by == target.ManagedBy.SYSTEM
-        and not _table_exists(managed_conn, table_name),
+        missing=missing,
     )
     return _table_provider.target_state(key, spec)
 
@@ -1321,13 +1337,19 @@ async def mount_table_target(
     Returns:
         A TableTarget that can be used to declare rows.
     """
+    # A system-managed table that is not in the database: if CocoIndex created
+    # it on an earlier run, it was dropped outside CocoIndex.
+    missing = managed_by == target.ManagedBy.SYSTEM and not _table_exists(
+        coco.use_context(db), table_name
+    )
     provider = await coco.mount_target(
-        table_target(
+        _table_target_state(
             db,
             table_name,
             table_schema,
             managed_by=managed_by,
             virtual_table_def=virtual_table_def,
+            missing=missing,
         )
     )
     return TableTarget(provider, table_schema)
