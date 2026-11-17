@@ -3,6 +3,11 @@
 //! the source is a full tree-sitter parse, so precedence/balancing/context come
 //! from the AST for free.
 //!
+//! This crate is an internal part of [CocoIndex](https://cocoindex.io), published
+//! only so the [`cocoindex`](https://docs.rs/cocoindex) crate can depend on it. It
+//! makes no API stability promise: any release may change it. Depend on
+//! `cocoindex` instead.
+//!
 //! Pattern compilation is fallible: a malformed metavar regex surfaces as a
 //! [`cocoindex_utils::error::Error::client`] via [`Pattern::compile`].
 

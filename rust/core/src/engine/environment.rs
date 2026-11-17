@@ -7,6 +7,7 @@ use crate::{
 
 use cocoindex_utils::fingerprint::Fingerprint;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 /// User-facing environment settings. Currently just storage configuration;
@@ -15,6 +16,9 @@ pub type EnvironmentSettings = StorageSettings;
 
 struct EnvironmentInner<Prof: EngineProfile> {
     storage: Storage,
+    /// The `db_path` the environment was opened with; holds the per-app
+    /// update locks (see [`crate::engine::app_lock`]).
+    db_path: PathBuf,
     app_names: Mutex<BTreeSet<String>>,
     target_states_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
     host_runtime_ctx: Prof::HostRuntimeCtx,
@@ -47,6 +51,7 @@ impl<Prof: EngineProfile> Environment<Prof> {
         let storage = Storage::new(&settings).await?;
         let state = Arc::new(EnvironmentInner {
             storage,
+            db_path: settings.db_path.clone(),
             app_names: Mutex::new(BTreeSet::new()),
             target_states_providers,
             host_runtime_ctx,
@@ -64,6 +69,11 @@ impl<Prof: EngineProfile> Environment<Prof> {
 
     pub fn storage(&self) -> &Storage {
         &self.inner.storage
+    }
+
+    /// The `db_path` the environment was opened with.
+    pub fn db_path(&self) -> &Path {
+        &self.inner.db_path
     }
 
     /// Close the environment's storage. See [`Storage::close`].

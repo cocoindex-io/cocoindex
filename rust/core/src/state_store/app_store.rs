@@ -243,7 +243,7 @@ impl AppStore {
     /// Standalone snapshot read of raw tracking-info bytes — no
     /// caller-managed txn. Engine `Committer` uses this to fetch the
     /// post-pre_commit tracking_info for prune+converge, then hands
-    /// the new bytes to [`AppStoreTrait::commit`](super::AppStoreTrait::commit)
+    /// the new bytes to [`AppStore::commit`](Self::commit)
     /// via the plan.
     pub async fn read_tracking_info(&self, path: &StablePath) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;

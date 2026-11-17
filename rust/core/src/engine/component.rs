@@ -572,7 +572,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         // the parent component (or outer group) waits for it as a unit.
         let parent_guard = self.components_readiness().clone().add_child(None);
 
-        let cancel_token = self.app_ctx().cancellation_token();
+        let cancel_token = self.cancellation_token().clone();
         let live = self.live();
         let lifecycle_group = group.clone();
         get_runtime().spawn(async move {
@@ -1139,10 +1139,10 @@ impl<Prof: EngineProfile> Component<Prof> {
 
         let relative_path = self.relative_path()?;
         let span = info_span!("component.run", component_path = %relative_path);
-        let cancel_token = self.app_ctx().cancellation_token();
+        let cancel_token = context.cancellation_token().clone();
         let join_handle = get_runtime().spawn(
             async move {
-                // Race the work against app-level cancellation. On cancel, the
+                // Race the work against the operation's cancellation. On cancel, the
                 // work future is dropped, which cascades drop into from_py_future
                 // → CancelOnDropPy and cancels the underlying Python task.
                 let result = tokio::select! {
@@ -1192,9 +1192,9 @@ impl<Prof: EngineProfile> Component<Prof> {
             child_readiness: child_readiness_guard,
         } = started;
 
-        let cancel_token = self.app_ctx().cancellation_token();
+        let cancel_token = context.cancellation_token().clone();
         let join_handle = get_runtime().spawn(async move {
-            // Race the work against app-level cancellation. On cancel, the
+            // Race the work against the operation's cancellation. On cancel, the
             // work future is dropped, which cascades drop into from_py_future
             // → CancelOnDropPy and cancels the underlying Python task.
             let result = tokio::select! {
@@ -2335,6 +2335,110 @@ mod tests {
             .unwrap();
         let app = App::new(name, env, max_inflight_components).await.unwrap();
         (app, dir)
+    }
+
+    /// Cancelling an update's token stops that update and the child
+    /// components it mounted, and leaves another update of the same app
+    /// running: the token belongs to the operation, not to the app.
+    #[tokio::test]
+    async fn cancelling_an_update_stops_it_and_its_children_but_not_another_update() {
+        struct SetOnDrop(Arc<AtomicBool>);
+        impl Drop for SetOnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let (app, _dir) = test_app("cancel_one_update").await;
+        let child_started = Arc::new(tokio::sync::Notify::new());
+        let child_dropped = Arc::new(AtomicBool::new(false));
+
+        let child = {
+            let child_started = child_started.clone();
+            let child_dropped = child_dropped.clone();
+            TestProcessor::new(
+                "child",
+                Fingerprint::from(&"cancel_one_update/child").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .without_memo()
+            .with_on_process(Arc::new(move |_ctx| {
+                let child_started = child_started.clone();
+                let guard = SetOnDrop(child_dropped.clone());
+                Box::pin(async move {
+                    let _guard = guard;
+                    child_started.notify_one();
+                    std::future::pending::<()>().await;
+                    unreachable!()
+                })
+            }))
+        };
+        let child = Arc::new(Mutex::new(Some(child)));
+        let blocked_root = TestProcessor::new(
+            "root",
+            Fingerprint::from(&"cancel_one_update/root").unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .without_memo()
+        .with_on_process(Arc::new(move |ctx| {
+            let child = child.lock().unwrap().take().expect("root runs once");
+            Box::pin(async move {
+                let component = ctx.component().mount_child(
+                    &FnCallContext::new(true),
+                    key_path(ctx.component(), "child"),
+                )?;
+                let handle = component
+                    .use_mount(&ctx, child, DeadlineContext::NONE)
+                    .await?;
+                handle.result(Some(&ctx)).await
+            })
+        }));
+
+        let (cancelled, _) = app
+            .update(
+                blocked_root,
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), child_started.notified())
+            .await
+            .expect("the child starts");
+
+        // A second update of the same app, started while the first runs.
+        let other_root = TestProcessor::new(
+            "root",
+            Fingerprint::from(&"cancel_one_update/other").unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .without_memo();
+        let (other, _) = app
+            .update(other_root, AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+
+        cancelled.cancellation_token().cancel();
+        tokio::time::timeout(Duration::from_secs(10), cancelled.result())
+            .await
+            .expect("a cancelled update ends promptly")
+            .expect_err("a cancelled update fails");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !child_dropped.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the cancelled update's child component is cancelled too");
+
+        let value = tokio::time::timeout(Duration::from_secs(10), other.result())
+            .await
+            .expect("the other update ends")
+            .expect("the other update is not cancelled");
+        assert_eq!(value, TestData(b"ret".to_vec()));
+        assert!(!app.app_ctx().cancellation_token().is_cancelled());
     }
 
     /// Every run in a chain of `use_mount`s borrows its parent's in-flight
@@ -4196,5 +4300,86 @@ mod tests {
             3,
             "nothing left to delete"
         );
+    }
+
+    /// An update or drop of an app holds a cross-process lock for its whole
+    /// run: another holder of the app's lock file (another process; `flock`
+    /// treats a second open file description alike) is refused, and an update
+    /// or drop started while another process holds it fails at once, naming
+    /// the app. A preview takes no lock.
+    #[tokio::test]
+    async fn an_update_holds_the_cross_process_app_lock() {
+        use crate::engine::app_lock::AppUpdateLockSlot;
+
+        let (app, dir) = test_app("locked_app").await;
+        let db_path = dir.path().join("lmdb");
+        let other_process = AppUpdateLockSlot::new(&db_path, "locked_app");
+
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let hook: ProcessHook = {
+            let release = release.clone();
+            let started = started.clone();
+            Arc::new(move |_ctx| {
+                let release = release.clone();
+                let started = started.clone();
+                Box::pin(async move {
+                    started.notify_one();
+                    release.acquire().await.unwrap().forget();
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            })
+        };
+        let processor = || {
+            TestProcessor::new(
+                "locked",
+                Fingerprint::from(&"locked_app").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .without_memo()
+            .with_on_process(hook.clone())
+        };
+        let (handle, _) = app
+            .update(processor(), AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        started.notified().await;
+        let err = other_process
+            .acquire()
+            .err()
+            .expect("the update holds the lock")
+            .to_string();
+        assert!(err.contains("app 'locked_app'"), "{err}");
+        release.add_permits(1);
+        handle.result().await.unwrap();
+        // Released when the update ends.
+        let held_elsewhere = other_process.acquire().unwrap();
+
+        let err = match app.update(processor(), AppUpdateOptions::default(), Arc::new(()), None) {
+            Ok(_) => panic!("an update must fail while another process holds the lock"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("app 'locked_app'"), "{err}");
+        assert!(err.contains("another process"), "{err}");
+        assert!(app.drop_app(Arc::new(())).is_err());
+
+        // A preview writes nothing and runs regardless.
+        let (handle, _) = app
+            .update(
+                processor(),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                Some(PreviewActionCollector::<TestProfile>::default()),
+            )
+            .unwrap();
+        release.add_permits(1);
+        handle.result().await.unwrap();
+
+        drop(held_elsewhere);
+        let (handle, _) = app
+            .update(processor(), AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        release.add_permits(1);
+        handle.result().await.unwrap();
     }
 }

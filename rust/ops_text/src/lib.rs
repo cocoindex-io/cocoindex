@@ -1,5 +1,10 @@
 //! Text processing operations for CocoIndex.
 //!
+//! This crate is an internal part of [CocoIndex](https://cocoindex.io), published
+//! only so the [`cocoindex`](https://docs.rs/cocoindex) crate can depend on it. It
+//! makes no API stability promise: any release may change it. Depend on
+//! `cocoindex` instead.
+//!
 //! This crate provides text processing functionality including:
 //! - Text splitting by separators
 //! - Recursive text chunking with syntax awareness

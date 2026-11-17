@@ -959,10 +959,10 @@ struct SinkInput<Prof: EngineProfile> {
     /// sink for the declaring action. Read back after the sink call; a slot the
     /// sink left unfulfilled is an error.
     pending_children: Vec<(TargetStateProvider<Prof>, ChildTargetSlot<Prof>)>,
-    /// The smallest [`TargetStateProvider::depth`] of the providers whose
-    /// target states sent actions to this sink: sinks apply in this order
-    /// (see [`sinks_in_apply_order`]).
-    provider_depth: usize,
+    /// The distinct providers of the target states that sent actions to this
+    /// sink (usually one: a table's rows), to name them when the sink fails
+    /// and to order the sink among the others (see [`sinks_in_apply_order`]).
+    providers: Vec<TargetStateProvider<Prof>>,
 }
 
 impl<Prof: EngineProfile> Default for SinkInput<Prof> {
@@ -971,7 +971,7 @@ impl<Prof: EngineProfile> Default for SinkInput<Prof> {
             actions: Vec::new(),
             factory_children: Vec::new(),
             pending_children: Vec::new(),
-            provider_depth: usize::MAX,
+            providers: Vec::new(),
         }
     }
 }
@@ -986,7 +986,13 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
         action: Prof::TargetAction,
         child: Option<(TargetStateProvider<Prof>, ChildHandling)>,
     ) -> Result<()> {
-        self.provider_depth = self.provider_depth.min(provider.depth());
+        if !self
+            .providers
+            .iter()
+            .any(|p| Arc::ptr_eq(&p.inner, &provider.inner))
+        {
+            self.providers.push(provider.clone());
+        }
         let child_slot = match child {
             None => None,
             Some((child_provider, ChildHandling::Factory)) => {
@@ -1018,7 +1024,9 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
 /// first, so a container's sink (a table) applies before the sink of the
 /// target states inside it (its rows), and those before the sinks of their
 /// provider's attachments (an index over the rows, which may need the rows
-/// to build). Sinks at one depth keep no particular order.
+/// to build). Sinks at one depth apply in the order of their providers'
+/// stable keys from the root provider down (e.g. table `a` before table `b`),
+/// so the order is the same on every run.
 #[allow(
     clippy::mutable_key_type,
     reason = "`TargetActionSinkKeeper` hashes and compares by `Arc` identity"
@@ -1027,7 +1035,17 @@ fn sinks_in_apply_order<Prof: EngineProfile>(
     actions_by_sinks: HashMap<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>,
 ) -> Vec<(TargetActionSinkKeeper<Prof>, SinkInput<Prof>)> {
     let mut sinks: Vec<_> = actions_by_sinks.into_iter().collect();
-    sinks.sort_by_key(|(_, input)| input.provider_depth);
+    // Where a sink applies: by the depth of a provider that sent it actions,
+    // then by that provider's stable keys from the root provider down; a sink
+    // fed by several providers takes the first of them. A sink with no action
+    // is never queued; `None` would sort first.
+    sinks.sort_by_cached_key(|(_, input)| {
+        input
+            .providers
+            .iter()
+            .map(|p| (p.depth(), p.stable_key_chain()))
+            .min()
+    });
     sinks
 }
 
@@ -1257,8 +1275,8 @@ impl PreemptedOwner<'_> {
 }
 
 /// Engine-side reconcile body. Takes precomputed reads from
-/// [`PrecommitSession::precommit_read`] and
-/// [`PrecommitSession::precommit_claim_targets`] (existing tracking_info,
+/// [`PrecommitSession::precommit_read`](crate::state_store::PrecommitSession::precommit_read) and
+/// [`PrecommitSession::precommit_claim_targets`](crate::state_store::PrecommitSession::precommit_claim_targets) (existing tracking_info,
 /// declared-target owners, preempted-owner tracking blobs) and returns
 /// the [`PrecommitWritePlan`] that the caller returns from the
 /// [`AppStore::precommit`](crate::state_store::AppStore::precommit)
@@ -2284,12 +2302,25 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         pending_fulfillments.extend(build_factory_children(comp_ctx, &actions_by_sinks).await?);
         let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
         for (sink, input) in sinks_in_apply_order(actions_by_sinks) {
+            // Connectors report what failed (`postgres: ...`), not which
+            // target: name the target states here, once for every connector.
             sink.apply(
                 host_runtime_ctx,
                 Arc::clone(comp_ctx.host_ctx()),
                 input.actions,
             )
-            .await?;
+            .await
+            .with_context(|| {
+                let paths: Vec<String> = input
+                    .providers
+                    .iter()
+                    .map(|provider| provider.display_name())
+                    .collect();
+                format!(
+                    "failed to apply changes to target states under {}",
+                    paths.join(", ")
+                )
+            })?;
             for (child_provider, slot) in input.pending_children {
                 let Some(handler) = slot.take()? else {
                     client_bail!(
@@ -2357,7 +2388,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 /// re-reconciled.
 ///
 /// Each iteration calls
-/// [`AppStoreTrait::clear_stage_marker`](crate::state_store::AppStoreTrait::clear_stage_marker).
+/// [`AppStore::clear_stage_marker`](crate::state_store::AppStore::clear_stage_marker).
 /// Retried indefinitely with exponential backoff — every failure is
 /// logged but the function does not return until the cleanup
 /// succeeds. If the process exits while this is still retrying, the

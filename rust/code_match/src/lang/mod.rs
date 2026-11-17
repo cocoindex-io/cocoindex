@@ -67,7 +67,7 @@ pub use typescript::{tsx, typescript};
 pub use xml::xml;
 pub use yaml::yaml;
 
-/// Resolve a language name to its [`LangConfig`]. Resolution goes through the
+/// Resolve a language name to its [`LangConfig`](crate::LangConfig). Resolution goes through the
 /// `cocoindex_code_ast` registry — case-insensitive, with all its aliases and
 /// file extensions (`c++`, `c#`, `js`, `py`, `.rs`, `golang`, …) — then maps
 /// the canonical name to a matcher config. Returns `None` for a language
