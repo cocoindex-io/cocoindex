@@ -5,7 +5,7 @@ use std::future::Future;
 use crate::engine::admission::{Lender, LiveShare};
 use crate::engine::component::{
     ActivityGuard, Component, ComponentBgChildReadinessChildGuard, ComponentExecutionHandle,
-    OnError,
+    OnError, RunCompleteness,
 };
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessorContext, FnCallContext, PreviewActionCollector,
@@ -18,7 +18,7 @@ use crate::state::component_selector::{ComponentSelector, MountDecision};
 use crate::state::stable_path::{StableKey, StablePath};
 use crate::state::target_state_path::TargetStatePath;
 use crate::state_store::AppStore;
-use cocoindex_utils::error::{SharedError, SharedResult};
+use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt};
 
 use tokio::sync::oneshot;
 
@@ -720,11 +720,15 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// Full processing cycle. Acquires `update_full_lock` (serializes with
     /// concurrent `update_full()` calls), waits for any in-flight subpath
     /// drains to quiesce, then runs `process()` via `run_in_background`.
+    ///
+    /// Returns whether the pass reached every component under it: a failure
+    /// that `on_error` absorbs (or that is only logged) does not fail the call,
+    /// so a host that records its source as fully processed checks this first.
     pub async fn update_full(
         &self,
         processor: Prof::ComponentProc,
         on_error: Option<OnError>,
-    ) -> Result<()> {
+    ) -> Result<RunCompleteness> {
         let _full_guard = self.state.update_full_lock.lock().await;
         // A catch-up incarnation beside a running live one also holds the
         // live one's lock (always after its own: one lock order).
@@ -780,15 +784,12 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             self.update_refusal.clone(),
         );
 
-        let handle = self
+        let run = self
             .component
             .clone()
-            .run_in_background(processor, context, on_error)
+            .run_in_background_to_completeness(processor, context, on_error)
             .await?;
-
-        handle.ready().await?;
-
-        Ok(())
+        run.await.into_result()
     }
 
     /// The update's selector leaves out a mount at `subpath`. [`Self::update`]

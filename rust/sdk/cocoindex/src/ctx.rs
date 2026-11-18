@@ -1096,7 +1096,7 @@ impl Ctx {
                         source: ExceptionSource::Component,
                     });
                     match controller.update_full(processor, on_error).await {
-                        Ok(()) => {
+                        Ok(_) => {
                             controller.mark_ready().await;
                             ready_marked = true;
                         }
