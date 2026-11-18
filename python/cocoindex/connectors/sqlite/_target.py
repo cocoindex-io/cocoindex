@@ -793,14 +793,19 @@ def _create_table(
     conn.execute(sql)
 
 
+class _ColumnShape(NamedTuple):
+    type: str  # Upper-cased: SQLite reports standard type names upper-cased.
+    not_null: bool
+
+
 def _column_shape(
     conn: sqlite3.Connection, table_name: str, col_name: str
-) -> tuple[str, bool] | None:
-    """Return (declared type, notnull) of a column, or None if it is absent."""
+) -> _ColumnShape | None:
+    """Return the shape of a column, or None if it is absent."""
     qualified_name = _qualified_table_name(table_name)
     for row in conn.execute(f"PRAGMA table_info({qualified_name})"):
         if row[1] == col_name:
-            return str(row[2]), bool(row[3])
+            return _ColumnShape(str(row[2]).upper(), bool(row[3]))
     return None
 
 
@@ -836,23 +841,24 @@ def _apply_column_actions(
             try:
                 conn.execute(f'ALTER TABLE {qualified_name} DROP COLUMN "{col_name}"')
             except sqlite3.OperationalError as e:
-                # A failed DROP is tolerated (SQLite < 3.35, or an index still
-                # references the column), but the leftover is not harmless: if it
-                # still carries NOT NULL, rows that do not set it are rejected,
-                # so it has to be dropped manually.
                 leftover = _column_shape(conn, table_name, col_name)
-                not_null_note = (
-                    "; it is still NOT NULL, so rows that do not set it will be "
-                    "rejected — drop the column manually once it can be dropped"
-                    if leftover is not None and leftover[1]
-                    else ""
-                )
+                if leftover is None:
+                    continue  # Already gone, as desired.
+                if leftover.not_null:
+                    # Every row write would fail on the leftover, and once this
+                    # delete is recorded no later run retries it.
+                    raise RuntimeError(
+                        f"Failed to drop NOT NULL column {col_name!r} from SQLite "
+                        f"table {table_name!r}: {e}"
+                    ) from e
+                # A nullable leftover (SQLite < 3.35, or an index references the
+                # column) is harmless: rows just leave it NULL.
                 _logger.warning(
-                    "SQLite target: could not drop removed column %r from table %r: %s%s",
+                    "SQLite target: could not drop removed column %r from table %r, "
+                    "left in place as unused: %s",
                     col_name,
                     table_name,
                     e,
-                    not_null_note,
                 )
             continue
 
@@ -862,71 +868,34 @@ def _apply_column_actions(
             # it as a no-op here; "delete" should have been emitted.
             continue
 
-        if action in ("insert", "upsert"):
-            # SQLite supports ADD COLUMN
-            nullable = "" if desired_col.nullable else " NOT NULL"
-            try:
-                conn.execute(
-                    f"ALTER TABLE {qualified_name} "
-                    f'ADD COLUMN "{col_name}" {desired_col.type}{nullable}'
-                )
-            except sqlite3.OperationalError as e:
-                # Only ignore if column already exists (e.g. upsert / idempotent re-run)
-                if "duplicate column name" in str(e).lower():
-                    pass
-                else:
-                    raise RuntimeError(
-                        f"Failed to add column {col_name!r} to SQLite table {table_name!r}: {e}"
-                    ) from e
+        # insert / upsert / replace: bring the column to the desired shape.
+        desired = _ColumnShape(desired_col.type.upper(), not desired_col.nullable)
+        actual = _column_shape(conn, table_name, col_name)
+        if actual == desired:
+            # Already there: an idempotent re-run, or a change made out of band.
             continue
-
-        if action == "replace":
-            # SQLite doesn't support ALTER COLUMN TYPE directly.
-            # For shape changes (type or nullability), attempt to drop and re-add
-            # the column.
-            drop_error: sqlite3.OperationalError | None = None
+        if actual is not None:
+            # SQLite has no ALTER COLUMN TYPE: drop, then re-add. A failed DROP
+            # (an index references the column, or SQLite < 3.35) fails the
+            # action, or the new shape would be recorded while the table keeps
+            # the old one.
             try:
                 conn.execute(f'ALTER TABLE {qualified_name} DROP COLUMN "{col_name}"')
             except sqlite3.OperationalError as e:
-                # DROP fails when an index references the column. Masking that
-                # would record the desired shape while the table keeps the old
-                # one, so the outcome is checked below.
-                drop_error = e
-            nullable = "" if desired_col.nullable else " NOT NULL"
-            try:
-                conn.execute(
-                    f"ALTER TABLE {qualified_name} "
-                    f'ADD COLUMN "{col_name}" {desired_col.type}{nullable}'
-                )
-            except sqlite3.OperationalError as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise RuntimeError(
-                        f"Failed to replace column {col_name!r} in SQLite table {table_name!r}: {e}"
-                    ) from e
-                # The ADD collided because the DROP did not remove the column.
-                # That is only fine if the column already carries the desired
-                # shape, both type and nullability (the change landed out of
-                # band); otherwise the table would silently keep the old shape
-                # while the new one is recorded.
-                actual = _column_shape(conn, table_name, col_name)
-                if actual != (desired_col.type, not desired_col.nullable):
-                    actual_desc = (
-                        "absent"
-                        if actual is None
-                        else f"type {actual[0]!r}, nullable={not actual[1]}"
-                    )
-                    drop_note = (
-                        "DROP COLUMN did not report an error"
-                        if drop_error is None
-                        else f"DROP COLUMN failed: {drop_error}"
-                    )
-                    raise RuntimeError(
-                        f"Failed to change the shape of column {col_name!r} in "
-                        f"SQLite table {table_name!r} to type {desired_col.type!r}, "
-                        f"nullable={desired_col.nullable} "
-                        f"(it is {actual_desc}; {drop_note})"
-                    ) from e
-            continue
+                raise RuntimeError(
+                    f"Failed to change the shape of column {col_name!r} in SQLite "
+                    f"table {table_name!r} from {actual} to {desired}: {e}"
+                ) from e
+        nullable = "" if desired_col.nullable else " NOT NULL"
+        try:
+            conn.execute(
+                f"ALTER TABLE {qualified_name} "
+                f'ADD COLUMN "{col_name}" {desired_col.type}{nullable}'
+            )
+        except sqlite3.OperationalError as e:
+            raise RuntimeError(
+                f"Failed to add column {col_name!r} to SQLite table {table_name!r}: {e}"
+            ) from e
 
 
 def _row_handler(

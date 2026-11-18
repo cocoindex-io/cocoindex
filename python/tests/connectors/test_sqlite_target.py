@@ -1783,11 +1783,10 @@ def test_column_type_change_already_applied_is_accepted(
         _table_name = old_table_name
 
 
-def test_dropped_column_that_cannot_be_dropped_warns(
+def test_dropped_not_null_column_that_cannot_be_dropped_raises(
     sqlite_db: tuple[sqlite.ManagedConnection, Path],
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Test that a removed column an index pins is left in place with a warning naming it, and a NOT NULL leftover is called out."""
+    """Test that a removed NOT NULL column an index pins fails the run, and succeeds once the index is gone."""
     managed_conn, _ = sqlite_db
     global _source_rows, _row_type, _table_name
 
@@ -1797,9 +1796,9 @@ def test_dropped_column_that_cannot_be_dropped_warns(
     try:
         _source_rows = [SimpleRow(id="1", name="Alice", value=100)]
         _row_type = SimpleRow
-        _table_name = "test_dropped_column_blocked_by_index"
+        _table_name = "test_dropped_not_null_column_blocked_by_index"
 
-        app_name = "test_dropped_column_that_cannot_be_dropped_warns"
+        app_name = "test_dropped_not_null_column_that_cannot_be_dropped_raises"
         app = coco.App(
             coco.AppConfig(
                 name=app_name, environment=make_test_env(managed_conn, app_name)
@@ -1813,10 +1812,74 @@ def test_dropped_column_that_cannot_be_dropped_warns(
         with managed_conn.transaction() as conn:
             conn.execute(f'CREATE INDEX idx_value ON "{_table_name}" ("value")')
 
-        # No rows are left to write, so the leftover NOT NULL column is only a
-        # hazard to report here, not something the run trips over.
+        # Every row write would fail on the leftover NOT NULL column, so failing
+        # the run lets the next one retry the DROP.
         _row_type = NoValueRow
-        _source_rows = []
+        _source_rows = [NoValueRow(id="1", name="Alice")]
+        with pytest.raises(
+            RuntimeError, match="Failed to drop NOT NULL column 'value'"
+        ):
+            app.update_blocking()
+
+        # Nothing was half-applied: the column is still there.
+        assert "value" in get_table_columns(managed_conn, _table_name)
+
+        # The failed run recorded nothing, so the next run retries.
+        with pytest.raises(
+            RuntimeError, match="Failed to drop NOT NULL column 'value'"
+        ):
+            app.update_blocking()
+        assert "value" in get_table_columns(managed_conn, _table_name)
+
+        # Once the blocking index is gone, the column is dropped and the data is
+        # preserved.
+        with managed_conn.transaction() as conn:
+            conn.execute("DROP INDEX idx_value")
+        app.update_blocking()
+
+        assert "value" not in get_table_columns(managed_conn, _table_name)
+        assert read_table_data(managed_conn, _table_name) == [
+            {"id": "1", "name": "Alice"}
+        ]
+    finally:
+        _source_rows = old_source_rows
+        _row_type = old_row_type
+        _table_name = old_table_name
+
+
+def test_dropped_nullable_column_that_cannot_be_dropped_warns(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test that a removed nullable column an index pins is left in place with a warning naming it."""
+    managed_conn, _ = sqlite_db
+    global _source_rows, _row_type, _table_name
+
+    old_source_rows = _source_rows
+    old_row_type = _row_type
+    old_table_name = _table_name
+    try:
+        _source_rows = [NullableIntValueRow(id="1", name="Alice", value=100)]
+        _row_type = NullableIntValueRow
+        _table_name = "test_dropped_nullable_column_blocked_by_index"
+
+        app_name = "test_dropped_nullable_column_that_cannot_be_dropped_warns"
+        app = coco.App(
+            coco.AppConfig(
+                name=app_name, environment=make_test_env(managed_conn, app_name)
+            ),
+            declare_table_and_rows,
+        )
+
+        app.update_blocking()
+        assert get_column_notnull(managed_conn, _table_name, "value") is False
+
+        with managed_conn.transaction() as conn:
+            conn.execute(f'CREATE INDEX idx_value ON "{_table_name}" ("value")')
+
+        # A nullable leftover is harmless: rows just leave it NULL.
+        _row_type = NoValueRow
+        _source_rows = [NoValueRow(id="1", name="Alice")]
         with caplog.at_level(logging.WARNING):
             app.update_blocking()
 
@@ -1828,10 +1891,72 @@ def test_dropped_column_that_cannot_be_dropped_warns(
         assert len(warnings) == 1
         assert "'value'" in warnings[0]
         assert repr(_table_name) in warnings[0]
-        assert "NOT NULL" in warnings[0]
 
         # The DROP was tolerated, so the column is still there.
         assert "value" in get_table_columns(managed_conn, _table_name)
+    finally:
+        _source_rows = old_source_rows
+        _row_type = old_row_type
+        _table_name = old_table_name
+
+
+def test_readded_column_after_blocked_drop_raises_until_index_is_dropped(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that re-adding a column whose DROP was blocked applies the new type once the index is gone."""
+    managed_conn, _ = sqlite_db
+    global _source_rows, _row_type, _table_name
+
+    old_source_rows = _source_rows
+    old_row_type = _row_type
+    old_table_name = _table_name
+    try:
+        _source_rows = [NullableIntValueRow(id="1", name="Alice", value=100)]
+        _row_type = NullableIntValueRow
+        _table_name = "test_readded_column_after_blocked_drop"
+
+        app_name = (
+            "test_readded_column_after_blocked_drop_raises_until_index_is_dropped"
+        )
+        app = coco.App(
+            coco.AppConfig(
+                name=app_name, environment=make_test_env(managed_conn, app_name)
+            ),
+            declare_table_and_rows,
+        )
+
+        app.update_blocking()
+        assert get_table_columns(managed_conn, _table_name)["value"] == "INTEGER"
+
+        with managed_conn.transaction() as conn:
+            conn.execute(f'CREATE INDEX idx_value ON "{_table_name}" ("value")')
+
+        # Removing the column is only a warning for a nullable leftover.
+        _row_type = NoValueRow
+        _source_rows = [NoValueRow(id="1", name="Alice")]
+        app.update_blocking()
+        assert "value" in get_table_columns(managed_conn, _table_name)
+
+        # Re-adding it as TEXT is an insert. The leftover INTEGER column blocks
+        # the DROP, so the run fails instead of recording TEXT while the table
+        # keeps INTEGER.
+        _row_type = NullableStrValueRow
+        _source_rows = [NullableStrValueRow(id="1", name="Alice", value="100")]
+        with pytest.raises(
+            RuntimeError, match="Failed to change the shape of column 'value'"
+        ):
+            app.update_blocking()
+        assert get_table_columns(managed_conn, _table_name)["value"] == "INTEGER"
+
+        # Once the index is gone, the insert converges to TEXT.
+        with managed_conn.transaction() as conn:
+            conn.execute("DROP INDEX idx_value")
+        app.update_blocking()
+
+        assert get_table_columns(managed_conn, _table_name)["value"] == "TEXT"
+        assert read_table_data(managed_conn, _table_name) == [
+            {"id": "1", "name": "Alice", "value": "100"}
+        ]
     finally:
         _source_rows = old_source_rows
         _row_type = old_row_type
