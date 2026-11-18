@@ -191,22 +191,25 @@ class ComponentContext:
             if node is None:
                 # No handlers registered — log directly without building
                 # the ExceptionContext metadata at all. Don't propagate.
+                self._core_processor_ctx.record_unhandled_failure()
+                # The path and processor are the mounted component's; a failed
+                # delete of one of its descendants is reported here as well.
+                path = readable_path(stable_path)
+                label = f"{path} ({processor_name})" if processor_name else path
+                message = "%s failed: %s: %s"
+                args = (label, type(exc).__name__, exc)
                 mode = display_mode()
-                if mode is not None:
-                    # A progress display lists only the first few failures of
-                    # the stats it draws, so this log is the complete record.
-                    # On a terminal a traceback per failure would push the
-                    # display off screen; in scrolling output it costs nothing.
-                    path = readable_path(str(stable_path))
-                    message = "%s failed: %s: %s"
-                    args = (path, type(exc).__name__, exc)
-                    if mode is DisplayMode.TERMINAL:
-                        _failure_logger.error(message, *args)
-                        _failure_logger.debug("traceback of %s", path, exc_info=exc)
-                    else:
-                        _failure_logger.error(message, *args, exc_info=exc)
+                # A progress display lists only the first few failures of
+                # the stats it draws, so this log is the complete record.
+                # On a terminal a traceback per failure would push the
+                # display off screen; in scrolling output it costs nothing.
+                if mode is DisplayMode.TERMINAL:
+                    _failure_logger.error(message, *args)
+                    _failure_logger.debug("traceback of %s", path, exc_info=exc)
+                elif mode is not None:
+                    _failure_logger.error(message, *args, exc_info=exc)
                 else:
-                    _logger.error("component build failed: %s", exc, exc_info=exc)
+                    _logger.error(message, *args, exc_info=exc)
                 return
 
             env_name = self._env.name
@@ -242,6 +245,7 @@ class ComponentContext:
             # raise — Rust's on_error catches it and the spawned task
             # returns Err, so `handle.ready()` raises. Handlers thus
             # control propagation: return (swallow) vs raise (propagate).
+            self._core_processor_ctx.record_unhandled_failure()
             raise current_exc
 
         return _run

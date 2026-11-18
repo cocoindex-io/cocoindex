@@ -1158,3 +1158,59 @@ class TestShowTargetStatesTypedKeys:
         )
 
         self._assert_typed_keys_rendered(result.stdout)
+
+
+# =============================================================================
+# Update exit status: failures nobody handled
+# =============================================================================
+
+
+class TestUpdateExitStatus:
+    """The exit status of `update` counts only unhandled component failures:
+    no exception handler was registered, or every handler re-raised."""
+
+    def test_unhandled_failures_exit_1(self) -> None:
+        """Background components failing with no handler exit 1."""
+        result = run_cli("update", "./failing_app.py", check=False)
+
+        assert result.returncode == 1
+        assert "unhandled component failure(s)" in result.stderr
+
+    def test_failures_inside_stats_group_exit_1(self) -> None:
+        """A failure inside a stats group lands on the run's count too."""
+        result = run_cli("update", "./failing_group_app.py", check=False)
+
+        assert result.returncode == 1
+        assert "unhandled component failure(s)" in result.stderr
+
+    def test_swallowing_handler_exits_0(self) -> None:
+        """A handler that returns normally has taken ownership: exit 0."""
+        run_cli("update", "./handler_app.py:SwallowingHandlerApp")
+
+    def test_reraising_handler_exits_1(self) -> None:
+        """A handler that re-raises leaves the failure unhandled: exit 1."""
+        result = run_cli("update", "./handler_app.py:ReraisingHandlerApp", check=False)
+
+        assert result.returncode == 1
+        assert "unhandled component failure(s)" in result.stderr
+
+    def test_reraising_handler_quiet_stderr_line_only(self) -> None:
+        """#2429: with -q, the stderr line is the only output."""
+        result = run_cli(
+            "update", "-q", "./handler_app.py:ReraisingHandlerApp", check=False
+        )
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "unhandled component failure(s)" in result.stderr
+
+    def test_catching_parent_exits_0(self) -> None:
+        """A parent that catches a use_mount failure owns it: exit 0."""
+        run_cli("update", "./catching_parent_app.py")
+
+    def test_preview_with_failures_exit_1(self) -> None:
+        """A preview with failed components is missing their changes: exit 1."""
+        result = run_cli("update", "--preview", "./failing_app.py", check=False)
+
+        assert result.returncode == 1
+        assert "unhandled component failure(s)" in result.stderr

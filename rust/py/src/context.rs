@@ -64,6 +64,14 @@ impl PyComponentProcessorContext {
         self.0.end_stats_group();
     }
 
+    /// Count a component failure that no exception handler took ownership of
+    /// (no handler registered, or every handler re-raised). Recorded on the
+    /// root of the stats chain, so failures inside a stats group are covered
+    /// too; drives the exit status of `cocoindex update`.
+    fn record_unhandled_failure(&self) {
+        self.0.processing_stats().record_unhandled_failure();
+    }
+
     /// Collect eager initial memo states for the change-detection context fingerprints
     /// observed so far on this component (from `logic_deps`). Returns a
     /// `dict[Fingerprint, list[Any]]` directly — fingerprints with no

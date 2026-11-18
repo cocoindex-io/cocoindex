@@ -82,6 +82,12 @@ pub struct VersionedProcessingStats {
     /// What the stats groups under this scope count, at any depth. Their rows
     /// stay out of this scope's report, but its final status covers them.
     pub in_groups: ProcessingStatsGroup,
+    /// Failures nobody took ownership of: no exception handler was registered,
+    /// or every handler re-raised. Unlike `num_errors`, which the engine bumps
+    /// for every failed component, this is what the exit status of
+    /// `cocoindex update` counts. Only the root of a stats chain carries a
+    /// meaningful value.
+    pub unhandled_failures: u64,
 }
 
 /// Thread-safe container for processing stats with version tracking and change notification.
@@ -158,6 +164,19 @@ impl ProcessingStats {
         if guard.failures.len() < MAX_RECORDED_FAILURES {
             guard.failures.push(failure);
         }
+    }
+
+    /// Count a failure that no exception handler took ownership of: either no
+    /// handler was registered, or every handler in the chain re-raised. Walks
+    /// the chain to its root, so a failure inside a stats group lands on the
+    /// run's count. Does not bump the version: the CLI reads it once, after
+    /// the update finished.
+    pub fn record_unhandled_failure(&self) {
+        let mut root = self;
+        while let Some(parent) = root.parent.as_deref() {
+            root = parent;
+        }
+        root.inner.lock().unwrap().unhandled_failures += 1;
     }
 
     /// Returns an atomic snapshot of (version, stats).
