@@ -664,6 +664,10 @@ def _seeds() -> list[int]:
     return list(range(int(lo), int(hi or lo) + 1))
 
 
+# Each seed runs 20 updates on two apps and compares their target states after
+# each one: ~4 s locally, but over the suite's 30 s default on a slow Windows
+# runner.
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("seed", _seeds())
 def test_panel_flow(seed: int) -> None:
     run_panel(seed, int(os.environ.get("COCO_PANEL_ITERS", "20")), _raw())

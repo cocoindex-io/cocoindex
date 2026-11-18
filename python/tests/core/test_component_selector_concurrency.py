@@ -16,6 +16,10 @@ from tests.common.target_states import GlobalDictTarget
 
 ITERS = int(os.environ.get("SELECTOR_STRESS_ITERS", "40"))
 
+# The stress tests run ITERS rounds of parallel updates: up to ~7 s locally, but
+# over the suite's 30 s default on a slow Windows runner.
+_STRESS_TIMEOUT = pytest.mark.timeout(120)
+
 
 @pytest.fixture(autouse=True)
 def _reset() -> None:
@@ -216,6 +220,7 @@ def _check_batch(
             )
 
 
+@_STRESS_TIMEOUT
 @pytest.mark.asyncio
 @pytest.mark.parametrize("max_inflight", [None, 1, 2])
 async def test_stress_parallel_selective_plain_preview_one_app(
@@ -246,6 +251,7 @@ async def test_stress_parallel_selective_plain_preview_one_app(
     assert _stored() == model.expected()
 
 
+@_STRESS_TIMEOUT
 @pytest.mark.asyncio
 async def test_stress_two_apps_one_env(request: pytest.FixtureRequest) -> None:
     env = common.create_test_env(__file__, suffix=request.node.name)
