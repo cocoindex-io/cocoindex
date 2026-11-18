@@ -651,6 +651,17 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
     }
 }
 
+/// Whether a run reached every component under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunCompleteness {
+    /// The component and every component under it ran without a failure.
+    Complete,
+    /// The component or one under it failed, and the failure went to an
+    /// exception handler that absorbed it, or to the log, rather than to the
+    /// caller; or the run was cancelled.
+    Incomplete,
+}
+
 pub struct ComponentExecutionHandle {
     fut: Pin<Box<dyn Future<Output = SharedResult<()>> + Send + Sync>>,
 }
@@ -1151,6 +1162,22 @@ impl<Prof: EngineProfile> Component<Prof> {
         context: ComponentProcessorContext<Prof>,
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
+        let run = self
+            .run_in_background_to_completeness(processor, context, on_error)
+            .await?;
+        Ok(ComponentExecutionHandle::new(async move {
+            run.await.map(|_| ())
+        }))
+    }
+
+    /// [`Self::run_in_background`], resolving to whether the run reached every
+    /// component under it.
+    pub(crate) async fn run_in_background_to_completeness(
+        self,
+        processor: Prof::ComponentProc,
+        context: ComponentProcessorContext<Prof>,
+        on_error: Option<OnError>,
+    ) -> Result<impl Future<Output = SharedResult<RunCompleteness>> + Send + Sync + 'static> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
         let started = self.start_task(&context)?;
         self.admit_before_spawn(&context, &started).await?;
@@ -1200,6 +1227,11 @@ impl<Prof: EngineProfile> Component<Prof> {
                     (ComponentRunOutcome::exception(), task_result)
                 }
             };
+            let completeness = if outcome.has_exception {
+                RunCompleteness::Incomplete
+            } else {
+                RunCompleteness::Complete
+            };
             context.admission().finish();
             drop(processor);
             drop(context);
@@ -1210,13 +1242,13 @@ impl<Prof: EngineProfile> Component<Prof> {
             if let Some(guard) = child_readiness_guard {
                 guard.resolve(outcome);
             }
-            task_result
+            task_result.map(|()| completeness)
         });
-        Ok(ComponentExecutionHandle::new(async move {
+        Ok(async move {
             join_handle
                 .await
                 .map_err(|e| SharedError::new(internal_error!("task panicked: {e}")))?
-        }))
+        })
     }
 
     pub fn delete(
