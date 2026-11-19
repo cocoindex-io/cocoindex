@@ -16,6 +16,8 @@ use tracing::error;
 struct CancelOnDropPy {
     inner: BoxFuture<'static, PyResult<Py<PyAny>>>,
     task_ref: Arc<Mutex<Option<Py<PyAny>>>>,
+    /// Shared with the loop callback that creates the task; see its field.
+    dropped: Arc<AtomicBool>,
     event_loop: Py<PyAny>,
     ctx: Py<PyAny>,
     done: AtomicBool,
@@ -42,7 +44,18 @@ impl Drop for CancelOnDropPy {
         if unsafe { pyo3::ffi::Py_IsInitialized() == 0 } {
             return;
         }
-        let task = self.task_ref.lock().unwrap().take();
+        // Set under the task lock: the loop callback checks it under the same
+        // lock before it creates the task, so a drop before the callback ran
+        // (the sync caller still held the GIL) leaves no task behind.
+        let task = {
+            // In `Drop`: a poisoned mutex must not panic here.
+            let mut task_ref = self
+                .task_ref
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.dropped.store(true, Ordering::SeqCst);
+            task_ref.take()
+        };
         if let Some(task) = task {
             Python::attach(|py| {
                 let kwargs = PyDict::new(py);
@@ -71,6 +84,9 @@ struct CreateTaskAndBridge {
     awaitable: Option<Py<PyAny>>,
     result_tx: Option<oneshot::Sender<PyResult<Py<PyAny>>>>,
     task_ref: Arc<Mutex<Option<Py<PyAny>>>>,
+    /// Set by `CancelOnDropPy::drop`; a future dropped before this callback
+    /// ran gets no task, and its coroutine is closed instead of run.
+    dropped: Arc<AtomicBool>,
 }
 
 #[pymethods]
@@ -78,10 +94,50 @@ impl CreateTaskAndBridge {
     fn __call__(&mut self) -> PyResult<()> {
         Python::attach(|py| {
             let awaitable = self.awaitable.take().unwrap();
+            let close_unrun = |awaitable: &Py<PyAny>| -> PyResult<()> {
+                // Nobody awaits the result any more. A coroutine that never
+                // ran is closed, so it neither runs nor warns.
+                if awaitable.bind(py).hasattr(pyo3::intern!(py, "close"))? {
+                    awaitable
+                        .bind(py)
+                        .call_method0(pyo3::intern!(py, "close"))?;
+                }
+                Ok(())
+            };
+            if self.dropped.load(Ordering::SeqCst) {
+                return close_unrun(&awaitable);
+            }
+            // No Python call runs under the task mutex: `ensure_future` can
+            // release the GIL, and a thread dropping the future meanwhile
+            // takes that mutex while holding the GIL.
             let asyncio = py.import(pyo3::intern!(py, "asyncio"))?;
-            let task =
-                asyncio.call_method1(pyo3::intern!(py, "ensure_future"), (awaitable.bind(py),))?;
-            *self.task_ref.lock().unwrap() = Some(task.clone().unbind());
+            let task = match asyncio
+                .call_method1(pyo3::intern!(py, "ensure_future"), (awaitable.bind(py),))
+            {
+                Ok(task) => task,
+                Err(e) => {
+                    // The awaiter sees why, instead of a bare cancellation;
+                    // reported once (not again as a callback error), and the
+                    // never-started coroutine is closed.
+                    if let Some(tx) = self.result_tx.take() {
+                        let _ = tx.send(Err(e));
+                    }
+                    return close_unrun(&awaitable);
+                }
+            };
+            let dropped_meanwhile = {
+                let mut task_ref = self.task_ref.lock().unwrap();
+                if self.dropped.load(Ordering::SeqCst) {
+                    true
+                } else {
+                    *task_ref = Some(task.clone().unbind());
+                    false
+                }
+            };
+            if dropped_meanwhile {
+                task.call_method0(pyo3::intern!(py, "cancel"))?;
+                return Ok(());
+            }
             task.call_method1(
                 pyo3::intern!(py, "add_done_callback"),
                 (TaskResultForwarder {
@@ -124,6 +180,7 @@ pub fn from_py_future<'py, 'fut>(
 
     let (result_tx, result_rx) = oneshot::channel();
     let task_ref: Arc<Mutex<Option<Py<PyAny>>>> = Arc::new(Mutex::new(None));
+    let dropped = Arc::new(AtomicBool::new(false));
 
     // 2) Schedule task creation on the event loop thread (thread-safe).
     //    This avoids calling event_loop.create_task() from a non-event-loop thread,
@@ -136,6 +193,7 @@ pub fn from_py_future<'py, 'fut>(
             awaitable: Some(awaitable.unbind()),
             result_tx: Some(result_tx),
             task_ref: task_ref.clone(),
+            dropped: dropped.clone(),
         },),
         Some(&kwargs),
     )?;
@@ -157,6 +215,7 @@ pub fn from_py_future<'py, 'fut>(
     Ok(CancelOnDropPy {
         inner: fut,
         task_ref,
+        dropped,
         event_loop: event_loop.unbind(),
         ctx: ctx.unbind(),
         done: AtomicBool::new(false),

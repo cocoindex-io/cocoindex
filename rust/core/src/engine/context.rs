@@ -2,8 +2,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cocoindex_utils::fingerprint::Fingerprint;
+use tokio_util::sync::CancellationToken;
 
 use crate::engine::admission::{Admission, AdmissionPool, Lender, UpdateShare};
+use crate::engine::app_lock::{AppOpLock, AppOpLockSlot};
 use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup};
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::id_sequencer::IdSequencerManager;
@@ -50,7 +52,7 @@ struct AppContextInner<Prof: EngineProfile> {
     /// it can be replaced with a fresh child of the global token after a
     /// previous cancellation (e.g. after `App::drop_app` finishes), allowing
     /// the same `App` instance to be reused for subsequent operations.
-    cancellation_token: std::sync::Mutex<tokio_util::sync::CancellationToken>,
+    cancellation_token: std::sync::Mutex<CancellationToken>,
 
     /// Flat registry of all live components mounted under this app.
     /// `mount_live_async` registers (compacts then pushes) before returning;
@@ -70,6 +72,10 @@ struct AppContextInner<Prof: EngineProfile> {
     /// state only, not in the environment's registry, so `App::drop_app`
     /// adds these to revert the target states they own.
     run_root_providers: parking_lot::Mutex<HashMap<TargetStatePath, TargetStateProvider<Prof>>>,
+
+    /// The cross-process lock an update or drop of this app holds; see
+    /// [`crate::engine::app_lock`].
+    op_lock: Arc<AppOpLockSlot>,
 }
 
 #[derive(Clone)]
@@ -84,6 +90,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         app_reg: AppRegistration<Prof>,
         max_inflight_components: Option<usize>,
     ) -> Self {
+        let op_lock = env.app_op_lock(app_reg.name());
         Self {
             inner: Arc::new(AppContextInner {
                 env,
@@ -97,8 +104,45 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                 ),
                 live_components: parking_lot::Mutex::new(Vec::new()),
                 run_root_providers: parking_lot::Mutex::new(HashMap::new()),
+                op_lock,
             }),
         }
+    }
+
+    /// Start an `App::update` of this app: take (or share this process's
+    /// hold on) the cross-process lock on updating it, unless the update is a
+    /// preview, which writes nothing. Its token is a child of the app's:
+    /// dropping the app or cancelling every operation stops it.
+    pub(crate) fn begin_update(&self, preview: bool) -> Result<OperationStart> {
+        let lock = if preview {
+            None
+        } else {
+            Some(self.inner.op_lock.acquire()?)
+        };
+        // Refresh the app token if a prior operation (e.g. a drop) cancelled
+        // it, so this update starts with a token that is not cancelled.
+        self.reset_cancellation_token_if_cancelled();
+        Ok(Operation::start(
+            self.cancellation_token().child_token(),
+            lock,
+        ))
+    }
+
+    /// Start an `App::drop_app` of this app, under the cross-process lock. A
+    /// drop cancels the app's token to stop the app's other operations, so
+    /// its own token hangs off the global one instead.
+    pub(crate) fn begin_drop(&self) -> Result<OperationStart> {
+        let lock = self.inner.op_lock.acquire()?;
+        Ok(Operation::start(
+            crate::engine::runtime::global_cancellation_token().child_token(),
+            Some(lock),
+        ))
+    }
+
+    /// The app is dropped: remove its lock file once the drop's work ends
+    /// (see [`AppOpLockSlot::remove_on_last_release`]).
+    pub(crate) fn remove_op_lock_file_on_release(&self) {
+        self.inner.op_lock.remove_on_last_release();
     }
 
     /// Remember root providers a run registered; see `run_root_providers`.
@@ -188,7 +232,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     ///
     /// The clone stays valid even if the slot is later refreshed via
     /// `reset_cancellation_token_if_cancelled`.
-    pub fn cancellation_token(&self) -> tokio_util::sync::CancellationToken {
+    pub fn cancellation_token(&self) -> CancellationToken {
         self.inner.cancellation_token.lock().unwrap().clone()
     }
 
@@ -491,7 +535,7 @@ pub enum FnCallMemoEntry<Prof: EngineProfile> {
 }
 
 /// In-memory cache of all function-memoization entries for a single
-/// component build. Populated by [`Self::prefetch`] (one prefix scan over
+/// component build. Populated by [`ComponentProcessorContext::prefetch_states`] (one prefix scan over
 /// the storage layer) at the start of build mode, then serves every
 /// subsequent fn-memo lookup in memory. New entries from cache-miss
 /// executions accumulate here; [`Self::into_flush_plan`] produces the diff
@@ -740,7 +784,7 @@ enum UserStateEntry<D> {
 /// Mirrors the `FnMemoCache` pattern: `populate` fills it from a
 /// standalone read at build start, then `use_state` / `update_declared`
 /// accumulate the declared states, and `into_flush_plan` produces the diff
-/// that is applied atomically via [`CommitPlan`].
+/// that is applied atomically via [`CommitPlan`](crate::state_store::CommitPlan).
 /// At flush time only keys re-declared or newly declared by the user
 /// during this build through use_state() survive: `Declared` entries are
 /// written to DB and `Loaded` entries (present in the previous build but
@@ -826,7 +870,7 @@ impl<D: Persist + Clone> UserStateCache<D> {
         }
     }
 
-    /// Drain the cache into a serialized plan for inclusion in [`CommitPlan`].
+    /// Drain the cache into a serialized plan for inclusion in [`CommitPlan`](crate::state_store::CommitPlan).
     /// Mirrors [`FnMemoCache::into_flush_plan`]. Serialization of each surviving
     /// `Declared` value to bytes happens here — once per key, at commit time.
     pub(crate) fn into_flush_plan(self) -> Result<UserStateFlushPlan> {
@@ -855,7 +899,7 @@ impl<D: Persist + Clone> UserStateCache<D> {
 }
 
 /// Serialized diff produced by [`UserStateCache::into_flush_plan`].
-/// Included in [`CommitPlan`] so the AppStore can apply it atomically.
+/// Included in [`CommitPlan`](crate::state_store::CommitPlan) so the AppStore can apply it atomically.
 pub(crate) struct UserStateFlushPlan {
     pub(crate) clear_all_first: bool,
     pub(crate) writes: Vec<(StableKey, Vec<u8>)>,
@@ -905,6 +949,94 @@ impl UpdateRefusal {
     pub(crate) fn take(&self) -> Option<String> {
         self.0.lock().take()
     }
+}
+
+/// One `App::update` (a preview included) or `App::drop_app`, and what every
+/// context of it shares: the contexts of its children, of the deletes its
+/// commits launch, and of the runs of the live components it mounts (whose
+/// [`LiveComponentState`](crate::engine::live_component::LiveComponentState)
+/// holds it too).
+///
+/// The operation's hold on the app's cross-process lock belongs to its work,
+/// not to the operation: every task of the work holds an [`OperationWork`],
+/// and the hold ends when the last of them does, however the operation ends.
+/// A cancelled operation keeps the lock until its tasks, which race its token,
+/// have stopped; a context a host keeps after that (a Python object can
+/// outlive its run) keeps no lock.
+pub(crate) struct Operation {
+    /// Cancels this operation alone; see
+    /// [`ComponentProcessorContext::cancellation_token`].
+    cancellation_token: CancellationToken,
+    /// See [`UpdateRefusal`].
+    update_refusal: UpdateRefusal,
+    /// The hold on the app's lock while the operation's work lasts; `None`
+    /// for a preview, which takes no lock. The work holds it strongly.
+    lock: Option<std::sync::Weak<AppOpLock>>,
+}
+
+/// An operation just started, and the first piece of its work: the
+/// operation's own task holds it until it ends.
+pub(crate) struct OperationStart {
+    pub(crate) operation: Arc<Operation>,
+    pub(crate) work: OperationWork,
+}
+
+/// A task's part in its operation's work, held for as long as the task runs:
+/// the operation's own task, each component run and delete, a live
+/// component's `process_live` task and its drain tasks, and a live
+/// component's direct writes. It keeps the operation's hold on the app's lock.
+pub(crate) struct OperationWork {
+    _lock: Option<Arc<AppOpLock>>,
+}
+
+impl Operation {
+    fn start(cancellation_token: CancellationToken, lock: Option<AppOpLock>) -> OperationStart {
+        let lock = lock.map(Arc::new);
+        let operation = Arc::new(Self {
+            cancellation_token,
+            update_refusal: UpdateRefusal::default(),
+            lock: lock.as_ref().map(Arc::downgrade),
+        });
+        OperationStart {
+            operation,
+            work: OperationWork { _lock: lock },
+        }
+    }
+
+    pub(crate) fn cancellation_token(&self) -> &CancellationToken {
+        &self.cancellation_token
+    }
+
+    pub(crate) fn update_refusal(&self) -> &UpdateRefusal {
+        &self.update_refusal
+    }
+
+    /// Take part in the operation's work. `None` once its work is over (every
+    /// task of a locked operation has ended): work started then would run
+    /// outside the operation, without its lock. A preview's work is never
+    /// over this way; it holds no lock.
+    pub(crate) fn work(&self) -> Option<OperationWork> {
+        match &self.lock {
+            None => Some(OperationWork { _lock: None }),
+            Some(lock) => lock
+                .upgrade()
+                .map(|lock| OperationWork { _lock: Some(lock) }),
+        }
+    }
+
+    /// An operation that holds no lock, for tests that build contexts by hand.
+    #[cfg(test)]
+    pub(crate) fn unlocked_for_test() -> Arc<Self> {
+        Self::start(CancellationToken::new(), None).operation
+    }
+}
+
+/// Where a new [`ComponentProcessorContext`] belongs.
+pub(crate) enum ContextParent<'a, Prof: EngineProfile> {
+    /// The root run of an operation.
+    Root(Arc<Operation>),
+    /// A run inside its parent's run, and so inside its operation.
+    Child(&'a ComponentProcessorContext<Prof>),
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
@@ -998,15 +1130,12 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     operation_generation: u64,
     /// See [`ComponentProcessorContext::data_dep_verdicts`].
     data_dep_verdicts: Arc<DataDepVerdicts>,
+    /// The operation this context belongs to.
+    operation: Arc<Operation>,
 
     /// This run's in-flight token and the lender its children borrow from;
     /// see [`crate::engine::admission`].
     admission: Admission,
-
-    /// Where a run of this update records that it refused a change for the
-    /// selector's sake (see [`UpdateRefusal`]). One per update: every context
-    /// of the update shares it, live components' runs included.
-    update_refusal: UpdateRefusal,
 
     /// This run's selector left out a child it mounted or one the store holds,
     /// so this subtree is not up to date when the run ends. Set by a mount, by
@@ -1050,16 +1179,20 @@ pub struct ComponentProcessorContext<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
-    /// A context whose run borrows its in-flight token from `parent_context`'s
-    /// run and belongs to its update. Without a parent, the run is an
-    /// app-level update of its own.
+    /// A context whose run borrows its in-flight token from its parent's
+    /// run and belongs to its operation, or, for a root, the root run of
+    /// `operation`.
     pub(crate) fn new(
         component: Component<Prof>,
-        parent_context: Option<ComponentProcessorContext<Prof>>,
+        parent: ContextParent<'_, Prof>,
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
     ) -> Self {
+        let (parent_context, operation) = match parent {
+            ContextParent::Root(operation) => (None, operation),
+            ContextParent::Child(parent) => (Some(parent.clone()), parent.operation().clone()),
+        };
         let (lender, share) = match &parent_context {
             Some(parent) => (
                 Some(parent.admission().lender().clone()),
@@ -1090,7 +1223,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             host_ctx,
             processing_action,
             app_store,
-            None,
+            operation,
         )
     }
 
@@ -1098,7 +1231,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// is an update of its own (`share`, from the live component's share).
     /// It borrows its in-flight token from `lender`, the run that mounted the
     /// live component, for as long as that run lasts, and reads and writes
-    /// the store through `app_store`, that run's handle.
+    /// the store through `app_store`, that run's handle. It belongs to
+    /// `operation`, the operation that mounted the live component.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_borrowing_from(
         component: Component<Prof>,
@@ -1108,7 +1242,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
         app_store: AppStore,
-        update_refusal: UpdateRefusal,
+        operation: Arc<Operation>,
     ) -> Self {
         Self::from_parts(
             component,
@@ -1118,7 +1252,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             host_ctx,
             processing_action,
             app_store,
-            Some(update_refusal),
+            operation,
         )
     }
 
@@ -1131,13 +1265,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
         app_store: AppStore,
-        update_refusal: Option<UpdateRefusal>,
+        operation: Arc<Operation>,
     ) -> Self {
-        let update_refusal = match (&parent_context, update_refusal) {
-            (Some(parent), _) => parent.update_refusal().clone(),
-            (None, Some(update_refusal)) => update_refusal,
-            (None, None) => UpdateRefusal::default(),
-        };
         let operation_generation = match &parent_context {
             Some(parent) => parent.operation_generation(),
             None => component.app_ctx().next_operation_generation(),
@@ -1154,8 +1283,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 app_store,
                 operation_generation,
                 data_dep_verdicts,
+                operation,
                 admission,
-                update_refusal,
                 left_out_children: Arc::new(AtomicBool::new(false)),
                 logic_deps: Mutex::new(HashSet::new()),
                 data_deps: Mutex::new(DataDeps::default()),
@@ -1482,10 +1611,12 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
-    /// Generation of the operation this context belongs to. A context created
+    /// Generation of the run tree this context belongs to. A context created
     /// without a parent — the root of an `App::update` or `App::drop_app`, or
-    /// a live component's own cycle — starts a new operation; children inherit
-    /// their parent's. So two runs of one component share a generation exactly
+    /// a live component's own cycle — starts a new generation; children inherit
+    /// their parent's. (A live component's cycle belongs to the [`Operation`]
+    /// that mounted the component, but is a generation of its own: each cycle
+    /// is a fresh pass.) So two runs of one component share a generation exactly
     /// when the same operation started both, which is how `full_reprocess`
     /// tells a memo stored earlier in the same operation (that operation's own
     /// execution) from one left behind by a previous run (a cache it must
@@ -1502,6 +1633,21 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// verdicts to itself.
     pub fn data_dep_verdicts(&self) -> &Arc<DataDepVerdicts> {
         &self.inner.data_dep_verdicts
+    }
+
+    /// The token that cancels the operation this context belongs to. An
+    /// operation's runs race their work against it, so cancelling it stops
+    /// that one operation (an `App::update`, or the live components it
+    /// mounted) and leaves the app's other operations running. Cancelling
+    /// the app's token (`App::drop_app`) or the global one (`cancel_all`)
+    /// cancels it too.
+    pub(crate) fn cancellation_token(&self) -> &CancellationToken {
+        self.inner.operation.cancellation_token()
+    }
+
+    /// The operation this context belongs to; see [`Operation`].
+    pub(crate) fn operation(&self) -> &Arc<Operation> {
+        &self.inner.operation
     }
 
     /// The collector of a preview run's actions; see
@@ -1529,8 +1675,11 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             .is_some_and(|selector| !selector.selects_everything())
     }
 
+    /// Where a run of this update records that it refused a change for the
+    /// selector's sake (see [`UpdateRefusal`]). One per update: every context
+    /// of the update shares it, live components' runs included.
     pub(crate) fn update_refusal(&self) -> &UpdateRefusal {
-        &self.inner.update_refusal
+        self.inner.operation.update_refusal()
     }
 
     pub(crate) fn mark_left_out_children(&self) {
@@ -1850,6 +1999,36 @@ impl FnCallContext {
 
 #[cfg(test)]
 mod tests {
+    use super::Operation;
+    use crate::engine::app_lock::{AppOpLockSlot, other_process};
+
+    /// An operation's hold on the app's lock lasts while any part of its work
+    /// does: past the end of the part it started with (its own task), and no
+    /// longer than the last part. After that, it takes no new part.
+    #[test]
+    fn an_operations_lock_lasts_while_any_of_its_work_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot = AppOpLockSlot::for_app(dir.path(), "app");
+        let start = Operation::start(
+            tokio_util::sync::CancellationToken::new(),
+            Some(slot.acquire().unwrap()),
+        );
+        let child_task = start.operation.work().expect("the work runs");
+        drop(start.work);
+        assert!(
+            other_process::try_acquire(dir.path(), "app").is_err(),
+            "a child task still runs"
+        );
+        drop(child_task);
+        drop(other_process::try_acquire(dir.path(), "app").expect("the work is over"));
+        assert!(start.operation.work().is_none());
+
+        // A preview holds no lock, and its work is never refused.
+        let preview = Operation::start(tokio_util::sync::CancellationToken::new(), None);
+        drop(preview.work);
+        assert!(preview.operation.work().is_some());
+    }
+
     use super::{UserStateCache, UserStateEntry};
     use crate::engine::profile::Persist;
     use crate::state::db_schema::StateKind;

@@ -141,7 +141,9 @@ def _run_async_cmd(coro_fn: Any, *, quiet: bool = False) -> None:
         _core.reset_global_cancellation()
         try:
             await coro_fn(cancelled=lambda: cancelled)
-        except Exception:
+        except (Exception, asyncio.CancelledError):
+            # After Ctrl+C the interrupted operation fails as cancelled
+            # (`asyncio.CancelledError`, a `BaseException`): a clean stop.
             if not cancelled:
                 raise
 
