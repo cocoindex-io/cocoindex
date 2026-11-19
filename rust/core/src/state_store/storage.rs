@@ -380,11 +380,8 @@ impl Storage {
             Ok(env) => env,
             Err(heed::Error::EnvAlreadyOpened) => internal_bail!(
                 "the database at '{}' is already open in this process; close the \
-                 environment that holds it (`Environment.close()` in Python, \
-                 `Environment::shutdown()` in Rust), or drop it along with everything \
-                 bound to it (its apps, and in Python its AppConfigs and \
-                 ContextProvider) and let in-flight operations finish, before opening \
-                 it again",
+                 environment that holds it, or drop it along with everything bound \
+                 to it and let in-flight operations finish, before opening it again",
                 settings.db_path.display()
             ),
             Err(e) => return Err(e.into()),
@@ -939,7 +936,10 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("already open"), "{message}");
-        assert!(message.contains("Environment.close()"), "{message}");
+        assert!(
+            message.contains("close the environment that holds it"),
+            "{message}"
+        );
 
         storage.close().await;
     }

@@ -119,10 +119,10 @@ There is no implicit default environment: an `App` always comes from an `Environ
 An environment holds its database open, and LMDB allows one environment per `db_path` per process. An explicit environment's store is released when the last reference to it is gone: the environment itself, the Apps and `AppConfig`s bound to it, its `ContextProvider`, and any operations still finishing. Until then, opening the same `db_path` again fails:
 
 ```text
-RuntimeError: the database at 'my_db.db' is already open in this process; close the environment that holds it (`Environment.close()` in Python, `Environment::shutdown()` in Rust), or drop it along with everything bound to it (its apps, and in Python its AppConfigs and ContextProvider) and let in-flight operations finish, before opening it again
+RuntimeError: the database at 'my_db.db' is already open in this process; close the environment that holds it, or drop it along with everything bound to it and let in-flight operations finish, before opening it again
 ```
 
-Call `env.close()` once you're done with it to release the database without waiting for those references:
+"Everything bound to it" is the environment's Apps, `AppConfig`s and `ContextProvider`. Call `env.close()` once you're done with it to release the database without waiting for those references:
 
 </Lang>
 
