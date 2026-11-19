@@ -8,7 +8,7 @@ use std::sync::Weak;
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{
     AppContext, ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
-    MemoStatesPayload, PreviewActionCollector,
+    ContextParent, MemoStatesPayload, Operation, OperationWork, PreviewActionCollector,
 };
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
@@ -236,6 +236,9 @@ struct StartedTask<Prof: EngineProfile> {
     run: RunGuard<Prof>,
     /// Registration with the parent's readiness accumulator; `None` for the root.
     child_readiness: Option<ComponentBgChildReadinessChildGuard>,
+    /// The task's part in its operation's work (which holds the operation's
+    /// lock on the app); dropped before `run` and `activity`.
+    work: OperationWork,
 }
 
 impl<Prof: EngineProfile> Drop for ActivityGuard<Prof> {
@@ -572,7 +575,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         // the parent component (or outer group) waits for it as a unit.
         let parent_guard = self.components_readiness().clone().add_child(None);
 
-        let cancel_token = self.app_ctx().cancellation_token();
+        let cancel_token = self.cancellation_token().clone();
         let live = self.live();
         let lifecycle_group = group.clone();
         get_runtime().spawn(async move {
@@ -921,7 +924,16 @@ impl<Prof: EngineProfile> Component<Prof> {
     /// prune it before its task had started); readiness and membership are
     /// registered together, so a group can never see a member become ready
     /// without also tracking its activity.
+    ///
+    /// A task of an operation whose work is over is refused, as the caller's
+    /// mistake: it would run outside the operation, without its lock on the
+    /// app (a host may start one from a context it kept).
     fn start_task(&self, context: &ComponentProcessorContext<Prof>) -> Result<StartedTask<Prof>> {
+        let work = context.operation().work().ok_or_else(|| {
+            Error::client(
+                "the update this context belongs to has ended; mount from a running update",
+            )
+        })?;
         let activity = ActivityGuard::new(self.clone());
         let run = RunGuard::new(self.clone());
         let child_readiness = match context.parent_context() {
@@ -941,6 +953,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             activity,
             run,
             child_readiness,
+            work,
         })
     }
 
@@ -993,7 +1006,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             selector.classify(self.stable_path()) == ComponentSelection::Unselected
         });
         let child_ctx = self.new_processor_context_for_build(
-            Some(parent_ctx),
+            ContextParent::Child(parent_ctx),
             parent_ctx.processing_stats().clone(),
             parent_ctx.full_reprocess() && !unselected,
             parent_ctx.live(), // use_mount inherits live from parent
@@ -1035,7 +1048,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         // same handler is also passed to `run_in_background` for the
         // child's own task failure — one handler, two surfaces.
         let child_ctx = self.new_processor_context_for_build(
-            Some(parent_ctx),
+            ContextParent::Child(parent_ctx),
             parent_ctx.processing_stats().clone(),
             parent_ctx.full_reprocess(),
             parent_ctx.live(), // mount inherits live from parent
@@ -1146,19 +1159,20 @@ impl<Prof: EngineProfile> Component<Prof> {
             activity,
             run,
             child_readiness: child_readiness_guard,
+            work,
         } = started;
 
         let relative_path = self.relative_path()?;
         let span = info_span!("component.run", component_path = %relative_path);
-        let cancel_token = self.app_ctx().cancellation_token();
+        let cancel_token = context.cancellation_token().clone();
         let join_handle = get_runtime().spawn(
             async move {
-                // Race the work against app-level cancellation. On cancel, the
+                // Race the work against the operation's cancellation. On cancel, the
                 // work future is dropped, which cascades drop into from_py_future
                 // → CancelOnDropPy and cancels the underlying Python task.
                 let result = tokio::select! {
                     r = self.execute_once(&context, Some(&processor), deadline) => r,
-                    _ = cancel_token.cancelled() => Err(internal_error!("operation cancelled")),
+                    _ = cancel_token.cancelled() => Err(Error::cancelled()),
                 };
                 let (outcome, output) = match result {
                     Ok((outcome, output)) => (outcome, Ok(output)),
@@ -1170,6 +1184,9 @@ impl<Prof: EngineProfile> Component<Prof> {
                 drop(processor);
                 drop(context);
                 drop(self);
+                // The operation's work goes on without this task: its hold
+                // on the app's lock may end, before the task counts as over.
+                drop(work);
                 // Mark the task over before readiness resolves, so whoever
                 // observes readiness also observes the component as inactive.
                 drop(run);
@@ -1217,17 +1234,18 @@ impl<Prof: EngineProfile> Component<Prof> {
             activity,
             run,
             child_readiness: child_readiness_guard,
+            work,
         } = started;
 
-        let cancel_token = self.app_ctx().cancellation_token();
+        let cancel_token = context.cancellation_token().clone();
         let join_handle = get_runtime().spawn(async move {
-            // Race the work against app-level cancellation. On cancel, the
+            // Race the work against the operation's cancellation. On cancel, the
             // work future is dropped, which cascades drop into from_py_future
             // → CancelOnDropPy and cancels the underlying Python task.
             let result = tokio::select! {
                 // Background components are deadline-isolated by design.
                 r = self.execute_once(&context, Some(&processor), DeadlineContext::NONE) => r,
-                _ = cancel_token.cancelled() => Err(internal_error!("operation cancelled")),
+                _ = cancel_token.cancelled() => Err(Error::cancelled()),
             };
             // Background-style error handling:
             // - Cancellation is always swallowed (no handler call, no
@@ -1244,7 +1262,10 @@ impl<Prof: EngineProfile> Component<Prof> {
             let (outcome, task_result) = match result {
                 Ok((outcome, _)) => (outcome, Ok(())),
                 Err(err) => {
-                    let task_result = if cancel_token.is_cancelled() || err.is_cancelled() {
+                    // An error that only happens because the operation was
+                    // cancelled (a wrapped child cancellation, a connection
+                    // closed by teardown) is part of the stop, not a failure.
+                    let task_result = if err.is_cancelled() || cancel_token.is_cancelled() {
                         trace!("component build cancelled");
                         Ok(())
                     } else if let Some(handler) = &on_error {
@@ -1268,7 +1289,8 @@ impl<Prof: EngineProfile> Component<Prof> {
             drop(processor);
             drop(context);
             drop(self);
-            // See `run` for why this precedes readiness resolution.
+            // See `run` for the order of these.
+            drop(work);
             drop(run);
             drop(activity);
             if let Some(guard) = child_readiness_guard {
@@ -1295,18 +1317,25 @@ impl<Prof: EngineProfile> Component<Prof> {
             activity,
             run,
             child_readiness: child_readiness_guard,
+            work,
         } = self.start_task(&context)?;
         // Pull on_error out of the delete context so the spawned task
         // can invoke it. The context still carries the same handler for
         // descendant GC sweeps to read and cascade.
         let on_error = context.delete_action_on_error();
+        let cancel_token = context.cancellation_token().clone();
         let join_handle: tokio::task::JoinHandle<SharedResult<()>> =
             get_runtime().spawn(async move {
                 trace!("deleting component at {}", self.stable_path());
+                // Race the delete against the operation's cancellation, as a
+                // run does: a cancelled operation (a drop, or the update whose
+                // commit launched the delete) stops its deletes too. The
+                // tombstone stays, so the next reconcile deletes again.
                 // Delete/GC runs must never be deadline-bounded.
-                let result = self
-                    .execute_once(&context, None, DeadlineContext::NONE)
-                    .await;
+                let result = tokio::select! {
+                    r = self.execute_once(&context, None, DeadlineContext::NONE) => r,
+                    _ = cancel_token.cancelled() => Err(Error::cancelled()),
+                };
                 // Same error model as `run_in_background`: cancellation
                 // filtered; with-handler delegates propagation to the
                 // handler's Result (Ok = swallow, Err = propagate);
@@ -1314,7 +1343,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 let (outcome, task_result) = match result {
                     Ok((outcome, _)) => (outcome, Ok(())),
                     Err(err) => {
-                        let task_result = if err.is_cancelled() {
+                        let task_result = if err.is_cancelled() || cancel_token.is_cancelled() {
                             trace!("component delete cancelled");
                             Ok(())
                         } else if let Some(handler) = &on_error {
@@ -1337,7 +1366,8 @@ impl<Prof: EngineProfile> Component<Prof> {
                 context.admission().finish();
                 drop(context);
                 drop(self);
-                // See `run` for why this precedes readiness resolution.
+                // See `run` for the order of these.
+                drop(work);
                 drop(run);
                 drop(activity);
                 if let Some(guard) = child_readiness_guard {
@@ -1768,9 +1798,9 @@ impl<Prof: EngineProfile> Component<Prof> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn new_processor_context_for_build(
+    pub(crate) fn new_processor_context_for_build(
         &self,
-        parent_ctx: Option<&ComponentProcessorContext<Prof>>,
+        parent: ContextParent<'_, Prof>,
         processing_stats: ProcessingStats,
         full_reprocess: bool,
         live: bool,
@@ -1779,7 +1809,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         on_error: Option<OnError>,
         component_selector: Option<ComponentSelector>,
     ) -> Result<ComponentProcessorContext<Prof>> {
-        let providers = if let Some(parent_ctx) = parent_ctx {
+        let providers = if let ContextParent::Child(parent_ctx) = &parent {
             let sub_path = self
                 .stable_path()
                 .as_ref()
@@ -1805,7 +1835,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         };
         Ok(ComponentProcessorContext::new(
             self.clone(),
-            parent_ctx.cloned(),
+            parent,
             processing_stats,
             host_ctx,
             ComponentProcessingAction::new_build(
@@ -1819,17 +1849,36 @@ impl<Prof: EngineProfile> Component<Prof> {
         ))
     }
 
+    /// A delete of this component inside its parent's operation.
     pub fn new_processor_context_for_delete(
         &self,
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
-        parent_ctx: Option<&ComponentProcessorContext<Prof>>,
+        parent_ctx: &ComponentProcessorContext<Prof>,
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         on_error: Option<OnError>,
     ) -> ComponentProcessorContext<Prof> {
         ComponentProcessorContext::new(
             self.clone(),
-            parent_ctx.cloned(),
+            ContextParent::Child(parent_ctx),
+            processing_stats,
+            host_ctx,
+            ComponentProcessingAction::new_delete(providers, on_error),
+        )
+    }
+
+    /// The root delete of an app drop, `operation`.
+    pub(crate) fn new_processor_context_for_drop(
+        &self,
+        operation: Arc<Operation>,
+        providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+        processing_stats: ProcessingStats,
+        host_ctx: Arc<Prof::HostCtx>,
+        on_error: Option<OnError>,
+    ) -> ComponentProcessorContext<Prof> {
+        ComponentProcessorContext::new(
+            self.clone(),
+            ContextParent::Root(operation),
             processing_stats,
             host_ctx,
             ComponentProcessingAction::new_delete(providers, on_error),
@@ -1844,9 +1893,10 @@ mod tests {
         ComponentProcessorInfo, ComponentRunOutcome, StatsGroup,
     };
     use crate::engine::app::{App, AppUpdateOptions};
+    use crate::engine::app_lock::other_process;
     use crate::engine::context::{
-        ComponentProcessingAction, ComponentProcessorContext, FnCallContext, MemoStatesPayload,
-        PreviewActionCollector,
+        ComponentProcessingAction, ComponentProcessorContext, ContextParent, FnCallContext,
+        MemoStatesPayload, Operation, PreviewActionCollector,
     };
     use crate::engine::deadline::{
         DeadlineContext, testing_advance_deadline_clock, testing_deadline_clock_lock,
@@ -2022,12 +2072,36 @@ mod tests {
     /// provides a `CountingHandler` counting into the given counter for every
     /// child-bearing action, in the given way: from `child_handlers` or by
     /// fulfilling the slots in `apply`. With `failing`, `apply` fails (after
-    /// counting) while the flag is set.
+    /// counting) while the flag is set. With `blocking`, `apply` blocks for
+    /// good while it is enabled. With `recording`, `apply` appends the given
+    /// name to the given list.
     #[derive(Default)]
     struct NoopSink {
         apply_calls: Arc<AtomicUsize>,
         children: Option<(ChildHandling, Arc<AtomicUsize>)>,
         failing: Option<Arc<AtomicBool>>,
+        blocking: Option<Arc<BlockingApply>>,
+        recording: Option<(Arc<Mutex<Vec<String>>>, String)>,
+    }
+
+    /// Makes a [`NoopSink`]'s `apply` block for good while `enabled`: it
+    /// notifies `started` when it blocks and `stopped` when the blocked call
+    /// is dropped (its run was cancelled).
+    #[derive(Default)]
+    struct BlockingApply {
+        enabled: AtomicBool,
+        started: tokio::sync::Notify,
+        stopped: Arc<tokio::sync::Notify>,
+    }
+
+    /// Notifies on drop; `notify_one` keeps the wake-up for a waiter that
+    /// comes later.
+    struct NotifyOnDrop(Arc<tokio::sync::Notify>);
+
+    impl Drop for NotifyOnDrop {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
     }
 
     impl NoopSink {
@@ -2037,7 +2111,7 @@ mod tests {
             let sink = Self {
                 apply_calls: apply_calls.clone(),
                 children: Some((child_handling, child_reconcile_calls.clone())),
-                failing: None,
+                ..Default::default()
             };
             (sink, apply_calls, child_reconcile_calls)
         }
@@ -2078,6 +2152,16 @@ mod tests {
             actions: &[TargetActionWithChildSlot<TestProfile>],
         ) -> crate::prelude::Result<()> {
             self.apply_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some((applied, name)) = &self.recording {
+                applied.lock().unwrap().push(name.clone());
+            }
+            if let Some(blocking) = &self.blocking
+                && blocking.enabled.load(Ordering::SeqCst)
+            {
+                let _stopped = NotifyOnDrop(blocking.stopped.clone());
+                blocking.started.notify_one();
+                std::future::pending::<()>().await;
+            }
             if let Some(failing) = &self.failing
                 && failing.load(Ordering::SeqCst)
             {
@@ -2369,6 +2453,100 @@ mod tests {
         (app, dir)
     }
 
+    /// Cancelling an update's token stops that update and the child
+    /// components it mounted, and leaves another update of the same app
+    /// running: the token belongs to the operation, not to the app.
+    #[tokio::test]
+    async fn cancelling_an_update_stops_it_and_its_children_but_not_another_update() {
+        let (app, _dir) = test_app("cancel_one_update").await;
+        let child_started = Arc::new(tokio::sync::Notify::new());
+        let child_dropped = Arc::new(tokio::sync::Notify::new());
+
+        let child = {
+            let child_started = child_started.clone();
+            let child_dropped = child_dropped.clone();
+            TestProcessor::new(
+                "child",
+                Fingerprint::from(&"cancel_one_update/child").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .without_memo()
+            .with_on_process(Arc::new(move |_ctx| {
+                let child_started = child_started.clone();
+                let guard = NotifyOnDrop(child_dropped.clone());
+                Box::pin(async move {
+                    let _guard = guard;
+                    child_started.notify_one();
+                    std::future::pending::<()>().await;
+                    unreachable!()
+                })
+            }))
+        };
+        let child = Arc::new(Mutex::new(Some(child)));
+        let blocked_root = TestProcessor::new(
+            "root",
+            Fingerprint::from(&"cancel_one_update/root").unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .without_memo()
+        .with_on_process(Arc::new(move |ctx| {
+            let child = child.lock().unwrap().take().expect("root runs once");
+            Box::pin(async move {
+                let component = ctx.component().mount_child(
+                    &FnCallContext::new(true),
+                    key_path(ctx.component(), "child"),
+                )?;
+                let handle = component
+                    .use_mount(&ctx, child, DeadlineContext::NONE)
+                    .await?;
+                handle.result(Some(&ctx)).await
+            })
+        }));
+
+        let (cancelled, _) = app
+            .update(
+                blocked_root,
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), child_started.notified())
+            .await
+            .expect("the child starts");
+
+        // A second update of the same app, started while the first runs.
+        let other_root = TestProcessor::new(
+            "root",
+            Fingerprint::from(&"cancel_one_update/other").unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .without_memo();
+        let (other, _) = app
+            .update(other_root, AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+
+        cancelled.cancellation_token().cancel();
+        let err = tokio::time::timeout(Duration::from_secs(10), cancelled.result())
+            .await
+            .expect("a cancelled update ends promptly")
+            .expect_err("a cancelled update fails");
+        assert!(err.is_cancelled(), "{err:?}");
+        tokio::time::timeout(Duration::from_secs(10), child_dropped.notified())
+            .await
+            .expect("the cancelled update's child component is cancelled too");
+
+        let value = tokio::time::timeout(Duration::from_secs(10), other.result())
+            .await
+            .expect("the other update ends")
+            .expect("the other update is not cancelled");
+        assert_eq!(value, TestData(b"ret".to_vec()));
+        assert!(!app.app_ctx().cancellation_token().is_cancelled());
+    }
+
     /// Every run in a chain of `use_mount`s borrows its parent's in-flight
     /// token, so a hierarchy of any depth completes on a single pool token.
     #[tokio::test]
@@ -2493,7 +2671,7 @@ mod tests {
                     assert_eq!(pool.available_tokens(), Some(0));
                     let second_ctx = ComponentProcessorContext::new(
                         child.clone(),
-                        Some(ctx.clone()),
+                        ContextParent::Child(&ctx),
                         ctx.processing_stats().clone(),
                         ctx.host_ctx().clone(),
                         ComponentProcessingAction::new_build(
@@ -2634,7 +2812,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 let second_ctx = ComponentProcessorContext::new(
                     child.clone(),
-                    Some(ctx.clone()),
+                    ContextParent::Child(&ctx),
                     ctx.processing_stats().clone(),
                     ctx.host_ctx().clone(),
                     ComponentProcessingAction::new_build(
@@ -2946,7 +3124,7 @@ mod tests {
                         .await?;
                     let second_ctx = ComponentProcessorContext::new(
                         child.clone(),
-                        Some(ctx.clone()),
+                        ContextParent::Child(&ctx),
                         ctx.processing_stats().clone(),
                         ctx.host_ctx().clone(),
                         ComponentProcessingAction::new_build(
@@ -3223,7 +3401,7 @@ mod tests {
         let collector = PreviewActionCollector::<TestProfile>::default();
         let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
             .new_processor_context_for_build(
-                None,
+                ContextParent::Root(Operation::unlocked_for_test()),
                 ProcessingStats::new(),
                 false,
                 false,
@@ -3316,7 +3494,7 @@ mod tests {
         let collector = PreviewActionCollector::<TestProfile>::default();
         let root = Component::new(app.app_ctx().clone(), StablePath::root(), None)
             .new_processor_context_for_build(
-                None,
+                ContextParent::Root(Operation::unlocked_for_test()),
                 ProcessingStats::new(),
                 false,
                 false,
@@ -3351,7 +3529,7 @@ mod tests {
                 .get_child(StablePath::root().concat_part(StableKey::Str(Arc::from(name))));
             let ctx = child
                 .new_processor_context_for_build(
-                    Some(&root),
+                    ContextParent::Child(&root),
                     ProcessingStats::new(),
                     false,
                     false,
@@ -3535,6 +3713,7 @@ mod tests {
                     apply_calls: apply_calls.clone(),
                     children: None,
                     failing: None,
+                    ..Default::default()
                 });
                 let reconcile_calls = reconcile_calls.clone();
                 Box::pin(async move {
@@ -3606,6 +3785,7 @@ mod tests {
                     apply_calls: apply_calls.clone(),
                     children: None,
                     failing: None,
+                    ..Default::default()
                 });
                 Box::pin(async move {
                     let provider = register_root_target_state_provider(
@@ -3766,7 +3946,7 @@ mod tests {
         let root_ctx = |app: &App<TestProfile>, reject: bool| {
             let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
                 .new_processor_context_for_build(
-                    None,
+                    ContextParent::Root(Operation::unlocked_for_test()),
                     ProcessingStats::new(),
                     false,
                     false,
@@ -4052,7 +4232,7 @@ mod tests {
         let contents_before = app_store_contents(&app).await;
         let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
             .new_processor_context_for_build(
-                None,
+                ContextParent::Root(Operation::unlocked_for_test()),
                 ProcessingStats::new(),
                 false,
                 false,
@@ -4228,5 +4408,355 @@ mod tests {
             3,
             "nothing left to delete"
         );
+    }
+
+    /// An update or drop of an app holds a cross-process lock for its whole
+    /// run: another holder of the app's lock file (another process; `flock`
+    /// treats a second open file description alike) is refused, and an update
+    /// or drop started while another process holds it fails at once, naming
+    /// the app. A preview takes no lock.
+    #[tokio::test]
+    async fn an_update_holds_the_cross_process_app_lock() {
+        let (app, dir) = test_app("locked_app").await;
+        let db_path = dir.path().join("lmdb");
+
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let hook: ProcessHook = {
+            let release = release.clone();
+            let started = started.clone();
+            Arc::new(move |_ctx| {
+                let release = release.clone();
+                let started = started.clone();
+                Box::pin(async move {
+                    started.notify_one();
+                    release.acquire().await.unwrap().forget();
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            })
+        };
+        let processor = || {
+            TestProcessor::new(
+                "locked",
+                Fingerprint::from(&"locked_app").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .without_memo()
+            .with_on_process(hook.clone())
+        };
+        let (handle, _) = app
+            .update(processor(), AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        started.notified().await;
+        let err = other_process::try_acquire(&db_path, "locked_app")
+            .err()
+            .expect("the update holds the lock");
+        assert!(err.contains("app 'locked_app'"), "{err}");
+        release.add_permits(1);
+        handle.result().await.unwrap();
+        // Released when the update ends.
+        let held_elsewhere = other_process::try_acquire(&db_path, "locked_app").unwrap();
+
+        let err = match app.update(processor(), AppUpdateOptions::default(), Arc::new(()), None) {
+            Ok(_) => panic!("an update must fail while another process holds the lock"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("app 'locked_app'"), "{err}");
+        assert!(err.contains("another process"), "{err}");
+        assert!(app.drop_app(Arc::new(())).is_err());
+
+        // A preview writes nothing and runs regardless.
+        let (handle, _) = app
+            .update(
+                processor(),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                Some(PreviewActionCollector::<TestProfile>::default()),
+            )
+            .unwrap();
+        release.add_permits(1);
+        handle.result().await.unwrap();
+
+        drop(held_elsewhere);
+        let (handle, _) = app
+            .update(processor(), AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        release.add_permits(1);
+        handle.result().await.unwrap();
+    }
+
+    /// A root processor that registers a run-time root provider per entry of
+    /// `sinks`, in their order, and declares one target state through each.
+    /// With `root_component`, it records the root component there.
+    fn declaring_root(
+        test: &str,
+        sinks: Vec<(&'static str, TargetActionSinkKeeper<TestProfile>)>,
+        root_component: Option<Arc<Mutex<Option<Component<TestProfile>>>>>,
+    ) -> TestProcessor {
+        TestProcessor::new(
+            "root",
+            Fingerprint::from(&test).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .without_memo()
+        .with_on_process(Arc::new(move |ctx| {
+            let sinks = sinks.clone();
+            let root_component = root_component.clone();
+            Box::pin(async move {
+                if let Some(slot) = root_component {
+                    *slot.lock().unwrap() = Some(ctx.component().clone());
+                }
+                for (name, sink) in sinks {
+                    let provider = register_root_target_state_provider(
+                        &ctx,
+                        name.to_string(),
+                        CountingHandler {
+                            reconcile_calls: Default::default(),
+                            sink,
+                            reject: false,
+                            change_only: false,
+                            plans_deletes: true,
+                        },
+                    )?;
+                    declare_target_state(
+                        &ctx,
+                        &FnCallContext::default(),
+                        provider,
+                        StableKey::Int(0),
+                        (),
+                    )?;
+                }
+                Ok(TestData(b"ret".to_vec()))
+            })
+        }))
+    }
+
+    /// Cancelling a drop stops it, its component deletes included: the
+    /// delete blocked reverting a target state is dropped. The target state's
+    /// tracking and the app's database stay, the drop's lock is released once
+    /// its work has stopped, and dropping again finishes the drop and removes
+    /// the app's lock file.
+    #[tokio::test]
+    async fn cancelling_a_drop_stops_its_deletes_and_keeps_the_database() {
+        let (app, dir) = test_app("cancel_drop").await;
+        let blocking = Arc::new(BlockingApply::default());
+        let sink = TargetActionSinkKeeper::new(NoopSink {
+            blocking: Some(blocking.clone()),
+            ..Default::default()
+        });
+        let root_component = Arc::new(Mutex::new(None));
+        let (handle, _) = app
+            .update(
+                declaring_root(
+                    "cancel_drop",
+                    vec![("target", sink)],
+                    Some(root_component.clone()),
+                ),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        handle.result().await.unwrap();
+        let root = root_component
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the root ran");
+        let app_store = app.app_ctx().persisting_app_store().clone();
+        let tracked = || async {
+            app_store
+                .read_tracking_info(&StablePath::root())
+                .await
+                .unwrap()
+                .is_some()
+        };
+        assert!(tracked().await);
+
+        blocking.enabled.store(true, Ordering::SeqCst);
+        let dropping = app.drop_app(Arc::new(())).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), blocking.started.notified())
+            .await
+            .expect("the drop reverts the target state");
+        dropping.cancellation_token().cancel();
+        let err = tokio::time::timeout(Duration::from_secs(10), dropping.result())
+            .await
+            .expect("a cancelled drop ends promptly")
+            .expect_err("a cancelled drop fails");
+        assert!(err.is_cancelled(), "{err:?}");
+        tokio::time::timeout(Duration::from_secs(10), blocking.stopped.notified())
+            .await
+            .expect("the cancelled drop's delete stops too");
+        root.wait_until_inactive().await;
+
+        assert!(tracked().await, "a cancelled drop keeps the database");
+        drop(
+            other_process::try_acquire(&dir.path().join("lmdb"), "cancel_drop")
+                .expect("a drop whose work has stopped holds no lock"),
+        );
+
+        blocking.enabled.store(false, Ordering::SeqCst);
+        app.drop_app(Arc::new(())).unwrap().result().await.unwrap();
+        root.wait_until_inactive().await;
+        assert!(!tracked().await, "dropping again finishes the drop");
+        #[cfg(unix)]
+        {
+            let lock_dir = dir.path().join("lmdb").join("app_locks");
+            assert_eq!(
+                std::fs::read_dir(&lock_dir).unwrap().count(),
+                0,
+                "a finished drop removes the app's lock file"
+            );
+        }
+    }
+
+    /// Every `App` of one name in a process shares one lock slot, held by the
+    /// environment: a second `App` of the name built while an operation of the
+    /// first still holds the lock (a drop's task winds down after it
+    /// unregistered the name) shares the hold instead of opening a second
+    /// file description, which `flock` would refuse like another process.
+    #[tokio::test]
+    async fn apps_of_one_name_share_the_lock_slot_of_their_environment() {
+        let (app, dir) = test_app("lock_slot_shared").await;
+        let env = app.app_ctx().env().clone();
+        assert!(Arc::ptr_eq(
+            &env.app_op_lock("lock_slot_shared"),
+            &env.app_op_lock("lock_slot_shared")
+        ));
+
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let blocked = {
+            let (started, release) = (started.clone(), release.clone());
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&"lock_slot_shared").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .without_memo()
+            .with_on_process(Arc::new(move |_ctx| {
+                let (started, release) = (started.clone(), release.clone());
+                Box::pin(async move {
+                    started.notify_one();
+                    release.notified().await;
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            }))
+        };
+        let (handle, _) = app
+            .update(blocked, AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        started.notified().await;
+        // A slot of its own, as another process has, is refused meanwhile...
+        assert!(
+            other_process::try_acquire(&dir.path().join("lmdb"), "lock_slot_shared").is_err(),
+            "another process is refused while the lock is held"
+        );
+        // ...but a second `App` of the name, built once the first unregistered
+        // it (as `drop_root` does before its task ends), shares the hold.
+        app.app_ctx().app_reg().unregister();
+        let second = App::new("lock_slot_shared", env.clone(), None)
+            .await
+            .unwrap();
+        let (second_handle, _) = second
+            .update(
+                TestProcessor::new(
+                    "root",
+                    Fingerprint::from(&"lock_slot_shared/second").unwrap(),
+                    Arc::new(AtomicBool::new(false)),
+                    false,
+                ),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .expect("an app of the same name shares this process's hold");
+        second_handle.result().await.unwrap();
+        release.notify_one();
+        handle.result().await.unwrap();
+    }
+
+    /// An update holds the app's cross-process lock for as long as its work
+    /// runs, and no longer: a failed update releases it when it ends, and a
+    /// cancelled one once its runs have stopped, though a host keeps one of
+    /// its contexts (a Python object can outlive its run). Work started from
+    /// that context afterwards is refused, as the caller's mistake: it would
+    /// run without the lock.
+    #[tokio::test]
+    async fn an_update_holds_the_app_lock_while_its_work_runs_however_it_ends() {
+        let (app, dir) = test_app("lock_release").await;
+        let other_process = || other_process::try_acquire(&dir.path().join("lmdb"), "lock_release");
+        let new_root = |hook: ProcessHook| {
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&"lock_release").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .without_memo()
+            .with_on_process(hook)
+        };
+
+        let failing = new_root(Arc::new(|_ctx| {
+            Box::pin(async { Err(cocoindex_utils::error::Error::client("injected failure")) })
+        }));
+        let (handle, _) = app
+            .update(failing, AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        handle.result().await.expect_err("the update fails");
+        drop(other_process().expect("a failed update releases the lock"));
+
+        let retained = Arc::new(Mutex::new(None));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let blocked = {
+            let retained = retained.clone();
+            let started = started.clone();
+            new_root(Arc::new(move |ctx| {
+                *retained.lock().unwrap() = Some(ctx.clone());
+                let started = started.clone();
+                Box::pin(async move {
+                    started.notify_one();
+                    std::future::pending::<()>().await;
+                    unreachable!()
+                })
+            }))
+        };
+        let (handle, _) = app
+            .update(blocked, AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        started.notified().await;
+        handle.cancellation_token().cancel();
+        let err = handle.result().await.expect_err("a cancelled update fails");
+        assert!(err.is_cancelled(), "{err:?}");
+        let root = retained
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|ctx: &ComponentProcessorContext<TestProfile>| ctx.component().clone())
+            .expect("the root ran");
+        root.wait_until_inactive().await;
+        drop(other_process().expect("a kept context holds no lock once the work has stopped"));
+
+        let ctx = retained.lock().unwrap().take().expect("the root ran");
+        let late = ctx
+            .component()
+            .mount_child(&FnCallContext::new(true), key_path(ctx.component(), "late"))
+            .unwrap();
+        let err = late
+            .mount(
+                &ctx,
+                new_root(Arc::new(|_ctx| {
+                    Box::pin(async { Ok(TestData(b"late".to_vec())) })
+                })),
+                None,
+            )
+            .await
+            .err()
+            .expect("a run of an operation whose work is over is refused");
+        assert!(err.client_kind().is_some(), "{err:?}");
+        assert!(err.to_string().contains("has ended"), "{err}");
     }
 }
