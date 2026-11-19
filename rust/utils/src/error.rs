@@ -205,6 +205,15 @@ impl Error {
         }
     }
 
+    /// The innermost error, by value: the error under every context layer,
+    /// for a conversion that needs to own it (a host error to downcast).
+    pub fn into_without_contexts(self) -> Error {
+        match self {
+            Error::Context { source, .. } => source.0.into_without_contexts(),
+            other => other,
+        }
+    }
+
     /// Check if this error represents a cancellation (e.g. Python `CancelledError`).
     pub fn is_cancelled(&self) -> bool {
         let inner = self.without_contexts();
