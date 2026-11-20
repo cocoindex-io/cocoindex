@@ -1,6 +1,9 @@
 """Comprehensive tests for cocoindex._internal.serde serialize/deserialize."""
 
 import datetime
+import decimal
+import enum
+import ipaddress
 import pathlib
 import pickle
 import uuid
@@ -248,6 +251,123 @@ class TestRoundtripPydantic:
         result = deserialize(data, MyModel)
         assert result == value
         assert isinstance(result, MyModel)
+
+    def test_pydantic_bytes_field(self) -> None:
+        """Non-UTF-8 bytes in a pydantic model round-trip instead of raising.
+
+        model_dump(mode="json") decoded bytes as UTF-8, so any non-UTF-8
+        payload (raw file bytes, a hash digest) crashed serialize() with
+        UnicodeDecodeError. mode="python" keeps bytes as msgpack bin.
+        """
+        pydantic = pytest.importorskip("pydantic")
+
+        class WithBytes(pydantic.BaseModel):  # type: ignore[misc,name-defined]
+            text: str
+            raw: bytes
+
+        value = WithBytes(text="hello", raw=b"\x89PNG\r\n\x1a\n\x00\xff")
+        data = serialize(value)
+        assert _routing_byte(data) == 0x02
+        result = deserialize(data, WithBytes)
+        assert result == value
+        assert isinstance(result, WithBytes)
+        assert result.raw == b"\x89PNG\r\n\x1a\n\x00\xff"
+
+    def test_pydantic_bytes_field_nested(self) -> None:
+        """Bytes survive in a nested pydantic model and in a dataclass wrapper."""
+        pydantic = pytest.importorskip("pydantic")
+
+        class Inner(pydantic.BaseModel):  # type: ignore[misc,name-defined]
+            raw: bytes
+
+        class Outer(pydantic.BaseModel):  # type: ignore[misc,name-defined]
+            inner: Inner
+
+        value = Outer(inner=Inner(raw=b"\xff\x00"))
+        data = serialize(value)
+        assert _routing_byte(data) == 0x02
+        assert deserialize(data, Outer) == value
+
+        @dataclass
+        class HasPyd:
+            inner: Inner
+            n: int
+
+        wrapped = HasPyd(inner=Inner(raw=b"\xff\x00"), n=3)
+        data = serialize(wrapped)
+        assert _routing_byte(data) == 0x01
+        assert deserialize(data, HasPyd) == wrapped
+
+    def test_pydantic_ipaddress_field(self) -> None:
+        """An ipaddress field round-trips via the JSON-mode dump.
+
+        model_dump(mode="json") stringifies ipaddress objects, and
+        model_validate reconstructs them on the way back, so no unpickle
+        registration is needed for these fields.
+        """
+        pydantic = pytest.importorskip("pydantic")
+
+        class WithIP(pydantic.BaseModel):  # type: ignore[misc,name-defined]
+            host: ipaddress.IPv4Address
+
+        value = WithIP(host=ipaddress.IPv4Address("1.2.3.4"))
+        data = serialize(value)
+        assert _routing_byte(data) == 0x02
+        result = deserialize(data, WithIP)
+        assert result == value
+        assert isinstance(result.host, ipaddress.IPv4Address)
+
+    def test_pydantic_json_mode_fields_unchanged(self) -> None:
+        """Fields that JSON mode turns into strings round-trip as before."""
+        pydantic = pytest.importorskip("pydantic")
+
+        class Doc(pydantic.BaseModel):  # type: ignore[misc,name-defined]
+            url: pydantic.HttpUrl  # type: ignore[name-defined]
+            when: datetime.datetime
+
+        plus5 = datetime.timezone(datetime.timedelta(hours=5))
+        value = Doc(
+            url="https://example.com/a",
+            when=datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=plus5),
+        )
+        result = deserialize(serialize(value), Doc)
+        assert result == value
+        assert result.when.utcoffset() == datetime.timedelta(hours=5)
+
+    def test_pydantic_mixed_types_roundtrip(self) -> None:
+        """Guards the dump-mode change across every scalar the dump can emit."""
+        pydantic = pytest.importorskip("pydantic")
+
+        class Color(enum.Enum):
+            RED = 1
+
+        class KitchenSink(pydantic.BaseModel):  # type: ignore[misc,name-defined]
+            b: bytes
+            when: datetime.datetime
+            day: datetime.date
+            dec: decimal.Decimal
+            u: uuid.UUID
+            c: Color
+            p: pathlib.Path
+            s: set[int]
+            tup: tuple[int, str]
+
+        value = KitchenSink(
+            b=b"\x89PNG\x00\xff",
+            when=datetime.datetime(2024, 1, 2, 3, 4, 5),
+            day=datetime.date(2024, 1, 2),
+            dec=decimal.Decimal("3.14"),
+            u=uuid.UUID(int=7),
+            c=Color.RED,
+            p=pathlib.Path("/a/b"),
+            s={1, 2},
+            tup=(1, "x"),
+        )
+        data = serialize(value)
+        assert _routing_byte(data) == 0x02
+        result = deserialize(data, KitchenSink)
+        assert result == value
+        assert isinstance(result, KitchenSink)
 
 
 class TestRoundtripSerializeByPickle:
