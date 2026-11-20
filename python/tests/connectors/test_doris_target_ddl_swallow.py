@@ -1,10 +1,11 @@
-"""Regression tests for the Doris connector's column-DDL error handling.
+"""Regression tests for the Doris connector's DDL error handling (column
+ALTERs and table drops).
 
 Unlike test_doris_target.py, these do not need a live Doris cluster: they
-call `_apply_column_actions` directly and stub `_execute_ddl_sync`, since the
-bug and its fix are both pure control flow (which exceptions from a DDL
-statement are swallowed vs. re-raised), not something a live cluster
-response is needed to observe.
+call `_apply_column_actions` / `_apply_table_actions` directly and stub
+`_execute_ddl_sync`, since the bugs and their fixes are both pure control
+flow (which exceptions from a DDL statement are swallowed vs. re-raised), not
+something a live cluster response is needed to observe.
 """
 
 from __future__ import annotations
@@ -26,7 +27,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 if DEPS_AVAILABLE:
+    import cocoindex as coco
     from cocoindex._internal.context_keys import ContextKey, ContextProvider
+    from cocoindex.connectorkits import statediff
     from cocoindex.connectorkits import target as connector_target
     from cocoindex.connectors import doris
     from cocoindex.connectors.doris import _target as doris_target
@@ -259,3 +262,96 @@ def test_end_to_end_genuine_ddl_failure_propagates_through_apply_table_actions(
 
     with pytest.raises(Exception, match="Access denied"):
         _apply_table_actions(ctx, [action])
+
+
+# ============================================================
+# DROP TABLE failures for a table delete or replace
+# ============================================================
+
+
+def _table_action_ctx(
+    name: str, main_action: "statediff.DiffAction", *, delete: bool = False
+) -> "tuple[ContextProvider, _TableAction]":
+    managed_conn = doris.ManagedConnection(config=_config())
+    db_key: ContextKey[doris.ManagedConnection] = ContextKey(
+        f"test_doris_target_ddl_swallow_{name}_db_key"
+    )
+    ctx = ContextProvider()
+    ctx.provide(db_key, managed_conn)
+    spec: "_TableSpec | coco.NonExistenceType" = (
+        coco.NON_EXISTENCE
+        if delete
+        else _TableSpec(
+            table_schema=_schema(), managed_by=connector_target.ManagedBy.SYSTEM
+        )
+    )
+    action = _TableAction(
+        key=_TableKey(db_key=db_key.key, table_name="t1"),
+        spec=spec,
+        main_action=main_action,
+        column_actions={},
+    )
+    return ctx, action
+
+
+def test_drop_table_failure_on_delete_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed DROP TABLE for a deleted table must fail the action. If it is
+    swallowed, the engine records the table as gone while it still exists,
+    and nothing ever retries the drop.
+    """
+    ctx, action = _table_action_ctx("drop_on_delete", "delete", delete=True)
+    calls: list[str] = []
+
+    def fake_execute(config: "DorisConnectionConfig", sql: str) -> None:
+        calls.append(sql)
+        raise Exception("Access denied; you need the DROP privilege")
+
+    monkeypatch.setattr(doris_target, "_execute_ddl_sync", fake_execute)
+
+    with pytest.raises(Exception, match="DROP privilege"):
+        _apply_table_actions(ctx, [action])
+    assert len(calls) == 1
+    assert calls[0].startswith("DROP TABLE IF EXISTS")
+
+
+def test_drop_table_failure_on_replace_propagates_without_create(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed DROP TABLE for a replaced table must fail the action before
+    the CREATE runs. Otherwise `CREATE TABLE IF NOT EXISTS` lands on the
+    surviving old table and leaves its schema and rows in place, while the
+    engine records the table as replaced.
+    """
+    ctx, action = _table_action_ctx("drop_on_replace", "replace")
+    calls: list[str] = []
+
+    def fake_execute(config: "DorisConnectionConfig", sql: str) -> None:
+        calls.append(sql)
+        if sql.startswith("DROP TABLE"):
+            raise Exception("Access denied; you need the DROP privilege")
+
+    monkeypatch.setattr(doris_target, "_execute_ddl_sync", fake_execute)
+
+    with pytest.raises(Exception, match="DROP privilege"):
+        _apply_table_actions(ctx, [action])
+    assert not any(sql.startswith("CREATE TABLE") for sql in calls)
+
+
+def test_replace_drops_then_creates(monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx, action = _table_action_ctx("replace_ok", "replace")
+    calls: list[str] = []
+
+    def fake_execute(config: "DorisConnectionConfig", sql: str) -> None:
+        calls.append(sql)
+
+    monkeypatch.setattr(doris_target, "_execute_ddl_sync", fake_execute)
+
+    _apply_table_actions(ctx, [action])
+    assert [sql.split("`")[0].strip() for sql in calls] == [
+        "DROP TABLE IF EXISTS",
+        "CREATE TABLE IF NOT EXISTS",
+    ]
+    assert "`testdb`.`t1`" in calls[0]
+    assert "`testdb`.`t1`" in calls[1]
