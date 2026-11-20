@@ -1202,15 +1202,18 @@ class TestUpdateExitStatus:
 
         assert result.returncode == 1
         assert result.stdout == ""
-        assert "unhandled component failure(s)" in result.stderr
+        assert "Update finished with 3 unhandled component failure(s)." in result.stderr
 
     def test_catching_parent_exits_0(self) -> None:
         """A parent that catches a use_mount failure owns it: exit 0."""
         run_cli("update", "./catching_parent_app.py")
 
     def test_preview_with_failures_exit_1(self) -> None:
-        """A preview with failed components is missing their changes: exit 1."""
+        """A preview with failed components is missing their changes: exit 1,
+        and "Nothing to change" doesn't get the green mark."""
         result = run_cli("update", "--preview", "./failing_app.py", check=False)
 
         assert result.returncode == 1
+        assert "Nothing to change" in result.stdout
+        assert "✓ Nothing to change" not in result.stdout
         assert "unhandled component failure(s)" in result.stderr

@@ -91,7 +91,7 @@ class UpdateHandle(Generic[R]):
             return None
         return self._snapshot_from_handle(self._core_handle).stats
 
-    def unhandled_failures(self) -> int:
+    def _unhandled_failures(self) -> int:
         """Number of component failures nobody took ownership of: no
         exception handler was registered for them, or every handler
         re-raised. Returns 0 if not yet started."""

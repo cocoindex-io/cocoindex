@@ -1106,7 +1106,7 @@ def _fail_on_unhandled_failures(handle: UpdateHandle[Any], verb: str) -> None:
     or every handler in the chain re-raised. `--quiet` keeps the message:
     Click prints it to stderr.
     """
-    failures = handle.unhandled_failures()
+    failures = handle._unhandled_failures()
     if failures:
         raise click.ClickException(
             f"{verb} finished with {failures} unhandled component failure(s)."
@@ -1232,8 +1232,13 @@ def update(
                     for action in actions:
                         click.echo(f"  {action!r}")
                 else:
-                    _say_done("ok", "Nothing to change", took)
-                # A preview with failed components is missing their changes.
+                    # A preview with failed components is missing their
+                    # changes, so "Nothing to change" would overstate it:
+                    # no green mark for an incomplete preview.
+                    mark: Literal["ok", "info"] = (
+                        "info" if handle._unhandled_failures() else "ok"
+                    )
+                    _say_done(mark, "Nothing to change", took)
                 _fail_on_unhandled_failures(handle, "Preview")
                 return
 

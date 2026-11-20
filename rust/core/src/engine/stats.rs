@@ -1,4 +1,5 @@
 use crate::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::watch;
 
 /// Sentinel version sent on the watch channel when processing is fully terminated
@@ -85,8 +86,8 @@ pub struct VersionedProcessingStats {
     /// Failures nobody took ownership of: no exception handler was registered,
     /// or every handler re-raised. Unlike `num_errors`, which the engine bumps
     /// for every failed component, this is what the exit status of
-    /// `cocoindex update` counts. Only the root of a stats chain carries a
-    /// meaningful value.
+    /// `cocoindex update` counts. The count lives on a counter shared by the
+    /// whole chain, so every scope's snapshot reports the run's total.
     pub unhandled_failures: u64,
 }
 
@@ -102,6 +103,9 @@ pub struct ProcessingStats {
     terminated_rx: watch::Receiver<bool>,
     /// The enclosing stats, for a stats group.
     parent: Option<Arc<ProcessingStats>>,
+    /// Unhandled failures of the whole run, shared by every stats in the
+    /// chain: a group's failure lands on the same counter the root reads.
+    unhandled_failures: Arc<AtomicU64>,
 }
 
 impl Default for ProcessingStats {
@@ -121,13 +125,16 @@ impl ProcessingStats {
             terminated_tx,
             terminated_rx,
             parent: None,
+            unhandled_failures: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    /// The stats of a group opened under `parent`.
+    /// The stats of a group opened under `parent`, sharing the parent's
+    /// unhandled-failure counter.
     pub(crate) fn new_in(parent: &ProcessingStats) -> Self {
         Self {
             parent: Some(Arc::new(parent.clone())),
+            unhandled_failures: parent.unhandled_failures.clone(),
             ..Self::new()
         }
     }
@@ -167,21 +174,19 @@ impl ProcessingStats {
     }
 
     /// Count a failure that no exception handler took ownership of: either no
-    /// handler was registered, or every handler in the chain re-raised. Walks
-    /// the chain to its root, so a failure inside a stats group lands on the
-    /// run's count. Does not bump the version: the CLI reads it once, after
-    /// the update finished.
+    /// handler was registered, or every handler in the chain re-raised. The
+    /// counter is shared by the whole chain, so a failure inside a stats group
+    /// lands on the run's count without walking to the root. Does not bump the
+    /// version: the CLI reads it once, after the update finished.
     pub fn record_unhandled_failure(&self) {
-        let mut root = self;
-        while let Some(parent) = root.parent.as_deref() {
-            root = parent;
-        }
-        root.inner.lock().unwrap().unhandled_failures += 1;
+        self.unhandled_failures.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Returns an atomic snapshot of (version, stats).
     pub fn snapshot(&self) -> VersionedProcessingStats {
-        self.inner.lock().unwrap().clone()
+        let mut snapshot = self.inner.lock().unwrap().clone();
+        snapshot.unhandled_failures = self.unhandled_failures.load(Ordering::Relaxed);
+        snapshot
     }
 
     /// Signal that the root processing component is ready (initial processing caught up).
@@ -253,6 +258,28 @@ mod tests {
             assert_eq!(snapshot.in_groups.num_in_progress(), 1);
         }
         assert_eq!(root.snapshot().version, 0, "its own rows did not change");
+    }
+
+    #[test]
+    fn test_unhandled_failure_count_is_shared_by_the_chain() {
+        let root = ProcessingStats::new();
+        let group = ProcessingStats::new_in(&root);
+
+        group.record_unhandled_failure();
+        group.record_unhandled_failure();
+        root.record_unhandled_failure();
+
+        assert_eq!(root.snapshot().unhandled_failures, 3);
+        assert_eq!(
+            group.snapshot().unhandled_failures,
+            3,
+            "every scope reports the run's total"
+        );
+        assert_eq!(
+            root.snapshot().version,
+            0,
+            "counting a failure does not bump the version"
+        );
     }
 
     #[test]
