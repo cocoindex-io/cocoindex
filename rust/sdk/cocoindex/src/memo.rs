@@ -1175,8 +1175,10 @@ pub fn any_has_memo_state(children: &[&dyn MemoInput]) -> bool {
 /// mtime: NTFS follows the system timer, HFS+ and ext3 keep whole seconds, FAT two. An
 /// equal mtime therefore only shows the content is unchanged if that mtime was already
 /// older than the coarsest tick, plus a margin for the filesystem's clock lagging the
-/// reader's, when the content was read. Like git's "racily clean" check, this assumes the
-/// file's timestamps and the reader's clock agree.
+/// reader's, when the content was read. The age is measured on the reader's clock, so this
+/// assumes the filesystem's clock agrees with it: on a network filesystem whose clock runs
+/// behind, a fresh write looks settled. (git's "racily clean" check compares with its
+/// index file's mtime instead, so both times come from the filesystem.)
 const SETTLED_MTIME_AGE: Duration = Duration::from_secs(3);
 
 pub(crate) async fn file_memo_state(
@@ -1732,12 +1734,13 @@ mod file_memo_state_tests {
         let modified = settled();
         let fingerprint = |etag: &str| Some(Fingerprint::from(&etag).unwrap());
         let first = state_of(&TestFile::new(modified, b"v1", fingerprint("e1")), None).await;
-        let second = state_of(
-            &TestFile::new(modified, b"v2", fingerprint("e2")),
-            Some(&first),
-        )
-        .await;
-        assert!(!second.memo_valid);
+        let unchanged = TestFile::new(modified, b"v1", fingerprint("e1"));
+        assert!(state_of(&unchanged, Some(&first)).await.memo_valid);
+        let overwritten = TestFile::new(modified, b"v2", fingerprint("e2"));
+        assert!(!state_of(&overwritten, Some(&first)).await.memo_valid);
+        // The listed fingerprint decides, so neither check reads the content.
+        assert_eq!(unchanged.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(overwritten.reads.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

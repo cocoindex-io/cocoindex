@@ -59,8 +59,10 @@ class FileMetadata(_NamedTuple):
 # mtime: NTFS follows the system timer, HFS+ and ext3 keep whole seconds, FAT two. An
 # equal mtime therefore only shows the content is unchanged if that mtime was already
 # older than the coarsest tick, plus a margin for the filesystem's clock lagging the
-# reader's, when the content was read. Like git's "racily clean" check, this assumes the
-# file's timestamps and the reader's clock agree.
+# reader's, when the content was read. The age is measured on the reader's clock, so this
+# assumes the filesystem's clock agrees with it: on a network filesystem whose clock runs
+# behind, a fresh write looks settled. (git's "racily clean" check compares with its
+# index file's mtime instead, so both times come from the filesystem.)
 _SETTLED_MTIME_AGE = _timedelta(seconds=3)
 
 
