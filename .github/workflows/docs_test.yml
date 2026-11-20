@@ -50,8 +50,8 @@ jobs:
           cache-dependency-path: docs/package-lock.json
       - name: Install dependencies
         run: npm --prefix docs ci
-      - name: Test the search content export
-        run: node --test docs/scripts/export-search-content.test.mjs
+      - name: Test the search content scripts
+        run: node --test docs/scripts/export-search-content.test.mjs docs/scripts/publish-search-content.test.mjs
       - name: Build docs site
         run: npm --prefix docs run build
       # A change that breaks one of the export's rules (a new kind of .md file,
