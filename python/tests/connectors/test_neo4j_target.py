@@ -15,6 +15,7 @@ import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from typing import Any, TypeVar
+from unittest.mock import create_autospec
 
 import pytest
 import pytest_asyncio
@@ -674,6 +675,83 @@ def test_record_sinks_shared_per_connection_factory() -> None:
         node.attachments()["vector_index"]._sink._core
         == relation.attachments()["vector_index"]._sink._core
     )
+
+
+# =============================================================================
+# Arbitrary queries through the shared connection — no server
+# =============================================================================
+
+
+@requires_neo4j
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        None,
+        {},
+        {"query": "a query value"},
+        {"parameters": "a parameter value"},
+        {"self": 42},
+    ],
+)
+async def test_query_binds_parameter_dictionary_without_driver_keyword_collisions(
+    monkeypatch: pytest.MonkeyPatch, params: dict[str, Any] | None
+) -> None:
+    driver = create_autospec(_neo4j.AsyncDriver, instance=True)
+    session = create_autospec(_neo4j.AsyncSession, instance=True)
+    driver.session.return_value.__aenter__.return_value = session
+    session.run.return_value.__aiter__.return_value = [
+        {"value": "first"},
+        {"value": "second"},
+    ]
+    monkeypatch.setattr(_neo4j.AsyncGraphDatabase, "driver", lambda *a, **kw: driver)
+    factory = neo.ConnectionFactory(uri="bolt://localhost:7687", database="tenant")
+    statement = (
+        f"RETURN ${next(iter(params))} AS value" if params else "RETURN 1 AS value"
+    )
+    try:
+        graph = await factory.acquire()
+        assert await graph.query(statement, params) == [
+            {"value": "first"},
+            {"value": "second"},
+        ]
+        driver.session.assert_called_once_with(database="tenant")
+        session.run.assert_awaited_once_with(statement, parameters=params)
+        driver.session.return_value.__aexit__.assert_awaited_once()
+    finally:
+        await factory.close()
+    driver.close.assert_awaited_once()
+
+
+@requires_neo4j
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_during_iteration", [False, True])
+async def test_query_closes_session_when_execution_or_result_iteration_fails(
+    monkeypatch: pytest.MonkeyPatch, fail_during_iteration: bool
+) -> None:
+    driver = create_autospec(_neo4j.AsyncDriver, instance=True)
+    session = create_autospec(_neo4j.AsyncSession, instance=True)
+    driver.session.return_value.__aenter__.return_value = session
+    failure = RuntimeError("query failed")
+    if fail_during_iteration:
+
+        async def records() -> AsyncIterator[dict[str, int]]:
+            yield {"value": 1}
+            raise failure
+
+        session.run.return_value.__aiter__.side_effect = records
+    else:
+        session.run.side_effect = failure
+    monkeypatch.setattr(_neo4j.AsyncGraphDatabase, "driver", lambda *a, **kw: driver)
+    factory = neo.ConnectionFactory(uri="bolt://localhost:7687")
+    try:
+        graph = await factory.acquire()
+        with pytest.raises(RuntimeError, match="query failed") as error:
+            await graph.query("RETURN 1 AS value")
+        assert error.value is failure
+        driver.session.return_value.__aexit__.assert_awaited_once()
+    finally:
+        await factory.close()
 
 
 # =============================================================================

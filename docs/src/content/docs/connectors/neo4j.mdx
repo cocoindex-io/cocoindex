@@ -172,6 +172,27 @@ let app = Environment::builder()
 
 Different context keys with different database names produce fully separate target-state trees — changes to one never spill into the other.
 
+## Running Cypher queries
+
+Reuse the same factory for reads and graph algorithms: `await factory.acquire()` returns a graph handle with `query(cypher, params=None)`. Each call opens a session in the factory's database, consumes the result into a list of dictionaries, and closes the session before returning. The connection-pooled driver is shared with the targets; do not create a second driver for retrieval.
+
+For example, using `KG_DB` from the lifespan above:
+
+```python
+@coco.fn
+async def outgoing_neighbors(node_id: str) -> list[dict[str, object]]:
+    graph = await coco.use_context(KG_DB).acquire()
+    return await graph.query(
+        "MATCH (n:Entity {id: $node_id})-[r]->(neighbor) "
+        "RETURN type(r) AS relationship, neighbor.id AS neighbor_id",
+        {"node_id": node_id},
+    )
+```
+
+Pass values in the parameter dictionary, not by interpolating them into Cypher. Parameter names such as `query` and `parameters` are valid too; the dictionary is passed to the driver separately from its own method arguments. Queries return all rows in memory, so use Cypher filters and `LIMIT` for large graphs.
+
+When a query depends on target writes from a mounted component, wait for that component's `handle.ready()` before querying. `await coco.mount(...)` alone dispatches the component and returns its handle; it does not wait for its target states to be synced. Keep graph reads non-memoized, as in the example: the query helper does not track changes to database contents for memo invalidation. Direct Cypher writes are not declared target states and therefore do not receive CocoIndex's incremental reconciliation or cleanup.
+
 ## As target
 
 The `neo4j` connector provides target state APIs for writing nodes to node tables and edges to relationship tables. CocoIndex tracks what records should exist and automatically handles upserts and deletions.
