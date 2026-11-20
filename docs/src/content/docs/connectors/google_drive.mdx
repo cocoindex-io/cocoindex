@@ -84,6 +84,14 @@ The client is `Clone`; provide it under a context key so that functions can read
 
 </Lang>
 
+:::tip[Your own Drive, without signing in]
+On macOS and Windows, [Google Drive for desktop](https://support.google.com/drive/answer/10838124) keeps your Drive in a folder on your computer: under `~/Library/CloudStorage/` on macOS, and on a drive letter (`G:` by default) on Windows. The [`localfs`](./localfs) connector reads that folder like any other, with no service account, OAuth client or sign-in in CocoIndex. Keep in mind:
+
+- Drive for desktop has no Linux version.
+- Google Docs, Sheets and Slides appear in that folder as shortcut files (`.gdoc`, `.gsheet`, `.gslides`) that link to the document and hold none of its content. Exclude them with a [`PatternFilePathMatcher`](../common_resources/data_types#patternfilepathmatcher) (`**/*.gdoc`, `**/*.gsheet`, `**/*.gslides`), or read them with this connector, which exports them to text.
+- In streaming mode, the default, a file's content is downloaded when it is first read, so a first run waits for the downloads. Drive for desktop must be running while CocoIndex reads.
+:::
+
 ### Setting up a service account
 
 1. Create a service account in the [Google Cloud Console](https://console.cloud.google.com/iam-admin/serviceaccounts)
