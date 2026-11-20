@@ -8,13 +8,13 @@ import { fileURLToPath } from 'node:url';
 import { exportSearchContent } from './export-search-content.mjs';
 
 const SCRIPT = fileURLToPath(new URL('./export-search-content.mjs', import.meta.url));
-const SITE = 'https://cocoindex.io/docs';
+const SITE = 'https://example.com/docs';
 const BANNER =
-  '> **CocoIndex v1.** This page documents CocoIndex **v1**.\n' +
+  '> **A notice for coding agents.** It opens every page.\n' +
   '>\n' +
   `> Source: ${SITE}/page/ · Docs index: ${SITE}/llms.txt\n` +
   '>\n' +
-  '> v0→v1 quick map — use the v1 form.\n';
+  '> A map from the old names to the new ones.\n';
 const twin = (title, body) => `# ${title}\n\n${BANNER}\n${body}\n`;
 
 const write = (root, files) => {
@@ -37,18 +37,18 @@ const build = (extra = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'search-content-build-'));
   write(dir, {
     'llms.txt':
-      '# Docs\n\n> Full text: https://cocoindex.io/docs/llms-full.txt.\n\n' +
-      '[The project](https://github.com/cocoindex-io/cocoindex/)\n\n## Guide\n' +
+      `# Docs\n\n> Full text: ${SITE}/llms-full.txt.\n\n` +
+      '[The project](https://project.example.org/source/)\n\n## Guide\n' +
       `- [Guide](${SITE}/guide/): The section overview.\n` +
       `- [App](${SITE}/guide/app/): The App page.\n` +
-      `## Examples\n- [PDF](${SITE}/examples/pdf-embedding/): An example.\n`,
+      `## Examples\n- [Sample](${SITE}/examples/sample/): An example.\n`,
     'rust/llms.txt': `# Rust docs\n\n- [App](${SITE}/rust/guide/app/): The App page.\n`,
     'guide.md': twin('Guide', 'The overview.'),
     'guide/app.md': twin('The App', 'An **App** is the runnable unit.\n\n> A quote of the page.'),
     'rust/guide/app.md': twin('The App', 'The Rust page.'),
-    'examples/pdf-embedding.md': twin('PDF', 'The walkthrough.'),
+    'examples/sample.md': twin('Sample', 'The walkthrough.'),
     'skill.md': '# Skill\n',
-    'references/api_reference.md': '# API\n',
+    'references/notes.md': '# Notes\n',
     'guide/app/index.html': '<html></html>',
     ...extra,
   });
@@ -60,7 +60,7 @@ test('each listed page lands in its tree, and the agent files are not copied', (
   const out = outDir();
   assert.deepEqual(exportSearchContent(build(), out), { python: 2, rust: 1, examples: 1 });
   assert.deepEqual(tree(out), [
-    'examples/pdf-embedding.md',
+    'examples/sample.md',
     'python/guide.md',
     'python/guide/app.md',
     'rust/guide/app.md',

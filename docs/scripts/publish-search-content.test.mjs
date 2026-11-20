@@ -19,7 +19,7 @@ Object.assign(process.env, {
 });
 
 const SCRIPT = fileURLToPath(new URL('./publish-search-content.mjs', import.meta.url));
-const SITE = 'https://cocoindex.io/docs';
+const SITE = 'https://example.com/docs';
 const REF = 'refs/heads/search-content';
 const twin = (title, body) => `# ${title}\n\n> Source: ${SITE}/page/\n\n${body}\n`;
 
