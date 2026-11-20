@@ -75,6 +75,16 @@ jobs:
           min-free-disk-gib: 30
           clippy: ${{ contains(matrix.platform.hooks, 'cargo-clippy-sdk') }}
 
+      - name: Test ONNX Runtime setup
+        if: runner.os == 'Linux' && runner.arch == 'X64'
+        run: python3 -m unittest discover -s dev/tests -p test_setup_onnxruntime.py -v
+
+      # Use Microsoft's upstream release instead of the mirror that timed out
+      # in #2625. Supply the same runtime to every SDK hook and matrix leg.
+      - name: Install ONNX Runtime
+        shell: bash
+        run: bash dev/setup_onnxruntime.sh
+
       - name: Run Rust SDK hooks
         uses: ./.github/actions/run-prek
         with:
