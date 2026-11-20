@@ -71,3 +71,13 @@ jobs:
           fi
           git commit -m "deploy docs from ${GITHUB_SHA::7}"
           git push origin gh-pages
+      # The same pages as Markdown, for site search. This runs after the
+      # deploy, so a failure here shows in the run and leaves the site deployed.
+      - name: Publish the search content to cocoindex-io/docs search-content
+        env:
+          GIT_AUTHOR_NAME: ${{ vars.COCOINDEX_DOCS_DEPLOY_USER_NAME }}
+          GIT_AUTHOR_EMAIL: ${{ vars.COCOINDEX_DOCS_DEPLOY_USER_EMAIL }}
+          GIT_COMMITTER_NAME: ${{ vars.COCOINDEX_DOCS_DEPLOY_USER_NAME }}
+          GIT_COMMITTER_EMAIL: ${{ vars.COCOINDEX_DOCS_DEPLOY_USER_EMAIL }}
+          TARGET_REPO: git@github.com:cocoindex-io/docs.git
+        run: node docs/scripts/publish-search-content.mjs docs/dist "$TARGET_REPO" "docs pages from ${GITHUB_SHA::7}"
