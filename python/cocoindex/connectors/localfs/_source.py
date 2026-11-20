@@ -319,6 +319,7 @@ class _LiveDirItems:
 
     async def _watch(self, subscriber: LiveMapSubscriber[str, File]) -> None:
         from watchdog.events import (
+            EVENT_TYPE_ATTRIB,
             EVENT_TYPE_CREATED,
             EVENT_TYPE_DELETED,
             EVENT_TYPE_MODIFIED,
@@ -425,7 +426,14 @@ class _LiveDirItems:
                             await handle.ready()
                         continue
 
-                    if kind not in (EVENT_TYPE_CREATED, EVENT_TYPE_MODIFIED):
+                    # A metadata-only change (a touch or chmod) arrives as its own
+                    # event type, not as a modification: re-process it as a
+                    # rescan would, since the file's stat changed.
+                    if kind not in (
+                        EVENT_TYPE_CREATED,
+                        EVENT_TYPE_MODIFIED,
+                        EVENT_TYPE_ATTRIB,
+                    ):
                         continue
                     if event.is_directory:
                         continue
