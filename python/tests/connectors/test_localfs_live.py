@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -204,6 +205,54 @@ async def test_localfs_live_rescan_none_disables(tmp_path: Path) -> None:
         (tmp_path / "b.txt").write_text("bbb")
         await _wait_for_target_keys({"a.txt", "b.txt"})
         assert GlobalDictTarget.store.data["b.txt"].data == "bbb"
+    finally:
+        update_task.cancel()
+        try:
+            await update_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_localfs_live_root_removed_and_recreated_without_rescan(
+    tmp_path: Path,
+) -> None:
+    """With rescan_interval=None, a watched root that is removed and made
+    again is watched again: its files' outputs go with it, and the files of
+    the new directory are processed."""
+    GlobalDictTarget.store.clear()
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "a.txt").write_text("aaa")
+
+    @coco.fn
+    async def app_main() -> None:
+        files = localfs.walk_dir(root, live=True, rescan_interval=None)
+        await coco.mount_each(process_file, files.items())
+
+    app = coco.App(
+        coco.AppConfig(name="test_localfs_live_root_gone", environment=coco_env),
+        app_main,
+    )
+
+    handle = app.update(live=True)
+    update_task = asyncio.create_task(handle.result())
+    await asyncio.sleep(0.5)
+
+    try:
+        await _wait_for_target_keys({"a.txt"})
+
+        shutil.rmtree(root)
+        await _wait_for_target_keys(set())
+        await asyncio.sleep(1.5)
+
+        root.mkdir()
+        (root / "b.txt").write_text("bbb")
+        await _wait_for_target_keys({"b.txt"})
+        # The new directory's watch delivers ordinary events.
+        (root / "c.txt").write_text("ccc")
+        await _wait_for_target_keys({"b.txt", "c.txt"})
+        assert not update_task.done()
     finally:
         update_task.cancel()
         try:

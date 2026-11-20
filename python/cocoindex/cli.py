@@ -230,12 +230,29 @@ def _parse_app_target(specifier: str) -> AppSpecifier:
 
 
 def _get_persisted_app_names(env: Environment) -> set[str]:
-    """Get the set of app names persisted in the given environment's database."""
-    try:
-        names = _core.list_app_names(env._core_env)
-        return set(names) if names else set()
-    except Exception:
-        return set()
+    """Get the set of app names persisted in the given environment's database.
+
+    An open environment always has its database (opening one creates it), so
+    a failure here is a real database error: it is raised, not read as "no
+    apps"."""
+    return set(_core.list_app_names(env._core_env))
+
+
+def _require_persisted_app(env: Environment, app_name: str) -> None:
+    """Fail unless the environment's database has persisted state for `app_name`:
+    `show --db … --app-name …` of an app it lacks (a typo, the wrong database)
+    is an error, not an empty listing."""
+    names = sorted(_get_persisted_app_names(env))
+    if app_name in names:
+        return
+    where = f"the database at {_format_db_path(env)}"
+    if not names:
+        raise click.ClickException(
+            f"No app named '{app_name}' in {where}; it has no apps."
+        )
+    raise click.ClickException(
+        f"No app named '{app_name}' in {where}. Apps in it: {', '.join(names)}"
+    )
 
 
 def _format_db_path(env: Environment) -> str:
@@ -320,7 +337,7 @@ async def _ls_from_module_async(module_ref: str) -> None:
     try:
         load_user_app(module_ref)
     except UserAppLoaderError as e:
-        raise RuntimeError(f"Failed to load module '{module_ref}'") from e
+        raise click.ClickException(str(e)) from e
 
     try:
         env_infos = get_registered_environment_infos()
@@ -417,7 +434,7 @@ def _load_app(app_target: str) -> App[Any, Any]:
     try:
         load_user_app(spec.module_ref)
     except UserAppLoaderError as e:
-        raise RuntimeError(f"Failed to load module '{spec.module_ref}'") from e
+        raise click.ClickException(str(e)) from e
 
     # Get target environments (filter by env_name if specified)
     env_infos = get_registered_environment_infos()
@@ -928,6 +945,7 @@ async def _show_from_database(
         Settings(db_path=db_path_obj),
         event_loop=asyncio.get_running_loop(),
     )
+    _require_persisted_app(env, app_name)
 
     if stable_path is not None:
         path_obj = _parse_stable_path(stable_path)
@@ -986,6 +1004,7 @@ async def _show_target_states_from_database(
         Settings(db_path=db_path_obj),
         event_loop=asyncio.get_running_loop(),
     )
+    _require_persisted_app(env, app_name)
     await _print_target_states(
         iter_target_states_by_name(env, app_name), fingerprints, tree
     )

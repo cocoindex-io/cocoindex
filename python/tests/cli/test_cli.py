@@ -1001,6 +1001,55 @@ class TestShowFromDatabase:
         assert "Stable paths" in result.stdout
         assert "[component]" in result.stdout
 
+    @pytest.mark.parametrize("extra", [[], ["-l"], ["--tree"], ["--target-states"]])
+    def test_show_db_unknown_app_is_an_error(self, extra: list[str]) -> None:
+        """show --db --app-name of an app the database lacks fails (exit 1)
+        with a message naming the apps it has, instead of an empty listing."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli(
+            "show",
+            "--db",
+            "./cocoindex.db",
+            "--app-name",
+            "Nope",
+            *extra,
+            check=False,
+        )
+
+        assert result.returncode == 1, result
+        assert (
+            "No app named 'Nope' in the database at ./cocoindex.db. "
+            "Apps in it: FlatPreviewApp"
+        ) in result.stderr
+        assert "Traceback" not in result.stderr
+        assert result.stdout == ""
+
+
+class TestMissingAppTarget:
+    """An APP_TARGET file that does not exist is a clean error (exit 1)."""
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["ls", "./definitely_missing.py"],
+            ["show", "./definitely_missing.py"],
+            ["update", "./definitely_missing.py"],
+            ["drop", "./definitely_missing.py", "-f"],
+        ],
+    )
+    def test_missing_app_target_exits_1_without_traceback(
+        self, args: list[str]
+    ) -> None:
+        result = run_cli(*args, check=False)
+
+        assert result.returncode == 1, result
+        assert (
+            "Error: Application file path not found: ./definitely_missing.py"
+            in result.stderr
+        )
+        assert "Traceback" not in result.stderr
+
 
 class TestShowLong:
     """Tests for target-state rendering in show -l."""

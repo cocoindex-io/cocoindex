@@ -372,6 +372,8 @@ A plain `Environment::builder().build()` or `App::builder(name).build()` reads n
 </Fragment>
 </LangTabs>
 
+Several processes can open the same database: one can inspect it (`cocoindex ls`, `cocoindex show`) while another updates an app. Only one process at a time can update or drop a given app, though. While a process runs an update of an app (for a live update, until it stops) or drops it, an update or drop of the same app from another process fails at once with an error that names the app; it does not wait, since a live update may never end. Different apps in one database are independent, and a preview takes no lock. The lock lives in `app_locks/` under `db_path`, and the OS releases it when its process exits, crashed or not.
+
 For details on what the internal database stores and how to tune its LMDB settings (the database grows automatically; `map_size` only sets where it starts), see [Internal Storage](../advanced_topics/internal_storage).
 
 ## Lifespan (optional)

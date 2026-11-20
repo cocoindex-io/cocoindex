@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import pytest
 
@@ -35,8 +35,11 @@ if HAS_QDRANT:
 
     from cocoindex._internal import serde
     from cocoindex.connectors.qdrant import _target as qdrant_target
+    from cocoindex.connectorkits import statediff
+    from cocoindex.connectorkits.target import ManagedBy
     from cocoindex.connectors.qdrant._target import (
         _CollectionHandler,
+        _CollectionSpec,
         _CollectionTrackingRecordCore,
         _PointHandler,
         _ResolvedQdrantNamedVectorsDef,
@@ -348,6 +351,206 @@ class TestPointIdValidation:
 
 
 # =============================================================================
+# Unit tests — vectors checked when a point is declared (no service needed)
+# =============================================================================
+
+
+class _Sparse(NamedTuple):
+    """A sparse vector as a test parameter, built into a ``SparseVector`` in
+    the test (``qdrant_models`` exists only when qdrant-client is installed)."""
+
+    indices: list[int]
+    values: list[float]
+
+
+class _UnusedProvider:
+    """A provider a test never reaches: the declaration fails before it."""
+
+    def target_state(self, *args: Any) -> Any:
+        raise AssertionError("the declaration should have been refused")
+
+
+def _dense_def(size: int = 3) -> "_ResolvedQdrantVectorDef":
+    return _ResolvedQdrantVectorDef(
+        schema=VectorSchema(dtype=np.dtype(np.float32), size=size),
+        distance="cosine",
+        multivector_comparator="max_sim",
+    )
+
+
+def _multi_def(size: int = 3) -> "_ResolvedQdrantVectorDef":
+    return _ResolvedQdrantVectorDef(
+        schema=MultiVectorSchema(
+            vector_schema=VectorSchema(dtype=np.dtype(np.float32), size=size)
+        ),
+        distance="cosine",
+        multivector_comparator="max_sim",
+    )
+
+
+@requires_qdrant
+class TestPointVectorCheck:
+    """A vector that does not fit the collection fails its own declaration,
+    rather than the whole batch it would be written in (or, for a NaN, every
+    score it is in)."""
+
+    @pytest.mark.parametrize(
+        ("vector", "message"),
+        [
+            ([1.0, 2.0], "vector has 2 elements but the collection expects 3"),
+            (
+                [1.0, 2.0, 3.0, 4.0],
+                "vector has 4 elements but the collection expects 3",
+            ),
+            ([], "vector has 0 elements but the collection expects 3"),
+            ([1.0, float("nan"), 0.0], r"vector contains a non-finite \(NaN/Inf\)"),
+            ([float("-inf"), 0.0, 0.0], r"vector contains a non-finite \(NaN/Inf\)"),
+            ([[1.0, 2.0, 3.0]], "vector is a multivector but the collection expects"),
+        ],
+    )
+    def test_single_vector(self, vector: Any, message: str) -> None:
+        target = qdrant.CollectionTarget(
+            _UnusedProvider(),  # type: ignore[arg-type]
+            qdrant.CollectionSchema(_dense_def()),
+        )
+        with pytest.raises(ValueError, match=f"Qdrant point 7: {message}"):
+            target.declare_point(qdrant_models.PointStruct(id=7, vector=vector))
+
+    @pytest.mark.parametrize(
+        ("vector", "message"),
+        [
+            ([], "vector is an empty multivector"),
+            ([1.0, 2.0, 3.0], "vector is a single vector but the collection"),
+            ([[1.0, 2.0, 3.0], [1.0, 2.0]], "vector has 2 elements but"),
+            ([[1.0, 2.0, float("nan")]], "vector contains a non-finite"),
+        ],
+    )
+    def test_multivector(self, vector: Any, message: str) -> None:
+        target = qdrant.CollectionTarget(
+            _UnusedProvider(),  # type: ignore[arg-type]
+            qdrant.CollectionSchema(_multi_def()),
+        )
+        with pytest.raises(ValueError, match=f"Qdrant point 7: {message}"):
+            target.declare_point(qdrant_models.PointStruct(id=7, vector=vector))
+
+    @pytest.mark.parametrize(
+        ("vector", "message"),
+        [
+            ({"dense": [1.0, 2.0]}, "vector field 'dense' has 2 elements"),
+            ({"other": [1.0, 2.0, 3.0]}, "vector name 'other' is not declared"),
+            (
+                {"sparse": _Sparse(indices=[1, 2], values=[1.0])},
+                "vector field 'sparse' has 2 indices but 1 values",
+            ),
+            (
+                {"sparse": _Sparse(indices=[1, 1], values=[1.0, 2.0])},
+                "vector field 'sparse' repeats an index",
+            ),
+            (
+                {"sparse": _Sparse(indices=[1], values=[float("nan")])},
+                "vector field 'sparse' contains a non-finite",
+            ),
+            ({"sparse": [1.0, 2.0, 3.0]}, "vector field 'sparse' is dense but"),
+            (
+                {"dense": _Sparse(indices=[1], values=[1.0])},
+                "vector field 'dense' is sparse but",
+            ),
+            ([1.0, 2.0, 3.0], "vector is unnamed but the collection declares named"),
+        ],
+    )
+    def test_named_vectors(self, vector: Any, message: str) -> None:
+        target = qdrant.CollectionTarget(
+            _UnusedProvider(),  # type: ignore[arg-type]
+            qdrant.CollectionSchema(
+                _ResolvedQdrantNamedVectorsDef(
+                    vectors={
+                        "dense": _dense_def(),
+                        "sparse": _ResolvedQdrantSparseVectorDef(),
+                    }
+                )
+            ),
+        )
+        if isinstance(vector, dict):
+            vector = {
+                name: qdrant_models.SparseVector(indices=v.indices, values=v.values)
+                if isinstance(v, _Sparse)
+                else v
+                for name, v in vector.items()
+            }
+        with pytest.raises(ValueError, match=f"Qdrant point 7: {message}"):
+            target.declare_point(qdrant_models.PointStruct(id=7, vector=vector))
+
+    def test_vectors_that_fit_pass(self) -> None:
+        check = qdrant_target._check_point_vectors
+        check(1, [1.0, 2.0, 3.0], _dense_def())
+        check(1, [[1.0, 2.0, 3.0], [0.0, 0.0, 1.0]], _multi_def())
+        named = _ResolvedQdrantNamedVectorsDef(
+            vectors={"dense": _dense_def(), "sparse": _ResolvedQdrantSparseVectorDef()}
+        )
+        sparse = qdrant_models.SparseVector(indices=[3, 1], values=[0.5, 1.0])
+        check(1, {"dense": [1.0, 2.0, 3.0], "sparse": sparse}, named)
+        # A point may leave out a named vector, and Qdrant computes the
+        # vectors of an inference object itself.
+        check(1, {"sparse": sparse}, named)
+        check(1, {"dense": qdrant_models.Document(text="hi", model="m")}, named)
+
+
+class _RecordingQdrantClient:
+    """Stands in for ``QdrantClient``: records every write."""
+
+    def __init__(self) -> None:
+        self.upserts: list[list[Any]] = []
+        self.deletes: list[list[Any]] = []
+
+    def upsert(self, *, collection_name: str, points: list[Any]) -> None:
+        self.upserts.append(points)
+
+    def delete(self, *, collection_name: str, points_selector: Any) -> None:
+        self.deletes.append(points_selector.points)
+
+
+@requires_qdrant
+class TestWriteRequestSize:
+    @pytest.mark.asyncio
+    async def test_large_batch_is_split_under_the_request_limit(self) -> None:
+        """A batch of about 40 MiB, over Qdrant's default 32 MiB request limit
+        (enforced on REST), goes out in several requests under it, every point
+        and id once, in order."""
+        from cocoindex.connectors.qdrant._target import _PointAction
+
+        limit = 32 * 1024 * 1024
+        client = _RecordingQdrantClient()
+        handler = _PointHandler(client, "docs")  # type: ignore[arg-type]
+        text = "x" * (1024 * 1024)
+        upserts = [
+            _PointAction(
+                point_id=i,
+                point=qdrant_models.PointStruct(
+                    id=i, vector=[1.0, 0.0, 0.0], payload={"text": text}
+                ),
+            )
+            for i in range(40)
+        ]
+        await handler._apply_actions(None, upserts)  # type: ignore[arg-type]
+        assert len(client.upserts) > 1
+        for points in client.upserts:
+            assert sum(len(p.model_dump_json()) for p in points) <= limit
+        assert [p.id for points in client.upserts for p in points] == list(range(40))
+
+        # Half a million UUID deletes: about 20 MiB of ids, over the 16 MiB a
+        # request carries.
+        ids = [str(uuid.UUID(int=i)) for i in range(500_000)]
+        await handler._apply_actions(
+            None,  # type: ignore[arg-type]
+            [_PointAction(point_id=i, point=None) for i in ids],
+        )
+        assert len(client.deletes) > 1
+        for batch in client.deletes:
+            assert sum(len(str(i)) + 3 for i in batch) <= limit
+        assert [i for batch in client.deletes for i in batch] == ids
+
+
+# =============================================================================
 # Unit tests — tracking record upgrade compatibility
 # =============================================================================
 
@@ -586,6 +789,170 @@ def test_live_dense_sparse_vectors_and_hybrid_query() -> None:
             with_payload=True,
         )
         assert [p.id for p in hybrid_result.points] == [1]
+    finally:
+        try:
+            client.delete_collection(collection_name=collection_name)
+        except Exception:
+            pass
+
+
+# =============================================================================
+# Unit tests — the vector dtype Qdrant stores
+# =============================================================================
+
+
+def _typed_dense_def(dtype: Any, *, multi: bool = False) -> "_ResolvedQdrantVectorDef":
+    schema = VectorSchema(dtype=np.dtype(dtype), size=4)
+    return _ResolvedQdrantVectorDef(
+        schema=MultiVectorSchema(vector_schema=schema) if multi else schema,
+        distance="cosine",
+        multivector_comparator="max_sim",
+    )
+
+
+@requires_qdrant
+class TestVectorDtype:
+    def test_float16_reaches_qdrant(self) -> None:
+        """A float16 schema creates a float16 collection; float32 and float64
+        (Qdrant has no 64-bit vectors) its default, float32."""
+        for multi in (False, True):
+            params = _vector_params_from_def(_typed_dense_def(np.float16, multi=multi))
+            assert params.datatype == qdrant_models.Datatype.FLOAT16
+            for dtype in (np.float32, np.float64):
+                params = _vector_params_from_def(_typed_dense_def(dtype, multi=multi))
+                assert params.datatype is None
+
+    def test_float32_float64_change_alone_keeps_the_collection(self) -> None:
+        """Qdrant stores a float64 schema's vectors as float32, so a change
+        between the two alone recreates nothing, also against a record stored
+        with float64; a change to or from float16 recreates the collection."""
+
+        def vectors(dtype: Any, *, multi: bool, named: bool) -> Any:
+            dense = _typed_dense_def(dtype, multi=multi)
+            if named:
+                return _ResolvedQdrantNamedVectorsDef(
+                    vectors={"dense": dense, "sparse": _ResolvedQdrantSparseVectorDef()}
+                )
+            return dense
+
+        def plan(prev_dtype: Any, dtype: Any) -> list[tuple[Any, Any]]:
+            out = []
+            for multi in (False, True):
+                for named in (False, True):
+                    # A record as stored before the fix: the dtype as declared.
+                    prev = statediff.MutualTrackingRecord(
+                        tracking_record=_CollectionTrackingRecordCore(
+                            vectors=vectors(prev_dtype, multi=multi, named=named)
+                        ),
+                        managed_by=ManagedBy.SYSTEM,
+                    )
+                    spec = _CollectionSpec(
+                        schema=qdrant.CollectionSchema(
+                            vectors(dtype, multi=multi, named=named)
+                        )
+                    )
+                    output = _CollectionHandler().reconcile(
+                        ("db", "docs"), spec, [prev], False
+                    )
+                    assert output is not None
+                    out.append((output.action.main_action, output.child_invalidation))
+            return out
+
+        assert plan(np.float32, np.float64) == [(None, None)] * 4
+        assert plan(np.float64, np.float32) == [(None, None)] * 4
+        assert plan(np.float64, np.float64) == [(None, None)] * 4
+        assert plan(np.float32, np.float16) == [("replace", "destructive")] * 4
+        assert plan(np.float16, np.float64) == [("replace", "destructive")] * 4
+
+
+# =============================================================================
+# End-to-end — a collection deleted outside CocoIndex
+# =============================================================================
+
+
+@pytest.fixture(params=["memory", "live"])
+def any_qdrant_client(request: pytest.FixtureRequest) -> "QdrantClient":
+    if request.param == "live":
+        if not os.environ.get("QDRANT_URL"):
+            pytest.skip("QDRANT_URL is not set")
+        return qdrant.create_client(os.environ["QDRANT_URL"], prefer_grpc=True)
+    return QdrantClient(":memory:")
+
+
+_dropped_point_component_runs = 0
+
+
+if HAS_QDRANT:
+
+    @coco.fn(memo=True)
+    async def _declare_point_in_component(
+        point_id: int, target: "qdrant.CollectionTarget[coco.ResolvedS]"
+    ) -> None:
+        global _dropped_point_component_runs
+        _dropped_point_component_runs += 1
+        target.declare_point(
+            qdrant.PointStruct(
+                id=point_id, vector=[1.0, 0.0, float(point_id)], payload={"n": point_id}
+            )
+        )
+
+
+@requires_qdrant
+def test_collection_deleted_outside_cocoindex_comes_back(
+    any_qdrant_client: "QdrantClient",
+) -> None:
+    """A collection deleted outside CocoIndex is created again on the next run,
+    with all its points: those of child components that would otherwise be
+    skipped as unchanged too."""
+    global _dropped_point_component_runs
+    _dropped_point_component_runs = 0
+    client = any_qdrant_client
+    collection_name = f"coco_dropped_{uuid.uuid4().hex}"
+    db_key = coco.ContextKey[QdrantClient](f"test_qdrant_dropped_{uuid.uuid4().hex}")
+    env = common.create_test_env(__file__, suffix=collection_name)
+    env.context_provider.provide(db_key, client)
+
+    @coco.fn
+    async def app_main() -> None:
+        target = await qdrant.mount_collection_target(
+            db_key,
+            collection_name,
+            await qdrant.CollectionSchema.create(
+                vectors=qdrant.QdrantVectorDef(
+                    schema=VectorSchema(dtype=np.dtype(np.float32), size=3)
+                )
+            ),
+        )
+        await coco.mount_each(
+            _declare_point_in_component, [(str(i), i) for i in (1, 2)], target
+        )
+
+    app = coco.App(
+        coco.AppConfig(name=f"test_qdrant_dropped_{collection_name}", environment=env),
+        app_main,
+    )
+
+    def stored_ids() -> list[Any]:
+        points, _ = client.scroll(collection_name=collection_name, limit=10)
+        return sorted(p.id for p in points)
+
+    try:
+        app.update_blocking()
+        assert stored_ids() == [1, 2]
+        assert _dropped_point_component_runs == 2
+        app.update_blocking()
+        assert _dropped_point_component_runs == 2, "unchanged children are skipped"
+
+        client.delete_collection(collection_name=collection_name)
+        app.update_blocking()
+        assert stored_ids() == [1, 2]
+        assert _dropped_point_component_runs == 4, (
+            "the children run again to write their points"
+        )
+
+        app.update_blocking()
+        assert stored_ids() == [1, 2]
+        assert _dropped_point_component_runs == 4
     finally:
         try:
             client.delete_collection(collection_name=collection_name)

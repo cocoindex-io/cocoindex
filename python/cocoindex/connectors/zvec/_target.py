@@ -21,6 +21,7 @@ import decimal
 import json
 import re
 import threading
+import unicodedata
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -52,7 +53,7 @@ except ImportError as e:
 import msgspec
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import (
@@ -85,10 +86,37 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # zvec additionally rejects collection names shorter than 3 characters.
 _MIN_COLLECTION_NAME_LEN = 3
 
+# zvec rejects a document id longer than this many bytes.
+_MAX_DOC_ID_BYTES = 1024
+
 
 def _validate_identifier(name: str, kind: str = "identifier") -> None:
     if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
         raise ValueError(f"Invalid {kind}: {name!r}")
+
+
+def _validate_doc_id(doc_id: str) -> None:
+    """Raise ValueError for a document id zvec refuses to write.
+
+    These are the ids every zvec version refuses (zvec 0.8 refuses no others):
+    an empty one, one longer than ``_MAX_DOC_ID_BYTES``, or one holding a
+    control character such as a newline or a tab. Checked when the row is
+    declared, so it fails there instead of failing the write of its batch.
+    """
+    if not doc_id:
+        raise ValueError("zvec document id must not be empty.")
+    size = len(doc_id.encode("utf-8"))
+    if size > _MAX_DOC_ID_BYTES:
+        raise ValueError(
+            f"zvec document id {doc_id[:32]!r}... is {size} bytes long; "
+            f"zvec takes at most {_MAX_DOC_ID_BYTES}."
+        )
+    for ch in doc_id:
+        if unicodedata.category(ch) == "Cc":
+            raise ValueError(
+                f"zvec document id {doc_id!r} holds the control character "
+                f"{ch!r}, which zvec refuses."
+            )
 
 
 def _validate_collection_name(name: str) -> None:
@@ -129,10 +157,14 @@ class ManagedConnection:
     def open_or_create(self, name: str, schema: Any) -> Any:
         """Open the collection, creating it from ``schema`` if it doesn't exist."""
         with self._lock:
-            col = self._open.get(name)
-            if col is not None:
-                return col
             path = self.collection_path(name)
+            if name in self._open:
+                if path.exists():
+                    return self._open[name]
+                # The collection was deleted outside CocoIndex while its handle
+                # was cached: the handle writes into files that are gone. Drop
+                # it (releasing its locks) and create the collection again.
+                del self._open[name]
             if path.exists():
                 col = _zvec.open(str(path), option=_collection_option(self.enable_mmap))
             else:
@@ -722,6 +754,8 @@ class _CollectionKey(NamedTuple):
 class _CollectionSpec:
     schema: CollectionSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # See `_container.ContainerSpec`.
+    missing: bool = False
 
 
 class _ColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
@@ -883,9 +917,18 @@ class _CollectionHandler(
                 managed_by=desired_state.managed_by,
             )
 
+        # A collection CocoIndex created before that is gone now was deleted
+        # outside CocoIndex: create it as if new, and invalidate its documents,
+        # which went with it.
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_possible_records, prev_may_be_missing
+        )
+
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
-                tracking_record, prev_possible_records, prev_may_be_missing
+                tracking_record,
+                recreated.prev_possible_records,
+                recreated.prev_may_be_missing,
             )
         )
         main_action = statediff.diff(resolved)
@@ -893,7 +936,7 @@ class _CollectionHandler(
         # v1 has no in-place schema evolution: any schema change rebuilds the
         # collection, which destroys all documents.
         child_invalidation: Literal["destructive"] | None = (
-            "destructive" if main_action == "replace" else None
+            "destructive" if recreated.dropped or main_action == "replace" else None
         )
 
         return coco.TargetReconcileOutput(
@@ -956,6 +999,7 @@ class CollectionTarget(
                 f"Primary key {schema.primary_key!r} value cannot be None."
             )
         doc_id = str(pk_value)
+        _validate_doc_id(doc_id)
 
         vectors: dict[str, Any] = {}
         fields: dict[str, Any] = {}
@@ -1006,6 +1050,20 @@ def collection_target(
         managed_by: Whether CocoIndex manages the collection lifecycle
             ("system") or it must already exist ("user", documents only).
     """
+    return _collection_target_state(
+        db, collection_name, schema, managed_by=managed_by, missing=False
+    )
+
+
+def _collection_target_state(
+    db: ContextKey[ManagedConnection],
+    collection_name: str,
+    schema: CollectionSchema[RowT],
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> "coco.TargetState[_DocHandler]":
+    """`collection_target`, with `missing` as in `_container.ContainerSpec`."""
     _validate_collection_name(collection_name)
     for name in schema.columns:
         if name != schema.primary_key:
@@ -1021,7 +1079,7 @@ def collection_target(
         )
 
     key = _CollectionKey(db_key=db.key, collection_name=collection_name)
-    spec = _CollectionSpec(schema=schema, managed_by=managed_by)
+    spec = _CollectionSpec(schema=schema, managed_by=managed_by, missing=missing)
     return _collection_provider.target_state(key, spec)
 
 
@@ -1047,8 +1105,16 @@ async def mount_collection_target(
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> "CollectionTarget[RowT]":
     """Mount a zvec collection target and return a ready-to-use CollectionTarget."""
+    # A system-managed collection whose directory is not there: if CocoIndex
+    # created it on an earlier run, it was deleted outside CocoIndex.
+    missing = (
+        managed_by == target.ManagedBy.SYSTEM
+        and not coco.use_context(db).collection_path(collection_name).exists()
+    )
     provider = await coco.mount_target(
-        collection_target(db, collection_name, schema, managed_by=managed_by)
+        _collection_target_state(
+            db, collection_name, schema, managed_by=managed_by, missing=missing
+        )
     )
     return CollectionTarget(provider, schema)
 

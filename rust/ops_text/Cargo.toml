@@ -15,4 +15,4 @@ unicase = { workspace = true }
 # linked there (and only there); this crate needs `tree-sitter` itself only for
 # node/tree types.
 cocoindex_code_ast = { path = "../code_ast" }
-tree-sitter = "0.25.10"
+tree-sitter = "0.26.13"

@@ -112,7 +112,7 @@ let consumer = kafka::KafkaConsumer::connect_with_options(
 .await?;
 ```
 
-`KafkaSasl` is `Plain`, `ScramSha256` or `ScramSha512`, each with a `username` and a `password`. `KafkaTls::default()` trusts the Mozilla root certificates; its `ca_cert_pem`, `client_cert_pem` and `client_key_pem` fields add a private CA and a client certificate for mutual TLS. For a connection setup these options cannot express, build an `rskafka` client yourself and wrap it with `KafkaConsumer::from_client(client, state_id, consumer_group)`, where `state_id` is the cluster's stable identity (for example its bootstrap-server list), never a credential.
+`KafkaSasl` is `Plain`, `ScramSha256` or `ScramSha512`, each with a `username` and a `password`. `KafkaTls::default()` trusts the Mozilla root certificates; its `ca_cert_pem`, `client_cert_pem` and `client_key_pem` fields add a private CA and a client certificate for mutual TLS. For a connection setup these options cannot express, build an `rskafka` client yourself and wrap it with `KafkaConsumer::from_client(state_id, client, consumer_group)`, where `state_id` is the cluster's stable identity (for example its bootstrap-server list), never a credential.
 
 </Fragment>
 </LangTabs>
@@ -228,7 +228,13 @@ Offsets are committed automatically with at-least-once semantics. Messages are p
 
 A consumer with a `consumer_group` commits the offsets of the records a live run has processed, per partition, to the app's state database under that group name once their child components have synced. The next live run resumes from them. A consumer without a group re-reads the topic on every run.
 
+When a committed offset is no longer in the log (retention deleted it, or the topic was recreated), the feed logs a warning and resumes at the earliest record the partition still has.
+
 </Lang>
+
+### Fetch errors
+
+A live feed keeps running through a failed fetch, such as an unreachable broker or a partition without a leader: it logs the error and tries again<Lang only="rust">, waiting 100 ms at first and doubling the wait up to 30 s</Lang>.<Lang only="python"> The `confluent_kafka` consumer retries on its own and reports each error, which the feed logs.</Lang>
 
 ### Readiness
 
@@ -614,7 +620,7 @@ let app = Environment::builder()
     .await?;
 ```
 
-`KafkaProducer::connect_with_options(servers, KafkaConnectOptions { sasl, tls })` adds SASL and TLS, as for the consumer, and `KafkaProducer::from_client(client, state_id)` wraps an `rskafka` client you built. `ensure_topic(topic, num_partitions)` is an explicit helper outside reconciliation; CocoIndex never creates or drops a topic on its own.
+`KafkaProducer::connect_with_options(servers, KafkaConnectOptions { sasl, tls })` adds SASL and TLS, as for the consumer, and `KafkaProducer::from_client(state_id, client)` wraps an `rskafka` client you built. `ensure_topic(topic, num_partitions)` is an explicit helper outside reconciliation; CocoIndex never creates or drops a topic on its own.
 
 </Fragment>
 </LangTabs>

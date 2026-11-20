@@ -12,6 +12,7 @@ import asyncio
 import uuid
 
 import msgspec
+import numpy as np
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -35,7 +36,8 @@ except ImportError as e:
     ) from e
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
+from cocoindex.connectorkits._request_size import split_by_size
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import TypeChecker
 from cocoindex.resources import schema as res_schema
@@ -48,6 +50,12 @@ PointStruct = qdrant_models.PointStruct
 _PointId = str | int
 _PointFingerprint = bytes
 _POINT_ID_CHECKER: TypeChecker[str | int] = TypeChecker(str | int)  # type: ignore[arg-type]
+
+# The most points, or point ids, one write request carries, in bytes of their
+# JSON form: half of Qdrant's default request size limit, 32 MiB
+# (`service.max_request_size_mb`), which Qdrant enforces on REST requests. A
+# point larger than this goes in a request of its own.
+_MAX_WRITE_REQUEST_BYTES = 16 * 1024 * 1024
 
 
 class QdrantVectorDef(NamedTuple):
@@ -275,16 +283,20 @@ class _PointHandler(coco.TargetHandler[qdrant_models.PointStruct, _PointFingerpr
         # deleting it would remove the point just written.
         deletes = [point_id for point_id in deletes if point_id not in upserted_ids]
 
-        if upserts:
+        for points in split_by_size(
+            upserts, _MAX_WRITE_REQUEST_BYTES, lambda p: len(p.model_dump_json())
+        ):
             await asyncio.to_thread(
                 self._client.upsert,
                 collection_name=self._collection_name,
-                points=upserts,
+                points=points,
             )
 
-        if deletes:
+        for ids in split_by_size(
+            deletes, _MAX_WRITE_REQUEST_BYTES, lambda i: len(str(i)) + 3
+        ):
             selector = qdrant_models.PointIdsList(
-                points=cast(list[qdrant_models.ExtendedPointId], deletes)
+                points=cast(list[qdrant_models.ExtendedPointId], ids)
             )
             await asyncio.to_thread(
                 self._client.delete,
@@ -335,10 +347,65 @@ _COLLECTION_KEY_CHECKER = TypeChecker(tuple[str, str])
 class _CollectionSpec:
     schema: CollectionSchema
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # See `_container.ContainerSpec`.
+    missing: bool = False
 
 
 class _CollectionTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
     vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef
+
+
+_FLOAT32 = np.dtype(np.float32)
+_FLOAT64 = np.dtype(np.float64)
+_FLOAT16 = np.dtype(np.float16)
+
+
+def _stored_vector_def(
+    vector_def: _ResolvedQdrantVectorDef | _ResolvedQdrantSparseVectorDef,
+) -> _ResolvedQdrantVectorDef | _ResolvedQdrantSparseVectorDef:
+    """`vector_def` with a float64 dtype read as float32 (see `_as_stored`)."""
+    if not isinstance(vector_def, _ResolvedQdrantVectorDef):
+        return vector_def
+    schema = vector_def.schema
+    vector_schema = (
+        schema.vector_schema
+        if isinstance(schema, res_schema.MultiVectorSchema)
+        else schema
+    )
+    if vector_schema.dtype != _FLOAT64:
+        return vector_def
+    stored = res_schema.VectorSchema(dtype=_FLOAT32, size=vector_schema.size)
+    return msgspec.structs.replace(
+        vector_def,
+        schema=(
+            res_schema.MultiVectorSchema(vector_schema=stored)
+            if isinstance(schema, res_schema.MultiVectorSchema)
+            else stored
+        ),
+    )
+
+
+def _as_stored(record: _CollectionTrackingRecordCore) -> _CollectionTrackingRecordCore:
+    """The record as Qdrant stores the collection.
+
+    Qdrant has no 64-bit float vectors and stores those of a float64 schema as
+    float32, so a float64 dtype reads as float32 here, and a change between the
+    two alone recreates nothing. A record stored with float64 reads the same
+    way. float16 is stored as such, so a change to or from it recreates.
+    """
+    vectors = record.vectors
+    if isinstance(vectors, _ResolvedQdrantNamedVectorsDef):
+        stored: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef = (
+            _ResolvedQdrantNamedVectorsDef(
+                vectors={
+                    name: _stored_vector_def(vector_def)
+                    for name, vector_def in vectors.vectors.items()
+                }
+            )
+        )
+    else:
+        stored = cast(_ResolvedQdrantVectorDef, _stored_vector_def(vectors))
+    return _CollectionTrackingRecordCore(vectors=stored)
 
 
 _CollectionTrackingRecord = statediff.MutualTrackingRecord[
@@ -483,23 +550,37 @@ class _CollectionHandler(
             tracking_record = coco.NON_EXISTENCE
         else:
             tracking_record = statediff.MutualTrackingRecord(
-                tracking_record=_CollectionTrackingRecordCore(
-                    vectors=desired_state.schema.vectors
+                tracking_record=_as_stored(
+                    _CollectionTrackingRecordCore(vectors=desired_state.schema.vectors)
                 ),
                 managed_by=desired_state.managed_by,
             )
 
+        prev_records = [
+            statediff.MutualTrackingRecord(
+                tracking_record=_as_stored(prev.tracking_record),
+                managed_by=prev.managed_by,
+            )
+            for prev in prev_possible_records
+        ]
+        # A collection CocoIndex created before that is gone now was deleted
+        # outside CocoIndex: create it as if new, and invalidate its points,
+        # which went with it.
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_records, prev_may_be_missing
+        )
+
         transition = statediff.TrackingRecordTransition(
             tracking_record,
-            prev_possible_records,
-            prev_may_be_missing,
+            recreated.prev_possible_records,
+            recreated.prev_may_be_missing,
         )
         resolved = statediff.resolve_system_transition(transition)
         main_action = statediff.diff(resolved)
 
         # Collection replacement destroys all points.
         child_invalidation: Literal["destructive"] | None = (
-            "destructive" if main_action == "replace" else None
+            "destructive" if recreated.dropped or main_action == "replace" else None
         )
 
         return coco.TargetReconcileOutput(
@@ -545,14 +626,17 @@ class CollectionTarget(
     _provider: coco.TargetStateProvider[
         qdrant_models.PointStruct, None, coco.MaybePendingS
     ]
+    _schema: CollectionSchema
 
     def __init__(
         self,
         provider: coco.TargetStateProvider[
             qdrant_models.PointStruct, None, coco.MaybePendingS
         ],
+        schema: CollectionSchema,
     ) -> None:
         self._provider = provider
+        self._schema = schema
 
     def declare_point(
         self: "CollectionTarget[coco.ResolvedS]",
@@ -570,11 +654,16 @@ class CollectionTarget(
 
         Raises:
             ValueError: If the point ID is not an unsigned 64-bit integer or
-                a UUID (Qdrant rejects all other IDs at write time).
+                a UUID (Qdrant rejects all other IDs at write time), or if a
+                vector does not fit the collection schema: a dense vector of
+                the wrong length, an empty multivector, a NaN or an infinity,
+                a sparse vector with repeated indices or a values list of
+                another length, or a vector name the schema does not declare.
+                Qdrant would reject the whole batch the point is written in.
         """
-        coco.declare_target_state(
-            self._provider.target_state(_validate_point_id(point.id), point)
-        )
+        point_id = _validate_point_id(point.id)
+        _check_point_vectors(point_id, point.vector, self._schema.vectors)
+        coco.declare_target_state(self._provider.target_state(point_id, point))
 
     def __coco_memo_key__(self) -> str:
         return self._provider.memo_key
@@ -602,8 +691,22 @@ def collection_target(
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    return _collection_target_state(
+        db, collection_name, schema, managed_by=managed_by, missing=False
+    )
+
+
+def _collection_target_state(
+    db: ContextKey[QdrantClient],
+    collection_name: str,
+    schema: CollectionSchema,
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> "coco.TargetState[_PointHandler]":
+    """`collection_target`, with `missing` as in `_CollectionSpec.missing`."""
     key = _CollectionKey(db_key=db.key, collection_name=collection_name)
-    spec = _CollectionSpec(schema=schema, managed_by=managed_by)
+    spec = _CollectionSpec(schema=schema, managed_by=managed_by, missing=missing)
     return _collection_provider.target_state(key, spec)
 
 
@@ -628,7 +731,7 @@ def declare_collection_target(
     provider = coco.declare_target_state_with_child(
         collection_target(db, collection_name, schema, managed_by=managed_by)
     )
-    return CollectionTarget(provider)
+    return CollectionTarget(provider, schema)
 
 
 async def mount_collection_target(
@@ -652,10 +755,17 @@ async def mount_collection_target(
     Returns:
         A CollectionTarget for declaring points.
     """
-    provider = await coco.mount_target(
-        collection_target(db, collection_name, schema, managed_by=managed_by)
+    # A system-managed collection that is not on the server: if CocoIndex
+    # created it on an earlier run, it was deleted outside CocoIndex.
+    missing = managed_by == target.ManagedBy.SYSTEM and not await asyncio.to_thread(
+        _collection_exists, coco.use_context(db), collection_name
     )
-    return CollectionTarget(provider)
+    provider = await coco.mount_target(
+        _collection_target_state(
+            db, collection_name, schema, managed_by=managed_by, missing=missing
+        )
+    )
+    return CollectionTarget(provider, schema)
 
 
 def _collection_exists(client: QdrantClient, collection_name: str) -> bool:
@@ -706,9 +816,9 @@ def _vector_params_from_def(
     multivector_config = None
 
     if isinstance(resolved_schema, res_schema.VectorSchema):
-        dim = resolved_schema.size
+        vector_schema = resolved_schema
     elif isinstance(resolved_schema, res_schema.MultiVectorSchema):
-        dim = resolved_schema.vector_schema.size
+        vector_schema = resolved_schema.vector_schema
         # For multivector, use the specified comparator
         multivector_config = qdrant_models.MultiVectorConfig(
             comparator=_multivector_comparator(vector_def.multivector_comparator)
@@ -717,9 +827,14 @@ def _vector_params_from_def(
         raise ValueError(f"Unexpected schema type: {type(resolved_schema)}")
 
     return qdrant_models.VectorParams(
-        size=dim,
+        size=vector_schema.size,
         distance=_distance_from_spec(vector_def.distance),
         multivector_config=multivector_config,
+        # Qdrant stores float16 vectors as such; every other dtype, float64
+        # included (Qdrant has no 64-bit vectors), as its default, float32.
+        datatype=(
+            qdrant_models.Datatype.FLOAT16 if vector_schema.dtype == _FLOAT16 else None
+        ),
     )
 
 
@@ -730,6 +845,95 @@ def _sparse_vector_params_from_def(
     return qdrant_models.SparseVectorParams(
         modifier=_sparse_modifier_from_spec(sparse_vector_def.modifier)
     )
+
+
+def _check_dense_vector(
+    vector: list[float] | list[list[float]], vector_def: _ResolvedQdrantVectorDef
+) -> str | None:
+    """What is wrong with a dense vector or multivector, or ``None``."""
+    vector_schema = vector_def.schema
+    is_multi = bool(vector) and isinstance(vector[0], list)
+    if isinstance(vector_schema, res_schema.MultiVectorSchema):
+        if not vector:
+            return "is an empty multivector"
+        if not is_multi:
+            return "is a single vector but the collection expects a multivector"
+        size = vector_schema.vector_schema.size
+        rows = cast(list[list[float]], vector)
+    else:
+        if is_multi:
+            return "is a multivector but the collection expects a single vector"
+        size = vector_schema.size
+        rows = [cast(list[float], vector)]
+    for row in rows:
+        if len(row) != size:
+            return f"has {len(row)} elements but the collection expects {size}"
+        if not np.isfinite(np.asarray(row, dtype=np.float64)).all():
+            return "contains a non-finite (NaN/Inf) element"
+    return None
+
+
+def _check_sparse_vector(vector: qdrant_models.SparseVector) -> str | None:
+    """What is wrong with a sparse vector, or ``None``."""
+    if len(vector.indices) != len(vector.values):
+        return f"has {len(vector.indices)} indices but {len(vector.values)} values"
+    if not np.isfinite(np.asarray(vector.values, dtype=np.float64)).all():
+        return "contains a non-finite (NaN/Inf) value"
+    if len(set(vector.indices)) != len(vector.indices):
+        return "repeats an index"
+    return None
+
+
+def _check_point_vectors(
+    point_id: _PointId,
+    vector: qdrant_models.VectorStruct,
+    vectors_def: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef,
+) -> None:
+    """Check a point's vectors against the collection schema, at declare time.
+
+    Qdrant rejects a point whose vectors do not fit the collection when it is
+    written, failing the whole batch, and stores a NaN that then poisons every
+    score it is in. Vectors Qdrant computes itself (``Document``, ``Image``,
+    ``InferenceObject``) are left to the server.
+    """
+    problem: str | None = None
+    if isinstance(vectors_def, _ResolvedQdrantVectorDef):
+        if isinstance(vector, list):
+            problem = _check_dense_vector(vector, vectors_def)
+        if problem is not None:
+            raise ValueError(f"Qdrant point {point_id!r}: vector {problem}")
+        return
+
+    if isinstance(vector, list):
+        raise ValueError(
+            f"Qdrant point {point_id!r}: vector is unnamed but the collection "
+            f"declares named vectors {sorted(vectors_def.vectors)}"
+        )
+    if not isinstance(vector, dict):
+        return
+    for name, named_vector in vector.items():
+        vector_def = vectors_def.vectors.get(name)
+        if vector_def is None:
+            raise ValueError(
+                f"Qdrant point {point_id!r}: vector name {name!r} is not declared "
+                f"in the collection schema {sorted(vectors_def.vectors)}"
+            )
+        if isinstance(named_vector, qdrant_models.SparseVector):
+            problem = (
+                _check_sparse_vector(named_vector)
+                if isinstance(vector_def, _ResolvedQdrantSparseVectorDef)
+                else "is sparse but the field is dense"
+            )
+        elif isinstance(named_vector, list):
+            problem = (
+                _check_dense_vector(named_vector, vector_def)
+                if isinstance(vector_def, _ResolvedQdrantVectorDef)
+                else "is dense but the field is sparse"
+            )
+        if problem is not None:
+            raise ValueError(
+                f"Qdrant point {point_id!r}: vector field {name!r} {problem}"
+            )
 
 
 def _validate_vector_names(names: Collection[str], kind: str) -> None:

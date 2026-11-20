@@ -205,8 +205,10 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         // (no bit, no open children): live re-runs report nothing upward.
         let readiness_guard = parent_ctx.components_readiness().clone().add_child(None);
 
-        // 4. Create cancellation token as child of app's root token.
-        let cancellation_token = parent_ctx.app_ctx().cancellation_token().child_token();
+        // 4. The live component belongs to the operation that mounts it:
+        //    cancelling that operation (or the app, or every operation)
+        //    cancels it.
+        let operation_cancellation_token = parent_ctx.cancellation_token().clone();
 
         // 5. Create LiveComponentState.
         let beside = if leaves_existing && existing_runs_live {
@@ -216,7 +218,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         };
         let state = Arc::new(LiveComponentState::<Prof>::new(
             readiness_guard,
-            cancellation_token,
+            operation_cancellation_token,
             live,
             beside,
         ));
@@ -385,8 +387,14 @@ pub struct LiveComponentState<Prof: EngineProfile> {
     ready_notify: tokio::sync::Notify,
 
     /// Cancellation token — triggered on re-mount, app shutdown, or
-    /// catch-up `mark_ready`.
+    /// catch-up `mark_ready`. A child of `operation_cancellation_token`.
     cancellation_token: tokio_util::sync::CancellationToken,
+
+    /// The token of the operation that mounted this incarnation. The runs
+    /// of its cycles belong to that operation: cancelling it cancels them,
+    /// but cancelling this incarnation alone (`cancellation_token`) only
+    /// stops new cycles, as before.
+    operation_cancellation_token: tokio_util::sync::CancellationToken,
 
     /// JoinHandle of the tokio task running `process_live`. Set by `start()`.
     live_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -407,10 +415,11 @@ pub struct LiveComponentState<Prof: EngineProfile> {
 impl<Prof: EngineProfile> LiveComponentState<Prof> {
     pub fn new(
         readiness_guard: ComponentBgChildReadinessChildGuard,
-        cancellation_token: tokio_util::sync::CancellationToken,
+        operation_cancellation_token: tokio_util::sync::CancellationToken,
         live: bool,
         beside: Option<Arc<LiveComponentState<Prof>>>,
     ) -> Self {
+        let cancellation_token = operation_cancellation_token.child_token();
         Self {
             update_full_lock: tokio::sync::Mutex::new(()),
             pending: parking_lot::Mutex::new(PendingState::new()),
@@ -421,6 +430,7 @@ impl<Prof: EngineProfile> LiveComponentState<Prof> {
             }),
             ready_notify: tokio::sync::Notify::new(),
             cancellation_token,
+            operation_cancellation_token,
             live_task: Mutex::new(None),
             live,
             beside,
@@ -667,7 +677,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// persisted a bootstrap flag + logic version).
     ///
     /// Returns `None` if `key` has no committed value (e.g. the component
-    /// never bootstrapped). Reads the [`StateKind::Live`] keyspace via a
+    /// never bootstrapped). Reads the [`StateKind::Live`](db_schema::StateKind::Live) keyspace via a
     /// single point-get on a fresh standalone snapshot — isolated from the
     /// `Regular` keyspace that `coco.use_state` in `process()` writes and
     /// set-reduces, and not participating in any commit, so it is safe in the
@@ -685,7 +695,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             .await
     }
 
-    /// Commit `value` under `key` in this live component's [`StateKind::Live`]
+    /// Commit `value` under `key` in this live component's [`StateKind::Live`](db_schema::StateKind::Live)
     /// persistent user state, read back by [`Self::read_committed_state`] on a
     /// later run. Written via the single-writer batcher in its own txn —
     /// independent of any component build's flush — so the live machinery can
@@ -782,6 +792,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             ),
             self.app_store.clone(),
             self.update_refusal.clone(),
+            self.state.operation_cancellation_token.clone(),
         );
 
         let run = self
@@ -1111,6 +1122,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             ),
             self.app_store.clone(),
             self.update_refusal.clone(),
+            self.state.operation_cancellation_token.clone(),
         );
         let fn_ctx = FnCallContext::default();
 
@@ -1456,6 +1468,7 @@ async fn run_op<Prof: EngineProfile>(
                 ),
                 app_store.clone(),
                 update_refusal.clone(),
+                state.operation_cancellation_token.clone(),
             );
             let inner_handle = child
                 .run_in_background(processor, context, on_error)
@@ -1486,6 +1499,7 @@ async fn run_op<Prof: EngineProfile>(
                 ComponentProcessingAction::new_delete(providers.clone(), on_error),
                 app_store.clone(),
                 update_refusal.clone(),
+                state.operation_cancellation_token.clone(),
             );
             let inner_handle = child.delete(context)?;
             inner_handle.ready().await

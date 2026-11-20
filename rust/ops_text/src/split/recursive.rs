@@ -47,6 +47,12 @@ const BODY_FIELD_NAMES: [&str; 3] = ["body", "consequence", "definition"];
 const TOO_SMALL_CHUNK_COST_SHIFT: u32 = 64 - TOO_SMALL_CHUNK_COST.ilog2();
 const _: () = assert!(TOO_SMALL_CHUNK_COST.is_power_of_two());
 
+/// A run of text that no separator splits and that is longer than
+/// `chunk_size` is cut into pieces of `chunk_size / CHAR_PIECES_PER_CHUNK`
+/// bytes, which chunks are built from: fine enough to fill a chunk to within
+/// a sixteenth of `chunk_size`, coarse enough to keep the merge cheap.
+const CHAR_PIECES_PER_CHUNK: usize = 16;
+
 /// Configuration for a custom language with regex-based separators.
 #[derive(Debug, Clone)]
 pub struct CustomLanguageConfig {
@@ -82,6 +88,19 @@ struct SimpleLanguageConfig {
     name: String,
     aliases: Vec<String>,
     separator_regex: Vec<Regex>,
+    separator_punctuation: SeparatorPunctuation,
+}
+
+/// What happens to a separator's text at a split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeparatorPunctuation {
+    /// The text up to the separator's first whitespace, such as the `.` of
+    /// `". "`, stays at the end of the chunk before it. The built-in
+    /// separators keep sentence and clause punctuation that way.
+    KeepBeforeWhitespace,
+    /// The separator is dropped whole: a custom language's regexes say what
+    /// to split on, not what to keep.
+    Drop,
 }
 
 static DEFAULT_LANGUAGE_CONFIG: LazyLock<SimpleLanguageConfig> =
@@ -99,6 +118,7 @@ static DEFAULT_LANGUAGE_CONFIG: LazyLock<SimpleLanguageConfig> =
         .into_iter()
         .map(|s| Regex::new(s).unwrap())
         .collect(),
+        separator_punctuation: SeparatorPunctuation::KeepBeforeWhitespace,
     });
 
 enum ChunkKind<'t> {
@@ -110,6 +130,43 @@ enum ChunkKind<'t> {
         lang_config: &'t SimpleLanguageConfig,
         next_regexp_sep_id: usize,
     },
+    /// A piece of text that no separator splits, cut at char boundaries so
+    /// that no chunk need be longer than `chunk_size` (see `CharPiecesIter`).
+    CharPiece,
+}
+
+/// Cuts a range that no separator splits, such as a long minified line, into
+/// pieces of at most `piece_len` bytes, each ending at a char boundary (a
+/// piece is longer only where one char is).
+struct CharPiecesIter<'t, 's: 't> {
+    full_text: &'s str,
+    next_start_pos: usize,
+    end_pos: usize,
+    piece_len: usize,
+    _kind: std::marker::PhantomData<&'t ()>,
+}
+
+impl<'t, 's: 't> Iterator for CharPiecesIter<'t, 's> {
+    type Item = InternalChunk<'t, 's>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let start = self.next_start_pos;
+        if start >= self.end_pos {
+            return None;
+        }
+        let mut end = self
+            .full_text
+            .floor_char_boundary((start + self.piece_len).min(self.end_pos));
+        if end == start {
+            end = self.full_text.ceil_char_boundary(start + 1);
+        }
+        self.next_start_pos = end;
+        Some(InternalChunk {
+            full_text: self.full_text,
+            range: TextRange::new(start, end),
+            kind: ChunkKind::CharPiece,
+        })
+    }
 }
 
 struct InternalChunk<'t, 's: 't> {
@@ -155,7 +212,13 @@ impl<'t, 's: 't> Iterator for TextChunksIter<'t, 's> {
         let end_pos = match self.matches_iter.next() {
             Some(grp) => {
                 self.next_start_pos = Some(self.range.start + grp.end());
-                self.range.start + grp.start()
+                let kept = match self.lang_config.separator_punctuation {
+                    SeparatorPunctuation::KeepBeforeWhitespace => {
+                        grp.as_str().find(char::is_whitespace).unwrap_or(grp.len())
+                    }
+                    SeparatorPunctuation::Drop => 0,
+                };
+                self.range.start + grp.start() + kept
             }
             None => {
                 self.next_start_pos = None;
@@ -240,6 +303,7 @@ impl<'t, 's: 't> Iterator for TreeSitterNodeIter<'t, 's> {
 enum ChunkIterator<'t, 's: 't> {
     TreeSitter(TreeSitterNodeIter<'t, 's>),
     Text(TextChunksIter<'t, 's>),
+    CharPieces(CharPiecesIter<'t, 's>),
     Once(std::iter::Once<InternalChunk<'t, 's>>),
 }
 
@@ -250,6 +314,7 @@ impl<'t, 's: 't> Iterator for ChunkIterator<'t, 's> {
         match self {
             ChunkIterator::TreeSitter(iter) => iter.next(),
             ChunkIterator::Text(iter) => iter.next(),
+            ChunkIterator::CharPieces(iter) => iter.next(),
             ChunkIterator::Once(iter) => iter.next(),
         }
     }
@@ -411,7 +476,7 @@ fn node_header(
         // tree-sitter finds a node's siblings through its parent, which it
         // finds by walking down from the root, so these index into `node`.
         .or_else(|| {
-            let mut index = node.child_count();
+            let mut index = u32::try_from(node.child_count()).ok()?;
             let last = loop {
                 index = index.checked_sub(1)?;
                 let child = node.child(index)?;
@@ -660,7 +725,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
     ) {
         let root_node = match &chunk.kind {
             ChunkKind::TreeSitterNode { node, .. } => Some(*node),
-            ChunkKind::RegexpSepChunk { .. } => None,
+            ChunkKind::RegexpSepChunk { .. } | ChunkKind::CharPiece => None,
         };
         let root_iter = ChunkIterator::Once(std::iter::once(chunk));
         let mut frames = Vec::new();
@@ -714,14 +779,33 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
                             }));
                             self.push_node_frame(&mut frames, iter, node, true);
                         }
+                        ChunkKind::CharPiece => {
+                            atom_collector.collect(current_chunk.range, |pos| {
+                                self.boundary_cut_cost(&frames, pos)
+                            });
+                        }
                         ChunkKind::RegexpSepChunk {
                             lang_config,
                             next_regexp_sep_id,
                         } => {
                             if next_regexp_sep_id >= lang_config.separator_regex.len() {
-                                atom_collector.collect(current_chunk.range, |pos| {
-                                    self.boundary_cut_cost(&frames, pos)
-                                });
+                                if current_chunk.range.len() <= self.chunk_size {
+                                    atom_collector.collect(current_chunk.range, |pos| {
+                                        self.boundary_cut_cost(&frames, pos)
+                                    });
+                                } else {
+                                    // No separator is left to split a run
+                                    // longer than `chunk_size`: cut it at
+                                    // char boundaries instead.
+                                    let iter = ChunkIterator::CharPieces(CharPiecesIter {
+                                        full_text: self.full_text,
+                                        next_start_pos: current_chunk.range.start,
+                                        end_pos: current_chunk.range.end,
+                                        piece_len: (self.chunk_size / CHAR_PIECES_PER_CHUNK).max(1),
+                                        _kind: std::marker::PhantomData,
+                                    });
+                                    WalkFrame::push_text(&mut frames, iter);
+                                }
                             } else {
                                 let iter = ChunkIterator::Text(TextChunksIter::new(
                                     lang_config,
@@ -963,6 +1047,7 @@ impl RecursiveChunker {
                 name: lang.language_name,
                 aliases: lang.aliases,
                 separator_regex,
+                separator_punctuation: SeparatorPunctuation::Drop,
             });
             if custom_languages
                 .insert(
@@ -1020,11 +1105,14 @@ impl RecursiveChunker {
             too_small_chunk_cost_scale: u64::from(u32::MAX)
                 .checked_div(min_chunk_size as u64)
                 .unwrap_or(0),
+            // An atom is never longer than `chunk_size`, even where
+            // `min_chunk_size` is, so a chunk need never be either.
             min_atom_chunk_size: if chunk_overlap > 0 {
                 chunk_overlap
             } else {
                 min_chunk_size
-            },
+            }
+            .min(config.chunk_size),
             tiny_chunk_cost: if chunk_overlap > 0 {
                 TINY_CHUNK_WITH_OVERLAP_COST
             } else {
@@ -1105,6 +1193,163 @@ mod tests {
             .map(|chunk| &text[chunk.range.start..chunk.range.end])
             .collect();
         assert_eq!(covered, text);
+    }
+
+    fn chunk_texts<'a>(text: &'a str, chunks: &[Chunk]) -> Vec<&'a str> {
+        chunks
+            .iter()
+            .map(|chunk| &text[chunk.range.start..chunk.range.end])
+            .collect()
+    }
+
+    fn split_default(text: &str, chunk_size: usize) -> Vec<Chunk> {
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let config = RecursiveChunkConfig {
+            chunk_size,
+            min_chunk_size: None,
+            chunk_overlap: None,
+        };
+        chunker.split(&CodeSource::new(text), config)
+    }
+
+    #[test]
+    fn test_split_keeps_punctuation_with_the_chunk_before() {
+        let text = "aaaa. bbbb";
+        assert_eq!(
+            chunk_texts(text, &split_default(text, 6)),
+            ["aaaa.", "bbbb"]
+        );
+        for (text, chunk_size, expected) in [
+            ("Is it? Yes! Done.", 8, vec!["Is it?", "Yes!", "Done."]),
+            ("one; two: three", 6, vec!["one;", "two:", "three"]),
+            ("alpha, beta", 7, vec!["alpha,", "beta"]),
+            ("aaaa — bbbb", 8, vec!["aaaa —", "bbbb"]),
+            ("一二三。四五六。", 12, vec!["一二三。", "四五六。"]),
+            ("一二三，四五六", 12, vec!["一二三，", "四五六"]),
+        ] {
+            assert_eq!(
+                chunk_texts(text, &split_default(text, chunk_size)),
+                expected,
+                "{text:?} at {chunk_size}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_custom_language_separators_are_dropped_whole() {
+        let config = RecursiveSplitConfig {
+            custom_languages: vec![CustomLanguageConfig {
+                language_name: "sentences".to_string(),
+                aliases: vec![],
+                separators_regex: vec![r"[.?!]+\s+".to_string()],
+            }],
+        };
+        let chunker = RecursiveChunker::new(config).unwrap();
+        let text = "aaaa. bbbb";
+        let chunks = chunker.split(
+            &CodeSource::with_language(text, "sentences"),
+            RecursiveChunkConfig {
+                chunk_size: 6,
+                min_chunk_size: None,
+                chunk_overlap: None,
+            },
+        );
+        assert_eq!(chunk_texts(text, &chunks), ["aaaa", "bbbb"]);
+    }
+
+    /// Checks that `chunks` cover `text` without gaps, each on char
+    /// boundaries and at most `chunk_size` bytes.
+    fn assert_cut_within_chunk_size(text: &str, chunks: &[Chunk], chunk_size: usize) {
+        assert!(!chunks.is_empty());
+        assert_eq!(chunks[0].range.start, 0);
+        assert_eq!(chunks.last().unwrap().range.end, text.len());
+        for pair in chunks.windows(2) {
+            assert_eq!(pair[0].range.end, pair[1].range.start, "no gap");
+        }
+        for chunk in chunks {
+            let chunk_text = text
+                .get(chunk.range.start..chunk.range.end)
+                .expect("chunk on char boundaries");
+            assert!(
+                chunk_text.len() <= chunk_size,
+                "chunk of {} bytes over {chunk_size}",
+                chunk_text.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_split_cuts_a_run_with_no_separator() {
+        // A minified line: no whitespace, so no separator splits it.
+        let text = "a=1;f=(x)=>{return(x*2+a)};".repeat(8_000);
+        let chunks = split_default(&text, 1000);
+        assert_cut_within_chunk_size(&text, &chunks, 1000);
+        // Pieces of a sixteenth of `chunk_size` fill each chunk to within one.
+        assert!(chunks.len() <= text.len() / (1000 - 1000 / 16) + 1);
+
+        // Multi-byte chars are never cut.
+        let text = "日🦀é".repeat(2_000);
+        let chunks = split_default(&text, 100);
+        assert_cut_within_chunk_size(&text, &chunks, 100);
+
+        // A run inside a syntax node splits the same way.
+        let text = format!("{{\"key\": \"{}\"}}", "x".repeat(5_000));
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let chunks = chunker.split(
+            &CodeSource::with_language(text.as_str(), "json"),
+            RecursiveChunkConfig {
+                chunk_size: 300,
+                min_chunk_size: None,
+                chunk_overlap: Some(50),
+            },
+        );
+        assert!(chunks.len() > 5000 / 300);
+        for chunk in &chunks {
+            assert!(chunk.range.len() <= 300, "{:?}", chunk.range);
+        }
+    }
+
+    #[test]
+    fn test_split_min_chunk_size_over_chunk_size_still_cuts() {
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let text = "word ".repeat(60);
+        let chunks = chunker.split(
+            &CodeSource::new(text.as_str()),
+            RecursiveChunkConfig {
+                chunk_size: 50,
+                min_chunk_size: Some(400),
+                chunk_overlap: None,
+            },
+        );
+        for chunk in &chunks {
+            assert!(chunk.range.len() <= 50, "{:?}", chunk.range);
+        }
+    }
+
+    #[test]
+    fn test_split_falls_back_to_text_when_the_parse_is_over_budget() {
+        // Svelte's lexer rescans to the end of the text from every token of
+        // unbalanced brackets: the parse would take seconds, so it is
+        // abandoned and the text splits as it would with no language.
+        let text = "({[".repeat(8_000);
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let config = || RecursiveChunkConfig {
+            chunk_size: 500,
+            min_chunk_size: None,
+            chunk_overlap: None,
+        };
+        let svelte = CodeSource::with_language(text.as_str(), "svelte");
+        assert!(matches!(svelte.tree(), ParseOutcome::ParseFailed));
+        let ranges = |chunks: Vec<Chunk>| -> Vec<(usize, usize)> {
+            chunks
+                .iter()
+                .map(|chunk| (chunk.range.start, chunk.range.end))
+                .collect()
+        };
+        assert_eq!(
+            ranges(chunker.split(&svelte, config())),
+            ranges(chunker.split(&CodeSource::new(text.as_str()), config()))
+        );
     }
 
     #[test]

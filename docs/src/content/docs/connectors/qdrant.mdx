@@ -342,6 +342,8 @@ The id, the vector and the payload are separate arguments, and the shape of the 
   - `vector` — Vector data (single vector or dict of named vectors)
   - `payload` — Optional metadata as a JSON-serializable dict
 
+`declare_point` checks the vectors against the collection schema when it is called and raises a `ValueError` for a mismatch, which Qdrant would otherwise reject for the whole batch: a dense vector of the wrong length, an empty multivector, a NaN or infinite element, a sparse vector with repeated indices or a different number of values, or a vector name the schema does not declare. A point may leave out a named vector.
+
 </Lang>
 
 ### Collection schema
@@ -514,6 +516,36 @@ pub enum SparseModifier { Idf }
 </LangTabs>
 
 Sparse vectors use Qdrant's native sparse-vector storage and dot-product scoring. The optional <Lang only="python">`modifier="idf"`</Lang><Lang only="rust">`modifier: Some(SparseModifier::Idf)`</Lang> enables Qdrant's IDF modifier for sparse vectors.
+
+<Lang only="rust">
+
+#### HNSW and quantization
+
+{/* Rust: rust/sdk/cocoindex/src/connectors/qdrant.rs */}
+
+A collection's HNSW graph and the quantization of its dense vectors are set on the schema:
+
+```rust
+impl CollectionSchema {
+    pub fn with_hnsw(self, config: HnswConfig) -> Self
+    pub fn with_quantization(self, quantization: Quantization) -> Self
+}
+
+pub struct HnswConfig {
+    pub m: u64,            // edges per node; Qdrant's default is 16
+    pub ef_construct: u64, // neighbours considered while building; default 100
+}
+
+pub enum Quantization { ScalarInt8, Binary }
+```
+
+Without them the collection keeps Qdrant's defaults and no quantization. A change to either is applied to the existing collection on the next run, and Qdrant rebuilds the index or re-quantizes the vectors in the background; the collection is not recreated and its points are not written again. Removing `with_hnsw` sets the defaults back; removing `with_quantization` turns quantization off.
+
+</Lang>
+
+<RustNote>
+`with_hnsw` and `with_quantization` have no Python counterpart yet.
+</RustNote>
 
 #### Single (unnamed) vector
 
@@ -752,13 +784,13 @@ for (id, dense, indices, values, text) in points {
 
 <Lang only="python">
 
-The `schema` field of `QdrantVectorDef` accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema` to specify the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
+The `schema` field of `QdrantVectorDef` accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema` to specify the vector dimension and dtype. A `float16` schema is stored as Qdrant's `Float16` datatype; `float32` and `float64` (Qdrant has no 64-bit vectors) as `Float32`, so a change between those two alone keeps the collection, while a change to or from `float16` recreates it. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
 
 </Lang>
 
 <Lang only="rust">
 
-`QdrantVectorDef::new(VectorSchema::f32(384), distance)` takes an explicit schema and `QdrantVectorDef::from_vector_provider(&embedder, distance).await?` takes a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider). An `f16` schema is stored as Qdrant's `Float16` datatype. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
+`QdrantVectorDef::new(VectorSchema::f32(384), distance)` takes an explicit schema and `QdrantVectorDef::from_vector_provider(&embedder, distance).await?` takes a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider). An `f16` schema is stored as Qdrant's `Float16` datatype; `f32` and `f64` (Qdrant has no 64-bit vectors) as `Float32`, so a change between those two alone keeps the collection, while a change to or from `f16` recreates it. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
 
 </Lang>
 

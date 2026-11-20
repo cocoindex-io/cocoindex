@@ -14,6 +14,7 @@ import msgspec
 import pytest
 
 import cocoindex as coco
+from cocoindex.connectorkits import statediff, target
 
 from tests import common
 
@@ -40,7 +41,23 @@ def _config() -> "doris.DorisConnectionConfig":
 
 
 @pytest.fixture
-def sql_log(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def dropped_tables(monkeypatch: pytest.MonkeyPatch) -> set[str]:
+    """Tables the stubbed catalog does not list; it lists every other one."""
+    dropped: set[str] = set()
+
+    def fake_query(
+        config: "doris.DorisConnectionConfig", sql: str, args: Any = ()
+    ) -> list[tuple[Any, ...]]:
+        assert sql == doris_target._TABLE_EXISTS_SQL
+        _, table_name, _ = args
+        return [] if table_name in dropped else [(1,)]
+
+    monkeypatch.setattr(doris_target, "_query_sync", fake_query)
+    return dropped
+
+
+@pytest.fixture
+def sql_log(monkeypatch: pytest.MonkeyPatch, dropped_tables: set[str]) -> list[str]:
     """Every SQL statement the connector runs, in order; none reaches a server."""
     log: list[str] = []
 
@@ -223,3 +240,154 @@ def test_old_tracking_record_decodes_with_no_index_params() -> None:
     )
     assert decoded.vector_index_params is None
     assert decoded.inverted_index_parsers is None
+
+
+# ============================================================
+# A table dropped outside CocoIndex
+# ============================================================
+
+
+def test_table_exists_matches_the_name_and_its_lower_case_form(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The catalog query names the configured database and the table, also
+    lower-cased (a cluster with `lower_case_table_names = 1` stores it so)."""
+    calls: list[tuple[str, Any]] = []
+    found: list[tuple[Any, ...]] = []
+
+    def fake_query(
+        config: "doris.DorisConnectionConfig", sql: str, args: Any = ()
+    ) -> list[tuple[Any, ...]]:
+        calls.append((sql, args))
+        return found
+
+    monkeypatch.setattr(doris_target, "_query_sync", fake_query)
+    assert not asyncio.run(doris_target._table_exists(_config(), "MyDocs"))
+    found.append((1,))
+    assert asyncio.run(doris_target._table_exists(_config(), "MyDocs"))
+    assert calls[0] == (
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema = %s AND table_name IN (%s, %s)",
+        ("testdb", "MyDocs", "mydocs"),
+    )
+
+
+def _simple_schema() -> "doris.TableSchema[Any]":
+    return doris.TableSchema(
+        columns={
+            "id": doris.ColumnDef(type="VARCHAR(64)", nullable=False),
+            "text": doris.ColumnDef(type="TEXT"),
+        },
+        primary_key=["id"],
+    )
+
+
+def test_a_missing_system_table_is_created_and_its_rows_invalidated() -> None:
+    present = doris_target._TableSpec(table_schema=_simple_schema())
+    prev = statediff.MutualTrackingRecord(
+        tracking_record=doris_target._table_composite_tracking_record_from_spec(
+            present
+        ),
+        managed_by=present.managed_by,
+    )
+    handler = doris_target._TableHandler()
+    key = ("db", "docs")
+
+    out = handler.reconcile(key, present, [prev], False)
+    assert out is not None
+    assert (out.action.main_action, out.child_invalidation) == (None, None)
+
+    out = handler.reconcile(
+        key, dataclasses.replace(present, missing=True), [prev], False
+    )
+    assert out is not None
+    assert out.action.main_action == "insert"
+    assert out.action.column_actions == {}
+    assert out.child_invalidation == "destructive"
+    # `missing` is not part of the tracking record.
+    assert out.tracking_record == prev
+
+    # A user-managed table is never created: `missing` changes nothing.
+    user = dataclasses.replace(present, managed_by=target.ManagedBy.USER)
+    user_prev = statediff.MutualTrackingRecord(
+        tracking_record=prev.tracking_record, managed_by=target.ManagedBy.USER
+    )
+    out = handler.reconcile(
+        key, dataclasses.replace(user, missing=True), [user_prev], False
+    )
+    assert out is not None
+    assert (out.action.main_action, out.child_invalidation) == (None, None)
+
+
+_row_component_runs = 0
+
+
+@coco.fn(memo=True)
+async def _declare_row_in_component(
+    row: dict[str, Any], table: "doris.DorisTableTarget[dict[str, Any]]"
+) -> None:
+    global _row_component_runs
+    _row_component_runs += 1
+    table.declare_row(row=row)
+
+
+def test_a_table_dropped_outside_cocoindex_comes_back_with_its_rows(
+    sql_log: list[str],
+    dropped_tables: set[str],
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """A table the catalog no longer lists is created again on the next run,
+    with all its rows: the rows of child components that would otherwise be
+    skipped as unchanged too."""
+    loaded: list[str] = []
+
+    async def fake_stream_load(
+        managed_conn: Any, table_name: str, rows: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        loaded.extend(row["id"] for row in rows)
+        return {}
+
+    monkeypatch.setattr(doris_target, "_stream_load", fake_stream_load)
+    env = common.create_test_env(__file__, suffix=request.node.name)
+    db_key = coco.ContextKey[doris.ManagedConnection]("test_doris_dropped_db")
+    env.context_provider.provide(db_key, doris.connect(_config()))
+    rows = [{"id": "1", "text": "one"}, {"id": "2", "text": "two"}]
+
+    @coco.fn
+    async def main() -> None:
+        table = await doris.mount_table_target(db_key, "docs", _simple_schema())
+        await coco.mount_each(
+            _declare_row_in_component, [(row["id"], row) for row in rows], table
+        )
+
+    app = coco.App(coco.AppConfig(name="test_doris_dropped", environment=env), main)
+
+    def creates() -> list[str]:
+        return [
+            sql
+            for sql in sql_log
+            if sql.startswith("CREATE TABLE IF NOT EXISTS `testdb`.`docs`")
+        ]
+
+    app.update_blocking()
+    assert len(creates()) == 1
+    assert sorted(loaded) == ["1", "2"]
+    assert _row_component_runs == 2
+
+    sql_log.clear()
+    loaded.clear()
+    app.update_blocking()
+    assert (sql_log, loaded, _row_component_runs) == ([], [], 2)
+
+    dropped_tables.add("docs")
+    app.update_blocking()
+    assert len(creates()) == 1
+    assert sorted(loaded) == ["1", "2"]
+    assert _row_component_runs == 4, "the children run again to write their rows"
+
+    dropped_tables.clear()
+    sql_log.clear()
+    loaded.clear()
+    app.update_blocking()
+    assert (sql_log, loaded, _row_component_runs) == ([], [], 4)

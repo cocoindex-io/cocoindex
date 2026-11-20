@@ -458,6 +458,49 @@ def test_switch_from_flat_path_to_nested_dir_target_keeps_file(
     assert (outdir / "sub" / "a.txt").read_text() == "a"
 
 
+def test_file_and_directory_replace_each_other_at_one_path(tmp_path: Path) -> None:
+    """An entry declared as a file where a previous run declared a directory (and
+    the other way round) replaces what that run created, with what was under the
+    directory. Before, the write failed every run (IsADirectoryError /
+    FileExistsError)."""
+    outdir = tmp_path / "out"
+    app = _new_app("test_file_and_dir_replace", outdir)
+
+    async def as_dir(target: localfs.DirTarget[coco.ResolvedS]) -> None:
+        sub = await coco.use_mount(
+            coco.component_subpath("x"), _declare_named_sub_dir, target, "x"
+        )
+        sub.declare_file("a.txt", "a")
+
+    async def as_file(target: localfs.DirTarget[coco.ResolvedS]) -> None:
+        target.declare_file("x", "file")
+
+    _update(app, as_dir)
+    assert (outdir / "x" / "a.txt").read_text() == "a"
+    _update(app, as_file)
+    assert (outdir / "x").read_text() == "file"
+    _update(app, as_dir)
+    assert (outdir / "x" / "a.txt").read_text() == "a"
+
+
+def test_entry_of_the_other_kind_made_by_the_user_fails_the_write(
+    tmp_path: Path,
+) -> None:
+    """Only an entry CocoIndex declared is replaced: a directory the user made
+    where a file is declared still fails the update."""
+    outdir = tmp_path / "out"
+    app = _new_app("test_user_dir_not_replaced", outdir)
+    (outdir / "x").mkdir(parents=True)
+    (outdir / "x" / "mine.txt").write_text("mine")
+
+    async def as_file(target: localfs.DirTarget[coco.ResolvedS]) -> None:
+        target.declare_file("x", "file")
+
+    with pytest.raises(Exception):
+        _update(app, as_file)
+    assert (outdir / "x" / "mine.txt").read_text() == "mine"
+
+
 def test_delete_of_another_file_in_the_same_update_runs(tmp_path: Path) -> None:
     """The guard spares only the entry just written: a removed file is deleted in
     the same call that rewrites its sibling."""

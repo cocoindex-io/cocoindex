@@ -1,5 +1,6 @@
 pub mod admission;
 pub mod app;
+pub(crate) mod app_lock;
 pub mod component;
 pub mod context;
 pub mod deadline;

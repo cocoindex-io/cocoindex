@@ -110,7 +110,7 @@ impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
     /// and context-change deps ride everywhere regardless of it. Re-offering
     /// the whole set through a mode-governed channel would drop the tunneled
     /// and context parts under a `"self"` caller — a stale entry. It goes
-    /// through [`FnCallContextInner::reoffered_logic_deps`] instead, which
+    /// through [`FnCallContextInner::reoffered_logic_deps`](crate::engine::context::FnCallContextInner::reoffered_logic_deps) instead, which
     /// rides to the enclosing component's entry through every frame: a
     /// `"self"` caller re-stored after a hit then records its callee's own
     /// logic too, which a miss would have dropped — more invalidation, never

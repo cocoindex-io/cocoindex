@@ -663,3 +663,57 @@ def test_recursive_splitter_keeps_text_past_the_root_node() -> None:
     text = "{日本語﻿é```"
     chunks = splitter.split(text, chunk_size=373, chunk_overlap=15, language="yaml")
     assert "".join(c.text for c in chunks) == text
+
+
+def test_recursive_splitter_keeps_punctuation_with_the_chunk_before() -> None:
+    """A split at a sentence or clause separator drops only the whitespace:
+    the punctuation stays at the end of the chunk before it."""
+    splitter = RecursiveSplitter()
+    assert [c.text for c in splitter.split("aaaa. bbbb", chunk_size=6)] == [
+        "aaaa.",
+        "bbbb",
+    ]
+    assert [c.text for c in splitter.split("Is it? Yes! Done.", chunk_size=8)] == [
+        "Is it?",
+        "Yes!",
+        "Done.",
+    ]
+    assert [c.text for c in splitter.split("一二三。四五六。", chunk_size=12)] == [
+        "一二三。",
+        "四五六。",
+    ]
+
+
+def test_recursive_splitter_custom_language_drops_separators_whole() -> None:
+    """A custom language's separators say where to split, not what to keep."""
+    config = CustomLanguageConfig("sentences", [r"[.?!]+\s+"])
+    splitter = RecursiveSplitter(custom_languages=[config])
+    chunks = splitter.split("aaaa. bbbb", chunk_size=6, language="sentences")
+    assert [c.text for c in chunks] == ["aaaa", "bbbb"]
+
+
+def test_recursive_splitter_cuts_a_run_with_no_separator() -> None:
+    """A long run with no whitespace, such as a minified line, is cut at
+    char boundaries instead of staying one chunk."""
+    splitter = RecursiveSplitter()
+    for text, chunk_size in [
+        ("a=1;f=(x)=>{return(x*2+a)};" * 8_000, 1000),
+        ("日🦀é" * 2_000, 100),
+    ]:
+        chunks = splitter.split(text, chunk_size=chunk_size)
+        assert len(chunks) > 1
+        assert "".join(c.text for c in chunks) == text
+        assert all(len(c.text.encode()) <= chunk_size for c in chunks)
+
+
+def test_recursive_splitter_falls_back_to_text_on_a_runaway_parse() -> None:
+    """Svelte's lexer rescans to the end of the text from every token of
+    unbalanced brackets; the parse is abandoned within a fixed read budget and
+    the text splits as it does with no language."""
+    splitter = RecursiveSplitter()
+    text = "({[" * 8_000
+    with_language = splitter.split(text, chunk_size=500, language="svelte")
+    without = splitter.split(text, chunk_size=500)
+    assert [(c.start.byte_offset, c.end.byte_offset) for c in with_language] == [
+        (c.start.byte_offset, c.end.byte_offset) for c in without
+    ]

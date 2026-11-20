@@ -53,6 +53,9 @@ class _EntryAction(NamedTuple):
     content: _FileContent | None  # For files; None means delete
     create_parents: bool  # Whether to create parent directories
     root_key: _RootKey | None = None  # Key of a root-level entry; None under a dir
+    # A previous run declared the other kind of entry here (a directory where a
+    # file is now declared, or the other way round): replace it.
+    replaces_other_kind: bool = False
 
 
 def _normalize_entry_name(name: str | pathlib.PurePath) -> _EntryName:
@@ -107,13 +110,17 @@ def _execute_entry_action(path: pathlib.Path, action: _EntryAction) -> None:
         return
 
     if action.entry_type == "file":
-        # Write file
+        # Write file, replacing a directory a previous run declared here
+        if action.replaces_other_kind and path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
         if action.create_parents:
             path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(action.content)
         return
 
-    # Create directory
+    # Create directory, replacing a file a previous run declared here
+    if action.replaces_other_kind and (path.is_symlink() or path.is_file()):
+        path.unlink()
     if action.create_parents:
         path.mkdir(parents=True, exist_ok=True)
     else:
@@ -269,12 +276,22 @@ def _reconcile_entry(
 
     entry_spec = desired_state.entry_spec
     create_parents = desired_state.create_parent_dirs
+    # What a previous run declared here. Only an entry CocoIndex declared is
+    # replaced by one of the other kind; something else there fails the write.
+    was_dir = any(prev.fingerprint is None for prev in prev_possible_records)
+    was_file = any(prev.fingerprint is not None for prev in prev_possible_records)
 
     if isinstance(entry_spec, _DirSpec):
         # Directory entry (fingerprint=None means directory)
         return coco.TargetReconcileOutput(
             action=_EntryAction(
-                base_dir_key, path_str, "dir", b"", create_parents, root_key
+                base_dir_key,
+                path_str,
+                "dir",
+                b"",
+                create_parents,
+                root_key,
+                replaces_other_kind=was_file,
             ),
             sink=_entry_action_sink,
             tracking_record=_EntryTrackingRecord(fingerprint=None),
@@ -291,7 +308,13 @@ def _reconcile_entry(
 
     return coco.TargetReconcileOutput(
         action=_EntryAction(
-            base_dir_key, path_str, "file", entry_spec, create_parents, root_key
+            base_dir_key,
+            path_str,
+            "file",
+            entry_spec,
+            create_parents,
+            root_key,
+            replaces_other_kind=was_dir,
         ),
         sink=_entry_action_sink,
         tracking_record=_EntryTrackingRecord(fingerprint=target_fp),

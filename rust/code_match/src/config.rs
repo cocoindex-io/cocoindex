@@ -246,7 +246,7 @@ impl LangConfig {
     /// tokenizer profile: every language must state how its literals tokenize,
     /// because string-escaping conventions differ (a `"a\"b"` that is one
     /// string in C is two in a doubled-quote language). C-style languages pass
-    /// [`c_like_tokenizers`]; others compose the `*_doubled` / `*_literal` /
+    /// `c_like_tokenizers()`; others compose the `*_doubled` / `*_literal` /
     /// `triple_*` builders. Op/splittable tables are derived from the grammar.
     ///
     /// Panics if the name is not a registry language with a tree-sitter

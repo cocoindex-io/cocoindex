@@ -3,7 +3,7 @@ use crate::engine::stats::{ProcessingStats, VersionedProcessingStats};
 use crate::prelude::*;
 
 use crate::engine::component::Component;
-use crate::engine::context::{AppContext, PreviewActionCollector};
+use crate::engine::context::{AppContext, ComponentProcessorContext, PreviewActionCollector};
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::live_component::{LIVE_COMPONENT_DRAIN_TIMEOUT_SECS, LiveComponentState};
 
@@ -12,6 +12,7 @@ use crate::engine::runtime::get_runtime;
 use crate::state::component_selector::ComponentSelector;
 use crate::state::stable_path::StablePath;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 /// Options for updating an app.
 #[derive(Debug, Clone)]
@@ -47,6 +48,8 @@ pub struct AppOpHandle<T: Send + 'static> {
     /// Whether this is a live-mode operation (affects progress display).
     pub live: bool,
     deadline: DeadlineContext,
+    /// Cancels this operation alone; see [`AppOpHandle::cancellation_token`].
+    cancellation_token: CancellationToken,
 }
 
 impl<T: Send + 'static> AppOpHandle<T> {
@@ -75,6 +78,17 @@ impl<T: Send + 'static> AppOpHandle<T> {
     /// don't care about every update aren't woken on every version bump.
     pub async fn wait_terminated(&self) {
         self.stats.wait_terminated().await;
+    }
+
+    /// The token that cancels this operation, and only it: the app's other
+    /// operations go on. Cancelling it makes [`AppOpHandle::result`] return
+    /// an error promptly; work the operation already committed stays. An
+    /// update's live components stop with it. A drop that is cancelled
+    /// before it clears the app's database leaves the database in place
+    /// (component deletes already under way may still finish); dropping
+    /// again finishes it.
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.cancellation_token
     }
 
     /// Awaits the task completion and returns the result.
@@ -131,6 +145,12 @@ impl<Prof: EngineProfile> App<Prof> {
         Option<PreviewActionCollector<Prof>>,
     )> {
         crate::telemetry::track("app_update");
+        // A preview writes nothing, so it needs no lock against other processes.
+        let op_lock = if preview_collector.is_none() {
+            Some(self.app_ctx().acquire_op_lock()?)
+        } else {
+            None
+        };
         // Refresh the app token if a prior operation (e.g. drop_app) cancelled
         // it, so this update starts with a non-cancelled token.
         self.app_ctx().reset_cancellation_token_if_cancelled();
@@ -161,7 +181,8 @@ impl<Prof: EngineProfile> App<Prof> {
         let update_refusal = context.update_refusal().clone();
         let root_component = self.root_component.clone();
         let stats_for_task = processing_stats.clone();
-        let cancel_token = self.app_ctx().cancellation_token();
+        let cancel_token = context.cancellation_token().clone();
+        let cancel_token_for_handle = cancel_token.clone();
         let live = options.live;
         let span = Span::current();
         let task = get_runtime().spawn(
@@ -184,6 +205,7 @@ impl<Prof: EngineProfile> App<Prof> {
                     root_component.wait_until_inactive().await;
                 }
                 stats_for_task.notify_terminated();
+                drop(op_lock);
                 // A change refused for the selector's sake fails the update,
                 // wherever the run that refused it was (see `UpdateRefusal`).
                 match (result, update_refusal.take()) {
@@ -201,6 +223,7 @@ impl<Prof: EngineProfile> App<Prof> {
                 version_rx,
                 live,
                 deadline,
+                cancellation_token: cancel_token_for_handle,
             },
             preview_collector,
         ))
@@ -222,6 +245,7 @@ impl<Prof: EngineProfile> App<Prof> {
     #[instrument(name = "app.drop", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
     pub fn drop_app(&self, host_ctx: Arc<Prof::HostCtx>) -> Result<AppOpHandle<()>> {
         crate::telemetry::track("app_drop");
+        let op_lock = self.app_ctx().acquire_op_lock()?;
         // Refresh the app token if a prior operation cancelled it, so the
         // cancel below applies to a token shared with any concurrent update.
         self.app_ctx().reset_cancellation_token_if_cancelled();
@@ -264,9 +288,8 @@ impl<Prof: EngineProfile> App<Prof> {
         // descendant deletes (see `specs/core/error_handling.md`).
         let raise_on_error: crate::engine::component::OnError =
             Arc::new(|err| Box::pin(async move { Err(err) }));
-        let context = self.root_component.new_processor_context_for_delete(
+        let context = self.root_component.new_processor_context_for_drop(
             providers,
-            None,
             processing_stats.clone(),
             host_ctx,
             Some(raise_on_error),
@@ -274,41 +297,18 @@ impl<Prof: EngineProfile> App<Prof> {
 
         let root_component = self.root_component.clone();
         let stats_for_task = processing_stats.clone();
+        let cancel_token = context.cancellation_token().clone();
+        let cancel_token_for_handle = cancel_token.clone();
         let span = Span::current();
         let task = get_runtime().spawn(
             async move {
-                // ── Live-component drain (must complete BEFORE deleting the
-                // root component / clearing the DB, so leaked drain tasks
-                // don't race teardown of shared resources) ──
-                drain_live_components(live_snapshot).await;
-
-                // Delete the root component (uses on_error from the context).
-                let handle = root_component.clone().delete(context.clone())?;
-
-                // Wait for the drop operation to complete
-                handle.ready().await?;
-
-                // Drop the per-app state-store data. Clears (rather than
-                // removes) the per-app sub-database; see `Storage::drop_app`.
-                let app_name = root_component.app_ctx().app_reg().name().to_owned();
-                root_component
-                    .app_ctx()
-                    .env()
-                    .storage()
-                    .drop_app(&app_name)
-                    .await?;
-
-                // Release the env-side `app_names` slot eagerly so a
-                // follow-up `App::new(name, …)` (e.g. Python re-using
-                // the same `App` instance for `update()` after `drop()`)
-                // doesn't trip the "App name already registered" check
-                // while pending tokio captures of `Arc<AppContextInner>`
-                // are still releasing.
-                root_component.app_ctx().app_reg().unregister();
-
-                debug!("App dropped successfully");
+                let result = tokio::select! {
+                    result = drop_root(root_component, context, live_snapshot) => result,
+                    _ = cancel_token.cancelled() => Err(internal_error!("Operation cancelled")),
+                };
                 stats_for_task.notify_terminated();
-                Ok(())
+                drop(op_lock);
+                result
             }
             .instrument(span),
         );
@@ -319,12 +319,53 @@ impl<Prof: EngineProfile> App<Prof> {
             version_rx,
             live: false,
             deadline: DeadlineContext::NONE,
+            cancellation_token: cancel_token_for_handle,
         })
     }
 
     pub fn app_ctx(&self) -> &AppContext<Prof> {
         self.root_component.app_ctx()
     }
+}
+
+/// The body of [`App::drop_app`]'s task: drain the live components, delete
+/// the root component (reverting its target states), then clear the app's
+/// database.
+async fn drop_root<Prof: EngineProfile>(
+    root_component: Component<Prof>,
+    context: ComponentProcessorContext<Prof>,
+    live_snapshot: Vec<Arc<LiveComponentState<Prof>>>,
+) -> Result<()> {
+    // ── Live-component drain (must complete BEFORE deleting the root
+    // component / clearing the DB, so leaked drain tasks don't race teardown
+    // of shared resources) ──
+    drain_live_components(live_snapshot).await;
+
+    // Delete the root component (uses on_error from the context).
+    let handle = root_component.clone().delete(context)?;
+
+    // Wait for the drop operation to complete
+    handle.ready().await?;
+
+    // Drop the per-app state-store data. Clears (rather than removes) the
+    // per-app sub-database; see `Storage::drop_app`.
+    let app_name = root_component.app_ctx().app_reg().name().to_owned();
+    root_component
+        .app_ctx()
+        .env()
+        .storage()
+        .drop_app(&app_name)
+        .await?;
+
+    // Release the env-side `app_names` slot eagerly so a follow-up
+    // `App::new(name, …)` (e.g. Python re-using the same `App` instance for
+    // `update()` after `drop()`) doesn't trip the "App name already
+    // registered" check while pending tokio captures of
+    // `Arc<AppContextInner>` are still releasing.
+    root_component.app_ctx().app_reg().unregister();
+
+    debug!("App dropped successfully");
+    Ok(())
 }
 
 /// Drain each live component in parallel with a per-component

@@ -308,7 +308,7 @@ An active [`Ctx` deadline](../advanced_topics/timeouts) can only shorten the bou
 
 ### Retries
 
-Within the bound, a failed request is retried with exponential backoff: 1s, doubling, capped at 30s. A `Retry-After` header in seconds replaces the backoff delay, under the same 30s cap. There is no attempt cap; time is the only brake.
+Within the bound, a failed request is retried with exponential backoff: 1s, doubling, capped at 30s. A `Retry-After` header, in seconds or as an HTTP date, replaces the backoff delay, without the 30s cap: an earlier try would only be refused again. When the wait it asks for would end past the bound, the call fails at once instead of waiting. There is no attempt cap; time is the only brake.
 
 | Failure | Retried? |
 | --- | --- |

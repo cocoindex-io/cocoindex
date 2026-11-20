@@ -192,6 +192,8 @@ By default, rows are returned as `dict[str, Any]`, with PostgreSQL types convert
 
 The row type is the type parameter of `read_table::<T>`. `T` must implement `serde::Deserialize`; column names map to struct fields, and unknown columns are ignored. Use `serde_json::Value` as `T` to get each row as a JSON object.
 
+A row is read through its JSON form, which has no NaN or infinity: a `float4`/`float8` column holding one is an error for that row, naming the column. Leave such a column out with `ReadTableOptions::columns`, or read from a view that maps it. Dropping the stream before its end closes its connection and cancels the query.
+
 <RustNote>
 There is no `row_factory`. Read the rows into a struct, then map them with the stream's or an iterator's `map`.
 </RustNote>
@@ -561,6 +563,10 @@ CocoIndex identifies a table by its key: the `db` key, `pg_schema_name` and `tab
 Declare each table through one key only. Switching a table from one form to the other changes its key: CocoIndex then cleans up the table it tracked under the old key, which is the same table.
 :::
 
+**Schema changes.** When the declared schema of a system-managed table changes, CocoIndex alters the table and writes again the rows a change can affect. A column that no cast converts to its new type is dropped and added again. PostgreSQL can't add a `NOT NULL` column to a table that has rows, so such a column is added nullable, and gets its `NOT NULL` back once the update has written every row's value. The DDL of one table runs in one transaction. When the schema doesn't change, an update runs no DDL.
+
+**Changes made outside CocoIndex.** CocoIndex tracks what it wrote, not what is in the table. <Lang only="python">If someone drops a system-managed table, the next update finds it gone and creates it again with every row. If someone truncates it or deletes rows, the next update writes again only the rows whose declared values changed.</Lang><Lang only="rust">If someone drops the table, truncates it or deletes rows, the next update writes again only the rows whose declared values changed; a row write that finds the table gone creates it again.</Lang> To write every row again, run an update with full reprocess (<Lang only="python">`full_reprocess=True`</Lang><Lang only="rust">`UpdateOptions { full_reprocess: true, .. }`</Lang>, or `--full-reprocess` on the CLI).
+
 #### Rows (child states)
 
 Once a `TableTarget` is resolved, declare rows to be upserted:
@@ -596,6 +602,8 @@ table.declare_row(&ctx, &row)?;
 - `row` — <Lang only="python">A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.</Lang><Lang only="rust">Any `Serialize` value that serializes to an object whose entries are the table's columns. Extra entries are ignored, and a missing entry is written as NULL. It must include all primary key columns.</Lang>
 
 CocoIndex writes rows in batches: each upsert or delete statement carries up to 2,000 rows, and the statements of a batch run concurrently over the pool.
+
+<Lang only="rust">A row's key is its primary-key values in the form PostgreSQL compares them by: in a `numeric` column `1`, `1.0` and `"1.00"` are one key, a `uuid` is one key in any case or format, and a `citext` value is one key in any case. Declaring two rows that PostgreSQL would store as one row is an "already declared" error, as for one key declared twice. A batch runs its deletes before its upserts, so a key whose spelling changes between updates keeps its row.</Lang>
 
 #### Vector indexes (attachment)
 
@@ -645,7 +653,7 @@ pub struct VectorIndexOptions {
 </Fragment>
 </LangTabs>
 
-The actual PostgreSQL index is named `{table_name}__vector__{name}`. PostgreSQL truncates a name longer than 63 bytes. <Lang only="python">If two vector indexes declared on the same `TableTarget` get the same name after truncation, `declare_vector_index` raises a `ValueError`.</Lang><Lang only="rust">`declare_vector_index` does not check for two names that become the same after truncation: keep the full index names distinct in their first 63 bytes.</Lang>
+The actual PostgreSQL index is named `{table_name}__vector__{name}`. PostgreSQL truncates a name longer than 63 bytes. If two vector indexes declared on the same `TableTarget` get the same name after truncation, `declare_vector_index` <Lang only="python">raises a `ValueError`</Lang><Lang only="rust">returns an error</Lang>.
 
 **Parameters:**
 
@@ -1104,16 +1112,16 @@ impl TableSchema {
 ```rust
 postgres::TableSchema::new(
     [
-        ("category", postgres::ColumnDef::new("text")),
-        ("name", postgres::ColumnDef::new("text")),
-        ("total_value", postgres::ColumnDef::new("double precision")),
-        ("title", postgres::ColumnDef::new("text").nullable()),
+        ("category", postgres::ColumnDef::new("text").not_null()),
+        ("name", postgres::ColumnDef::new("text").not_null()),
+        ("total_value", postgres::ColumnDef::new("double precision").not_null()),
+        ("title", postgres::ColumnDef::new("text")),
     ],
     ["category", "name"],
 )?
 ```
 
-`ColumnDef::new(pg_type)` is `NOT NULL`; `.nullable()` opts in to nulls.
+`ColumnDef::new(pg_type)` is nullable, as in Python; `.not_null()` makes it `NOT NULL`.
 
 </Fragment>
 </LangTabs>

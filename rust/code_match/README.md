@@ -1,5 +1,7 @@
 # cocoindex_code_match
 
+> This crate is an internal part of [CocoIndex](https://cocoindex.io), published only so the [`cocoindex`](https://crates.io/crates/cocoindex) crate can depend on it. It makes no API stability promise: any release may change it. Depend on `cocoindex` instead.
+
 Match **by-example code patterns** against **tree-sitter ASTs**, with metavariables.
 
 The bet: parse the *source* with a full tree-sitter grammar, but keep the *pattern* a flat token + metavar skeleton, and match it against the AST with metavariables snapping to node boundaries. This gives Comby-style pattern ergonomics (fragments like `else { \(*\) }` need not parse as a node) together with tree-sitter's correctness — balanced/context-sensitive nesting (`>>`, `<>`), AST-resolved precedence, and matches that are integral subtrees.

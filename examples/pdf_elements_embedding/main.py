@@ -235,7 +235,8 @@ async def app_main(sourcedir: pathlib.Path) -> None:
             vectors=qdrant.QdrantVectorDef(schema=EMBEDDER)
         ),
     )
-    clip_dim: int = clip()[0].config.projection_dim  # 768 for ViT-L/14
+    clip_dim = clip()[0].config.projection_dim  # 768 for ViT-L/14
+    assert clip_dim is not None, "the CLIP config names no projection dimension"
     image_target = await qdrant.mount_collection_target(
         QDRANT_DB,
         collection_name=IMAGE_COLLECTION,

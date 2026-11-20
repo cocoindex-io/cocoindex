@@ -64,7 +64,7 @@ import numpy as np
 import msgspec
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits._graph_relationship_ids import (
     legacy_relation_id,
     relationship_id,
@@ -503,7 +503,9 @@ class _SharedRecordApplier:
     action issues its own ``graph.query(cypher, params)`` call. Actions are
     grouped into the v0 ordering — node upserts → relation upserts → relation
     deletes → node deletes — to avoid temporarily-orphaned endpoints during
-    incremental updates.
+    incremental updates, and so a node undeclared together with its
+    relationships has none left when its delete runs (a node delete keeps a
+    node some relationship still touches, reduced to its key).
     """
 
     factory: ConnectionFactory
@@ -559,10 +561,11 @@ class _SharedRecordApplier:
 
     @staticmethod
     async def _apply_node_delete(graph: Any, action: _RecordAction) -> None:
-        cypher = _cypher.build_node_delete(
-            label=action.table_name, pk_fields=[action.pk_field]
-        )
-        await graph.query(cypher, {"key_0": action.record_id})
+        # A node a relationship still touches is reduced to its key, one none
+        # touches is deleted (see `_cypher.build_node_reduce_to_key`).
+        for build in (_cypher.build_node_reduce_to_key, _cypher.build_node_delete):
+            cypher = build(action.table_name, [action.pk_field])
+            await graph.query(cypher, {"key_0": action.record_id})
 
     @staticmethod
     async def _apply_relation_upsert(graph: Any, action: _RecordAction) -> None:
@@ -1120,7 +1123,7 @@ class _TableHandler(
         if main_action == "replace":
             # The table is rebuilt: its contents are deleted and re-declared.
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
+        elif any(_container.may_lose_data(a) for a in column_actions.values()):
             # FalkorDB has no per-field DDL so column changes don't actually
             # destroy data, but mark lossy so dependents re-upsert to be safe.
             child_invalidation = "lossy"

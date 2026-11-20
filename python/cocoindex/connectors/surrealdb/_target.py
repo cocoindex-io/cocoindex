@@ -57,7 +57,7 @@ import numpy as np
 from surrealdb.cbor import CBORTag as _CBORTag  # type: ignore[import-untyped]
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     MappingType,
@@ -176,6 +176,8 @@ class ConnectionFactory:
         self._connections: PerLoopConnections[AsyncSurreal] = PerLoopConnections(
             self._connect, _close_connection, owner="SurrealDB ConnectionFactory"
         )
+        # Known once a batch is written: see `_recreates_in_transaction`.
+        self._server_recreates_in_transaction: bool | None = None
 
     def __coco_memo_key__(self) -> tuple[str, str, str]:
         # Where the data lives, not how to sign in: the credentials and the
@@ -204,6 +206,15 @@ class ConnectionFactory:
             await conn.close()
             raise
         return conn
+
+    async def _recreates_in_transaction(self, conn: AsyncSurreal) -> bool:
+        """Whether the server can create a record deleted earlier in the same
+        transaction (asked once, through ``conn``)."""
+        if self._server_recreates_in_transaction is None:
+            self._server_recreates_in_transaction = _recreates_in_transaction(
+                await conn.version()
+            )
+        return self._server_recreates_in_transaction
 
     async def close(self) -> None:
         """Close the connection of the running event loop, if any. Call it on
@@ -582,30 +593,136 @@ class _RecordAction(NamedTuple):
     value: dict[str, Any] | None  # None = delete
     from_record: tuple[str, Any] | None  # (table, id) (relations only)
     to_record: tuple[str, Any] | None  # (table, id) (relations only)
-    # ``fields`` mode: "set" MERGEs into an existing record (zero rows affected
-    # raises), "unset" MERGEs NONE values (a missing record is fine).
+    # ``fields`` mode: "set" MERGEs into the record (creating it when it is
+    # missing), "unset" MERGEs NONE values (a missing record is fine).
     fields_op: Literal["set", "unset"] | None = None
 
 
 _MAX_ACTIONS_PER_TXN = 500
 _MAX_ATTEMPTS = 5
 
-# One transaction per chunk. Values are bound as typed CBOR parameters.
-# ``MERGE`` with a NONE value removes the field, so owned fields that became
-# None are unset without touching fields written by other owners.
-_BATCH_SURQL = """\
-BEGIN;
-FOR $r IN $ups { UPSERT $r.id MERGE $r.c RETURN NONE; };
-FOR $r IN $flds {
-    LET $n = (UPDATE ONLY $r.id MERGE $r.c RETURN id);
-    IF $n = NONE { THROW 'fields target record missing: ' + <string>$r.id; };
-};
-FOR $r IN $unf { UPDATE $r.id MERGE $r.c RETURN NONE; };
+
+def _recreates_in_transaction(version: str) -> bool:
+    """Whether the server (``version()``, e.g. ``surrealdb-3.2.4``) can create a
+    record deleted earlier in the same transaction: SurrealDB 3.2 cannot (the
+    create fails with "already exists"), 3.3 and later can."""
+    match = re.search(r"(\d+)\.(\d+)", version)
+    return match is None or (int(match[1]), int(match[2])) >= (3, 3)
+
+
+# The edges of the records ``$dels`` names, as they are: their whole records,
+# ids and endpoints included.
+_EDGES_OF_DELETED = (
+    "array::distinct(array::flatten(array::map($dels, "
+    "|$d| array::concat($d->?, $d<-?)))).map(|$e| $e.*)"
+)
+
+
+def _batch_surql(recreate_in_transaction: bool) -> str:
+    """One transaction of record writes. Values are bound as typed CBOR parameters.
+
+    ``MERGE`` with a NONE value removes the field, so owned fields that became
+    None are unset without touching fields written by other owners. Field
+    unsets come first, so that a removed group cannot erase a field another
+    owner takes over in the same batch.
+
+    An edge that exists between the same endpoints is updated in place; an edge
+    whose endpoints change is deleted and related again. A deleted record that
+    is not an edge keeps its edges: SurrealDB deletes them with it, while an
+    edge needs no endpoint record, so they are related again as they were.
+    SurrealDB 3.2 cannot create a record deleted earlier in the same
+    transaction: there, the batch only deletes, and ends with the edges to
+    relate in a second transaction (``_RECREATE_EDGES_SURQL``).
+    """
+    if recreate_in_transaction:
+        relate = """\
 FOR $r IN $rels {
-    DELETE $r.id RETURN NONE;
-    RELATE ($r.f) -> ($r.id) -> ($r.t) CONTENT $r.c RETURN NONE;
+    IF (SELECT VALUE [in, out] FROM ONLY $r.id) = [$r.f, $r.t] {
+        UPDATE $r.id CONTENT $r.c RETURN NONE;
+    } ELSE {
+        DELETE $r.id RETURN NONE;
+        RELATE ($r.f) -> ($r.id) -> ($r.t) CONTENT $r.c RETURN NONE;
+    };
 };
-FOR $d IN $dels { DELETE $d RETURN NONE; };
+"""
+        restore = """\
+FOR $e IN $edges {
+    IF (SELECT VALUE id FROM ONLY $e.id) = NONE {
+        RELATE ($e.in) -> ($e.id) -> ($e.out) CONTENT $e RETURN NONE;
+    };
+};
+"""
+    else:
+        relate = """\
+LET $moved = array::filter($rels,
+    |$r| (SELECT VALUE [in, out] FROM ONLY $r.id) NOT IN [NONE, [$r.f, $r.t]]);
+FOR $r IN $rels {
+    LET $cur = (SELECT VALUE [in, out] FROM ONLY $r.id);
+    IF $cur = [$r.f, $r.t] { UPDATE $r.id CONTENT $r.c RETURN NONE; }
+    ELSE IF $cur = NONE { RELATE ($r.f) -> ($r.id) -> ($r.t) CONTENT $r.c RETURN NONE; }
+    ELSE { DELETE $r.id RETURN NONE; };
+};
+"""
+        restore = "LET $restore = $edges;\n"
+    return (
+        "BEGIN;\n"
+        "LET $moved = [];\n"
+        "LET $restore = [];\n"
+        "FOR $r IN $unf { UPDATE $r.id MERGE $r.c RETURN NONE; };\n"
+        "FOR $r IN $ups { UPSERT $r.id MERGE $r.c RETURN NONE; };\n"
+        f"{relate}"
+        "FOR $d IN $rdels { DELETE $d RETURN NONE; };\n"
+        f"LET $edges = {_EDGES_OF_DELETED};\n"
+        "FOR $d IN $dels { DELETE $d RETURN NONE; };\n"
+        f"{restore}"
+        "[$moved, $restore];\n"
+        "COMMIT;\n"
+    )
+
+
+def _moved_and_restore(res: Any) -> tuple[list[Any], list[Any]]:
+    """The ``[$moved, $restore]`` of a `_batch_surql` response: the value of its
+    statement before ``COMMIT``."""
+    statements = res.get("result") if isinstance(res, dict) else None
+    value = (
+        statements[-2].get("result")
+        if isinstance(statements, list)
+        and len(statements) >= 2
+        and isinstance(statements[-2], dict)
+        else None
+    )
+    if not (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(isinstance(v, list) for v in value)
+    ):
+        raise RuntimeError(
+            "SurrealDB answered the batch transaction with an unexpected shape; "
+            f"expected [$moved, $restore] before COMMIT, got: {res!r}"
+        )
+    return value[0], value[1]
+
+
+# The second transaction on SurrealDB 3.2: relate each moved edge (``$moved``)
+# and each edge of a deleted record (``$restore``), unless another writer
+# created it in between. A moved edge another writer created between other
+# endpoints fails the batch, and the next run moves it again. Between the two
+# transactions the edges are missing; if the second never lands, a moved edge
+# is written on the next run, but an edge of a deleted record stays missing
+# until its declaration changes or a full reprocess.
+_RECREATE_EDGES_SURQL = """\
+BEGIN;
+FOR $r IN $moved {
+    LET $cur = (SELECT VALUE [in, out] FROM ONLY $r.id);
+    IF $cur = NONE { RELATE ($r.f) -> ($r.id) -> ($r.t) CONTENT $r.c RETURN NONE; }
+    ELSE IF $cur = [$r.f, $r.t] { UPDATE $r.id CONTENT $r.c RETURN NONE; }
+    ELSE { THROW 'edge ' + <string>$r.id + ' was written by another writer while it moved'; };
+};
+FOR $e IN $restore {
+    IF (SELECT VALUE id FROM ONLY $e.id) = NONE {
+        RELATE ($e.in) -> ($e.id) -> ($e.out) CONTENT $e RETURN NONE;
+    };
+};
 COMMIT;
 """
 
@@ -632,15 +749,34 @@ def _check_response(res: Any) -> None:
         raise RuntimeError(f"SurrealDB batch failed: {msg}")
 
 
+async def _query_with_retry(
+    conn: AsyncSurreal, surql: str, params: dict[str, Any]
+) -> Any:
+    """Run ``surql``, retried when its transaction conflicts; its response."""
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            res = await conn.query_raw(surql, params)
+            _check_response(res)
+            return res
+        except _RetryableError:
+            if attempt == _MAX_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(0.05 * 2**attempt * (1 + random.random()))
+    raise AssertionError("unreachable")
+
+
 @dataclass(frozen=True)
 class _SharedRecordApplier:
-    """The record sink callback shared by every record handler of one database.
+    """The record and index sink callback shared by every record handler of one database.
 
     Equal for the same ``ConnectionFactory``, so the record sinks of all tables
-    of one database — node and relation tables alike — share one identity (see
-    ``coco.TargetActionSink``) and the engine batches their actions together;
-    each batch is ordered by :meth:`_rank` so a relation is never written
-    before its endpoints exist.
+    of one database — node and relation tables alike — and their index sinks
+    share one identity (see ``coco.TargetActionSink``) and the engine batches
+    their actions together; each batch is ordered by :meth:`_rank` so a
+    relation is never written before its endpoints exist. Index changes wrap the
+    records: a changed index is removed before the records are written and
+    defined after them, since it can be defined neither over the old records (a
+    new dimension) nor before the new ones are written.
 
     Atomicity scope: the engine batches the actions of all components that share
     this sink; they are applied in chunks of ``_MAX_ACTIONS_PER_TXN``, each chunk one
@@ -652,63 +788,78 @@ class _SharedRecordApplier:
 
     @staticmethod
     def _rank(action: _RecordAction) -> int:
-        # Order: upserts, fields writes, relation upserts, relation deletes, deletes.
+        # Order: field unsets, upserts and field sets, relation upserts,
+        # relation deletes, deletes.
         if action.value is not None:
-            if action.fields_op is not None:
-                return 1
-            return 2 if action.is_relation else 0
+            if action.fields_op == "unset":
+                return 0
+            return 2 if action.is_relation else 1
         return 3 if action.is_relation else 4
 
     async def __call__(
-        self, context_provider: ContextProvider, actions: Sequence[_RecordAction]
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[_RecordAction | _VectorIndexAction],
     ) -> None:
         if not actions:
             return
         conn = await self.factory.acquire()
-        ordered = sorted(actions, key=self._rank)  # stable
+        indexes = [a for a in actions if isinstance(a, _VectorIndexAction)]
+        records = [a for a in actions if isinstance(a, _RecordAction)]
+        for index in indexes:
+            _check_response(
+                await conn.query_raw(
+                    f"REMOVE INDEX IF EXISTS {index.name} ON TABLE {index.table_name}"
+                )
+            )
+        ordered = sorted(records, key=self._rank)  # stable
         for start in range(0, len(ordered), _MAX_ACTIONS_PER_TXN):
             await self._apply_chunk(conn, ordered[start : start + _MAX_ACTIONS_PER_TXN])
+        for index in indexes:
+            if index.spec is not None:
+                _check_response(
+                    await conn.query_raw(_define_vector_index(index.name, index))
+                )
 
     async def _apply_chunk(
         self, conn: AsyncSurreal, chunk: Sequence[_RecordAction]
     ) -> None:
         ups: list[dict[str, Any]] = []
-        flds: list[dict[str, Any]] = []
         unf: list[dict[str, Any]] = []
         rels: list[dict[str, Any]] = []
+        rdels: list[Any] = []
         dels: list[Any] = []
         for a in chunk:
             rid = _to_record_id(a.table_name, a.record_id)
             if a.value is None:
-                dels.append(rid)
+                (rdels if a.is_relation else dels).append(rid)
                 continue
             content = {k: _sanitize(v) for k, v in a.value.items() if k != "id"}
-            if a.fields_op == "set":
-                flds.append({"id": rid, "c": content})
-            elif a.fields_op == "unset":
+            if a.fields_op == "unset":
                 unf.append({"id": rid, "c": content})
             elif a.is_relation:
                 assert a.from_record is not None and a.to_record is not None
+                f = _to_record_id(*a.from_record)
+                t = _to_record_id(*a.to_record)
+                # The content carries the endpoints, so that `UPDATE … CONTENT`
+                # keeps them.
                 rels.append(
-                    {
-                        "id": rid,
-                        "f": _to_record_id(*a.from_record),
-                        "t": _to_record_id(*a.to_record),
-                        "c": content,
-                    }
+                    {"id": rid, "f": f, "t": t, "c": {**content, "in": f, "out": t}}
                 )
             else:
                 ups.append({"id": rid, "c": content})
-        params = {"ups": ups, "flds": flds, "unf": unf, "rels": rels, "dels": dels}
-
-        for attempt in range(_MAX_ATTEMPTS):
-            try:
-                _check_response(await conn.query_raw(_BATCH_SURQL, params))
-                return
-            except _RetryableError:
-                if attempt == _MAX_ATTEMPTS - 1:
-                    raise
-                await asyncio.sleep(0.05 * 2**attempt * (1 + random.random()))
+        params = {"ups": ups, "unf": unf, "rels": rels, "rdels": rdels, "dels": dels}
+        recreate_in_transaction = await self.factory._recreates_in_transaction(conn)
+        res = await _query_with_retry(
+            conn, _batch_surql(recreate_in_transaction), params
+        )
+        if recreate_in_transaction:
+            return
+        moved, restore = _moved_and_restore(res)
+        if moved or restore:
+            await _query_with_retry(
+                conn, _RECREATE_EDGES_SURQL, {"moved": moved, "restore": restore}
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -737,45 +888,29 @@ class _VectorIndexAction(NamedTuple):
     spec: _VectorIndexSpec | None  # None = delete
 
 
-@dataclass(frozen=True)
-class _VectorIndexApplier:
-    """The vector index sink callback of one database (equal for the same
-    ``ConnectionFactory``, so one sink identity per database)."""
-
-    factory: ConnectionFactory
-
-    async def __call__(
-        self, context_provider: ContextProvider, actions: Sequence[_VectorIndexAction]
-    ) -> None:
-        if not actions:
-            return
-        conn = await self.factory.acquire()
-        for action in actions:
-            if action.spec is None:
-                await conn.query(
-                    f"REMOVE INDEX IF EXISTS {action.name} ON TABLE {action.table_name}"
-                )
-            else:
-                method = action.spec.method.upper()
-                dist = action.spec.metric.upper()
-                surql = (
-                    f"DEFINE INDEX OVERWRITE {action.name} ON {action.table_name} "
-                    f"FIELDS {action.spec.field} "
-                    f"{method} DIMENSION {action.spec.dimension} "
-                    f"DIST {dist} TYPE {action.spec.vector_type.upper()}"
-                )
-                await conn.query(surql)
+def _define_vector_index(name: str, action: _VectorIndexAction) -> str:
+    assert action.spec is not None
+    return (
+        f"DEFINE INDEX OVERWRITE {name} ON {action.table_name} "
+        f"FIELDS {action.spec.field} "
+        f"{action.spec.method.upper()} DIMENSION {action.spec.dimension} "
+        f"DIST {action.spec.metric.upper()} TYPE {action.spec.vector_type.upper()}"
+    )
 
 
 class _VectorIndexHandler:
-    """Attachment handler for vector indexes on a SurrealDB table."""
+    """Attachment handler for vector indexes on a SurrealDB table.
+
+    Its actions go to the table's record sink (see ``_SharedRecordApplier``),
+    which orders them around the records.
+    """
 
     _table_name: str
-    _sink: coco.TargetActionSink[_VectorIndexAction]
+    _sink: coco.TargetActionSink[_RecordAction | _VectorIndexAction]
 
     def __init__(self, factory: ConnectionFactory, table_name: str) -> None:
         self._table_name = table_name
-        self._sink = coco.TargetActionSink.from_async_fn(_VectorIndexApplier(factory))
+        self._sink = coco.TargetActionSink.from_async_fn(_SharedRecordApplier(factory))
 
     def reconcile(
         self,
@@ -996,6 +1131,8 @@ class _TableSpec:
     from_tables: tuple[str, ...] | None  # sorted table names for FROM clause
     to_tables: tuple[str, ...] | None  # sorted table names for TO clause
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # See `_container.ContainerSpec`.
+    missing: bool = False
 
 
 class _TableMainRecord(msgspec.Struct, frozen=True):
@@ -1125,9 +1262,18 @@ class _TableHandler(
             )
             is_relation = desired_state.is_relation
 
+        # A table CocoIndex defined before that is gone now was removed outside
+        # CocoIndex: define it as if new (with all its fields), and invalidate
+        # its records, which went with it, and its indexes.
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_possible_records, prev_may_be_missing
+        )
+
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
-                tracking_record, prev_possible_records, prev_may_be_missing
+                tracking_record,
+                recreated.prev_possible_records,
+                recreated.prev_may_be_missing,
             )
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
@@ -1152,9 +1298,9 @@ class _TableHandler(
             return None
 
         child_invalidation: Literal["destructive", "lossy"] | None = None
-        if main_action == "replace":
+        if recreated.dropped or main_action == "replace":
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
+        elif any(_container.may_lose_data(a) for a in column_actions.values()):
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -1306,6 +1452,53 @@ _table_provider = coco.register_root_target_states_provider(
 # ---------------------------------------------------------------------------
 
 
+class _FieldOwners:
+    """The owners of the fields declared through one ``TableTarget`` (a run mounts
+    the table, and with it a new target), so that a field declared by two owners
+    (the record itself, ``None``, or a field group) is refused when it is declared.
+
+    Every record declared through the target is in it, so it is kept small: a
+    record's own fields as one of the few distinct field-name sets of the table,
+    shared between records. Both maps are keyed by the record id's encoding
+    (`_endpoint_id_fragment`), so ``1`` and ``"1"`` stay apart.
+    """
+
+    def __init__(self, table_name: str) -> None:
+        self._table_name = table_name
+        self._record_fields: dict[str, frozenset[str]] = {}
+        self._field_sets: dict[frozenset[str], frozenset[str]] = {}
+        self._groups: dict[str, dict[str, frozenset[str]]] = {}
+
+    def claim(
+        self, record_id: Any, group: str | None, fields: Mapping[str, Any]
+    ) -> None:
+        names = frozenset(name for name in fields if name != "id")
+        key = _endpoint_id_fragment(record_id)
+        others: list[tuple[str, frozenset[str]]] = []
+        if group is not None and (own := self._record_fields.get(key)):
+            others.append(("the record's own declaration", own))
+        for other, other_names in self._groups.get(key, {}).items():
+            if other != group:
+                others.append((f"field group {other!r}", other_names))
+        for other_owner, other_names in others:
+            if shared := sorted(names & other_names):
+                owner = (
+                    "the record's own declaration"
+                    if group is None
+                    else f"field group {group!r}"
+                )
+                raise ValueError(
+                    f"SurrealDB field {shared[0]!r} of record {record_id!r} of table "
+                    f"{self._table_name!r} is declared by both {other_owner} and "
+                    f"{owner}: a field can have only one owner, since it is unset "
+                    "when either stops declaring it"
+                )
+        if group is None:
+            self._record_fields[key] = self._field_sets.setdefault(names, names)
+        else:
+            self._groups.setdefault(key, {})[group] = names
+
+
 class TableTarget(
     Generic[RowT, coco.MaybePendingS], coco.ResolvesTo["TableTarget[RowT]"]
 ):
@@ -1324,6 +1517,7 @@ class TableTarget(
         self._provider = provider
         self._table_schema = table_schema
         self._table_name = table_name
+        self._field_owners = _FieldOwners(table_name)
 
     @property
     def table_name(self) -> str:
@@ -1333,6 +1527,7 @@ class TableTarget(
         """Declare a record to be upserted to this table."""
         row_dict = self._row_to_dict(row)
         pk_values = (row_dict["id"],)
+        self._field_owners.claim(row_dict["id"], None, row_dict)
         coco.declare_target_state(self._provider.target_state(pk_values, row_dict))
 
     declare_row = declare_record
@@ -1340,12 +1535,20 @@ class TableTarget(
     def declare_fields(
         self: TableTarget[RowT], *, id: Any, group: str, fields: dict[str, Any]
     ) -> None:
-        """Declare the fields one owner (``group``) contributes to an existing record.
+        """Declare the fields one owner (``group``) contributes to a record whose
+        other fields other owners declare.
 
-        ``fields`` mode: writes ``UPDATE $id MERGE`` with only these fields, so fields
-        written by other owners (or by ``declare_record``) are never touched. When the
-        declaration goes away, or a field is dropped from it, those fields are unset.
-        If the record does not exist, the write raises and is retried on the next run.
+        ``fields`` mode: writes ``UPSERT $id MERGE`` with only these fields, so fields
+        written by other owners (or by ``declare_record``) are never touched, and the
+        record is created when it does not exist yet: a field group lands in the run
+        that declares it, also when the record itself is declared by the parent
+        component, which commits after its children. When the declaration goes away,
+        or a field is dropped from it, those fields are unset.
+
+        A field has one owner: declaring a field of a record that the record itself,
+        or another group, declares through this target in the same run raises
+        ``ValueError``, since the field would be unset when either owner stops
+        declaring it.
         """
         columns = self._table_schema.columns if self._table_schema else {}
         encoded: dict[str, Any] = {}
@@ -1355,6 +1558,7 @@ class TableTarget(
             if col is not None and col.encoder is not None and value is not None:
                 value = col.encoder(value)
             encoded[name] = value
+        self._field_owners.claim(id, group, encoded)
         coco.declare_target_state(self._provider.target_state((id, group), encoded))
 
     def _row_to_dict(self, row: RowT) -> dict[str, Any]:
@@ -1550,6 +1754,20 @@ def table_target(
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> coco.TargetState[_RecordHandler]:
     """Create a TargetState for a SurrealDB table."""
+    return _table_target_state(
+        db, table_name, table_schema, managed_by=managed_by, missing=False
+    )
+
+
+def _table_target_state(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    table_schema: TableSchema[RowT] | None,
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> coco.TargetState[_RecordHandler]:
+    """`table_target`, with `missing` as in `_TableSpec.missing`."""
     _validate_identifier(table_name, "table name")
     key = _TableKey(db_key=db.key, table_name=table_name)
     spec = _TableSpec(
@@ -1558,8 +1776,30 @@ def table_target(
         from_tables=None,
         to_tables=None,
         managed_by=managed_by,
+        missing=missing,
     )
     return _table_provider.target_state(key, spec)
+
+
+async def _system_table_missing(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    managed_by: target.ManagedBy,
+) -> bool:
+    """Whether a system-managed table is absent from the database: if CocoIndex
+    defined it on an earlier run, it was removed outside CocoIndex.
+
+    ``INFO FOR DB`` lists every table, defined or created by a write;
+    ``INFO FOR TABLE`` answers the same for a table that is not there as for
+    one with no definitions. A user-managed table, which CocoIndex never
+    defines, is not checked.
+    """
+    if managed_by != target.ManagedBy.SYSTEM:
+        return False
+    conn = await coco.use_context(db).acquire()
+    info = await conn.query("INFO FOR DB")
+    tables = info.get("tables") if isinstance(info, dict) else None
+    return not (isinstance(tables, dict) and table_name in tables)
 
 
 def declare_table_target(
@@ -1583,9 +1823,17 @@ async def mount_table_target(
     *,
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> TableTarget[RowT]:
-    """Mount a table target and return a ready-to-use TableTarget."""
+    """Mount a table target and return a ready-to-use TableTarget.
+
+    A system-managed table removed outside CocoIndex is defined again, with its
+    fields and indexes, and all its records written again (one ``INFO FOR DB``
+    per mount checks).
+    """
+    missing = await _system_table_missing(db, table_name, managed_by)
     provider = await coco.mount_target(
-        table_target(db, table_name, table_schema, managed_by=managed_by)
+        _table_target_state(
+            db, table_name, table_schema, managed_by=managed_by, missing=missing
+        )
     )
     return TableTarget(provider, table_schema, table_name)
 
@@ -1600,6 +1848,28 @@ def relation_target(
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> coco.TargetState[_RecordHandler]:
     """Create a TargetState for a SurrealDB relation table."""
+    return _relation_target_state(
+        db,
+        table_name,
+        from_table,
+        to_table,
+        table_schema,
+        managed_by=managed_by,
+        missing=False,
+    )
+
+
+def _relation_target_state(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    from_table: TableTarget[Any] | Collection[TableTarget[Any]],
+    to_table: TableTarget[Any] | Collection[TableTarget[Any]],
+    table_schema: TableSchema[RowT] | None,
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> coco.TargetState[_RecordHandler]:
+    """`relation_target`, with `missing` as in `_TableSpec.missing`."""
     _validate_identifier(table_name, "relation table name")
     from_names = _normalize_table_names(from_table)
     to_names = _normalize_table_names(to_table)
@@ -1614,6 +1884,7 @@ def relation_target(
         from_tables=tuple(sorted(from_names)),
         to_tables=tuple(sorted(to_names)),
         managed_by=managed_by,
+        missing=missing,
     )
     return _table_provider.target_state(key, spec)
 
@@ -1652,17 +1923,23 @@ async def mount_relation_target(
     *,
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> RelationTarget[RowT]:
-    """Mount a relation target and return a ready-to-use RelationTarget."""
+    """Mount a relation target and return a ready-to-use RelationTarget.
+
+    A system-managed relation table removed outside CocoIndex is defined again
+    and all its relations written again, as for ``mount_table_target``.
+    """
     from_names = _normalize_table_names(from_table)
     to_names = _normalize_table_names(to_table)
+    missing = await _system_table_missing(db, table_name, managed_by)
     provider = await coco.mount_target(
-        relation_target(
+        _relation_target_state(
             db,
             table_name,
             from_table,
             to_table,
             table_schema,
             managed_by=managed_by,
+            missing=missing,
         )
     )
     return RelationTarget(provider, table_name, table_schema, from_names, to_names)
