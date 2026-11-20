@@ -81,9 +81,14 @@ pub fn init_runtime(
     Ok(())
 }
 
+/// Shut the Tokio runtime down with the GIL released. The tasks it drops can
+/// hold a Python awaitable (a `process_live` still running, for one), and
+/// dropping one takes the GIL to cancel its Python task: with the GIL held
+/// here, those drops wait out the shutdown timeout and keep their worker
+/// threads running past it.
 #[pyfunction]
-pub fn shutdown_tokio_runtime() {
-    shutdown_runtime();
+pub fn shutdown_tokio_runtime(py: Python<'_>) {
+    py.detach(shutdown_runtime);
 }
 
 /// Cancel the global cancellation token, causing all in-flight operations to
