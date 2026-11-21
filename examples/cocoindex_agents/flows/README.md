@@ -74,9 +74,9 @@ reads at most 12 pages from the searches and 6 from the leads. Pages are
 normalized locally (title and main content as Markdown, by trafilatura); a
 PDF is read by the model natively. The normalized pages are kept in the
 flow's state (`.coco_db`) so that a `304 Not Modified` can reuse them;
-delete `.coco_db` to start from scratch. The flow needs `trafilatura`
-installed beside CocoIndex (`uv pip install trafilatura`, or install the
-example with its dependencies).
+delete `.coco_db` to start from scratch. `trafilatura` is part of the
+one-time setup in the package README: the tools import it at start-up, so
+every flow needs it installed, not only this one.
 
 A rerun reuses every step whose inputs did not change: an unchanged page
 costs one conditional request and no model call; a page that changed only in
