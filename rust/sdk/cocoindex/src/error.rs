@@ -139,22 +139,64 @@ impl From<cocoindex_utils::error::Error> for Error {
         if e.is_deadline_exceeded() {
             return Error::DeadlineExceeded;
         }
-        match e {
+        // The engine wraps a sink's error in a context naming the target
+        // states; the variant to keep is the one under every context layer.
+        // An `Engine` error is its message, so the context stays in it. Any
+        // other variant comes back as the original value, without the
+        // context: the exception-handlers doc promises `Error::user(..)`
+        // arrives as `Error::User(inner)` with `inner.downcast_ref` working,
+        // and a wrapper carrying the context would break that.
+        let message = e.to_string();
+        let had_context = matches!(e, cocoindex_utils::error::Error::Context { .. });
+        match e.into_without_contexts() {
             cocoindex_utils::error::Error::HostLang(host) => {
-                let message = host.to_string();
                 let host: Box<dyn Any + Send + Sync> = host;
                 match host.downcast::<SdkHostError>() {
                     // The original error, unless another awaiter still shares it.
-                    Ok(sdk) => Arc::try_unwrap(sdk.0).unwrap_or(Error::Engine(message)),
+                    // An `Engine` error is its message, so that one carries the
+                    // context; another variant is kept as itself.
+                    Ok(sdk) => match Arc::try_unwrap(sdk.0) {
+                        Ok(Error::Engine(_)) if had_context => Error::Engine(message),
+                        Ok(original) => original,
+                        Err(_) => Error::Engine(message),
+                    },
                     Err(_) => Error::Engine(message),
                 }
             }
             other => match other.client_kind() {
                 Some(cocoindex_utils::error::ClientErrorKind::AlreadyDeclared) => {
-                    Error::AlreadyDeclared(format!("{other}"))
+                    Error::AlreadyDeclared(message)
                 }
-                _ => Error::Engine(format!("{other}")),
+                _ => Error::Engine(message),
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cocoindex_utils::error::ContextExt;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("the orders table is gone")]
+    struct TableGone;
+
+    /// The engine wraps a sink's error in a context that names the target
+    /// states; the SDK error under it comes back as itself, by variant and
+    /// downcastable. The context text stays on the core error (and on an
+    /// `Engine` error's message); a `User` error keeps its value instead.
+    #[test]
+    fn an_sdk_error_keeps_its_variant_under_an_engine_context() {
+        let core: std::result::Result<(), cocoindex_utils::error::Error> =
+            Err(Error::user(TableGone).into_core());
+        let core = core
+            .with_context(|| "failed to apply changes to target states under @orders")
+            .unwrap_err();
+        assert!(core.to_string().contains("@orders"), "{core}");
+        match Error::from(core) {
+            Error::User(user) => assert!(user.downcast_ref::<TableGone>().is_some()),
+            other => panic!("the variant was lost: {other:?}"),
         }
     }
 }
