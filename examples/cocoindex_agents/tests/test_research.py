@@ -213,6 +213,7 @@ class Script:
     leads_task: str = LEADS
     report_task: str = REPORT
     reword_leads: bool = False  # the leads reducer phrases its answer differently
+    seed: str | None = None  # a page the task names to start from (recipe 5)
 
     def __call__(
         self, spec: SessionSpec, prefix: Transcript, hints: RunHints
@@ -230,22 +231,19 @@ class Script:
         n = len(prefix.steps)
         results = [s.results for s in prefix.steps]
         if n == 0:
-            return ModelOutput(
-                calls=(
+            opens = [
+                call(
+                    "open_source", kind="web_search", name="web", queries=self.queries
+                ),
+                call("open_target", kind="localfs_dir", name="out", path=str(self.out)),
+            ]
+            if self.seed is not None:
+                opens.append(
                     call(
-                        "open_source",
-                        kind="web_search",
-                        name="web",
-                        queries=self.queries,
-                    ),
-                    call(
-                        "open_target",
-                        kind="localfs_dir",
-                        name="out",
-                        path=str(self.out),
-                    ),
+                        "open_source", kind="web_pages", name="given", urls=[self.seed]
+                    )
                 )
-            )
+            return ModelOutput(calls=tuple(opens))
         card = results[0][0]
         if not card.ok:
             return ModelOutput(answer=f"could not open the web: {card.value}")
@@ -263,18 +261,17 @@ class Script:
                 )
             return ModelOutput(answer="no evidence")
         if n == 1:
-            return ModelOutput(
-                calls=(call("for_each", source="src:web", key="pages", task=READ),)
-            )
+            fan_outs = [call("for_each", source="src:web", key="pages", task=READ)]
+            if self.seed is not None:
+                fan_outs.append(
+                    call("for_each", source="src:given", key="given", task=READ)
+                )
+            return ModelOutput(calls=tuple(fan_outs))
+        first = ["coll:pages", "coll:given"] if self.seed is not None else "coll:pages"
         if n == 2:
             return ModelOutput(
                 calls=(
-                    call(
-                        "reduce",
-                        collection="coll:pages",
-                        key="leads",
-                        task=self.leads_task,
-                    ),
+                    call("reduce", collection=first, key="leads", task=self.leads_task),
                 )
             )
         if n == 3:
@@ -296,7 +293,11 @@ class Script:
             )
         step_report = 5 if has_leads else 4
         if n == step_report:
-            collections = ["coll:pages", "coll:pages2"] if has_leads else ["coll:pages"]
+            collections = ["coll:pages"] + (
+                ["coll:given"] if self.seed is not None else []
+            )
+            if has_leads:
+                collections.append("coll:pages2")
             return ModelOutput(
                 calls=(
                     call(
@@ -813,6 +814,47 @@ def test_empty_outcomes_are_reported_honestly_and_recover(
     assert f"({url('a')})" in f.report()
     f.run()
     assert f.model.calls == 0
+
+
+def test_a_page_the_task_names_is_read_first_and_its_change_reruns_only_its_path(
+    coco_env: coco.Environment, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Recipe 5's starting page: a ``web_pages`` source opened in the first turn
+    beside the search (same turn: not excluded from each other), read by its
+    own fan-out, both collections reduced for leads and for the report. A
+    change to that page re-runs its worker's answer and the two reducers; the
+    search pages' workers hit."""
+    fake = FakeWeb()
+    site(
+        fake,
+        a=Page(article("a"), etag='"a"'),
+        seed=Page(article("seed", links=(url("l1"),)), etag='"s1"'),
+        l1=Page(article("l1"), etag='"l1"'),
+    )
+    engine = FakeEngine({"q": [url("a")]})
+    f = setup(coco_env, tmp_path, monkeypatch, fake, engine, ["q"])
+    f.script.seed = url("seed")
+
+    f.run()
+    assert f.calls("orchestrator") == 8 and f.calls("worker") == 6
+    report = f.report()
+    assert all(f"({url(n)})" in report for n in ("a", "seed", "l1"))
+
+    f.run()
+    assert f.model.calls == 0 and f.executed() == {}
+
+    fake.pages[url("seed")] = Page(
+        html_page(
+            "Page seed",
+            ["Seed, revised. " + PARAGRAPHS[0], *PARAGRAPHS[1:]],
+            links=(url("l1"),),
+        ),
+        etag='"s2"',
+    )
+    f.run()
+    assert f.calls("worker") == 1 and f.calls("reducer") == 2
+    assert f.calls("orchestrator") == 0
+    assert "Seed, revised" in f.report()
 
 
 def test_a_planner_reading_a_page_is_skipped_while_the_page_is_unchanged(
