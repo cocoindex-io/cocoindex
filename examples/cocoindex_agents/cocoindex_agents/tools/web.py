@@ -1316,7 +1316,7 @@ def exclusions(objects: Iterable[object]) -> tuple[frozenset[str], frozenset[str
 # A validator here is a search per query or a request per page, so it must run
 # once per record per run: the engine probes a session's records once (a
 # double probe of the root session's records was observed with the scripted web
-# on 2026-11-21 and fixed in the engine, cocoindex PR #NNNN). No verdict is
+# on 2026-11-21 and fixed in the engine, cocoindex PR #2836). No verdict is
 # cached here for a time window: it would hand a stale one to a user who edits
 # and reruns at once.
 

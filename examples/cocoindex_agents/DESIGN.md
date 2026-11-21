@@ -616,7 +616,7 @@ before the body ran, so a listing was searched and fetched twice by
 validators and once by the body. A directory walk twice costs nothing; here
 it is a request per page. The cause was the engine's memo re-check under the
 build permit, which a long-lived root component repeated on every rerun
-(fixed the same day, engine PR #NNNN: the re-check now runs only for a memo
+(fixed the same day, engine PR #2836: the re-check now runs only for a memo
 stored since the fast path looked); the validators run once per record per
 run. No verdict is cached here for a time window: it would hand a stale one
 to a user who edits and reruns at once.
@@ -1328,7 +1328,7 @@ workers skipped) pins that the trace changed nothing memoized.
 |---|---|---|---|
 | Progress survives failure | solved by `use_mount` per turn | ✅ | partial fn-memo flush on failure (S–M; pure entries only) |
 | Skip unchanged **open** sessions | shipped: `coco.DataDep` + `use_data_dep` + `cannot_skip`; adopted 2026-11-04 (*Open vs closed*) | ✅ | — |
-| Skip the **parent** of an open session | shipped: transitive validation by path (engine PR #2671, 2026-11-04); one validation per record per run (engine PR #NNNN, 2026-11-21: the root's records were validated twice when its body re-ran, a search and a request per page each time, §3 *Sources: the web*); no change on this side | ✅ | — |
+| Skip the **parent** of an open session | shipped: transitive validation by path (engine PR #2671, 2026-11-04); one validation per record per run (engine PR #2836, 2026-11-21: the root's records were validated twice when its body re-ran, a search and a request per page each time, §3 *Sources: the web*); no change on this side | ✅ | — |
 | Memo probe ("would this hit?") | deferred | — | S |
 | A component hit keeps its `use_state` values | engine behaviour | ✅ | — |
 
