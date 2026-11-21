@@ -25,7 +25,8 @@
 //! A POSIX record lock belongs to the process, and closing any file
 //! description of the file releases it, so a process opens an app's lock file
 //! once: [`AppOpLockSlot::for_app`] hands out one slot per lock file from a
-//! process-wide registry, whatever environment opened the database. (An
+//! process-wide registry keyed by the canonical path, whatever environment
+//! opened the database and however it spelled its path. (An
 //! update started while a drop of the same app runs in the same process shares
 //! its lock; refusing it is a separate question, see `AppContext::begin_update`.)
 //!
@@ -108,6 +109,9 @@ impl AppOpLockSlot {
     /// slot this process has for that lock file, however many environments or
     /// apps reach it.
     pub fn for_app(db_path: &Path, app_name: &str) -> Arc<Self> {
+        // One slot per file, whatever spelling of `db_path` reached here: a
+        // relative path, or one through a symlink, names the same database.
+        let db_path = &std::fs::canonicalize(db_path).unwrap_or_else(|_| db_path.to_owned());
         let path = lock_file_path(db_path, app_name);
         let mut slots = SLOTS.lock();
         let slots = slots.get_or_insert_with(HashMap::new);
@@ -438,6 +442,28 @@ mod tests {
         assert!(name.starts_with("my_app."), "{name}");
         let long = lock_file_path(dir, &"x".repeat(10_000));
         assert!(long.file_name().unwrap().len() < 128);
+    }
+
+    #[test]
+    fn spellings_of_one_database_share_a_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let direct = AppOpLockSlot::for_app(dir.path(), "app");
+        // The same directory through `..`.
+        let inner = dir.path().join("sub");
+        std::fs::create_dir(&inner).unwrap();
+        let via_parent = AppOpLockSlot::for_app(&inner.join(".."), "app");
+        assert!(Arc::ptr_eq(&direct, &via_parent));
+        // And relative to the working directory, when the directory is under it.
+        if let Ok(relative) = dir.path().strip_prefix(std::env::current_dir().unwrap()) {
+            let via_relative = AppOpLockSlot::for_app(relative, "app");
+            assert!(Arc::ptr_eq(&direct, &via_relative));
+        }
+        // A different database gets its own slot.
+        let other = tempfile::tempdir().unwrap();
+        assert!(!Arc::ptr_eq(
+            &direct,
+            &AppOpLockSlot::for_app(other.path(), "app")
+        ));
     }
 
     #[test]
