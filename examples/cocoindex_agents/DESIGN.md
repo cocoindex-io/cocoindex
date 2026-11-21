@@ -138,7 +138,12 @@ the page's content, and an orchestrator that never reads a page or a search
 result. The recipe also says what to do with nothing to read: a search card
 showing `items: 0` means no page could be found or fetched and the report
 says so; a leads reduce that names no URL gives a `web_pages` source with no
-items, an empty second collection, and a report reduced from the first.
+items, an empty second collection, and a report reduced from the first. A
+task that names pages to start from gets a `web_pages` source over them in
+the first turn, beside the search (same turn, so neither excludes the
+other), read by its own fan-out and reduced with the rest; the
+`research_seeded` flow uses this to measure a changed source against a page
+the user controls.
 
 Directions kept in view, not in v1:
 
