@@ -2028,6 +2028,14 @@ mod tests {
         apply_calls: Arc<AtomicUsize>,
         children: Option<(ChildHandling, Arc<AtomicUsize>)>,
         failing: Option<Arc<AtomicBool>>,
+        /// `apply` appends its name to a shared list of applied sinks.
+        recording: Option<Recording>,
+    }
+
+    /// Where a [`NoopSink`] records its `apply` calls, and under which name.
+    struct Recording {
+        applied: Arc<Mutex<Vec<String>>>,
+        name: String,
     }
 
     impl NoopSink {
@@ -2038,15 +2046,23 @@ mod tests {
                 apply_calls: apply_calls.clone(),
                 children: Some((child_handling, child_reconcile_calls.clone())),
                 failing: None,
+                recording: None,
             };
             (sink, apply_calls, child_reconcile_calls)
         }
 
         fn child_handler(&self) -> CountingHandler {
             let (_, child_reconcile_calls) = self.children.as_ref().expect("a container sink");
+            let child_sink = NoopSink {
+                recording: self.recording.as_ref().map(|recording| Recording {
+                    applied: recording.applied.clone(),
+                    name: format!("{}/rows", recording.name),
+                }),
+                ..Default::default()
+            };
             CountingHandler {
                 reconcile_calls: child_reconcile_calls.clone(),
-                sink: TargetActionSinkKeeper::new(NoopSink::default()),
+                sink: TargetActionSinkKeeper::new(child_sink),
                 reject: false,
                 change_only: false,
                 plans_deletes: false,
@@ -2078,6 +2094,13 @@ mod tests {
             actions: &[TargetActionWithChildSlot<TestProfile>],
         ) -> crate::prelude::Result<()> {
             self.apply_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(recording) = &self.recording {
+                recording
+                    .applied
+                    .lock()
+                    .unwrap()
+                    .push(recording.name.clone());
+            }
             if let Some(failing) = &self.failing
                 && failing.load(Ordering::SeqCst)
             {
@@ -3053,6 +3076,16 @@ mod tests {
         container_sink: TargetActionSinkKeeper<TestProfile>,
         num_rows: i64,
     ) -> TestProcessor {
+        container_root_with(container_sink, num_rows, None)
+    }
+
+    /// [`container_root`] that also registers a root provider `also` and
+    /// declares one target state through it, after the rows.
+    fn container_root_with(
+        container_sink: TargetActionSinkKeeper<TestProfile>,
+        num_rows: i64,
+        also: Option<(&'static str, TargetActionSinkKeeper<TestProfile>)>,
+    ) -> TestProcessor {
         let new_processor = |name: &str| {
             TestProcessor::new(
                 name,
@@ -3096,6 +3129,7 @@ mod tests {
         }));
         new_processor("root").with_on_process(Arc::new(move |ctx| {
             let (table_processor, child_provider) = table_processor.lock().unwrap().take().unwrap();
+            let also = also.clone();
             Box::pin(async move {
                 let table = ctx.component().mount_child(
                     &FnCallContext::new(true),
@@ -3113,6 +3147,26 @@ mod tests {
                         &FnCallContext::default(),
                         rows.clone(),
                         StableKey::Int(i),
+                        (),
+                    )?;
+                }
+                if let Some((name, sink)) = also.clone() {
+                    let provider = register_root_target_state_provider(
+                        &ctx,
+                        name.to_string(),
+                        CountingHandler {
+                            reconcile_calls: Default::default(),
+                            sink,
+                            reject: false,
+                            change_only: false,
+                            plans_deletes: false,
+                        },
+                    )?;
+                    declare_target_state(
+                        &ctx,
+                        &FnCallContext::default(),
+                        provider,
+                        StableKey::Int(0),
                         (),
                     )?;
                 }
@@ -3535,6 +3589,7 @@ mod tests {
                     apply_calls: apply_calls.clone(),
                     children: None,
                     failing: None,
+                    recording: None,
                 });
                 let reconcile_calls = reconcile_calls.clone();
                 Box::pin(async move {
@@ -3606,6 +3661,7 @@ mod tests {
                     apply_calls: apply_calls.clone(),
                     children: None,
                     failing: None,
+                    recording: None,
                 });
                 Box::pin(async move {
                     let provider = register_root_target_state_provider(
@@ -4228,5 +4284,141 @@ mod tests {
             3,
             "nothing left to delete"
         );
+    }
+
+    /// A root processor that registers a run-time root provider per entry of
+    /// `sinks`, in their order, and declares one target state through each.
+    fn declaring_root(
+        test: &str,
+        sinks: Vec<(&'static str, TargetActionSinkKeeper<TestProfile>)>,
+    ) -> TestProcessor {
+        TestProcessor::new(
+            "root",
+            Fingerprint::from(&test).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .without_memo()
+        .with_on_process(Arc::new(move |ctx| {
+            let sinks = sinks.clone();
+            Box::pin(async move {
+                for (name, sink) in sinks {
+                    let provider = register_root_target_state_provider(
+                        &ctx,
+                        name.to_string(),
+                        CountingHandler {
+                            reconcile_calls: Default::default(),
+                            sink,
+                            reject: false,
+                            change_only: false,
+                            plans_deletes: true,
+                        },
+                    )?;
+                    declare_target_state(
+                        &ctx,
+                        &FnCallContext::default(),
+                        provider,
+                        StableKey::Int(0),
+                        (),
+                    )?;
+                }
+                Ok(TestData(b"ret".to_vec()))
+            })
+        }))
+    }
+
+    /// Sinks of providers at one depth apply in the order of the providers'
+    /// keys, whatever order the run declared through them, on every run.
+    #[tokio::test]
+    async fn sinks_of_providers_at_one_depth_apply_in_provider_key_order() {
+        let (app, _dir) = test_app("sink_order").await;
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        let sink = |name: &str| {
+            TargetActionSinkKeeper::new(NoopSink {
+                recording: Some(Recording {
+                    applied: applied.clone(),
+                    name: name.to_string(),
+                }),
+                ..Default::default()
+            })
+        };
+        let sinks = vec![("c", sink("c")), ("a", sink("a")), ("b", sink("b"))];
+        for run in 0..8 {
+            applied.lock().unwrap().clear();
+            let (handle, _) = app
+                .update(
+                    declaring_root("sink_order", sinks.clone()),
+                    AppUpdateOptions::default(),
+                    Arc::new(()),
+                    None,
+                )
+                .unwrap();
+            handle.result().await.unwrap();
+            assert_eq!(*applied.lock().unwrap(), ["a", "b", "c"], "run {run}");
+        }
+    }
+
+    /// Sinks of shallower providers apply first, whatever their keys: the
+    /// container's provider is keyed `tables` and the other root provider `z`,
+    /// which sorts after it, yet the rows (depth 1, under `tables`) apply
+    /// last. The key chain alone would put the rows before `z`.
+    #[tokio::test]
+    async fn sinks_of_shallower_providers_apply_first_whatever_their_keys() {
+        let (app, _dir) = test_app("sink_depth_order").await;
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        let recording = |name: &str| Recording {
+            applied: applied.clone(),
+            name: name.to_string(),
+        };
+        let (mut container, _, _) = NoopSink::container(ChildHandling::Factory);
+        container.recording = Some(recording("a"));
+        let container_sink = TargetActionSinkKeeper::new(container);
+        let root_sink = TargetActionSinkKeeper::new(NoopSink {
+            recording: Some(recording("z")),
+            ..Default::default()
+        });
+        for run in 0..8 {
+            applied.lock().unwrap().clear();
+            let root =
+                container_root_with(container_sink.clone(), 2, Some(("z", root_sink.clone())));
+            let (handle, _) = app
+                .update(root, AppUpdateOptions::default(), Arc::new(()), None)
+                .unwrap();
+            handle.result().await.unwrap();
+            assert_eq!(
+                *applied.lock().unwrap(),
+                ["a", "z", "a/rows"],
+                "run {run}: containers before rows, keys within a depth"
+            );
+        }
+    }
+
+    /// A failed sink's error names the target states it was applying: the
+    /// connector's own error says what failed, not where.
+    #[tokio::test]
+    async fn a_failed_sink_names_the_target_states_it_was_applying() {
+        let (app, _dir) = test_app("failing_sink").await;
+        let sink = TargetActionSinkKeeper::new(NoopSink {
+            failing: Some(Arc::new(AtomicBool::new(true))),
+            ..Default::default()
+        });
+        let (handle, _) = app
+            .update(
+                declaring_root("failing_sink", vec![("orders", sink)]),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        let message = handle
+            .result()
+            .await
+            .expect_err("the sink fails")
+            .to_string();
+        assert!(
+            message.contains("failed to apply changes to target states under @orders"),
+            "{message}"
+        );
+        assert!(message.contains("injected sink failure"), "{message}");
     }
 }

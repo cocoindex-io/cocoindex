@@ -91,7 +91,9 @@ impl cocoindex_utils::error::HostError for HostedPyErr {
 /// Convert an engine error into the Python exception surfaced to callers.
 ///
 /// Tunneled Python exceptions (`HostedPyErr`) pass through as the original
-/// object, including type, traceback and `__cause__`. Engine-native errors
+/// object, including type, traceback and `__cause__`, with the engine's
+/// context layers (e.g. which target states a failed sink was applying) added
+/// as notes (`__notes__`, see [`add_context_notes`]). Engine-native errors
 /// map to `asyncio.CancelledError` / `DeadlineExceededError` / `ValueError`
 /// (client; `AlreadyDeclaredError` for a second declaration within one run) /
 /// `RuntimeError` (internal).
@@ -104,11 +106,17 @@ pub fn cerror_to_pyerr(err: CError) -> PyErr {
         // too: don't synthesize a fresh one from the cancellation branch
         // below; return the original.
         let any: &dyn Any = host_err.as_ref();
-        if let Some(hosted_py_err) = any.downcast_ref::<HostedPyErr>() {
-            return Python::attach(|py| hosted_py_err.0.clone_ref(py));
-        }
-        if let Some(py_err) = any.downcast_ref::<PyErr>() {
-            return Python::attach(|py| py_err.clone_ref(py));
+        let py_err = if let Some(hosted_py_err) = any.downcast_ref::<HostedPyErr>() {
+            Some(&hosted_py_err.0)
+        } else {
+            any.downcast_ref::<PyErr>()
+        };
+        if let Some(py_err) = py_err {
+            return Python::attach(|py| {
+                let py_err = py_err.clone_ref(py);
+                add_context_notes(py, &py_err, &err);
+                py_err
+            });
         }
     }
     // Cancellation-flavored errors that aren't tunneled Python exceptions
@@ -139,6 +147,51 @@ pub fn cerror_to_pyerr(err: CError) -> PyErr {
         };
     }
     PyRuntimeError::new_err(format!("{}", err))
+}
+
+/// Add each context layer of `err`, outermost first, to the passed-through
+/// exception `py_err` as a note, so the Python traceback shows what the engine
+/// was doing (the message of an engine-native error carries its contexts
+/// already). The exception object is shared by every conversion of the same
+/// error (a component's result reaches every awaiter, and may cross into
+/// Python more than once), so a note it carries already is not added again.
+/// Best effort: a failure to add a note leaves the exception as it is.
+fn add_context_notes(py: Python<'_>, py_err: &PyErr, err: &CError) {
+    // A cancellation or a deadline is fanned out to every recipient of a
+    // batch as one shared exception object; a note naming one recipient's
+    // targets would mislead the others.
+    if err.is_cancelled() || err.is_deadline_exceeded() {
+        return;
+    }
+    let mut contexts = Vec::new();
+    let mut current = err;
+    while let CError::Context { msg, source } = current {
+        contexts.push(msg.as_str());
+        current = source.inner();
+    }
+    if contexts.is_empty() {
+        return;
+    }
+    let exc = py_err.value(py);
+    // `__notes__` may hold non-str entries (PEP 678 allows them); keep the
+    // str ones, and what this call appends, to add each note once however
+    // often the error crosses into Python.
+    let mut existing: Vec<String> = exc
+        .getattr("__notes__")
+        .ok()
+        .and_then(|notes| notes.try_iter().ok())
+        .map(|notes| {
+            notes
+                .filter_map(|note| note.ok()?.extract::<String>().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    for context in contexts {
+        if !existing.iter().any(|note| note == context) {
+            let _ = exc.call_method1("add_note", (context,));
+            existing.push(context.to_owned());
+        }
+    }
 }
 
 pub fn add_error_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
