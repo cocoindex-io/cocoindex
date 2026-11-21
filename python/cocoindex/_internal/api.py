@@ -188,6 +188,7 @@ class ComponentMountHandle:
 async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AsyncCallable[P, ResolvesTo[ReturnT]],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
@@ -195,6 +196,7 @@ async def use_mount(
 async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: Callable[P, ResolvesTo[ReturnT]],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
@@ -202,6 +204,7 @@ async def use_mount(
 async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AsyncCallable[P, ReturnT],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
@@ -209,30 +212,35 @@ async def use_mount(
 async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: Callable[P, ReturnT],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
 @overload
 async def use_mount(
     processor_fn: AsyncCallable[P, ResolvesTo[ReturnT]],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
 @overload
 async def use_mount(
     processor_fn: Callable[P, ResolvesTo[ReturnT]],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
 @overload
 async def use_mount(
     processor_fn: AsyncCallable[P, ReturnT],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
 @overload
 async def use_mount(
     processor_fn: Callable[P, ReturnT],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
@@ -357,6 +365,7 @@ async def _mount_live_component(
 async def mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Any],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountHandle: ...
@@ -365,6 +374,7 @@ async def mount(
 @overload
 async def mount(
     processor_fn: AnyCallable[P, Any],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountHandle: ...
@@ -453,6 +463,7 @@ async def mount_each(
     subpath: ComponentSubpath,
     fn: AnyCallable[Concatenate[T, P], Any],
     items: _ItemsType[T],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountHandle: ...
@@ -462,6 +473,7 @@ async def mount_each(
 async def mount_each(
     fn: AnyCallable[Concatenate[T, P], Any],
     items: _ItemsType[T],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountHandle: ...
@@ -609,6 +621,7 @@ class _MapTaskFailure:
 async def map(
     fn: Callable[Concatenate[T, P], Coroutine[Any, Any, ReturnT]],
     items: Iterable[T] | AsyncIterable[T],
+    /,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> list[ReturnT]:

@@ -334,6 +334,7 @@ class LiveComponentOperator:
         self,
         subpath: ComponentSubpath,
         processor_fn: AnyCallable[_P, Any],
+        /,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> Any:  # Returns ComponentMountHandle
@@ -677,7 +678,7 @@ def auto_refresh(
     fn_name = getattr(process_fn, "__name__", "auto_refresh")
 
     class _AutoRefresh:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
+        def __init__(self, /, *args: Any, **kwargs: Any) -> None:
             self._args = args
             self._kwargs = kwargs
 

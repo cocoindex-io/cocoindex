@@ -984,7 +984,7 @@ class SyncFunction(Function[P, R_co]):
             return self
         return _BoundSyncMethod(self, instance)  # type: ignore[arg-type]
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+    def __call__(self, /, *args: P.args, **kwargs: P.kwargs) -> R_co:
         _deadline_checkpoint()
         # In subprocess, execute the raw function directly (no memo)
         if _in_subprocess():
@@ -1146,7 +1146,7 @@ class SyncFunction(Function[P, R_co]):
         finally:
             parent_ctx._core_fn_call_ctx.join_child(fn_ctx)
 
-    async def as_async(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+    async def as_async(self, /, *args: P.args, **kwargs: P.kwargs) -> R_co:
         """Call this sync function wrapped in async (runs via asyncio.to_thread)."""
         return await asyncio.to_thread(self, *args, **kwargs)
 
@@ -1556,11 +1556,11 @@ class AsyncFunction(Function[P, R_co]):
             return self
         return _BoundAsyncMethod(self, instance)  # type: ignore[arg-type]
 
-    async def as_async(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+    async def as_async(self, /, *args: P.args, **kwargs: P.kwargs) -> R_co:
         """Call this async function (same as __call__)."""
         return await self(*args, **kwargs)
 
-    async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+    async def __call__(self, /, *args: P.args, **kwargs: P.kwargs) -> R_co:
         """Core implementation."""
         _deadline_checkpoint()
 
@@ -1711,6 +1711,7 @@ class AsyncFunction(Function[P, R_co]):
     async def _execute(
         self,
         async_ctx: core.AsyncContext,
+        /,
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> R_co:
@@ -1760,11 +1761,11 @@ class AsyncFunction(Function[P, R_co]):
             raise result.error
         return result
 
-    async def _execute_orig_async_fn(self, *args: Any, **kwargs: Any) -> Any:
+    async def _execute_orig_async_fn(self, /, *args: Any, **kwargs: Any) -> Any:
         assert self._orig_async_fn is not None
         return await self._orig_async_fn(*args, **kwargs)
 
-    def _execute_orig_sync_fn(self, *args: Any, **kwargs: Any) -> Any:
+    def _execute_orig_sync_fn(self, /, *args: Any, **kwargs: Any) -> Any:
         assert self._orig_sync_fn is not None
         return self._orig_sync_fn(*args, **kwargs)
 
