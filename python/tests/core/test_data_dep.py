@@ -63,16 +63,26 @@ def _read(path: pathlib.Path) -> bytes:
     return data
 
 
+# The last mtime set below, by path. A rewrite in the same timestamp tick as an earlier
+# write keeps that write's mtime, so a bump must also pass the last mtime it set.
+_last_mtime_ns: dict[pathlib.Path, int] = {}
+
+
+def _bump_mtime(path: pathlib.Path) -> None:
+    st = os.stat(path)
+    mtime_ns = max(st.st_mtime_ns, _last_mtime_ns.get(path, 0)) + 1_000_000
+    os.utime(path, ns=(st.st_atime_ns, mtime_ns))
+    _last_mtime_ns[path] = mtime_ns
+
+
 def _write(path: pathlib.Path, content: str) -> None:
     """Write and bump the mtime past any earlier stat."""
     path.write_bytes(content.encode())
-    st = os.stat(path)
-    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    _bump_mtime(path)
 
 
 def _touch(path: pathlib.Path) -> None:
-    st = os.stat(path)
-    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+    _bump_mtime(path)
 
 
 def _data() -> dict[str, str]:

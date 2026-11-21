@@ -242,14 +242,22 @@ call as a key and the state observed. The next probe validates each record
 from the stored key and state alone:
 
 ```rust
-static FILE: LazyLock<DataDep<String, (u64, Fingerprint)>> = LazyLock::new(|| {
-    DataDep::new("file", |path: String, (mtime, digest): (u64, Fingerprint)| async move {
+// A rewrite in the same timestamp tick keeps the mtime, so only an mtime older than
+// any filesystem's tick (FAT: 2 s) at the read can vouch for the content later.
+fn settled(mtime: u64) -> Option<u64> {
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    (now.saturating_sub(mtime) >= 3_000_000_000).then_some(mtime)
+}
+
+static FILE: LazyLock<DataDep<String, (Option<u64>, Fingerprint)>> = LazyLock::new(|| {
+    DataDep::new("file", |path: String, (mtime, digest): (Option<u64>, Fingerprint)| async move {
         let now = modified_nanos(&path)?;
-        if now == mtime {
+        if Some(now) == mtime {
             return MemoStateDecision::new(&(mtime, digest), true);
         }
+        let now_settled = settled(now); // before the read, so the age does not include the read
         let current = Fingerprint::from_bytes(&std::fs::read(&path)?);
-        MemoStateDecision::new(&(now, current), current == digest)
+        MemoStateDecision::new(&(now_settled, current), current == digest)
     })
     .unwrap()
 });
@@ -257,7 +265,9 @@ static FILE: LazyLock<DataDep<String, (u64, Fingerprint)>> = LazyLock::new(|| {
 #[cocoindex::function(memo)]
 async fn agent_session(ctx: &Ctx, task: &str) -> Result<String> {
     let path = pick_file(task);
-    let mtime = modified_nanos(&path)?;
+    // Stat *before* reading, so the recorded mtime is never newer than the bytes,
+    // and take its age then, so the age does not include the read.
+    let mtime = settled(modified_nanos(&path)?);
     let data = std::fs::read(&path)?;
     ctx.use_data_dep(&FILE, &path, &(mtime, Fingerprint::from_bytes(&data)))?;
     Ok(run_agent(task, data).await?)
