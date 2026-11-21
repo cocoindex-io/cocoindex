@@ -1,8 +1,8 @@
 # Sample flows
 
-Five small flows: one per shape of DESIGN.md §2, one over PDFs, and one over
-a Google Drive folder, each a directory with a `prompt.md` and (except
-`drive`) a few short input files. The prompts are written as a user
+Six small flows: one per shape of DESIGN.md §2, one over PDFs, one over a
+Google Drive folder and one over the web, each a directory with a
+`prompt.md` and (except `drive` and `research`) a few short input files. The prompts are written as a user
 would write them: the outcome, where the data is, where the output goes, the
 file naming when it matters, and what to answer. They do not mention workers,
 planners or reducers; the orchestrator decomposes the task itself, following
@@ -17,6 +17,7 @@ many model calls the run made, per role.
 | `table` | C. observe → plan → map | one JSON object per invoice under `invoices/`, columns chosen from the data |
 | `orders` | A. map → targets, over PDFs | one JSON object per purchase order under `orders/`, with the fields the prompt names, including which box of the Approval section is ticked |
 | `drive` | A. map → targets, over a Google Drive folder | one summary file per file in the Drive folder `$DRIVE_FOLDER`, `Meeting notes` → `Meeting notes.summary.md` |
+| `research` | E. search → read → follow → report, over the web | what incremental computation is and where it is used; search the web, read what is found, follow the leads worth following, write `out/report.md` with citations |
 
 The purchase orders are PDFs the model reads natively (DESIGN.md §3,
 *Documents*): one page each, a ruled line-item table, totals, and three
@@ -55,6 +56,37 @@ changes into.
 
 To see the incrementality, run a flow twice unchanged (the second run makes no
 model call), then edit one input file and run again.
+
+### The `research` flow: the web as a source
+
+The `research` flow searches the web, reads the pages it finds, follows the
+leads worth following and writes a report with citations (DESIGN.md §3,
+*Sources: the web*). Without a search key it searches **Wikipedia** (no key,
+no cost) and reaches the open web through the articles' references; with
+`TAVILY_API_KEY` set it searches with Tavily (a free tier of 1,000 credits a
+month). The engine's identity is part of every record, so switching engines
+re-runs the searches and the pages they find.
+
+The agent fetches pages itself: it identifies itself as `cocoindex-agents`
+with this repository's address, obeys `robots.txt` and `Crawl-delay`, sends
+one request at a time per host, follows no sign-in, posts nothing, and
+reads at most 12 pages from the searches and 6 from the leads. Pages are
+normalized locally (title and main content as Markdown, by trafilatura); a
+PDF is read by the model natively. The normalized pages are kept in the
+flow's state (`.coco_db`) so that a `304 Not Modified` can reuse them;
+delete `.coco_db` to start from scratch. The flow needs `trafilatura`
+installed beside CocoIndex (`uv pip install trafilatura`, or install the
+example with its dependencies).
+
+A rerun reuses every step whose inputs did not change: an unchanged page
+costs one conditional request and no model call; a page that changed only in
+a timestamp, an ad or a comment count costs nothing either, because a
+worker is memoized on the page's normalized content; only a real change
+reaches the model, and only that page's worker and the reducers on its path
+run again. The `--plan` tree lists each source's pages with their digest and
+when the current content was first fetched, and its unavailable pages with
+the reason; citations in the report carry the URL only (DESIGN.md §3: no
+time in a tool result).
 
 ### The `drive` flow: a Google Drive folder of your own
 
@@ -185,6 +217,42 @@ The first drive of these flows (2026-11-04, `anthropic/claude-sonnet-5-5`,
 prompts that still named workers and planners) measured 15/15/18 calls on a
 first run, 0 unchanged and 2/2/3 after one edit; its findings are in the
 next section.
+
+## Measured: the `research` flow against the real web
+
+Measured 2026-11-21 with `openai/gpt-6.1-terra` and the `wikipedia` engine
+(no search key), three to five queries written by the orchestrator from the
+prompt, from an empty `.coco_db`. The orchestrator followed recipe 5: it
+opened the target and a `web_search` source in one turn, fanned out over the
+12 pages the searches found, reduced the leads, opened a `web_pages` source
+over them (five of six leads fetched: the Gradle incremental-build guide,
+the GCC incremental-compiler wiki, an arXiv abstract and two PDFs read
+natively; one PDF link was a 404), fanned out over those, reduced the report
+from both collections and declared it.
+
+| Run | Model calls | `stats:` |
+|---|---|---|
+| fresh | 46 (orchestrator 8, workers 34, reducers 4) | `model calls 46, sessions 20, tool calls 27, spent tokens 193265 in (provider-cached 23209 / 12%), 8068 out, files 1, 63.1s` |
+| unchanged | 0 | `model calls 46 (reused 46 / 100%), sessions 20 (skipped 20 / 100%), tool calls 27 (reused 27 / 100%), files 1 (unchanged 1 / 100%), 1.1s` |
+| one source changed | not yet measured: it needs a page under the user's control (a gist, or a page they name); the scripted drive of the same case is `test_research.py::test_a_research_run_reuses_unchanged_pages_and_reruns_only_a_changed_one` (one worker's answer turn and the two reducers: 3 calls) | |
+
+What the runs show:
+
+- A first drive with the recipe's original wording ("three to five short
+  search queries") read only three pages per round: the orchestrator wrote
+  long strings of keywords, which Wikipedia's search matched to AI articles.
+  The recipe now asks for two-to-four-word, title-like queries, and the next
+  drive read twelve relevant pages. That is the one prompt change the drive
+  caused.
+- The unchanged rerun makes no model call and runs no tool: the root
+  session's one record per web source is validated by searching again (five
+  queries) and sending one conditional request per page (17 pages), and the
+  whole run is skipped in about a second. An earlier unchanged rerun had
+  re-run the orchestrator's body with no inference because a page's ETag had
+  rotated while its content had not; validity now rests on the normalized
+  content, and the record refreshes its validators.
+- Changing a source the flow actually reads needs a page under the user's
+  control; see the note in the row above.
 
 ## Measured: the `drive` flow against a real account
 

@@ -132,6 +132,9 @@ class ActionTrace:
     task: str | None = None  # a child's task, elided
     child: ChildTrace | None = None
     declared: DeclaredFile | None = None  # a declare's file
+    details: tuple[
+        str, ...
+    ] = ()  # lines a tool reports about what it did (a web listing's pages)
 
 
 @dataclass(frozen=True)
@@ -255,10 +258,12 @@ class TraceSink:
 
 @dataclass
 class ActionSink:
-    """What one tool call reports: the child it mounted, or the file it declared."""
+    """What one tool call reports: the child it mounted, the file it declared,
+    or lines of detail for the plan (what a web listing fetched, and when)."""
 
     child: ChildTrace | None = None
     declared: DeclaredFile | None = None
+    details: list[str] = field(default_factory=list)
 
 
 def answer_step(
