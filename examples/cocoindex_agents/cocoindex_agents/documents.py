@@ -12,11 +12,12 @@ changes the digest in the reference, so exactly the turns that saw it miss;
 an unchanged one renders byte-identical, so the turn memo and the
 provider's prompt cache both hit.
 
-Which files are documents is decided by media type, from the file name,
-never by flow. Today the set is ``application/pdf`` alone: the one type
-every provider accepts inline through LiteLLM's ``file`` content part
-(OpenAI chat completions take only PDFs that way; Anthropic and Gemini
-take more). A file of any other type is read as text, as before.
+Which resources are documents is decided by media type — the one the
+resource declares (a web page, from its ``Content-Type``) or, failing that,
+a guess from its name — never by flow. Today the set is ``application/pdf``
+alone: the one type every provider accepts inline through LiteLLM's ``file``
+content part (OpenAI chat completions take only PDFs that way; Anthropic and
+Gemini take more). A resource of any other type is read as text, as before.
 """
 
 from __future__ import annotations
@@ -33,9 +34,19 @@ DOCUMENT_MEDIA_TYPES = frozenset({"application/pdf"})
 
 
 def document_media_type(name: str) -> str | None:
-    """The media type of a file the model reads natively, from its name; ``None`` for text."""
+    """The media type of a resource the model reads natively, from its name; ``None`` for text."""
     media_type, _ = mimetypes.guess_type(name)
     return media_type if media_type in DOCUMENT_MEDIA_TYPES else None
+
+
+def resource_media_type(key: str, resource: object) -> str | None:
+    """The document media type of a resource: the one it declares (``media_type``
+    attribute, a page's ``Content-Type``) when it has one, else a guess from its
+    key; ``None`` for text."""
+    declared = getattr(resource, "media_type", None)
+    if isinstance(declared, str):
+        return declared if declared in DOCUMENT_MEDIA_TYPES else None
+    return document_media_type(key)
 
 
 @dataclass(frozen=True)

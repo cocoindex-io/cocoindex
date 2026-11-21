@@ -220,6 +220,8 @@ def _render_session(
             _line(lines, indent + 2, left, tags)
             if action.task:
                 lines.append(" " * (indent + 7) + f'"{action.task}"')
+            for detail in action.details:
+                lines.append(" " * (indent + 7) + detail)
             if action.child is not None:
                 _render_child(lines, action.child, indent + 5, stored)
         if not stored:

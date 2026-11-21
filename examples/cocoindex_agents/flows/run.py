@@ -31,7 +31,7 @@ from cocoindex_agents.app import DEFAULT_MODEL, build_app, default_config  # noq
 from cocoindex_agents.litellm_client import LiteLLMClient  # noqa: E402
 from cocoindex_agents.model import MODEL_CLIENT  # noqa: E402
 from cocoindex_agents.report import RunReport, render_plan, render_stats_line  # noqa: E402
-from cocoindex_agents.tools import AGENTS_CONFIG  # noqa: E402
+from cocoindex_agents.tools import AGENTS_CONFIG, web  # noqa: E402
 from cocoindex_agents.trace import SessionScratch  # noqa: E402
 
 FLOWS = pathlib.Path(__file__).resolve().parent
@@ -103,7 +103,9 @@ def main(argv: list[str] | None = None) -> int:
     litellm.disable_aiohttp_transport = True
     env = coco.Environment(coco.Settings.from_env(db_path=flow_dir / ".coco_db"))
     client = LiteLLMClient()
-    config = default_config(args.model)
+    config = default_config(
+        args.model, search_engine=web.default_engine(os.environ).identity
+    )
     env.context_provider.provide(MODEL_CLIENT, client)
     env.context_provider.provide(AGENTS_CONFIG, config)
     scratch = SessionScratch()

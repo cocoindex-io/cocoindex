@@ -21,6 +21,7 @@ items in the collection.
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import NamedTuple
 
 import cocoindex as coco
 
@@ -38,7 +39,7 @@ from ..trace import ChildTrace, Member, SessionScratch, child_members, child_ses
 from ..transcript import canonical_json
 from . import SessionContext, tool
 from .reduce import Group, GroupItem, ReduceError, hierarchical_reduce, leaf_item
-from .folder import FolderSource
+from .source import Source
 from .stats import format_range, widen_count
 
 _DEFAULT_REDUCE_THRESHOLD_TOKENS = 6000
@@ -162,7 +163,7 @@ _CLOSED_SKIPPED = "input unchanged"
     "call_agent",
     "Run one open subagent with `task` and wait for it. `key` names it stably across "
     "runs; `inputs` lists the handles it may use. Returns a res: handle to its answer, "
-    "never the text. For one piece of work over the whole data; per-file work is "
+    "never the text. For one piece of work over the whole data; per-item work is "
     "for_each.",
     {
         "type": "object",
@@ -277,8 +278,8 @@ async def observe(ctx: SessionContext, args: dict[str, Json]) -> Json:
 
 @tool(
     "for_each",
-    "Run one closed worker per file of a source, in parallel. `key` names the fan-out "
-    "stably across runs; `task` is every worker's instruction (each reads its own file "
+    "Run one closed worker per item of a source, in parallel. `key` names the fan-out "
+    "stably across runs; `task` is every worker's instruction (each reads its own item "
     "with read_input); `inputs` lists the handles the workers may use: the target they "
     "write to, a result they must follow. With collect=true (the default) the answers are "
     "gathered into a coll: handle for reduce; its card shows a widened count and how many "
@@ -301,7 +302,7 @@ async def observe(ctx: SessionContext, args: dict[str, Json]) -> Json:
 async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
     key: str = args["key"]
     src = ctx.handles.get(args["source"])
-    if not isinstance(src, FolderSource):
+    if not isinstance(src, Source):
         raise ToolError("for_each needs a src: handle")
     handles, cards = _child_inputs(ctx, args, closed=True)
     child = _closed_spec(ctx, args.get("role", "worker"), args["task"], cards)
@@ -365,13 +366,14 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
 
 @tool(
     "reduce",
-    "Combine every successful item of a coll: handle into one text with `task`, "
-    "hierarchically, so any number of items fits. Returns a res: handle to the text and "
-    'how many failed items were left out; write it with declare(value="res:<key>").',
+    "Combine every successful item of one coll: handle, or of several (a list of "
+    "handles), into one text with `task`, hierarchically, so any number of items fits. "
+    "Returns a res: handle to the text and how many failed items were left out; write "
+    'it with declare(value="res:<key>").',
     {
         "type": "object",
         "properties": {
-            "collection": {"type": "string"},
+            "collection": {"type": ["string", "array"], "items": {"type": "string"}},
             "key": {"type": "string"},
             "task": {"type": "string"},
             "role": {"type": "string"},
@@ -383,9 +385,7 @@ async def for_each(ctx: SessionContext, args: dict[str, Json]) -> Json:
 )
 async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
     key: str = args["key"]
-    coll = ctx.handles.get(args["collection"])
-    if not isinstance(coll, Collection):
-        raise ToolError("reduce needs a coll: handle")
+    members = _collections(ctx, args["collection"])
     child = _closed_spec(ctx, args.get("role", "reducer"), args["task"], ())
     threshold: int = args.get("threshold_tokens", _DEFAULT_REDUCE_THRESHOLD_TOKENS)
     if threshold < 2:
@@ -394,7 +394,7 @@ async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
 
     items: list[GroupItem[str]] = [
         leaf_item(item_key, _estimate_tokens(text), text)
-        for item_key, text in coll.entries
+        for item_key, text in members.entries
     ]
 
     groups: list[Member] = []
@@ -445,7 +445,44 @@ async def reduce(ctx: SessionContext, args: dict[str, Json]) -> Json:
         failed=0,
         skipped_reason="members unchanged",
     )
-    return _result(ctx, key, answer, omitted=len(coll.failed))
+    return _result(ctx, key, answer, omitted=members.omitted)
+
+
+class Members(NamedTuple):
+    entries: list[tuple[str, str]]  # (item key, answer) of every success
+    omitted: int  # failed members, over every collection
+
+
+def _collections(ctx: SessionContext, arg: Json) -> Members:
+    """The successes of one collection, or of several concatenated, and how many
+    members failed in all of them.
+
+    Several collections must be distinct handles whose item keys do not collide
+    (a key is a reducer slot's identity, §6); an empty member is allowed when
+    the union is not (a second round that found nothing, DESIGN.md §2 shape E).
+    """
+    names = [arg] if isinstance(arg, str) else list(arg)
+    if not names or not all(isinstance(n, str) for n in names):
+        raise ToolError("reduce needs a coll: handle or a non-empty list of them")
+    if len(set(names)) != len(names):
+        raise ToolError("reduce lists the same collection twice")
+    entries: list[tuple[str, str]] = []
+    omitted = 0
+    seen: dict[str, str] = {}
+    for name in names:
+        coll = ctx.handles.get(name)
+        if not isinstance(coll, Collection):
+            raise ToolError(f"{name!r} is a {coll.kind} handle, not a collection")
+        for item_key, text in coll.entries:
+            if item_key in seen:
+                raise ToolError(
+                    f"item {item_key!r} is in both {seen[item_key]} and {name}; "
+                    "a reduce needs distinct item keys"
+                )
+            seen[item_key] = name
+            entries.append((item_key, text))
+        omitted += len(coll.failed)
+    return Members(entries, omitted)
 
 
 def _estimate_tokens(text: str) -> int:

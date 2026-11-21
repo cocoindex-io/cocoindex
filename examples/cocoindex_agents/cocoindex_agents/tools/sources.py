@@ -1,7 +1,7 @@
-"""Source handles and the tools over them: a local directory, or a Google Drive
-folder (``drive.py``). The contract both keep is ``folder.FolderSource``; this
-module holds the local kind's records and walk, and the ``open_source``,
-``call`` and ``read_input`` tools.
+"""Source handles and the tools over them: a local directory, a Google Drive
+folder (``drive.py``), a web search or a set of web pages (``web.py``). The
+contract all keep is ``source.Source``; this module holds the local kind's
+records and walk, and the ``open_source``, ``call`` and ``read_input`` tools.
 
 The local kind's records: an ``OBSERVATION`` is keyed by the root, the
 patterns and the call, and validated by walking again; a ``FILE_READ`` is
@@ -23,13 +23,13 @@ import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
 
-from ..documents import Document, document_media_type
+from ..documents import Document, resource_media_type
 from ..errors import ToolError
-from ..handles import Volatility
+from ..handles import ResultValue, Volatility, is_handle
 from ..spec import Item, Json
 from ..transcript import digest_json, normalize_json
-from . import SessionContext, drive, tool
-from .folder import FolderSource, content_of, digest_bytes, digest_of_json, file_key_arg
+from . import SessionContext, drive, tool, web
+from .source import Source, content_of, digest_bytes, digest_of_json, item_key_arg
 
 # mtime and digest of a file that was read; ``None`` when it did not exist.
 FileState = tuple[int, bytes] | None
@@ -86,7 +86,7 @@ def _mtime_ns(path: pathlib.Path) -> int | None:
         return None
 
 
-class LocalDirSource(FolderSource[localfs.File]):
+class LocalDirSource(Source[localfs.File]):
     """A ``src:`` handle over ``localfs.walk_dir``."""
 
     kind = "localfs"
@@ -109,17 +109,17 @@ class LocalDirSource(FolderSource[localfs.File]):
     def walker(self) -> localfs.DirWalker:
         return localfs.walk_dir(self.root, recursive=True, path_matcher=self._matcher())
 
-    async def files(self) -> dict[str, localfs.File]:
+    async def resources(self) -> dict[str, localfs.File]:
         found = {key: file async for key, file in self.walker().items()}
         return dict(sorted(found.items()))
 
     def observation_key(self, method: str, args: str) -> object:
         return Observation(str(self.root), self.patterns, method, args)
 
-    async def entries(self, files: dict[str, localfs.File]) -> Json:
+    async def entries(self, resources: dict[str, localfs.File]) -> Json:
         def stat_all() -> list[tuple[str, int, int]]:
             out: list[tuple[str, int, int]] = []
-            for key, file in files.items():
+            for key, file in resources.items():
                 st = os.stat(file.file_path.resolve())
                 out.append((key, st.st_mtime_ns, st.st_size))
             return out
@@ -131,7 +131,7 @@ class LocalDirSource(FolderSource[localfs.File]):
         record covers this file and not the listing: an edit elsewhere under
         the root does not touch the session.
         """
-        file_key = file_key_arg(args)
+        file_key = item_key_arg(args)
         path = self._path_of(file_key)
         # Stat before reading, so the recorded mtime is never newer than the bytes.
         mtime = await asyncio.to_thread(_mtime_ns, path)
@@ -164,37 +164,128 @@ class LocalDirSource(FolderSource[localfs.File]):
         return path
 
 
+# What each kind of source takes besides ``kind`` and ``name``: the shallow
+# validator admits every optional argument, and the handler holds each kind to
+# its own, as ``call`` holds a method to the arguments its card lists.
+_KIND_ARGS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    # kind: (required, optional)
+    "localfs": (frozenset({"path"}), frozenset({"patterns"})),
+    "google_drive": (frozenset({"path"}), frozenset({"patterns"})),
+    "web_search": (frozenset({"queries"}), frozenset()),
+    "web_pages": (frozenset({"urls"}), frozenset()),
+}
+
+
 @tool(
     "open_source",
-    "Open a data source and get a handle (src:<name>) plus a card of its methods. "
-    "Kinds: localfs (args: path, patterns?); google_drive (args: path = the Drive "
-    "folder's link or id, patterns?), read with the Google account signed in on "
-    "this machine.",
+    "Open a source of items and get a handle (src:<name>) plus a card of its methods. "
+    "Kinds: localfs (args: path, patterns?) lists the files under a directory; "
+    "google_drive (args: path = the Drive folder's link or id, patterns?) lists the "
+    "files of a folder, read with the Google account signed in on this machine; "
+    "web_search (args: queries = a list of search queries) lists the web pages the "
+    "queries find; web_pages (args: urls = a list of res: handles whose text names "
+    "URLs, or of URLs) lists those pages, minus the pages a source opened in an "
+    "earlier turn already listed. Every item is read by a worker through read_input.",
     {
         "type": "object",
         "properties": {
-            "kind": {"type": "string", "enum": ["localfs", "google_drive"]},
+            "kind": {
+                "type": "string",
+                "enum": ["localfs", "google_drive", "web_search", "web_pages"],
+            },
             "name": {"type": "string"},
             "path": {"type": "string"},
             "patterns": {"type": "array", "items": {"type": "string"}},
+            "queries": {"type": "array", "items": {"type": "string"}},
+            "urls": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["kind", "name", "path"],
+        "required": ["kind", "name"],
     },
 )
 async def open_source(ctx: SessionContext, args: dict[str, Json]) -> Json:
-    patterns = tuple(args.get("patterns", ()))
-    src: FolderSource[Any]
+    kind: str = args["kind"]
+    required, optional = _KIND_ARGS[kind]
+    given = set(args) - {"kind", "name"}
+    missing = sorted(required - given)
+    foreign = sorted(given - required - optional)
+    if missing or foreign:
+        takes = sorted(required | optional)
+        detail = []
+        if missing:
+            detail.append(f"needs {missing}")
+        if foreign:
+            detail.append(f"does not take {foreign}")
+        raise ToolError(f"{kind} {' and '.join(detail)}; it takes {takes}")
+    src: Source[Any]
     where: dict[str, Json]
-    if args["kind"] == "google_drive":
-        src = drive.GoogleDriveFolderSource(drive.folder_id_of(args["path"]), patterns)
-        where = {"folder": src.folder_id}
+    if kind == "web_search":
+        queries = tuple(_strings(args["queries"], "queries"))
+        if not queries:
+            raise ToolError("web_search needs at least one query")
+        if not ctx.config.search_engine:
+            raise RuntimeError(
+                "no search engine is configured (AgentsConfig.search_engine)"
+            )
+        src = web.WebSearchSource(
+            ctx.config.search_engine, queries, sink=ctx.trace, ctx=ctx
+        )
+        where = {"engine": ctx.config.search_engine, "queries": list(queries)}
+    elif kind == "web_pages":
+        named = _named_urls(ctx, _strings(args["urls"], "urls"))
+        exclude_requested, exclude_final = web.exclusions(
+            ctx.handles.objects().values()
+        )
+        src = web.WebPagesSource.admit(
+            named, exclude_requested, exclude_final, sink=ctx.trace, ctx=ctx
+        )
+        where = {"urls": list(args["urls"])}
     else:
-        src = LocalDirSource(pathlib.Path(args["path"]), patterns)
-        where = {"root": str(src.root)}
+        patterns = tuple(_strings(args.get("patterns", ()), "patterns"))
+        if kind == "google_drive":
+            src = drive.GoogleDriveFolderSource(
+                drive.folder_id_of(args["path"]), patterns
+            )
+            where = {"folder": src.folder_id, "patterns": list(patterns)}
+        else:
+            local = LocalDirSource(pathlib.Path(args["path"]), patterns)
+            src = local
+            where = {"root": str(local.root), "patterns": list(patterns)}
     handle = ctx.handles.register("src", args["name"], src)
     stats = await src.call("stats", {})
     ctx.trace.note_read(f"stats of {handle}", digest_json(stats))
-    return ctx.handles.card(handle, **where, patterns=list(src.patterns), **stats)
+    if isinstance(src, web.WebSource):
+        ctx.action.details.extend(src.details())
+    return ctx.handles.card(handle, **where, **stats)
+
+
+def _strings(value: Json, name: str) -> list[str]:
+    # The shallow validator does not type array items.
+    if not isinstance(value, (list, tuple)) or not all(
+        isinstance(v, str) for v in value
+    ):
+        raise ToolError(f"{name} must be a list of strings")
+    return list(value)
+
+
+def _named_urls(ctx: SessionContext, entries: list[str]) -> list[str]:
+    """The URLs a ``web_pages`` source is given: the URLs in each result's text,
+    then the literal URLs, canonical, deduplicated, in the order given."""
+    named: list[str] = []
+    for entry in entries:
+        if is_handle(entry):
+            res = ctx.handles.get(entry)
+            if not isinstance(res, ResultValue):
+                raise ToolError(f"{entry!r} is a {res.kind} handle, not a result")
+            urls = web.urls_in(res.text)
+        else:
+            url = web.canonical_url(entry)
+            if url is None:
+                raise ToolError(
+                    f"{entry!r} is neither a res: handle nor an http(s) URL"
+                )
+            urls = [url]
+        named.extend(u for u in urls if u not in named)
+    return named
 
 
 @tool(
@@ -252,7 +343,7 @@ async def call_method(ctx: SessionContext, args: dict[str, Json]) -> Json:
 
 @tool(
     "read_input",
-    "Read this session's input: for a text file, {key, text}; for a PDF, a reference "
+    "Read this session's input: for a text item, {key, text}; for a PDF, a reference "
     "{key, media_type, bytes, digest} with the document attached to your next message; "
     "for a reduce, the list of partial results.",
     closed_ok=True,
@@ -261,9 +352,9 @@ async def read_input(ctx: SessionContext, args: dict[str, Json]) -> Json:
     if ctx.input is None:
         raise ToolError("this session has no input; it is an open session")
     if isinstance(ctx.input, Item):
-        media_type = document_media_type(ctx.input.key)
+        media_type = resource_media_type(ctx.input.key, ctx.input.resource)
         if media_type is None:
-            return {"key": ctx.input.key, "text": await ctx.input.file.read_text()}
-        data = await ctx.input.file.read()
+            return {"key": ctx.input.key, "text": await ctx.input.resource.read_text()}
+        data = await ctx.input.resource.read()
         return ctx.documents.attach(Document.of(ctx.input.key, media_type, data))
     return list(ctx.input)
