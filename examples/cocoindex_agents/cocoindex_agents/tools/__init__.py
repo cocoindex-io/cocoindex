@@ -30,9 +30,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field, replace
-from typing import cast
+from typing import Any, TypeVar, cast
 
 import cocoindex as coco
+
+# The handle ``use_state`` returns is not exported yet; this package is its
+# second consumer, as with the retry helpers in ``errors.py``.
+from cocoindex._internal.api import StateHandle
 
 from ..documents import Documents
 from ..errors import ToolError
@@ -60,6 +64,9 @@ __all__ = [
 ]
 
 
+_S = TypeVar("_S")
+
+
 @dataclass
 class SessionContext:
     """What a tool handler sees: the session, its input, its handles, the config.
@@ -69,6 +76,11 @@ class SessionContext:
     where a tool that mounts a child leaves the child's trace. ``documents``
     holds the documents the session's tools attached this run, for the
     client to render beside the results that refer to them (``documents.py``).
+    ``states`` and ``on_finish`` are shared by every call of the session (the
+    loop forks the context per call but these objects are the same): a tool
+    that keeps state on the session component declares it once through
+    ``state()``, and registers with ``on_finish`` work the loop runs when the
+    body is about to return (``web.py`` prunes its stores there).
     """
 
     spec: SessionSpec
@@ -79,6 +91,8 @@ class SessionContext:
     trace: TraceSink = field(default_factory=TraceSink)
     action: ActionSink = field(default_factory=ActionSink)
     documents: Documents = field(default_factory=Documents)
+    states: dict[str, Any] = field(default_factory=dict)
+    on_finish: list[Callable[[], None]] = field(default_factory=list)
 
     def claim_slot(self, key: str) -> None:
         """Reserve a child key for this session; a repeat is the model's error."""
@@ -87,6 +101,16 @@ class SessionContext:
                 f"key {key!r} was already used by an earlier call in this session"
             )
         self.used_slots.add(key)
+
+    def state(self, name: str, initial: _S, type_hint: type[_S]) -> StateHandle[_S]:
+        """The session component's ``use_state(name)``, declared once per run and
+        shared by every tool call of the session (the engine refuses a second
+        declaration of one key in a run)."""
+        handle = self.states.get(name)
+        if handle is None:
+            handle = coco.use_state(name, initial_value=initial, type_hint=type_hint)
+            self.states[name] = handle
+        return cast("StateHandle[_S]", handle)
 
 
 ToolHandler = Callable[[SessionContext, dict[str, Json]], Awaitable[Json]]
@@ -153,16 +177,29 @@ def validate_args(spec: ToolSpec, args: object) -> dict[str, Json]:
         prop = props.get(name)
         if prop is None:
             raise ToolError(f"unknown argument {name!r}")
-        expected = _JSON_TYPES.get(prop.get("type", ""))
-        if expected is not None:
-            bad_bool = prop.get("type") in ("integer", "number") and isinstance(
+        declared = prop.get("type", "")
+        # A property may allow several JSON types (``["string", "array"]``).
+        types = declared if isinstance(declared, list) else [declared]
+        expected = tuple(
+            t for name_ in types for t in _as_tuple(_JSON_TYPES.get(name_))
+        )
+        if expected:
+            bad_bool = any(t in ("integer", "number") for t in types) and isinstance(
                 value, bool
             )
             if bad_bool or not isinstance(value, expected):
-                raise ToolError(f"argument {name!r} must be of type {prop['type']}")
+                raise ToolError(
+                    f"argument {name!r} must be of type {' or '.join(map(str, types))}"
+                )
         if "enum" in prop and value not in prop["enum"]:
             raise ToolError(f"argument {name!r} must be one of {prop['enum']}")
     return args
+
+
+def _as_tuple(types: type | tuple[type, ...] | None) -> tuple[type, ...]:
+    if types is None:
+        return ()
+    return types if isinstance(types, tuple) else (types,)
 
 
 class ToolRegistry:
@@ -224,12 +261,19 @@ class AgentsConfig:
     is everything a spec can be built from. The config is frozen because its
     fingerprint is taken when it is provided: an edit is a new config
     (``dataclasses.replace``), provided anew.
+
+    ``search_engine`` is the identity of the web search engine the ``web``
+    sources use (``web.py``: a name and the configuration that affects
+    results, never a credential), tracked here because a record's validator
+    searches with the engine the record names and could not otherwise notice
+    a switch (DESIGN.md §3, *Sources: the web*). Empty means none configured.
     """
 
     roles: dict[str, RoleSpec]
     tools: ToolRegistry = field(default_factory=ToolRegistry)
     default_model: str = "unspecified"
-    version: int = 3
+    version: int = 4
+    search_engine: str = ""
 
     def __coco_memo_key__(self) -> object:
         return (
@@ -238,6 +282,7 @@ class AgentsConfig:
             self.tools.specs(),
             self.default_model,
             self.version,
+            self.search_engine,
         )
 
     def role(self, name: str) -> RoleSpec:
