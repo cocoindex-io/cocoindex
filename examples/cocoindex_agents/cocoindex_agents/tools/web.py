@@ -1313,14 +1313,12 @@ def exclusions(objects: Iterable[object]) -> tuple[frozenset[str], frozenset[str
 
 # --- validators ---------------------------------------------------------------
 
-# Observed with the scripted web (``test_research.py``): on a run whose body
-# re-runs, the engine validates the root session's records twice before the
-# body runs (its component entry, then the memoized function's entry), so a
-# listing is searched and fetched twice by validators and once by the body. A
-# localfs walk twice costs nothing; here it is a request per page. A window that
-# reused a verdict for a few seconds would hand a stale one to a user who edits
-# and reruns at once, so none is kept: the per-operation validation cache
-# belongs in the engine (DESIGN.md §7, framework roadmap).
+# A validator here is a search per query or a request per page, so it must run
+# once per record per run: the engine probes a session's records once (a
+# double probe of the root session's records was observed with the scripted web
+# on 2026-11-21 and fixed in the engine, cocoindex PR #NNNN). No verdict is
+# cached here for a time window: it would hand a stale one to a user who edits
+# and reruns at once.
 
 
 async def _validate_listing(

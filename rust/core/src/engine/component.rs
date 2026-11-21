@@ -133,10 +133,11 @@ struct ComponentInner<Prof: EngineProfile> {
     /// next decides whether to execute its body.
     build_semaphore: tokio::sync::Semaphore,
     /// The memo most recently stored under `build_semaphore`, if any. A run
-    /// that finds its own key here on acquiring the permit knows a same-key
-    /// run just completed and stored its result, so it re-checks the memo
-    /// instead of executing again — under `full_reprocess` only when that run
-    /// belonged to the same operation (see `execute_once`).
+    /// that finds its own key here on acquiring the permit, stored since its
+    /// memo fast path looked, knows a same-key run just completed and stored
+    /// its result, so it re-checks the memo instead of executing again — under
+    /// `full_reprocess` only when that run belonged to the same operation (see
+    /// `execute_once`).
     last_stored_memos: Mutex<LastStoredMemos>,
 
     /// Identity registry of child components, keyed by their full StablePath,
@@ -695,7 +696,7 @@ struct ComponentBuildOutput<Prof: EngineProfile> {
 
 /// A memo stored by a run of a component under its `build_semaphore`: the
 /// operation that stored it and the key it was stored under.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct StoredMemo {
     operation_generation: u64,
     memo_fp: Fingerprint,
@@ -1363,6 +1364,9 @@ impl<Prof: EngineProfile> Component<Prof> {
         // Memo states collected from state validation (on cache hit with invalid states)
         // or to be collected after execution (on cache miss).
         let mut memo_states_for_store: Option<MemoStatesPayload<Prof>> = None;
+        // What `last_stored_memos` held when the fast path below looked; the
+        // re-check under the permit compares against it (see there).
+        let mut memo_seen_by_fast_path: Option<StoredMemo> = None;
         let processing_stats = processor_context.processing_stats();
 
         if let Some(processor) = processor {
@@ -1376,6 +1380,15 @@ impl<Prof: EngineProfile> Component<Prof> {
             // operation stored it, which only the permit-holding re-check below can
             // tell, so the fast-path is skipped.
             if !processor_context.full_reprocess() {
+                // Read before the lookup: a store that races with the lookup
+                // then shows as new under the permit and costs one more probe,
+                // rather than going unseen and costing a second execution.
+                memo_seen_by_fast_path = self
+                    .inner
+                    .last_stored_memos
+                    .lock()
+                    .unwrap()
+                    .readable_by(processor_context.app_store());
                 match lookup_component_memo(processor_context, processor, memo_fp_to_store).await? {
                     MemoLookup::Reuse(outcome, output) => {
                         processing_stats.update(processor_name, |stats| {
@@ -1412,23 +1425,37 @@ impl<Prof: EngineProfile> Component<Prof> {
                     // calls on one app that both missed the fast-path above
                     // before either had stored a memo. Re-check the memo now;
                     // a failed run stores none (and records none), so a miss
-                    // falls through to executing. Under `full_reprocess` only
-                    // a memo stored by this same operation qualifies: that is
-                    // the operation's own execution of the component, not a
-                    // cache from a previous run.
+                    // falls through to executing. Only a memo stored since the
+                    // fast path looked qualifies: the one it saw, it already
+                    // probed, and a long-lived component object (the app's
+                    // root, a live component) holds that one on every rerun,
+                    // so probing again would run every memo-state and
+                    // data-dependency validator a second time to the same
+                    // verdict. A store that repeats the seen memo exactly,
+                    // operation and key alike, reads as nothing new: the body
+                    // runs again, which is only redundant. Under
+                    // `full_reprocess`, which skips the fast path, only a memo
+                    // stored by this same operation qualifies: that is the
+                    // operation's own execution of the component, not a cache
+                    // from a previous run.
                     let last_stored_memo = self
                         .inner
                         .last_stored_memos
                         .lock()
                         .unwrap()
                         .readable_by(processor_context.app_store());
+                    let qualifies_for_recheck = |stored: StoredMemo| {
+                        if processor_context.full_reprocess() {
+                            stored.operation_generation == processor_context.operation_generation()
+                        } else {
+                            Some(stored) != memo_seen_by_fast_path
+                        }
+                    };
                     if let Some(processor) = processor
                         && let Some(memo_fp) = memo_fp_to_store
                         && let Some(stored) = last_stored_memo
                         && stored.memo_fp == memo_fp
-                        && (!processor_context.full_reprocess()
-                            || stored.operation_generation
-                                == processor_context.operation_generation())
+                        && qualifies_for_recheck(stored)
                     {
                         match lookup_component_memo(processor_context, processor, memo_fp_to_store)
                             .await?
@@ -2231,6 +2258,9 @@ mod tests {
         /// Whether the processor has a memo key (`memo_fp`); a processor
         /// without one re-runs every time and stores no component memo.
         memoized: bool,
+        /// Counts the memo state handler's validations of stored states (a
+        /// memo probe); the initial collection after a body run is not one.
+        validations: Arc<AtomicUsize>,
         on_process: Option<ProcessHook>,
     }
 
@@ -2249,6 +2279,7 @@ mod tests {
                 memo_states_reusable: false,
                 memo_states_changed: false,
                 memoized: true,
+                validations: Arc::new(AtomicUsize::new(0)),
                 on_process: None,
             }
         }
@@ -2274,6 +2305,12 @@ mod tests {
 
         fn with_on_process(mut self, hook: ProcessHook) -> Self {
             self.on_process = Some(hook);
+            self
+        }
+
+        /// Share `counter` across the processors of several runs.
+        fn with_validation_counter(mut self, counter: Arc<AtomicUsize>) -> Self {
+            self.validations = counter;
             self
         }
     }
@@ -2316,7 +2353,7 @@ mod tests {
             &self,
             _host_runtime_ctx: &(),
             _comp_ctx: &ComponentProcessorContext<TestProfile>,
-            _stored_states: Option<MemoStatesPayload<TestProfile>>,
+            stored_states: Option<MemoStatesPayload<TestProfile>>,
         ) -> crate::prelude::Result<
             impl Future<Output = crate::prelude::Result<(MemoStatesPayload<TestProfile>, bool, bool)>>
             + Send
@@ -2325,6 +2362,9 @@ mod tests {
             let advance_clock = self.advance_clock_in_state_handler;
             let reusable = self.memo_states_reusable;
             let changed = self.memo_states_changed;
+            if stored_states.is_some() {
+                self.validations.fetch_add(1, Ordering::SeqCst);
+            }
             Ok(async move {
                 if advance_clock {
                     testing_advance_deadline_clock(Duration::from_secs(2));
@@ -2890,6 +2930,39 @@ mod tests {
         assert_eq!(body_runs.load(Ordering::SeqCst), 1);
     }
 
+    /// The re-check under the permit is for a memo stored since the fast path
+    /// looked, and a root that has run before holds a memo the fast path saw.
+    /// Two concurrent reruns of such a root whose stored memo is stale (its
+    /// key changed) still execute the body once: the loser finds the winner's
+    /// memo new under the permit and reuses it.
+    #[tokio::test]
+    async fn concurrent_same_key_reruns_of_a_root_with_a_stale_memo_execute_body_once() {
+        let (app, _dir) = test_app("memo_piggyback_rerun").await;
+        let (first, _) = app
+            .update(
+                TestProcessor::new(
+                    "root",
+                    Fingerprint::from(&"memo_piggyback_rerun/v1").unwrap(),
+                    Arc::new(AtomicBool::new(false)),
+                    false,
+                )
+                .with_reusable_memo_states(),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        first.result().await.unwrap();
+
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let body = counting_body(body_runs.clone(), Duration::from_millis(100));
+        let [first, second] =
+            update_twice_concurrently(&app, "memo_piggyback_rerun/v2", body).await;
+        assert_eq!(first.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(second.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(body_runs.load(Ordering::SeqCst), 1);
+    }
+
     /// The re-check under the permit consults the memo store, not only the
     /// key marker: a run that fails stores no memo, so the run queued behind
     /// it executes the body itself instead of reusing a stale result.
@@ -2920,6 +2993,55 @@ mod tests {
             succeeded.into_iter().next().unwrap().unwrap(),
             TestData(b"ret".to_vec())
         );
+    }
+
+    /// A rerun of the app's root whose memo misses probes the memo once. The
+    /// root component object lives as long as the app, so its last stored
+    /// memo carries the rerun's key; the re-check under the permit is for a
+    /// memo stored since the fast path looked, not for the one the fast path
+    /// already probed — a second probe would run every validator again to
+    /// the same verdict.
+    #[tokio::test]
+    async fn a_root_rerun_whose_memo_misses_probes_once() {
+        let (app, _dir) = test_app("root_rerun_probes_once").await;
+        let validations = Arc::new(AtomicUsize::new(0));
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let memo_fp = Fingerprint::from(&"root_rerun_probes_once").unwrap();
+        let run = |states_reusable: bool| {
+            let processor =
+                TestProcessor::new("root", memo_fp, Arc::new(AtomicBool::new(false)), false)
+                    .with_validation_counter(validations.clone())
+                    .with_on_process(counting_body(body_runs.clone(), Duration::ZERO));
+            let processor = if states_reusable {
+                processor.with_reusable_memo_states()
+            } else {
+                processor
+            };
+            let (handle, _) = app
+                .update(processor, AppUpdateOptions::default(), Arc::new(()), None)
+                .unwrap();
+            async move { handle.result().await.unwrap() }
+        };
+        let counts = || {
+            (
+                validations.load(Ordering::SeqCst),
+                body_runs.load(Ordering::SeqCst),
+            )
+        };
+
+        // Fresh: no memo to probe; the body runs and its states are collected.
+        run(true).await;
+        assert_eq!(counts(), (0, 1));
+        // Unchanged: one probe, which hits.
+        run(true).await;
+        assert_eq!(counts(), (1, 1));
+        // The stored states no longer validate: one probe, which misses, then
+        // the body.
+        run(false).await;
+        assert_eq!(counts(), (2, 2));
+        // Unchanged again: one probe, which hits.
+        run(true).await;
+        assert_eq!(counts(), (3, 2));
     }
 
     /// Run one update whose root runs the same memoizable child component
