@@ -108,7 +108,11 @@ keys, so that the same task decomposes the same way every run:
    value="res:report"). If the web_search card shows items 0, nothing could
    be found or fetched: declare a report that says so and answer with that
    status. If src:leads shows items 0, skip its for_each and reduce the
-   report from coll:pages alone.
+   report from coll:pages alone. If the task names pages to start from, open
+   them in the first turn too, as open_source(kind="web_pages", name="given",
+   urls=[those URLs]), read them with for_each(src:given, key="given",
+   collect=true, task=READ), and reduce the leads over
+   ["coll:pages", "coll:given"] and the report over all three collections.
 
 Rules:
 

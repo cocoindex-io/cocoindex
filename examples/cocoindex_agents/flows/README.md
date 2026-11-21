@@ -1,8 +1,9 @@
 # Sample flows
 
-Six small flows: one per shape of DESIGN.md §2, one over PDFs, one over a
-Google Drive folder and one over the web, each a directory with a
-`prompt.md` and (except `drive` and `research`) a few short input files. The prompts are written as a user
+Seven small flows: one per shape of DESIGN.md §2, one over PDFs, one over a
+Google Drive folder and two over the web, each a directory with a
+`prompt.md` and (except `drive` and the two `research` flows) a few short
+input files. The prompts are written as a user
 would write them: the outcome, where the data is, where the output goes, the
 file naming when it matters, and what to answer. They do not mention workers,
 planners or reducers; the orchestrator decomposes the task itself, following
@@ -18,6 +19,7 @@ many model calls the run made, per role.
 | `orders` | A. map → targets, over PDFs | one JSON object per purchase order under `orders/`, with the fields the prompt names, including which box of the Approval section is ticked |
 | `drive` | A. map → targets, over a Google Drive folder | one summary file per file in the Drive folder `$DRIVE_FOLDER`, `Meeting notes` → `Meeting notes.summary.md` |
 | `research` | E. search → read → follow → report, over the web | what incremental computation is and where it is used; search the web, read what is found, follow the leads worth following, write `out/report.md` with citations |
+| `research_seeded` | E, starting from a page the prompt names | the same topic, starting from the page `$RESEARCH_SEED` (a page the user controls, so that a changed source can be staged) |
 
 The purchase orders are PDFs the model reads natively (DESIGN.md §3,
 *Documents*): one page each, a ruled line-item table, totals, and three
@@ -83,7 +85,10 @@ costs one conditional request and no model call; a page that changed only in
 a timestamp, an ad or a comment count costs nothing either, because a
 worker is memoized on the page's normalized content; only a real change
 reaches the model, and only that page's worker and the reducers on its path
-run again. The `--plan` tree lists each source's pages with their digest and
+run again. To see that with a page you can change, run `research_seeded`
+with `$RESEARCH_SEED` set to a page you control (the raw URL of a gist, for
+example); the prompt names it as the page to start from, and the recipe
+reads it beside the search results. The `--plan` tree lists each source's pages with their digest and
 when the current content was first fetched, and its unavailable pages with
 the reason; citations in the report carry the URL only (DESIGN.md §3: no
 time in a tool result).
@@ -234,7 +239,39 @@ from both collections and declared it.
 |---|---|---|
 | fresh | 46 (orchestrator 8, workers 34, reducers 4) | `model calls 46, sessions 20, tool calls 27, spent tokens 193265 in (provider-cached 23209 / 12%), 8068 out, files 1, 63.1s` |
 | unchanged | 0 | `model calls 46 (reused 46 / 100%), sessions 20 (skipped 20 / 100%), tool calls 27 (reused 27 / 100%), files 1 (unchanged 1 / 100%), 1.1s` |
-| one source changed | not yet measured: it needs a page under the user's control (a gist, or a page they name); the scripted drive of the same case is `test_research.py::test_a_research_run_reuses_unchanged_pages_and_reruns_only_a_changed_one` (one worker's answer turn and the two reducers: 3 calls) | |
+
+The `research_seeded` flow adds a page the user controls as the starting
+page (`$RESEARCH_SEED`: the raw URL of a secret gist, a Markdown page of
+notes on the topic with two links), so that a changed source can be staged.
+Same model and engine, same day:
+
+| Run | Model calls | `stats:` |
+|---|---|---|
+| fresh | 52 (orchestrator 8, workers 36, reducers 8) | `model calls 52, sessions 23, tool calls 32, spent tokens 207238 in (provider-cached 27352 / 13%), 12828 out, files 1, 92.7s` |
+| unchanged | 0 | `model calls 52 (reused 52 / 100%), sessions 23 (skipped 23 / 100%), tool calls 32 (reused 32 / 100%), files 1 (unchanged 1 / 100%), 1.1s` |
+| the seed page changed (a paragraph added) | 4 (the gist's worker 1, the leads reducer 1, the report reducer 2) | `model calls 52 (reused 48 / 92%), sessions 23 (skipped 18 / 78%), tool calls 32 (reused 18 / 56%), spent tokens 37343 in, 3568 out, files 1, 49.2s` |
+
+What the changed-source run shows:
+
+- The validator saw the gist's digest move (`--plan`: `walk of src:given
+  changed`), the orchestrator's body re-ran with every turn a hit (0 calls),
+  the twelve search pages' workers and the five lead pages' workers were
+  skipped, and only the gist's worker re-ran its answer turn (its
+  `read_input` turn hit).
+- The leads reducer re-ran because its members changed and **picked its
+  previous answer** from the replay block (1 call, a byte-identical list of
+  URLs), so the `web_pages` source over the leads kept its identity and its
+  workers hit. The report reduce had three groups; the leaf holding the gist
+  and the root re-ran (2 calls), the other leaf was skipped. The report now
+  carries the added paragraph's claim with the gist's URL as its citation.
+- A caveat the drive surfaced: the gist's CDN answers with `max-age=300`
+  and caches per request variant. For about five minutes after the edit, a
+  conditional request from the flow's client was still answered `304` with
+  the old validator while a differently shaped request already saw the new
+  text, so the first two reruns after the edit were skipped whole, correctly
+  from what the origin told them. A page behind a caching CDN can lag its
+  own edit by the CDN's `max-age`; the flow cannot see what the server does
+  not tell it.
 
 What the runs show:
 
@@ -251,8 +288,12 @@ What the runs show:
   re-run the orchestrator's body with no inference because a page's ETag had
   rotated while its content had not; validity now rests on the normalized
   content, and the record refreshes its validators.
-- Changing a source the flow actually reads needs a page under the user's
-  control; see the note in the row above.
+- The orchestrator followed the recipe's starting-page clause in the seeded
+  drive: it opened the `web_pages` source over the gist in the first turn
+  beside the search, read it with its own fan-out, and reduced the leads
+  over both collections; the gist's link to the "Build systems à la carte"
+  page became one of the five leads. With 18 answers the report reduce had
+  three groups (two leaves and the root: six calls cold).
 
 ## Measured: the `drive` flow against a real account
 
