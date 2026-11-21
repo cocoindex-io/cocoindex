@@ -574,12 +574,12 @@ def test_a_research_run_reuses_unchanged_pages_and_reruns_only_a_changed_one(
     assert f.calls("worker") == 1 and f.calls("reducer") == 2
     assert f.calls("orchestrator") == 0
     assert "about b, revised" in f.report()
-    # The validators fetched every page twice (the engine probes the root's records
-    # for its component entry and for its memoized function's entry when the body
-    # re-runs) with the refreshed validators and were answered 304; the body's
-    # response cache still held a's rotated-away ETag, so its one request was a
-    # 200 that normalized to the same digest and refreshed the cache.
-    assert fake.gets[url("a")] == 3 and fake.not_modified[url("a")] == 2
+    # The validators fetched every page once (the engine probes the root's records
+    # once per run, even when the body re-runs) with the refreshed validators and
+    # were answered 304; the body's response cache still held a's rotated-away
+    # ETag, so its one request was a 200 that normalized to the same digest and
+    # refreshed the cache.
+    assert fake.gets[url("a")] == 2 and fake.not_modified[url("a")] == 1
     assert fake.downloads[url("a")] == 1
 
 
