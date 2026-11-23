@@ -91,7 +91,12 @@ async def sync_to_async_iter(
     try:
         while True:
             # Wait for items from the queue without blocking the event loop
-            is_done_or_error, value = await loop.run_in_executor(None, q.get)
+            # Free-threaded Python can inherit the caller's context when an
+            # executor lazily starts a worker. Queue waits need no context;
+            # do not leave a component/environment held by an idle worker.
+            is_done_or_error, value = await _contextvars.Context().run(
+                lambda: loop.run_in_executor(None, q.get)
+            )
             if is_done_or_error:
                 if isinstance(value, StopIteration):
                     break
@@ -114,7 +119,9 @@ async def sync_to_async_iter(
         except _queue.Full:
             pass
         # Joining directly would block the event loop while the producer exits.
-        await loop.run_in_executor(None, thread.join, 1.0)
+        await _contextvars.Context().run(
+            lambda: loop.run_in_executor(None, thread.join, 1.0)
+        )
 
 
 def async_to_sync_iter(
