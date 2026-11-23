@@ -934,6 +934,11 @@ U+0000 (NUL) is a valid Unicode codepoint, but Postgres cannot store it — neit
 
 <Lang only="python">
 
+If distinct dictionary keys become equal after stripping NUL (for example,
+`"a\0b"` and `"ab"`), declaring the row raises `ValueError` before writing it.
+This also applies to nested dictionaries, preventing one field from silently
+overwriting another. Rename the conflicting keys in the source data first.
+
 To override the default mapping, provide a `PgType` or `VectorSchemaProvider` via:
 
 - **Type annotation** — using `typing.Annotated` on the field
