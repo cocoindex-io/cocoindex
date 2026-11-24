@@ -16,7 +16,9 @@
 // lists also leaves the export. Every .md file in the build must be either a
 // listed page's twin or one of the files for coding agents (SKIPPED). Any
 // other .md file fails the export with its name: a new kind of file gets a
-// decision, not a silent default. A failed export changes nothing in <out-dir>.
+// decision, not a silent default. So does a listed link to /docs/rust/ or
+// /docs/examples/ itself: its twin would land beside the three folders, where
+// no later export removes it. A failed export changes nothing in <out-dir>.
 // The docs test workflow runs the export on every build, so a change that
 // breaks one of these rules fails its own pull request.
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -65,7 +67,7 @@ export function exportSearchContent(buildDir, outDir) {
     throw new Error(`the output folder and the build folder must not contain each other: ${out}, ${build}`);
 
   const problems = [];
-  const twins = new Map(); // source path in the build → path in the export
+  const twins = new Map(); // source path in the build → { target: path in the export, url }
   for (const list of PAGE_LISTS) {
     const path = join(build, list);
     if (!existsSync(path)) {
@@ -75,12 +77,18 @@ export function exportSearchContent(buildDir, outDir) {
     for (const [, url] of readFileSync(path, 'utf8').matchAll(PAGE_LINK)) {
       // A link that leaves the docs is not a page, so it has no twin.
       const twin = twinOf(url);
-      if (twin) twins.set(twin.source, twin.target);
+      if (twin) twins.set(twin.source, { target: twin.target, url });
     }
   }
 
   const files = new Map(); // path in the export → content
-  for (const [source, target] of twins) {
+  for (const [source, { target, url }] of twins) {
+    if (!TREES.some((tree) => target.startsWith(`${tree}/`))) {
+      problems.push(
+        `a listed page would be exported outside ${TREES.map((tree) => `${tree}/`).join(', ')}: ${url} → ${target}`,
+      );
+      continue;
+    }
     const path = join(build, source);
     if (!existsSync(path)) {
       problems.push(`a listed page has no .md twin: ${source}`);

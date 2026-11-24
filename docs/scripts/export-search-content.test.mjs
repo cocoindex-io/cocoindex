@@ -93,6 +93,31 @@ test('a listed page without a twin fails the export with its name', () => {
   );
 });
 
+test('a listed link to a tree itself fails the export with its target, which is outside the three folders', () => {
+  // With the twin in the build, and without it: the link is the problem either way.
+  for (const [tree, twins] of [
+    ['rust', { 'rust.md': twin('Start', 'The start page.') }],
+    ['examples', { 'examples.md': twin('Start', 'The start page.') }],
+    ['rust', {}],
+  ]) {
+    const out = outDir();
+    write(out, { 'python/old/page.md': 'earlier export' });
+    const dir = build({
+      'rust/llms.txt':
+        `# Rust docs\n\n- [Start](${SITE}/${tree}/): The start page.\n` +
+        `- [App](${SITE}/rust/guide/app/): The App page.\n`,
+      ...twins,
+    });
+    assert.throws(() => exportSearchContent(dir, out), (error) => {
+      // One problem for the one link: the twin is not also reported as a stray file.
+      assert.match(error.message, /^1 problem\(s\)/);
+      assert.match(error.message, new RegExp(`${SITE}/${tree}/ → ${tree}\\.md`));
+      return true;
+    });
+    assert.deepEqual(snapshot(out), { 'python/old/page.md': 'earlier export' });
+  }
+});
+
 test('a twin without the banner fails the export, also when it opens with its own quote', () => {
   for (const text of ['# Plain\n\nNo banner here.\n', '# Quote\n\n> The page opens with a quote.\n\nText.\n']) {
     assert.throws(
