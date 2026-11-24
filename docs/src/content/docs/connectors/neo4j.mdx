@@ -93,7 +93,7 @@ async def outgoing_neighbors(node_id: str) -> list[dict[str, object]]:
     )
 ```
 
-Pass values in the parameter dictionary, not by interpolating them into Cypher. Parameter names such as `query` and `parameters` are valid too; the dictionary is passed to the driver separately from its own method arguments. Queries return all rows in memory, so use Cypher filters and `LIMIT` for large graphs.
+Pass values in the parameter dictionary, not by interpolating them into Cypher. Queries return all rows in memory, so use Cypher filters and `LIMIT` for large graphs.
 
 When a query depends on target writes from a mounted component, wait for that component's `handle.ready()` before querying. `await coco.mount(...)` alone dispatches the component and returns its handle; it does not wait for its target states to be synced. The query helper does not track changes to database contents for memo invalidation, so keep graph reads out of memoized code: don't memoize the read, as in the example, or any function or component that calls it. On a memo hit the caller's body doesn't run, so a read inside it doesn't run either (see [cache-hit semantics](../programming_guide/function#cache-hit-semantics)). Direct Cypher writes are not declared target states and therefore do not receive CocoIndex's incremental reconciliation or cleanup.
 
