@@ -16,7 +16,7 @@ The whole pipeline is ordinary `async` Python. Kafka is just a [source](/docs/co
 
 ## Flow overview
 
-![CocoIndex Kafka → LanceDB flow: subscribe a topic as a keyed map, run one process_message component per message that parses the JSON and dispatches by shape, and declare each row on the products or employees LanceDB table](https://cocoindex.io/blobs/docs-v1/img/examples/kafka-to-lancedb/flow-v1.svg)
+![CocoIndex Kafka → LanceDB flow: subscribe a topic as a keyed map, run one process_message component per message that parses the JSON and dispatches by shape, and declare each row on the products or employees LanceDB table](https://cocoindex.io/blobs/docs-v1/img/examples/kafka-to-lancedb/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -26,7 +26,7 @@ From a high level, these are the steps:
 
 You [declare the transformation logic](/docs/programming_guide/core_concepts/) with native Python, without worrying about how updates propagate. Think: **target_state = transformation(source_state)**.
 
-> **Why two tables from one topic?** A topic is often a firehose of heterogeneous events — orders, users, inventory, whatever a service emits — sharing a transport but not a schema. The consumer's job is to *sort the mail*: read each envelope, decide what it is, and put it where it belongs. Branching on a discriminator field (`sku` vs `emp_id` here, but just as easily an `event_type` or a [JSON Schema](https://json-schema.org/) `$id`) and declaring a typed row is the same pattern whether the destination is LanceDB, Postgres, or a vector index.
+> **Why two tables from one topic?** A topic can contain orders, users, and inventory events with different schemas. Branch on a discriminator field (`sku` vs `emp_id` here, an `event_type`, or a [JSON Schema](https://json-schema.org/) `$id`). Declare a typed row in the corresponding table. This pattern also applies to Postgres and vector indexes.
 
 ## Setup
 
@@ -86,7 +86,7 @@ The dataclass *is* the schema. When we mount the table below, [`TableSchema.from
 
 ## Process a message
 
-![One process_message component per Kafka message, fanned out with mount_each: each message is parsed and dispatched by shape to the products or employees LanceDB table](https://cocoindex.io/blobs/docs-v1/img/examples/kafka-to-lancedb/stage-file-process.svg)
+![One process_message component per Kafka message, fanned out with mount_each: each message is parsed and dispatched by shape to the products or employees LanceDB table](https://cocoindex.io/blobs/docs-v1/img/examples/kafka-to-lancedb/stage-file-process-dark.svg)
 
 `process_message` runs once per message. It decodes the value, parses the JSON, and dispatches on shape — declaring a typed row on whichever table matches:
 
@@ -221,6 +221,4 @@ A catch-up run (`cocoindex update main.py`) drains the backlog once and exits; l
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/kafka_to_lancedb](https://github.com/cocoindex-io/cocoindex/tree/main/examples/kafka_to_lancedb). It pairs with the producer side — [csv-to-kafka](https://github.com/cocoindex-io/cocoindex/tree/main/examples/csv_to_kafka) turns a folder of CSV files into the very topic this example consumes, so you can run both and watch a row edited on disk land in the right LanceDB table.
-
-Got a topic full of mixed events you want sorted into typed tables? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).
+The full, runnable example is in the CocoIndex repo: [examples/kafka_to_lancedb](https://github.com/cocoindex-io/cocoindex/tree/main/examples/kafka_to_lancedb). It pairs with the producer side — [csv-to-kafka](https://github.com/cocoindex-io/cocoindex/tree/main/examples/csv_to_kafka) turns a folder of CSV files into the topic this example consumes, so you can run both and watch a row edited on disk land in the right LanceDB table.

@@ -1,0 +1,45 @@
+<!-- Keyboard access belongs only to regions that actually overflow. -->
+<script>
+  function setupScrollRegions() {
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>(
+      'main pre, main table, main .mermaid-figure, main .ex-run-code, .prose pre, .prose table, .ex-prose pre, .ex-prose table',
+    ));
+    const owned = new Set<HTMLElement>();
+    const update = () => {
+      for (const el of candidates) {
+        const css = getComputedStyle(el);
+        const overflow = el.clientWidth > 0 && el.scrollWidth > el.clientWidth + 1 && /auto|scroll/.test(css.overflowX);
+        if (overflow && !el.closest('[aria-hidden="true"], [inert]')) {
+          if (!el.hasAttribute('tabindex')) {
+            el.tabIndex = 0;
+            owned.add(el);
+          }
+          el.dataset.scrollRegion = '';
+          if (!el.hasAttribute('aria-label') && !el.hasAttribute('aria-labelledby')) {
+            el.setAttribute('aria-label', el.tagName === 'TABLE' ? 'Scrollable table' : 'Scrollable code or diagram');
+            el.dataset.scrollLabel = '';
+          }
+        } else {
+          if (owned.delete(el)) el.removeAttribute('tabindex');
+          delete el.dataset.scrollRegion;
+          if (el.hasAttribute('data-scroll-label')) {
+            el.removeAttribute('aria-label');
+            delete el.dataset.scrollLabel;
+          }
+        }
+      }
+    };
+    const observer = new ResizeObserver(update);
+    candidates.forEach(el => observer.observe(el));
+    update();
+    document.fonts.ready.then(update);
+    window.addEventListener('load', update, { once: true });
+    document.addEventListener('astro:before-swap', () => observer.disconnect(), { once: true });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setupScrollRegions, { once: true });
+  else setupScrollRegions();
+</script>
+<style is:global>
+  [data-scroll-region] { scrollbar-width: auto; }
+  [data-scroll-region]:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
+</style>

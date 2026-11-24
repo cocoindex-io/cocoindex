@@ -1,11 +1,10 @@
 ---
 title: CocoIndex *core concepts*
 description: >
-  The mental model behind CocoIndex — declarative state-driven sync, target states,
-  Apps, processing components, and how incremental execution skips unchanged work
-  across both logic and input changes.
+  Declare your outputs. CocoIndex applies changes and reuses cached results.
 ---
 import Tabs from '../../../components/Tabs.astro';
+import PipelinePlayground from '../../../components/PipelinePlayground.astro';
 
 import AppOverview from '/src/components/diagrams/concepts/AppOverview.astro';
 import AppExample from '/src/components/diagrams/concepts/AppExample.astro';
@@ -14,56 +13,34 @@ import ComponentWithChunks from '/src/components/diagrams/concepts/ComponentWith
 
 ## Incremental processing
 
-When processing data and storing results in targets (e.g., a database) for knowledge retrieval by AI agents or search systems, both your data and code evolve over time. Reprocessing everything after every change is expensive, slow, and disruptive. Incremental processing solves this by only processing what's changed, and applying those changes to the target.
+Data and code change over time. Incremental processing reruns affected work and updates targets, such as a search database.
 
-Implementing incremental processing by hand is complicated because:
-
-- You need to figure out what has changed and what has not.
-
-- You need to think in the time dimension and carefully compute the “delta”, e.g., what needs to be inserted, updated, or deleted in your target.
-
-- You need to track and preserve intermediate states to avoid full recomputation when possible.
-
-- You need to evolve the target schema and backfill data when the code logic changes.
-
-With so many moving parts, when something goes wrong, it is difficult to debug.
+Manual implementations must track changes and preserve intermediate results.
+They must also manage inserts, updates, deletes, schema changes, and backfills.
 
 ## State-driven programming
 
-CocoIndex uses a *declarative* programming model — instead of programming *how* to incrementally process your data and apply changes to your target, you declaratively specify *what* your target should look like, based on the current state of your data source.
+Declare the target state you want from the current source data.
+CocoIndex computes and applies the changes needed to match it.
 
-:::info
+**TargetState = Transform(SourceState)**
 
-If you've used React, spreadsheets, or materialized views, this mental model will feel familiar:
+The target state is a pure function of the source state, with no other side effects.
+Transformations read sources and produce target data, such as database rows or files.
 
-- **Spreadsheets**: You declare formulas in cells. When any upstream cell changes, downstream cells automatically recompute to reflect the new state.
+<details>
+<summary>Compare familiar programming models</summary>
 
-- **React**: You declare your UI as a function of state. When state changes, React automatically re-renders the UI to match.
+- **React:** Declare UI from state. React updates the UI when state changes.
+- **Spreadsheets:** Declare formulas. Upstream changes recompute dependent cells.
+- **Materialized views:** Declare a query. Source changes refresh the view.
 
-- **Materialized Views**: You declare a query (e.g., SQL) that runs on source tables. When input data changes, the view automatically refreshes to match.
-
-:::
-
-CocoIndex uses the above ideas to formulate a state-driven paradigm for long-running, side-effectful data processing pipelines with the following key concepts:
-
-- **Data transformations**: You read the current state from your source and perform a series of transformations. For example, converting PDFs to markdown files,
-extracting features or structures, or mapping data to fit a particular schema.
-
-- **Target states**: You output the results to a target such as a relational database, vector database, or file system. Note that the target state is a pure function of the source state (i.e., it has no other side effects). **TargetState = Transform(SourceState)**
-
-- **Incremental processing**: Under the hood, when the source state changes, CocoIndex incrementally processes only the changes needed to update the target, so you don't have to manage it yourself.
+</details>
 
 ## App
 
-An ***app*** is the top-level executable entity in CocoIndex. In an app, you write code to:
-
-- Read state from sources
-
-- Transform the data
-
-- Declare ***target states***: i.e., what the output should look like
-
-CocoIndex then syncs these target states to external systems (Postgres, vector databases, etc.).
+An **app** is CocoIndex's top-level executable. It reads sources, transforms data, and declares target states.
+CocoIndex synchronizes those target states with external systems, such as Postgres or a vector database.
 
 <AppOverview />
 
@@ -71,21 +48,24 @@ For example, here's an app that reads PDFs from a drive, converts them to markdo
 
 <AppExample />
 
-## Processing Component
+## Processing component
 
-In practice, your source often contains many items — files, rows, or entities — each of which can be processed independently. A ***processing component*** groups an item's processing together with its target states. Each processing component runs independently and applies its target states to the external system as soon as it completes, without waiting for the rest of the app.
+A **processing component** owns the work and target states for one source item.
+It runs independently. When it finishes, CocoIndex applies its target states without waiting for other components.
 
 For example, if you have many files in a drive and want to process them file by file, your processing component would operate at the file level:
 
 <ComponentPerFile />
 
-Taking this further, suppose you want to split each file into chunks and create embedding vectors for indexing. The processing component can still operate at the file level, but each component now produces multiple target states (one per chunk). CocoIndex applies all target state changes (inserts, updates, and deletes rows in the target database) as a unit for each file — all writes happen after processing completes, and each target backend applies its batch atomically when supported (e.g., within a database transaction):
+One file can produce several target states, such as one embedding vector per text chunk.
+CocoIndex batches the inserts, updates, and deletes for each file after processing completes.
+Each target backend applies its batch atomically when supported, such as within a database transaction:
 
 <ComponentWithChunks />
 
-Let's see what happens when the source state changes in different ways:
+These examples show how target states change:
 
-<Tabs labels={["On New File Added", "On Existing File Updated", "On Existing File Deleted"]}>
+<Tabs labels={["Add a file", "Update a file", "Delete a file"]}>
   <Fragment slot="tab-0">
     <ComponentWithChunks scenario={{ rows: [
       { file: 'a.md', chunks: [
@@ -102,7 +82,7 @@ Let's see what happens when the source state changes in different ways:
       ] },
     ]}} />
 
-    When a new file (`c.md`) is added, a new processing component is created for it. Once execution completes, CocoIndex applies the new target states — inserting `vector5` and `vector6` into the vector store.
+    Adding `c.md` creates a processing component for it. After processing completes, CocoIndex inserts `vector5` and `vector6`.
   </Fragment>
   <Fragment slot="tab-1">
     <ComponentWithChunks scenario={{ rows: [
@@ -117,7 +97,9 @@ Let's see what happens when the source state changes in different ways:
       ] },
     ]}} />
 
-    When file `b.md` is updated — say its content is reduced to just one chunk instead of two — the processing component's target state changes from `vector3` and `vector4` to just `vector5`. CocoIndex deletes `vector3` and `vector4`, then inserts `vector5` into the vector database, all within a single transaction.
+    Updating `b.md` reduces its content to one chunk.
+    Its target states change from `vector3` and `vector4` to `vector5`.
+    CocoIndex deletes the old rows and inserts the new row in one transaction.
   </Fragment>
   <Fragment slot="tab-2">
     <ComponentWithChunks scenario={{ rows: [
@@ -131,19 +113,17 @@ Let's see what happens when the source state changes in different ways:
       ] },
     ]}} />
 
-    When file `b.md` is deleted from the source folder, CocoIndex deletes its associated target states (`vector3` and `vector4`) from the vector database in a single transaction.
+    Deleting `b.md` removes its associated target states, `vector3` and `vector4`, in one transaction.
   </Fragment>
 </Tabs>
 
 ## Function memoization: skip unchanged computations
 
-***Function memoization*** is a technique that allows skipping a function when its input and code are unchanged from a previous run. It is essential for incremental processing — without it, every run would require full recomputation.
+A **memoized function** reuses its previous result when its inputs and code remain unchanged.
+Both processing components and transforms are functions, so you can memoize either level:
 
-In CocoIndex, both processing components and transforms are expressed as functions, so function memoization can be enabled at either level. Using the chunk-embed example:
-
-- *Processing component level*: If a file hasn't changed and the processing logic hasn't changed, the entire processing component is skipped.
-
-- *Transform level*: If the input to the "embed" transform (the chunk text) hasn't changed and the transform logic (e.g., the model) hasn't changed, that specific embedding computation is skipped.
+- **Processing component:** Skip the whole file when its content and processing logic remain unchanged.
+- **Transform:** Reuse an embedding when its text and embedding logic, including the model, remain unchanged.
 
 See [Function Memoization](./function#memoization) for more details.
 
@@ -151,7 +131,7 @@ See [Function Memoization](./function#memoization) for more details.
 
 Here's how memoization behaves in different scenarios:
 
-<Tabs labels={["On Input Data Change", "On Code Change"]}>
+<Tabs labels={["Change input", "Change code"]}>
   <Fragment slot="tab-0">
     <ComponentWithChunks memoized={true} scenario={{ rows: [
       { file: 'a.md', pcStatus: 'cache-ready', chunks: [
@@ -165,15 +145,11 @@ Here's how memoization behaves in different scenarios:
       ] },
     ]}} />
 
-    When input file `b.md` changes:
+    When `b.md` changes:
 
-    - The input state `a.md` is unchanged, so the 1st processing component is entirely reused without reprocessing.
-
-    - The input state `b.md` changed, so the 2nd processing component must be reprocessed. After splitting, suppose we get two chunks: `chunk3` (identical to before) and `chunk5` (new).
-
-      - `Embed(chunk3)` was memoized previously, so its cached result is reused.
-
-      - `Embed(chunk5)` is new and must be computed.
+    - `a.md` and its processing component remain cached.
+    - `b.md` runs again and produces `chunk3` and `chunk5`.
+    - `Embed(chunk3)` reuses its cached result. `Embed(chunk5)` requires a new computation.
   </Fragment>
   <Fragment slot="tab-1">
     <ComponentWithChunks memoized={true} scenario={{ rows: [
@@ -191,21 +167,25 @@ Here's how memoization behaves in different scenarios:
 
     When the "Split into chunks" logic changes:
 
-    - All processing components must be reprocessed since the logic changed.
+    - Both processing components run again.
+    - `a.md` produces the same chunks, so its `Embed` results are reused.
+    - `b.md` produces `chunk5` and `chunk6`, which require new `Embed` computations.
 
-    - For the 1st processing component, the new logic produces the same chunks as before. The memoized `Embed` results are reused without recomputation.
-
-    - For the 2nd processing component, the new logic produces different chunks (`chunk5` and `chunk6`), so `Embed` must be invoked on them.
-
-    As these examples show, memoization can save expensive computations even when logic changes — as long as the intermediate results remain the same.
+    A code change can still reuse downstream results when their inputs and function logic remain unchanged.
   </Fragment>
 </Tabs>
 
+## Try incremental processing
+
+Edit a file and compare the updated row with the cached work. This example uses simulated data.
+
+<PipelinePlayground />
+
 ## Next steps
 
-Now that you understand the mental model, dive into the Programming Guide to learn how to use these concepts in code:
+Use the Programming Guide to apply these concepts in code:
 
 - [App](./app) — creating and running pipelines
 - [Target State](./target_state) — declaring what should exist in external systems
 - [Processing Component](./processing_component) — structuring work and mounting components
-- [Function](./function) — the `@coco.fn` decorator, memoization, and change detection
+- [Function](./function) — <Lang only="python">the `@coco.fn` decorator</Lang><Lang only="rust">the `#[cocoindex::function]` attribute</Lang>, memoization, and change detection

@@ -1,0 +1,148 @@
+---
+// A paper's first page in, a typed PaperMetadataModel out, fanned into three
+// Postgres tables. The page text is the real pypdf extraction of
+// papers/1706.03762v7.pdf (15 pages); the schema is models.py; the LLM call is
+// gpt-4o with response_format json_object and temperature 0 on the first
+// 4000 chars. The author index rows are real: Jeff Dean is an author of both
+// 2502.06786v3.pdf (Matryoshka Quantization) and 2502.20346v1.pdf (Equilibria
+// and Learning in Modular Marketplaces). 2502.20346v1.pdf is the added file (Δ).
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="pm">
+    <div class="sc-row pm-top">
+      <div class="sc-col pm-src">
+        <span class="sc-cap">First page only</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-pdf"></span>papers/1706.03762v7.pdf</div>
+          <div class="pm-page">
+            <span class="pm-title">Attention Is All You Need</span>
+            <div class="pm-authors">
+              <span><b>Ashish Vaswani</b>Google Brain<i>avaswani@google.com</i></span>
+              <span><b>Noam Shazeer</b>Google Brain<i>noam@google.com</i></span>
+              <span><b>Niki Parmar</b>Google Research<i>nikip@google.com</i></span>
+              <span><b>Jakob Uszkoreit</b>Google Research<i>usz@google.com</i></span>
+            </div>
+            <span class="pm-abs-h">Abstract</span>
+            <p class="pm-abs sc-clip3">The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder.</p>
+          </div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col pm-mid">
+        <span class="sc-cap">extract_metadata</span>
+        <pre class="sc-code"><span class="k">class</span> <span class="f">PaperMetadataModel</span>(BaseModel):
+    title: <span class="f">str</span>
+    authors: <span class="f">list</span>[AuthorModel]
+    abstract: <span class="f">str</span>
+
+<span class="k">class</span> <span class="f">AuthorModel</span>(BaseModel):
+    name: <span class="f">str</span>
+    email: <span class="f">str</span> | <span class="k">None</span>
+    affiliation: <span class="f">str</span> | <span class="k">None</span></pre>
+        <div class="pm-chips">
+          <span class="sc-chip is-strong"><span class="sc-ico i-model"></span>gpt-4o</span>
+          <span class="sc-chip">json_object</span>
+          <span class="sc-chip">temperature=0</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="sc-row pm-bottom">
+      <div class="sc-col pm-rec">
+        <span class="sc-cap">Typed record</span>
+        <pre class="sc-code pm-json">&#123;
+  <span class="s">"title"</span>: <span class="s">"Attention Is All You Need"</span>,
+  <span class="s">"authors"</span>: [
+    &#123;<span class="s">"name"</span>: <span class="s">"Ashish Vaswani"</span>,
+     <span class="s">"email"</span>: <span class="s">"avaswani@google.com"</span>,
+     <span class="s">"affiliation"</span>: <span class="s">"Google Brain"</span>&#125;,
+    <span class="c">…</span>
+  ],
+  <span class="s">"abstract"</span>: <span class="s">"The dominant sequence…"</span>
+&#125;</pre>
+      </div>
+      <div class="sc-col pm-tabs">
+        <span class="sc-cap">Postgres + pgvector</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>paper_metadata</div>
+          <table class="sc-table">
+            <thead><tr><th>filename</th><th>title</th><th class="pm-n">num_pages</th></tr></thead>
+            <tbody>
+              <tr><td>1706.03762v7.pdf</td><td>Attention Is All You Need</td><td class="sc-dim pm-n">15</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>author_papers</div>
+          <table class="sc-table">
+            <thead><tr><th>author_name</th><th>filename</th></tr></thead>
+            <tbody>
+              <tr><td>Jeff Dean</td><td>2502.06786v3.pdf</td></tr>
+              <tr class="sc-delta"><td><span class="sc-dtext">Jeff Dean</span></td><td><span class="sc-dtext">2502.20346v1.pdf</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <span class="sc-cap pm-fine">metadata_embeddings: title and abstract chunks, all-MiniLM-L6-v2</span>
+      </div>
+    </div>
+    <p class="sc-quote pm-note"><span class="sc-dmark">Δ</span>Add a PDF and only that paper is extracted; its authors join the index.</p>
+  </div>
+) : (
+  <div class="pm-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel pm-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-pdf"></span>1706.03762v7.pdf</div>
+        <div class="pm-page is-card">
+          <span class="pm-title">Attention Is All You Need</span>
+          <span class="pm-line">Ashish Vaswani · Google Brain</span>
+          <span class="pm-line">Noam Shazeer · Google Brain</span>
+          <span class="pm-abs-h">Abstract</span>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <pre class="sc-code pm-card-json">&#123;
+  <span class="s">"title"</span>: <span class="s">"Attention Is…"</span>,
+  <span class="s">"authors"</span>: [
+    &#123;<span class="s">"name"</span>:
+      <span class="s">"Ashish Vaswani"</span>&#125;
+  ],
+  <span class="s">"abstract"</span>: <span class="s">"The…"</span>
+&#125;</pre>
+    </div>
+  </div>
+)}
+
+<style>
+  .pm { display: flex; flex-direction: column; gap: 18px; }
+  .pm-top, .pm-bottom { gap: 10px; }
+  .pm-src { flex: 1.05 1 0; }
+  .pm-mid { flex: 1 1 0; }
+  .pm-page { display: flex; flex-direction: column; gap: 8px; padding: 14px 14px 12px; background: #141414; min-width: 0; }
+  .pm-title { font-family: var(--sans); font-size: 15px; font-weight: 600; color: var(--sc-ink); text-align: center; letter-spacing: -0.01em; }
+  .pm-authors { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+  .pm-authors span { display: flex; flex-direction: column; min-width: 0; font-size: 11.5px; color: var(--sc-muted); text-align: center; line-height: 1.35; }
+  .pm-authors b { font-weight: 500; color: var(--sc-ink); font-size: 12px; }
+  .pm-authors i { font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--sc-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pm-abs-h { font-size: 12px; font-weight: 600; color: var(--sc-ink); text-align: center; margin-top: 2px; }
+  .pm-abs { margin: 0; font-size: 12px; line-height: 1.45; color: var(--sc-muted); }
+  .pm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pm-bottom { padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .pm-rec { flex: 1 1 0; }
+  .pm-tabs { flex: 1.15 1 0; }
+  .pm-json { align-self: stretch; }
+  .pm-n { width: 88px; text-align: right; }
+  .pm-tabs .sc-table th.pm-n { overflow: visible; }
+  .pm-tabs .sc-table td { white-space: normal; overflow-wrap: anywhere; }
+  .pm-fine { font-weight: 400; }
+  .pm-note { display: flex; align-items: center; gap: 8px; margin: -4px 0 0; font-size: 12px; color: var(--sc-dim); }
+  .pm-card { height: 100%; display: flex; align-items: center; }
+  .pm-card > .sc-row { width: 100%; align-items: center; }
+  .pm-card-src { flex: 1 1 0; }
+  .pm-page.is-card { gap: 3px; padding: 8px 10px; }
+  .pm-page.is-card .pm-title { font-size: 12px; }
+  .pm-line { font-size: 11px; color: var(--sc-muted); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pm-page.is-card .pm-abs-h { font-size: 11px; }
+  .pm-card-json { flex: 1.05 1 0; min-width: 0; }
+</style>

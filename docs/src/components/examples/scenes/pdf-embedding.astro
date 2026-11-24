@@ -1,0 +1,151 @@
+---
+// Semantic search over PDFs: the example's own pdf_files/ (the Transformer and
+// BERT papers, RFC 8259), page 1 of 1706.03762v7.pdf as docling reads it,
+// the Markdown it exports, RecursiveSplitter chunks in pdf_embeddings, and the
+// README's query. Page and passage text is copied from the PDFs. rfc8259.pdf
+// is the replaced file (Δ): it is re-parsed and only its rows change.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="pe">
+    <div class="pe-files">
+      <span class="sc-cap">pdf_files/</span>
+      <div class="pe-tabs">
+        <span class="sc-chip is-strong"><span class="sc-ico i-pdf"></span>1706.03762v7.pdf</span>
+        <span class="sc-chip"><span class="sc-ico i-pdf"></span>1810.04805v2.pdf</span>
+        <span class="sc-chip sc-delta"><span class="sc-ico i-pdf"></span>rfc8259.pdf<span class="sc-dmark">Δ</span></span>
+      </div>
+    </div>
+
+    <div class="sc-row pe-conv">
+      <div class="sc-col pe-pagecol">
+        <div class="pe-page">
+          <p class="pe-title">Attention Is All You Need</p>
+          <p class="pe-authors">Ashish Vaswani · Noam Shazeer · Niki Parmar · Jakob Uszkoreit · Llion Jones · Aidan N. Gomez · Łukasz Kaiser · Illia Polosukhin</p>
+          <p class="pe-abs-h">Abstract</p>
+          <p class="pe-abs sc-clip3">The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder.</p>
+          <p class="pe-sec">3.2 Attention</p>
+          <p class="pe-abs sc-clip2">An attention function can be described as mapping a query and a set of key-value pairs to an output…</p>
+        </div>
+      </div>
+      <div class="pe-mid">
+        <span class="sc-chip"><span class="sc-ico i-model"></span>docling</span>
+        <span class="sc-to"></span>
+        <span class="sc-cap pe-fine">GPU runner</span>
+      </div>
+      <div class="sc-col pe-mdcol">
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-file"></span>export_to_markdown()</div>
+          <div class="pe-md">
+            <p><span class="h">## Attention Is All You Need</span></p>
+            <p><span class="h">## Abstract</span></p>
+            <p class="sc-clip2">The dominant sequence transduction models are based on complex recurrent or convolutional neural networks…</p>
+            <p><span class="h">## 3.2 Attention</span></p>
+            <p class="sc-clip2">An attention function can be described as mapping a query and a set of key-value pairs to an output…</p>
+          </div>
+        </div>
+        <span class="sc-cap pe-fine">RecursiveSplitter: 2000-char chunks, 500 overlap</span>
+      </div>
+    </div>
+
+    <div class="sc-row pe-out">
+      <div class="sc-col pe-tcol">
+        <span class="sc-cap">Postgres + pgvector</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>pdf_embeddings<span class="pe-model">all-MiniLM-L6-v2</span></div>
+          <table class="sc-table">
+            <thead><tr><th class="pe-fn">filename</th><th>text</th></tr></thead>
+            <tbody>
+              <tr><td class="pe-fn">1706.03762v7.pdf</td><td class="sc-dim">## Attention Is All You Need …</td></tr>
+              <tr><td class="pe-fn">1706.03762v7.pdf</td><td class="sc-dim">## 3.2 Attention An attention…</td></tr>
+              <tr><td class="pe-fn">1810.04805v2.pdf</td><td class="sc-dim">## BERT: Pre-training of Deep Bidirectional Transformers …</td></tr>
+              <tr class="sc-delta"><td class="pe-fn">rfc8259.pdf</td><td><span class="sc-dtext">JavaScript Object Notation (JSON) is a lightweight, text-based …</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <span class="sc-cap pe-fine">Replace a PDF and only it is re-parsed; unchanged chunks keep their rows.</span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col pe-qcol">
+        <span class="sc-cap">Ask in plain English</span>
+        <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py "what is attention?"</span></div>
+        <div class="sc-panel"><div class="sc-panel-b">
+          <div class="sc-hit"><span class="r">1</span><span><span class="src">1706.03762v7.pdf</span><span class="sc-quote sc-clip3"><b>An attention function</b> can be described as mapping a query and a set of key-value pairs to an output, where the query, keys, values, and output are all vectors.</span></span></div>
+        </div></div>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="pe-card">
+    <div class="sc-row sc-keep">
+      <div class="pe-page pe-page-sm">
+        <p class="pe-title">Attention Is All You Need</p>
+        <p class="pe-authors">Ashish Vaswani · Noam Shazeer · Niki Parmar</p>
+        <p class="pe-sec">3.2 Attention</p>
+        <p class="pe-abs sc-clip2">An attention function can be described as mapping a query…</p>
+      </div>
+      <div class="pe-mid">
+        <span class="sc-chip">docling</span>
+        <span class="sc-to"></span>
+      </div>
+      <div class="sc-panel pe-card-md">
+        <div class="sc-panel-h"><span class="sc-ico i-file"></span>markdown</div>
+        <div class="pe-md">
+          <p><span class="h">## 3.2 Attention</span></p>
+          <p class="sc-clip2">An attention function can be described as mapping a query…</p>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .pe { display: flex; flex-direction: column; gap: 16px; }
+  .pe-files { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+  .pe-tabs { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  .pe-fine { font-weight: 400; }
+
+  .pe-conv { gap: 12px; align-items: center; }
+  .pe-pagecol { flex: 1 1 0; }
+  .pe-mdcol { flex: 1.15 1 0; }
+  .pe-mid { flex: none; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+
+  /* the PDF page: a sheet with the paper's own first-page layout */
+  .pe-page { position: relative; display: flex; flex-direction: column; gap: 7px; padding: 18px 18px 16px; background: #151515; border: 1px solid var(--sc-line-2); border-radius: 3px; box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04), 6px 6px 0 -1px #0F0F0F, 6px 6px 0 0 var(--sc-line); }
+  .pe-page p { margin: 0; }
+  .pe-title { font-family: var(--sans); font-size: 15px; font-weight: 600; text-align: center; color: var(--sc-ink); letter-spacing: -0.01em; }
+  .pe-authors { font-family: var(--sans); font-size: 12px; line-height: 1.45; text-align: center; color: var(--sc-dim); }
+  .pe-abs-h, .pe-sec { font-family: var(--sans); font-size: 12px; font-weight: 600; color: var(--sc-ink); }
+  .pe-abs-h { text-align: center; margin-top: 2px !important; }
+  .pe-abs { font-family: var(--sans); font-size: 12px; line-height: 1.5; color: var(--sc-muted); }
+
+  .pe-md { padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; background: #0A0A0A; font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--sc-muted); }
+  .pe-md p { margin: 0; min-width: 0; }
+  .pe-md .h { color: #79C0FF; }
+  .pe-model { margin-left: auto; padding-left: 8px; font-family: var(--sans); font-size: 11.5px; color: var(--sc-dim); }
+
+  .pe-out { gap: 10px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .pe-tcol { flex: 1.15 1 0; }
+  .pe-qcol { flex: 1.05 1 0; }
+  .pe-fn { width: 132px; }
+  .pe-qcol .sc-hit { padding: 2px 0; }
+  .pe-qcol .sc-query { align-items: flex-start; }
+  .pe-qcol .sc-query > span:last-child { white-space: normal; overflow-wrap: anywhere; }
+
+  .pe-card { height: 100%; display: flex; align-items: center; }
+  .pe-card > .sc-row { width: 100%; align-items: center; gap: 10px; }
+  .pe-page-sm { flex: 1 1 0; min-width: 0; padding: 10px 12px; gap: 4px; box-shadow: 4px 4px 0 -1px #0F0F0F, 4px 4px 0 0 var(--sc-line); }
+  .pe-page-sm .pe-title { font-size: 12px; }
+  .pe-page-sm .pe-authors, .pe-page-sm .pe-sec, .pe-page-sm .pe-abs { font-size: 11px; }
+  .pe-page-sm .pe-authors { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pe-card .pe-mid { gap: 4px; }
+  .pe-card-md { flex: 1.05 1 0; contain: inline-size; }
+  .pe-card .pe-md { font-size: 11px; padding: 6px 8px; gap: 3px; }
+  @container (max-width: 560px) {
+    .pe-mid { flex-direction: row; justify-content: center; }
+    .pe-mid .sc-to { transform: rotate(90deg); }
+    .pe-model { display: none; }
+    .pe-fn { width: 112px; }
+  }
+</style>

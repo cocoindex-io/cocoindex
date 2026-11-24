@@ -285,7 +285,7 @@ fn seed(rt: &tokio::runtime::Runtime, shape: SyntheticStoreShape) -> SeededStore
             .expect("seeded app store must exist");
         if !shape.with_names {
             let store2 = store.clone();
-            storage
+            store
                 .run_txn(move |wtxn| {
                     let store = store2.clone();
                     Box::pin(async move { store.delete_all_target_segment_names(wtxn).await })

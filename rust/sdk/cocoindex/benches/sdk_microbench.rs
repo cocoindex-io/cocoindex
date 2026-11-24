@@ -643,9 +643,27 @@ fn bench_memo_keys_scale(c: &mut Criterion) {
     }
 }
 
+/// A file's content fingerprint: `Fingerprint::from_bytes` (one hasher update,
+/// what `FileLike::content_fingerprint` and the local-fs target use) against
+/// `Fingerprint::from` over a `Vec<u8>`, which serializes the bytes one by one.
+fn bench_content_fingerprint(c: &mut Criterion) {
+    for (label, size) in [("64KiB", 64 * 1024), ("1MiB", 1024 * 1024)] {
+        let content: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        let mut group = c.benchmark_group(format!("content_fingerprint/{label}"));
+        group.sampling_mode(SamplingMode::Flat);
+        group.bench_function("from_bytes", |b| {
+            b.iter(|| black_box(Fingerprint::from_bytes(black_box(&content))));
+        });
+        group.bench_function("from_serialized_vec", |b| {
+            b.iter(|| black_box(Fingerprint::from(black_box(&content)).expect("fingerprint")));
+        });
+        group.finish();
+    }
+}
+
 criterion_group! {
     name = benches;
     config = benchmark_config();
-    targets = bench_file_walk, bench_file_walk_scale, bench_msgpack, bench_memo_keys, bench_memo_keys_scale
+    targets = bench_file_walk, bench_file_walk_scale, bench_msgpack, bench_memo_keys, bench_memo_keys_scale, bench_content_fingerprint
 }
 criterion_main!(benches);

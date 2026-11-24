@@ -10,9 +10,9 @@ tags: [knowledge-graph, llm-extraction]
 
 Documentation is a web of concepts pretending to be a list of files. "Incremental processing relies on change detection", "a target receives declared target states" — every page asserts relationships like these, but they're locked in prose. You can search docs for keywords; you can't ask how the concepts connect.
 
-In this tutorial, we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that turns a folder of Markdown docs into a concept knowledge graph in [Neo4j](https://neo4j.com/). For each document, an LLM extracts a summary plus a set of `(subject, predicate, object)` triples — *"engine detects source changes"*, *"triple becomes relationship in graph"* — and the triples become a property graph you can query in Cypher.
+Build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that turns a folder of Markdown docs into a concept knowledge graph in [Neo4j](https://neo4j.com/). For each document, an LLM extracts a summary plus a set of `(subject, predicate, object)` triples (*"engine detects source changes"*, *"triple becomes relationship in graph"*) and the triples become a property graph you can query in Cypher.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed graph targets — runs in a Rust engine underneath, so editing one doc re-extracts only that doc, and the graph reconciles itself: no orphaned nodes, no stale edges, no cleanup scripts.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and graph target management. As a result, editing one doc re-extracts only that doc, and CocoIndex reconciles the graph nodes and edges.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph)
 
@@ -26,7 +26,7 @@ The whole pipeline is ordinary `async` Python and your own types. The heavy lift
 
 The graph schema is small — two node types, two relationship types:
 
-![Graph schema: Document nodes connected to Entity nodes by MENTION edges, and Entity nodes connected to each other by RELATIONSHIP edges carrying the predicate](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/schema.png)
+![Graph schema: Document nodes connected to Entity nodes by MENTION edges, and Entity nodes connected to each other by RELATIONSHIP edges carrying the predicate](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/schema-dark.svg)
 
 - **`Document`** nodes — one per Markdown file, keyed by filename, with an LLM-generated `title` and `summary`.
 - **`Entity`** nodes — one per distinct concept named in any triple, keyed by the concept name.
@@ -48,7 +48,7 @@ A knowledge graph over living docs is exactly the kind of pipeline that's easy t
 
 ## Pipeline overview
 
-![CocoIndex flow: Markdown docs walked from the filesystem, per-doc LLM extraction declaring Document nodes and carrying triples forward, then a single graph-building pass declaring Entity nodes and edges into Neo4j](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/flow-v1.svg)
+![CocoIndex flow: Markdown docs walked from the filesystem, per-doc LLM extraction declaring Document nodes and carrying triples forward, then a single graph-building pass declaring Entity nodes and edges into Neo4j](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/flow-v1-dark.svg)
 
 The pipeline runs in two phases:
 
@@ -88,7 +88,7 @@ class Relationship:
 
 ## Shared resources: the lifespan
 
-The [lifespan](/docs/programming_guide/context/) provides what every step needs — the Neo4j connection factory and the LLM model id — once at startup, via [context keys](/docs/programming_guide/context/):
+The [lifespan](/docs/programming_guide/context/) provides what every step needs (the Neo4j connection factory and the LLM model id) once at startup, via [context keys](/docs/programming_guide/context/):
 
 ```python title="main.py"
 KG_DB = coco.ContextKey[neo4j.ConnectionFactory]("kg_db")
@@ -157,7 +157,7 @@ async def extract_relationships(content: str) -> list[Triple]:
 
 ## Phase 1: per-file extraction
 
-![Phase 1 — one processing component per doc: each file goes through memoized LLM extraction, declares its Document node into Neo4j, and returns DocTriples for phase 2](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/stage-phase1.svg)
+![Phase 1 — one processing component per doc: each file goes through memoized LLM extraction, declares its Document node into Neo4j, and returns DocTriples for phase 2](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/stage-phase1-dark.svg)
 
 `process_file` runs once per document: extract the summary, declare the `Document` node, extract the triples, and return them for phase 2.
 
@@ -165,7 +165,7 @@ async def extract_relationships(content: str) -> list[Triple]:
 @coco.fn(memo=True)
 async def process_file(
     file: localfs.File,
-    document_table: neo4j.TableTarget[Document],
+    document_table: neo4j.NodeTarget[Document],
 ) -> DocTriples:
     content = await file.read_text()
     filename = file.file_path.path.as_posix()
@@ -199,7 +199,7 @@ Why a component per file? Ownership. The component at `("file", path_key)` owns 
 
 ## Phase 2: build the concept graph
 
-![Phase 2 — a single build_graph component: all docs' triples are deduplicated into Entity nodes and RELATIONSHIP / MENTION edges, declared into Neo4j](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/stage-phase2.svg)
+![Phase 2 — a single build_graph component: all docs' triples are deduplicated into Entity nodes and RELATIONSHIP / MENTION edges, declared into Neo4j](https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/stage-phase2-dark.svg)
 
 A single component takes every file's triples and declares the cross-document parts of the graph: deduplicated `Entity` nodes and the two edge types.
 
@@ -207,9 +207,9 @@ A single component takes every file's triples and declares the cross-document pa
 @coco.fn
 async def build_graph(
     docs: list[DocTriples],
-    entity_table: neo4j.TableTarget[Entity],
-    relationship_rel: neo4j.RelationTarget[Relationship],
-    mention_rel: neo4j.RelationTarget[Any],
+    entity_table: neo4j.NodeTarget[Entity],
+    relationship_rel: neo4j.RelationshipTarget[Relationship],
+    mention_rel: neo4j.RelationshipTarget[Any],
 ) -> None:
     entities: set[str] = set()
     mentions: set[tuple[str, str]] = set()  # (filename, entity value)
@@ -222,7 +222,7 @@ async def build_graph(
             mentions.add((doc.filename, t.object))
 
             rel_id = await generate_id((t.subject, t.predicate, t.object))
-            relationship_rel.declare_relation(
+            relationship_rel.declare_relationship(
                 from_id=t.subject,
                 to_id=t.object,
                 record=Relationship(id=rel_id, predicate=t.predicate),
@@ -232,7 +232,7 @@ async def build_graph(
         entity_table.declare_record(row=Entity(value=value))
 
     for filename, entity in mentions:
-        mention_rel.declare_relation(from_id=filename, to_id=entity)
+        mention_rel.declare_relationship(from_id=filename, to_id=entity)
 ```
 
 Two details carry the correctness:
@@ -240,29 +240,29 @@ Two details carry the correctness:
 - **Stable edge identity.** [`generate_id`](/docs/common_resources/id_generation/) hashes the triple, so the same `(subject, predicate, object)` always maps to the same edge — re-asserting a fact in another doc is a no-op, not a duplicate.
 - **Entities live here, not in phase 1.** Concepts are shared across documents, so no single file's component can own them. The graph component owns the entity set as one target state; when the set of triples changes, CocoIndex diffs it — entities no longer named anywhere are deleted from Neo4j along with their edges.
 
-This is plain Python doing set-dedup in memory — no framework abstractions. The declarative part is only at the boundary: `declare_record` / `declare_relation` say what should exist, and the engine reconciles.
+This is plain Python doing set-dedup in memory — no framework abstractions. The declarative part is only at the boundary: `declare_record` / `declare_relationship` say what should exist, and the engine reconciles.
 
 ## Wire it up: app_main
 
-`app_main` mounts the targets and runs the two phases. Node tables come first, because relation targets are declared *between* two node tables — that's how the connector knows each edge's endpoint labels and keys:
+`app_main` mounts the targets and runs the two phases. Node tables come first, because relationship targets are declared *between* two node tables — that's how the connector knows each edge's endpoint labels and keys:
 
 ```python title="main.py"
 @coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
-    document_table = await neo4j.mount_table_target(
+    document_table = await neo4j.mount_node_target(
         KG_DB,
         "Document",
         await neo4j.TableSchema.from_class(Document, primary_key="filename"),
         primary_key="filename",
     )
-    entity_table = await neo4j.mount_table_target(
+    entity_table = await neo4j.mount_node_target(
         KG_DB,
         "Entity",
         await neo4j.TableSchema.from_class(Entity, primary_key="value"),
         primary_key="value",
     )
 
-    relationship_rel = await neo4j.mount_relation_target(
+    relationship_rel = await neo4j.mount_relationship_target(
         KG_DB,
         "RELATIONSHIP",
         entity_table,
@@ -270,7 +270,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         await neo4j.TableSchema.from_class(Relationship, primary_key="id"),
         primary_key="id",
     )
-    mention_rel = await neo4j.mount_relation_target(
+    mention_rel = await neo4j.mount_relationship_target(
         KG_DB, "MENTION", document_table, entity_table
     )
 
@@ -324,7 +324,7 @@ The example ships a small `markdown_files/` folder of sample docs so it runs out
 cocoindex update main
 ```
 
-To graph your own docs, drop `.md` / `.mdx` files into `markdown_files/` — or point `sourcedir` at your real docs folder — and re-run.
+To graph your own docs, drop `.md` / `.mdx` files into `markdown_files/` (or point `sourcedir` at your real docs folder) and re-run.
 
 ## Explore the graph
 
@@ -353,7 +353,7 @@ This is where the declarative model pays for itself. You never compute a diff or
 - **Edit one doc** — only that doc's component re-runs and re-extracts. If its triples changed, `build_graph` re-runs and diffs the graph: new entities and edges are inserted, ones no longer supported anywhere are deleted. Every other doc's extraction is served from the memo cache.
 - **Add a doc** — one new component, one extraction, plus the graph diff.
 - **Delete a doc** — its component disappears, so its `Document` node and `MENTION` edges are cleaned up automatically; concepts only that doc introduced vanish from the entity set on the next graph pass.
-- **Nothing changed** — the run completes in a fraction of a second with zero LLM calls.
+- **Nothing changed** — the run reuses cached work and makes zero LLM calls.
 
 **Logic changes** are reconciled the same way:
 
@@ -365,5 +365,3 @@ This is where the declarative model pays for itself. You never compute a diff or
 The full, runnable example is in the CocoIndex repo: [examples/docs_to_knowledge_graph](https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph).
 
 One natural next step: the LLM will sometimes name the same concept two ways ("CocoIndex" vs "Cocoindex"). The [meeting notes graph example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph_neo4j) adds an embedding + LLM [entity-resolution](/docs/ops/entity_resolution/) pass that collapses near-duplicates — it drops into this pipeline between the two phases. For a bigger end-to-end graph build (transcription, multi-entity schemas, polymorphic edges), see [Turn Podcasts into a Knowledge Graph](/docs/examples/podcast-to-knowledge-graph/).
-
-Got a docs folder, a wiki, or a pile of specs you want to turn into a graph? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

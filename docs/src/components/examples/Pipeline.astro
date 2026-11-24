@@ -1,0 +1,30 @@
+---
+// The example's pipeline drawn in HTML from its tags: source → transform →
+// model → target. `sm` is the card header (nodes only); `lg` is the detail
+// page's "What you'll build" figure, with a role caption under each node and
+// wraps on narrow columns with each arrow kept at its line end. No raster, so every example is accurate and
+// on-system, and the figure reflows with the column.
+import { pipelineStages, type ExampleCard } from '../../data/examples';
+
+interface Props {
+  ex: ExampleCard;
+  size?: 'sm' | 'lg';
+}
+const { ex, size = 'sm' } = Astro.props;
+const stages = pipelineStages(ex, size === 'sm');
+---
+<ol class={`pipe pipe-${size}`} aria-label={`Pipeline: ${stages.map((s) => s.label).join(' to ')}`}>
+  {stages.map((s, i) => (
+    <li class={`pipe-step is-${s.role}`}>
+      <span class="pipe-cell">
+        <span class="pipe-node">{s.label}</span>
+        {size === 'lg' && <span class="pipe-cap">{s.caption}</span>}
+      </span>
+      {i < stages.length - 1 && (
+        <span class="pipe-arrow" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7h10M8.5 3.5 12 7l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+      )}
+    </li>
+  ))}
+</ol>

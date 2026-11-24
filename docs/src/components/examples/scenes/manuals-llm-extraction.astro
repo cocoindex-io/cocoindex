@@ -1,0 +1,156 @@
+---
+// A manual page in, a nested ModuleInfo out, one Postgres row per manual. The
+// page is the real first page of manuals/copy.pdf; pdf_to_markdown runs
+// docling on the coco.GPU runner; extract_module runs instructor over LiteLLM
+// (LLM_MODEL defaults to openai/gpt-4o) with the ModuleInfo -> ClassInfo ->
+// MethodInfo -> ArgInfo models from main.py. The copy tree follows that page;
+// the modules_info rows (titles, class and function counts) are the results
+// table in the walkthrough post. copy.pdf is the edited manual (Δ).
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="ml">
+    <div class="sc-row ml-top">
+      <div class="sc-col ml-src">
+        <span class="sc-cap">manuals/</span>
+        <div class="sc-panel sc-delta">
+          <div class="sc-panel-h"><span class="sc-ico i-pdf"></span>copy.pdf<span class="sc-dmark">Δ</span></div>
+          <div class="ml-page">
+            <span class="ml-h">copy — Shallow and deep copy operations</span>
+            <span class="ml-p">Source code: Lib/copy.py</span>
+            <span class="ml-p ml-sub">Interface summary:</span>
+            <span class="ml-api">copy.copy(obj)</span>
+            <span class="ml-p">Return a shallow copy of obj.</span>
+            <span class="ml-api">copy.deepcopy(obj[, memo])</span>
+            <span class="ml-p">Return a deep copy of obj.</span>
+            <span class="ml-api">copy.replace(obj, /, **changes)</span>
+            <span class="ml-p">Creates a new object of the same type as obj, replacing fields with values from changes.</span>
+            <span class="ml-api">exception copy.Error</span>
+            <span class="ml-p">Raised for module specific errors.</span>
+          </div>
+        </div>
+        <div class="sc-row sc-keep ml-others">
+          <span class="sc-chip"><span class="sc-ico i-pdf"></span>array.pdf</span>
+          <span class="sc-chip"><span class="sc-ico i-pdf"></span>base64.pdf</span>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col ml-mid">
+        <span class="sc-cap">Parse, then extract</span>
+        <div class="sc-panel"><div class="sc-panel-b ml-steps">
+          <span class="sc-li"><span class="sc-ico i-code"></span><span>pdf_to_markdown</span><span class="sc-meta">docling</span></span>
+          <span class="sc-cap ml-fine">runs on the coco.GPU runner</span>
+          <span class="sc-li"><span class="sc-ico i-model"></span><span>extract_module</span><span class="sc-meta">openai/gpt-4o</span></span>
+          <span class="sc-cap ml-fine">instructor over LiteLLM</span>
+        </div></div>
+        <pre class="sc-code"><span class="k">class</span> <span class="f">ModuleInfo</span>:
+    title: <span class="f">str</span>
+    description: <span class="f">str</span>
+    classes: <span class="f">list</span>[ClassInfo]
+    methods: <span class="f">list</span>[MethodInfo]
+
+<span class="c"># ClassInfo.methods: list[MethodInfo]</span>
+<span class="c"># MethodInfo.args: list[ArgInfo]</span></pre>
+      </div>
+    </div>
+
+    <div class="sc-row ml-bottom">
+      <div class="sc-col ml-tree-col">
+        <span class="sc-cap">ModuleInfo for copy.pdf</span>
+        <div class="sc-panel sc-delta"><div class="sc-panel-b ml-tree">
+          <span class="ml-n"><i>title</i>copy — shallow and deep copy operations</span>
+          <span class="ml-n"><i>classes</i></span>
+          <span class="ml-n ml-l2"><b>Error</b></span>
+          <span class="ml-n"><i>methods</i></span>
+          <span class="ml-n ml-l2"><b>copy</b><em>obj</em></span>
+          <span class="ml-n ml-l2"><b>deepcopy</b><em>obj, memo</em></span>
+          <span class="ml-n ml-l2"><b>replace</b><em>obj, changes</em></span>
+        </div></div>
+      </div>
+      <div class="sc-col ml-table-col">
+        <span class="sc-cap">Postgres</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>coco_examples.modules_info</div>
+          <table class="sc-table">
+            <thead><tr><th>filename</th><th class="ml-c">num_classes</th><th class="ml-c">num_methods</th></tr></thead>
+            <tbody>
+              <tr><td>array.pdf</td><td class="sc-dim ml-c">1</td><td class="sc-dim ml-c">0</td></tr>
+              <tr><td>base64.pdf</td><td class="sc-dim ml-c">0</td><td class="sc-dim ml-c">22</td></tr>
+              <tr class="sc-delta"><td><span class="sc-dtext">copy.pdf</span></td><td class="ml-c"><span class="sc-dtext">1</span></td><td class="ml-c"><span class="sc-dtext">3</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="sc-quote ml-note">Edit one manual and only it is re-parsed and re-extracted; its row is updated in place, with the full tree as JSON in module_info.</p>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="ml-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel ml-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-pdf"></span>copy.pdf</div>
+        <div class="ml-page is-card">
+          <span class="ml-h">copy — Shallow and deep copy</span>
+          <span class="ml-api">copy.copy(obj)</span>
+          <span class="ml-api">copy.deepcopy(obj[, memo])</span>
+          <span class="ml-api">exception copy.Error</span>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel ml-card-out">
+        <div class="sc-panel-h"><span class="sc-ico i-table"></span>modules_info</div>
+        <table class="sc-table">
+          <thead><tr><th>filename</th><th class="ml-c">classes</th><th class="ml-c">methods</th></tr></thead>
+          <tbody>
+            <tr><td>array.pdf</td><td class="sc-dim ml-c">1</td><td class="sc-dim ml-c">0</td></tr>
+            <tr><td>base64.pdf</td><td class="sc-dim ml-c">0</td><td class="sc-dim ml-c">22</td></tr>
+            <tr><td>copy.pdf</td><td class="sc-dim ml-c">1</td><td class="sc-dim ml-c">3</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .ml { display: flex; flex-direction: column; gap: 18px; }
+  .ml-top, .ml-bottom { gap: 10px; }
+  .ml-src { flex: 1.15 1 0; }
+  .ml-mid { flex: 1 1 0; }
+  .ml-page { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px 14px; background: #141414; min-width: 0; }
+  .ml-h { font-size: 14px; font-weight: 600; color: var(--sc-ink); margin-bottom: 2px; letter-spacing: -0.01em; }
+  .ml-p { font-size: 12px; line-height: 1.4; color: var(--sc-muted); }
+  .ml-sub { margin-top: 4px; color: var(--sc-ink); }
+  .ml-api { margin-top: 5px; font-family: var(--mono); font-size: 12px; color: var(--sc-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ml-src .sc-dmark { margin-left: auto; }
+  .ml-others { gap: 6px; flex-wrap: wrap; }
+  .ml-steps { gap: 2px; }
+  .ml-steps .sc-li { font-size: 12px; }
+  .ml-fine { font-weight: 400; margin: 0 0 6px 22px; }
+  .ml-steps .ml-fine:last-child { margin-bottom: 0; }
+  .ml-bottom { padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .ml-tree-col { flex: 1.1 1 0; }
+  .ml-table-col { flex: 1 1 0; }
+  .ml-tree { gap: 3px; padding: 10px 12px; }
+  .ml-n { position: relative; display: flex; align-items: baseline; gap: 8px; min-width: 0; font-family: var(--mono); font-size: 12px; color: var(--sc-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ml-n i { flex: none; font-style: normal; color: var(--sc-dim); }
+  .ml-n b { font-weight: 500; }
+  .ml-n em { font-style: normal; color: var(--sc-muted); overflow: hidden; text-overflow: ellipsis; }
+  .ml-n em::before { content: "("; } .ml-n em::after { content: ")"; }
+  .ml-l2 { padding-left: 18px; }
+  .ml-l2::before { content: ""; position: absolute; left: 4px; top: -4px; bottom: 50%; width: 9px; border-left: 1px solid var(--sc-line-2); border-bottom: 1px solid var(--sc-line-2); }
+  .ml-c { width: 100px; text-align: right; }
+  .ml-note { margin: 0; font-size: 12px; color: var(--sc-dim); }
+  @container (max-width: 560px) {
+    .ml-table-col .ml-c { width: 52px; }
+  }
+  .ml-card { height: 100%; display: flex; align-items: center; }
+  .ml-card > .sc-row { width: 100%; align-items: center; }
+  .ml-card-src { flex: 1 1 0; }
+  .ml-page.is-card { padding: 7px 9px; gap: 1px; }
+  .ml-page.is-card .ml-h { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ml-page.is-card .ml-api { font-size: 11px; margin-top: 3px; }
+  .ml-card-out { flex: 1.15 1 0; }
+  .ml-card-out .ml-c { width: 62px; }
+</style>

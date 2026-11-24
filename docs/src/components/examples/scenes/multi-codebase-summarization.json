@@ -1,0 +1,9 @@
+{
+  "alt": "Each project folder under examples/ (code_embedding, paper_metadata, text_embedding) has its Python files read by gemini-2.5-flash through instructor and LiteLLM into a CodebaseInfo record, then merged into one Markdown wiki page per project; output/code_embedding.md lists app_main, process_file and process_chunk as CocoIndex functions and draws the pipeline app_main ==> process_file --> process_chunk, and editing code_embedding/main.py rewrites only that page.",
+  "needs": ["Python 3.11+", "GEMINI_API_KEY (or LLM_MODEL with its provider key)"],
+  "run": [
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Write one wiki page per project in ../ to output/", "cmd": "cocoindex update main.py" },
+    { "note": "Read a page", "cmd": "cat output/code_embedding.md" }
+  ]
+}

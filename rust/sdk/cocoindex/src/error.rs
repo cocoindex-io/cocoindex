@@ -21,9 +21,16 @@ pub enum Error {
     #[error("serde decode: {0}")]
     SerdeDecode(#[from] rmp_serde::decode::Error),
 
-    /// Engine invariant violated (component path conflict, cycle, etc).
+    /// Engine invariant violated (cycle, contract violation, etc).
     #[error("{0}")]
     Engine(String),
+
+    /// Something was declared a second time within one run, where one
+    /// declaration is final: a target state key, a target state provider
+    /// path, a user-state key, a child component path, an app name. The
+    /// first declaration stands.
+    #[error("{0}")]
+    AlreadyDeclared(String),
 
     /// The active CocoIndex deadline has expired.
     #[error("CocoIndex timeout deadline exceeded")]
@@ -38,6 +45,14 @@ pub enum Error {
     /// User-provided closure returned an error.
     #[error(transparent)]
     User(Box<dyn std::error::Error + Send + Sync>),
+
+    /// Returned by a batching function's body to ask the engine to retry the
+    /// work as smaller batches: the batch is halved and each half re-run,
+    /// down to single items. At size one the wrapped cause becomes that
+    /// item's own failure, so the signal never reaches a caller. See
+    /// [`Error::retry_with_smaller_batch`].
+    #[error("retry with a smaller batch: {0}")]
+    RetryWithSmallerBatch(Box<Error>),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -49,6 +64,33 @@ impl Error {
 
     pub fn engine(msg: impl Into<String>) -> Self {
         Error::Engine(msg.into())
+    }
+
+    /// Ask the engine to retry a failed batch as smaller batches, the Rust
+    /// form of Python's `raise RetryWithSmallerBatch() from err`.
+    ///
+    /// Return it from the body of a `#[cocoindex::function(batching)]` (or a
+    /// [`crate::Batched`] implementation) when a failure may depend on the
+    /// batch's composition: a provider's per-request token or payload limit,
+    /// or one input the provider rejects. The engine halves the batch and
+    /// re-runs each half, recursing down to single items; sub-batches that
+    /// succeed keep their results. At batch size one the engine unwraps the
+    /// signal and fails that item's caller with `cause`, so a body never
+    /// needs to check the batch size before returning it. Returning it for
+    /// an error that would fail at any size costs at most `2n - 1` attempts
+    /// for a batch of `n` and then fails every caller with `cause`.
+    ///
+    /// ```ignore
+    /// #[cocoindex::function(batching, max_batch_size = 64)]
+    /// async fn embed(_ctx: &Ctx, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+    ///     client
+    ///         .embed(&texts)
+    ///         .await
+    ///         .map_err(|err| Error::retry_with_smaller_batch(Error::user(err)))
+    /// }
+    /// ```
+    pub fn retry_with_smaller_batch(cause: Error) -> Self {
+        Error::RetryWithSmallerBatch(Box::new(cause))
     }
 
     pub fn is_deadline_exceeded(&self) -> bool {
@@ -97,17 +139,64 @@ impl From<cocoindex_utils::error::Error> for Error {
         if e.is_deadline_exceeded() {
             return Error::DeadlineExceeded;
         }
-        match e {
+        // The engine wraps a sink's error in a context naming the target
+        // states; the variant to keep is the one under every context layer.
+        // An `Engine` error is its message, so the context stays in it. Any
+        // other variant comes back as the original value, without the
+        // context: the exception-handlers doc promises `Error::user(..)`
+        // arrives as `Error::User(inner)` with `inner.downcast_ref` working,
+        // and a wrapper carrying the context would break that.
+        let message = e.to_string();
+        let had_context = matches!(e, cocoindex_utils::error::Error::Context { .. });
+        match e.into_without_contexts() {
             cocoindex_utils::error::Error::HostLang(host) => {
-                let message = host.to_string();
                 let host: Box<dyn Any + Send + Sync> = host;
                 match host.downcast::<SdkHostError>() {
                     // The original error, unless another awaiter still shares it.
-                    Ok(sdk) => Arc::try_unwrap(sdk.0).unwrap_or(Error::Engine(message)),
+                    // An `Engine` error is its message, so that one carries the
+                    // context; another variant is kept as itself.
+                    Ok(sdk) => match Arc::try_unwrap(sdk.0) {
+                        Ok(Error::Engine(_)) if had_context => Error::Engine(message),
+                        Ok(original) => original,
+                        Err(_) => Error::Engine(message),
+                    },
                     Err(_) => Error::Engine(message),
                 }
             }
-            other => Error::Engine(format!("{other}")),
+            other => match other.client_kind() {
+                Some(cocoindex_utils::error::ClientErrorKind::AlreadyDeclared) => {
+                    Error::AlreadyDeclared(message)
+                }
+                _ => Error::Engine(message),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cocoindex_utils::error::ContextExt;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("the orders table is gone")]
+    struct TableGone;
+
+    /// The engine wraps a sink's error in a context that names the target
+    /// states; the SDK error under it comes back as itself, by variant and
+    /// downcastable. The context text stays on the core error (and on an
+    /// `Engine` error's message); a `User` error keeps its value instead.
+    #[test]
+    fn an_sdk_error_keeps_its_variant_under_an_engine_context() {
+        let core: std::result::Result<(), cocoindex_utils::error::Error> =
+            Err(Error::user(TableGone).into_core());
+        let core = core
+            .with_context(|| "failed to apply changes to target states under @orders")
+            .unwrap_err();
+        assert!(core.to_string().contains("@orders"), "{core}");
+        match Error::from(core) {
+            Error::User(user) => assert!(user.downcast_ref::<TableGone>().is_some()),
+            other => panic!("the variant was lost: {other:?}"),
         }
     }
 }

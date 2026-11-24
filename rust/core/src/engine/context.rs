@@ -12,11 +12,12 @@ use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
 use crate::prelude::*;
 
+use crate::state::component_selector::{ComponentSelection, ComponentSelector};
 use crate::state::stable_path::StableKey;
 
 pub(crate) static TARGET_ID_KEY: LazyLock<StableKey> =
     LazyLock::new(|| StableKey::Symbol("cocoindex/_internal/target_id".into()));
-use crate::state::stable_path_set::ChildStablePathSet;
+use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 use crate::state::target_state_path::{
     TargetProviderDeps, TargetStatePath, TargetStateProviderGeneration,
 };
@@ -62,6 +63,13 @@ struct AppContextInner<Prof: EngineProfile> {
     live_components: parking_lot::Mutex<
         Vec<std::sync::Weak<crate::engine::live_component::LiveComponentState<Prof>>>,
     >,
+
+    /// Root target-state providers (with their attachment providers) that
+    /// this app's runs registered at run time, by path; the latest
+    /// registration of a path wins. Such a provider lives in its run's build
+    /// state only, not in the environment's registry, so `App::drop_app`
+    /// adds these to revert the target states they own.
+    run_root_providers: parking_lot::Mutex<HashMap<TargetStatePath, TargetStateProvider<Prof>>>,
 }
 
 #[derive(Clone)]
@@ -79,17 +87,37 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         Self {
             inner: Arc::new(AppContextInner {
                 env,
+                id_sequencer_manager: IdSequencerManager::new(app_store.clone()),
                 app_store,
                 app_reg,
-                id_sequencer_manager: IdSequencerManager::new(),
                 admission_pool: AdmissionPool::new(max_inflight_components),
                 operation_generation: std::sync::atomic::AtomicU64::new(0),
                 cancellation_token: std::sync::Mutex::new(
                     crate::engine::runtime::global_cancellation_token().child_token(),
                 ),
                 live_components: parking_lot::Mutex::new(Vec::new()),
+                run_root_providers: parking_lot::Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    /// Remember root providers a run registered; see `run_root_providers`.
+    pub(crate) fn remember_run_root_providers(
+        &self,
+        providers: impl IntoIterator<Item = (TargetStatePath, TargetStateProvider<Prof>)>,
+    ) {
+        self.inner.run_root_providers.lock().extend(providers);
+    }
+
+    /// The root providers this app's runs registered; see
+    /// `run_root_providers`.
+    pub(crate) fn run_root_providers(&self) -> Vec<(TargetStatePath, TargetStateProvider<Prof>)> {
+        self.inner
+            .run_root_providers
+            .lock()
+            .iter()
+            .map(|(path, provider)| (path.clone(), provider.clone()))
+            .collect()
     }
 
     /// Register a live component for shutdown drain coverage.
@@ -131,7 +159,11 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         &self.inner.env
     }
 
-    pub fn app_store(&self) -> &AppStore {
+    /// The app's state store, persisting every write: for deriving a root
+    /// run's handle, and for inspection. A component run reads and writes
+    /// through [`ComponentProcessorContext::app_store`] instead, which
+    /// persists nothing in a preview.
+    pub(crate) fn persisting_app_store(&self) -> &AppStore {
         &self.inner.app_store
     }
 
@@ -176,15 +208,13 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     /// IDs are allocated in batches for efficiency. The key can be `None` for a default sequencer.
     /// A preview reserves ids like an update: ids are opaque, so the gap its
     /// unused ids leave costs nothing, and the sequencer is the one state a
-    /// preview writes.
+    /// preview persists — the manager owns the app's persisting store, not a
+    /// run's handle.
     pub async fn next_id(&self, key: Option<&StableKey>, deadline: DeadlineContext) -> Result<u64> {
         deadline.check()?;
         let default_key = StableKey::Null;
         let key = key.unwrap_or(&default_key);
-        self.inner
-            .id_sequencer_manager
-            .next_id(self.inner.env.storage(), &self.inner.app_store, key)
-            .await
+        self.inner.id_sequencer_manager.next_id(key).await
     }
 }
 
@@ -202,6 +232,115 @@ pub(crate) struct ComponentTargetStatesContext<Prof: EngineProfile> {
     pub provider_registry: TargetStateProviderRegistry<Prof>,
 }
 
+/// One data dependency a body recorded with `use_data_dep`: what it read
+/// (`key`) and what it observed (`state`), as the serialized snapshot taken at
+/// the call, with the fingerprints of those bytes. `key_fp` is the record's
+/// identity within its kind and `state_fp` its equality; neither goes through
+/// the memo-key pipeline, so two unequal observations never collapse into one.
+#[derive(Clone, Debug)]
+pub struct DataDepRecord {
+    pub kind_fp: Fingerprint,
+    pub key_fp: Fingerprint,
+    pub state_fp: Fingerprint,
+    pub key: bytes::Bytes,
+    pub state: bytes::Bytes,
+}
+
+/// The data dependencies a frame or a component recorded in one run.
+///
+/// One record per `(kind_fp, key_fp)`. Recording a key again with an equal
+/// state is a no-op; with a different state it marks a *conflict*: output that
+/// used two states of one key has no single state to validate against, so the
+/// run stores no entry (see `FnCallMemoGuard::resolve` and
+/// `Component::execute_once`). The rule is symmetric, so merge order does not
+/// matter.
+#[derive(Clone, Debug, Default)]
+pub struct DataDeps {
+    records: HashMap<(Fingerprint, Fingerprint), DataDepRecord>,
+    /// The first `(kind_fp, key_fp)` observed in two states, if any.
+    conflict: Option<(Fingerprint, Fingerprint)>,
+}
+
+impl DataDeps {
+    pub fn insert(&mut self, record: DataDepRecord) {
+        match self.records.entry((record.kind_fp, record.key_fp)) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(record);
+            }
+            std::collections::hash_map::Entry::Occupied(slot) => {
+                if slot.get().state_fp != record.state_fp {
+                    self.conflict.get_or_insert((record.kind_fp, record.key_fp));
+                }
+            }
+        }
+    }
+
+    pub fn merge(&mut self, other: DataDeps) {
+        if self.conflict.is_none() {
+            self.conflict = other.conflict;
+        }
+        for record in other.records.into_values() {
+            self.insert(record);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// The first key observed in two states during the run, as
+    /// `(kind_fp, key_fp)`, if any.
+    pub fn conflict(&self) -> Option<(Fingerprint, Fingerprint)> {
+        self.conflict
+    }
+
+    /// The records sorted by `(kind_fp, key_fp)`, for deterministic storage.
+    pub fn sorted_records(&self) -> Vec<DataDepRecord> {
+        let mut records: Vec<DataDepRecord> = self.records.values().cloned().collect();
+        records.sort_by_key(|r| (r.kind_fp, r.key_fp));
+        records
+    }
+
+    /// [`sorted_records`](Self::sorted_records), consuming the set.
+    pub fn into_sorted_records(self) -> Vec<DataDepRecord> {
+        let mut records: Vec<DataDepRecord> = self.records.into_values().collect();
+        records.sort_by_key(|r| (r.kind_fp, r.key_fp));
+        records
+    }
+}
+
+/// Encode records for storage. `key` and `state` are already the serialized
+/// snapshot, so this only re-wraps the bytes.
+pub(crate) fn encode_data_deps(records: &[DataDepRecord]) -> Vec<db_schema::DataDepEntry<'_>> {
+    records
+        .iter()
+        .map(|r| db_schema::DataDepEntry {
+            kind_fp: r.kind_fp,
+            key_fp: r.key_fp,
+            state_fp: r.state_fp,
+            key: db_schema::MemoizedValue::Inlined(Cow::Borrowed(r.key.as_ref())),
+            state: db_schema::MemoizedValue::Inlined(Cow::Borrowed(r.state.as_ref())),
+        })
+        .collect()
+}
+
+pub(crate) fn decode_data_deps(entries: Vec<db_schema::DataDepEntry<'_>>) -> Vec<DataDepRecord> {
+    entries
+        .into_iter()
+        .map(|e| {
+            let db_schema::MemoizedValue::Inlined(key) = e.key;
+            let db_schema::MemoizedValue::Inlined(state) = e.state;
+            DataDepRecord {
+                kind_fp: e.kind_fp,
+                key_fp: e.key_fp,
+                state_fp: e.state_fp,
+                key: bytes::Bytes::copy_from_slice(key.as_ref()),
+                state: bytes::Bytes::copy_from_slice(state.as_ref()),
+            }
+        })
+        .collect()
+}
+
 pub struct FnCallMemo<Prof: EngineProfile> {
     pub ret: Prof::FunctionData,
     pub(crate) target_state_paths: Vec<TargetStatePath>,
@@ -212,7 +351,19 @@ pub struct FnCallMemo<Prof: EngineProfile> {
     /// Context-borne memo states, keyed by tracked-context value fingerprint.
     /// See `db_schema::FunctionMemoizationEntry::context_memo_states`.
     pub context_memo_states: Vec<(Fingerprint, Vec<Prof::FunctionData>)>,
-    pub(crate) already_stored: bool,
+    /// Data dependencies the call recorded, sorted by `(kind_fp, key_fp)`.
+    /// See `db_schema::FunctionMemoizationEntry::data_deps`.
+    pub data_deps: Vec<DataDepRecord>,
+    /// The DB row already holds this entry. Cleared when the entry is
+    /// built from a run or its memo states are refreshed after a hit, so the
+    /// flush writes it.
+    pub(crate) persisted: bool,
+    /// The entry's cached output was carried over this run instead of the
+    /// body running: its target states were not re-declared, so finalization
+    /// must keep them (and the entries it depends on) alive. Independent of
+    /// `persisted`: a memo-state refresh after a hit clears `persisted` but
+    /// leaves this set.
+    pub(crate) reused: bool,
 }
 
 /// Combined payload of positional and context-borne memo states.
@@ -224,6 +375,9 @@ pub struct FnCallMemo<Prof: EngineProfile> {
 pub struct MemoStatesPayload<Prof: EngineProfile> {
     pub positional: Vec<Prof::FunctionData>,
     pub by_context_fp: Vec<(Fingerprint, Vec<Prof::FunctionData>)>,
+    /// Data dependencies, validated by the host beside the states: stored
+    /// records on a hit, refreshed records back from the handler.
+    pub data_deps: Vec<DataDepRecord>,
 }
 
 impl<Prof: EngineProfile> Default for MemoStatesPayload<Prof> {
@@ -231,13 +385,14 @@ impl<Prof: EngineProfile> Default for MemoStatesPayload<Prof> {
         Self {
             positional: Vec::new(),
             by_context_fp: Vec::new(),
+            data_deps: Vec::new(),
         }
     }
 }
 
 impl<Prof: EngineProfile> MemoStatesPayload<Prof> {
     pub fn is_empty(&self) -> bool {
-        self.positional.is_empty() && self.by_context_fp.is_empty()
+        self.positional.is_empty() && self.by_context_fp.is_empty() && self.data_deps.is_empty()
     }
 }
 
@@ -337,9 +492,9 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
     ///
     /// Inclusion rule:
     ///
-    /// - `Ready(Some, already_stored=false)` → serialize bytes into
-    ///   `writes` (new or re-executed entries that must be written).
-    /// - `Ready(Some, already_stored=true)` → skip (DB row already correct).
+    /// - `Ready(Some, persisted=false)` → serialize bytes into `writes`
+    ///   (new, re-executed, or refreshed entries that must be written).
+    /// - `Ready(Some, persisted=true)` → skip (DB row already correct).
     /// - `Stored(_)` and `Ready(None)` → record in `deletes`, only when
     ///   `is_fully_loaded=true` (otherwise these entries can't exist on
     ///   disk because prefetch didn't run).
@@ -364,8 +519,8 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
             let state = std::mem::replace(&mut *guard, FnCallMemoEntry::Pending);
             match state {
                 FnCallMemoEntry::Ready(Some(memo)) => {
-                    if memo.already_stored {
-                        // Cache hit: DB row already correct.
+                    if memo.persisted {
+                        // Cache hit without refresh: DB row already correct.
                         continue;
                     }
                     let ret_bytes = memo.ret.to_bytes()?;
@@ -384,6 +539,7 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
                         logic_deps: memo.logic_deps.into_iter().collect(),
                         memo_states: memo_states_serialized,
                         context_memo_states: context_memo_states_serialized,
+                        data_deps: encode_data_deps(&memo.data_deps),
                     };
                     let encoded = rmp_serde::to_vec_named(&entry)?;
                     plan.writes.push((fp, encoded));
@@ -474,7 +630,9 @@ pub(crate) fn decode_stored_entry<Prof: EngineProfile>(
         logic_deps: decoded.logic_deps.into_iter().collect(),
         memo_states,
         context_memo_states,
-        already_stored: true,
+        data_deps: decode_data_deps(decoded.data_deps),
+        persisted: true,
+        reused: true,
     }));
     Ok(())
 }
@@ -552,8 +710,8 @@ impl<D: Persist + Clone> UserStateCache<D> {
         match self.entries.entry(key) {
             Entry::Occupied(mut e) => match e.get() {
                 UserStateEntry::Declared(_) => {
-                    client_bail!(
-                        "coco.use_state() key {:?} declared more than once in the same component run",
+                    already_declared_bail!(
+                        "use_state key {:?} declared more than once in the same component run",
                         e.key()
                     );
                 }
@@ -580,7 +738,7 @@ impl<D: Persist + Clone> UserStateCache<D> {
             }
             _ => {
                 client_bail!(
-                    "coco.use_state() key {:?} has not been declared via use_state() in this component run",
+                    "use_state key {:?} has not been declared via use_state in this component run",
                     key
                 );
             }
@@ -642,6 +800,30 @@ pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     /// `mount_inner_live`'s self-built parent context).
     pub on_error: Option<crate::engine::component::OnError>,
     pub preview_collector: Option<PreviewActionCollector<Prof>>,
+    /// The selector this run is under, scoped by
+    /// [`ComponentSelector::scoped_to`]. See
+    /// [`ComponentProcessorContext::component_selector`].
+    pub component_selector: Option<ComponentSelector>,
+}
+
+/// A change a run refused because the update's selector leaves out components
+/// it would affect: the rebuild or removal of a container target state whose
+/// children the update does not run. The run fails, and the update fails with
+/// the same error when it ends, wherever the run was: a background component's
+/// failure alone only reaches its error handler, and a caller that previews a
+/// slice and then updates it must see the refusal from both.
+#[derive(Clone, Default)]
+pub(crate) struct UpdateRefusal(Arc<parking_lot::Mutex<Option<String>>>);
+
+impl UpdateRefusal {
+    /// Keep the first refusal: it is the one the update reports.
+    pub(crate) fn record(&self, message: &str) {
+        self.0.lock().get_or_insert_with(|| message.to_string());
+    }
+
+    pub(crate) fn take(&self) -> Option<String> {
+        self.0.lock().take()
+    }
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
@@ -680,6 +862,7 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
         live: bool,
         on_error: Option<crate::engine::component::OnError>,
         preview_collector: Option<PreviewActionCollector<Prof>>,
+        component_selector: Option<ComponentSelector>,
     ) -> Self {
         Self::Build(ComponentBuildContext {
             state: Mutex::new(Some(ComponentBuildingState {
@@ -695,6 +878,7 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
             live,
             on_error,
             preview_collector,
+            component_selector,
         })
     }
 
@@ -713,6 +897,8 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     component: Component<Prof>,
     parent_context: Option<ComponentProcessorContext<Prof>>,
     processing_action: ComponentProcessingAction<Prof>,
+    /// See [`ComponentProcessorContext::app_store`].
+    app_store: AppStore,
     /// See [`ComponentProcessorContext::operation_generation`].
     operation_generation: u64,
 
@@ -720,8 +906,23 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     /// see [`crate::engine::admission`].
     admission: Admission,
 
+    /// Where a run of this update records that it refused a change for the
+    /// selector's sake (see [`UpdateRefusal`]). One per update: every context
+    /// of the update shares it, live components' runs included.
+    update_refusal: UpdateRefusal,
+
+    /// This run's selector left out a child it mounted or one the store holds,
+    /// so this subtree is not up to date when the run ends. Set by a mount, by
+    /// the commit's existence reconciliation and by its GC sweep.
+    left_out_children: Arc<AtomicBool>,
+
     /// Logic fingerprints accumulated from function calls and child components.
     logic_deps: Mutex<HashSet<Fingerprint>>,
+
+    /// Data dependencies this component's own run recorded (its top-level
+    /// function frame and the frames beneath it). Never a child component's:
+    /// a child reports one bit instead (`ComponentRunOutcome::cannot_skip`).
+    data_deps: Mutex<DataDeps>,
 
     /// Target-state provider generations this component declared against,
     /// accumulated from its own declarations and from child components. Stored
@@ -769,21 +970,44 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             ),
             None => (None, component.app_ctx().admission_pool().new_update()),
         };
+        // A run's store handle is its parent's, so every context of one
+        // operation — children, the deletes its commit launches, the live
+        // components it mounts — shares the root's: the app's persisting
+        // store, or in a preview one handle whose writes never persist.
+        let app_store = match &parent_context {
+            Some(parent) => parent.app_store().clone(),
+            None => match &processing_action {
+                ComponentProcessingAction::Build(build_ctx)
+                    if build_ctx.preview_collector.is_some() =>
+                {
+                    component
+                        .app_ctx()
+                        .persisting_app_store()
+                        .discarding_writes()
+                }
+                ComponentProcessingAction::Build(_) | ComponentProcessingAction::Delete(_) => {
+                    component.app_ctx().persisting_app_store().clone()
+                }
+            },
+        };
         Self::from_parts(
             component,
             parent_context,
-            lender,
-            share,
+            Admission::new(share, lender),
             processing_stats,
             host_ctx,
             processing_action,
+            app_store,
+            None,
         )
     }
 
     /// A context for a run of a live component: it has no parent context and
     /// is an update of its own (`share`, from the live component's share).
     /// It borrows its in-flight token from `lender`, the run that mounted the
-    /// live component, for as long as that run lasts.
+    /// live component, for as long as that run lasts, and reads and writes
+    /// the store through `app_store`, that run's handle.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_borrowing_from(
         component: Component<Prof>,
         lender: Option<Lender>,
@@ -791,40 +1015,53 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
+        app_store: AppStore,
+        update_refusal: UpdateRefusal,
     ) -> Self {
         Self::from_parts(
             component,
             None,
-            lender,
-            share,
+            Admission::new(share, lender),
             processing_stats,
             host_ctx,
             processing_action,
+            app_store,
+            Some(update_refusal),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn from_parts(
         component: Component<Prof>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
-        lender: Option<Lender>,
-        share: UpdateShare,
+        admission: Admission,
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
+        app_store: AppStore,
+        update_refusal: Option<UpdateRefusal>,
     ) -> Self {
+        let update_refusal = match (&parent_context, update_refusal) {
+            (Some(parent), _) => parent.update_refusal().clone(),
+            (None, Some(update_refusal)) => update_refusal,
+            (None, None) => UpdateRefusal::default(),
+        };
         let operation_generation = match &parent_context {
             Some(parent) => parent.operation_generation(),
             None => component.app_ctx().next_operation_generation(),
         };
-        let admission = Admission::new(share, lender);
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
                 parent_context,
                 processing_action,
+                app_store,
                 operation_generation,
                 admission,
+                update_refusal,
+                left_out_children: Arc::new(AtomicBool::new(false)),
                 logic_deps: Mutex::new(HashSet::new()),
+                data_deps: Mutex::new(DataDeps::default()),
                 target_provider_deps: Mutex::new(TargetProviderDeps::new()),
                 host_ctx,
             }),
@@ -873,6 +1110,17 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.component.app_ctx()
     }
 
+    /// The app's state store as this run reads and writes it, shared with
+    /// every other context of the same operation. In a preview it is a handle
+    /// that persists nothing (see [`AppStore::discarding_writes`]): the run
+    /// reads its own writes back and plans as an update would, and that is
+    /// what makes a preview write nothing — its write paths need no check of
+    /// their own. Component runs reach the store through here, not through
+    /// [`AppContext::persisting_app_store`].
+    pub(crate) fn app_store(&self) -> &AppStore {
+        &self.inner.app_store
+    }
+
     pub fn stable_path(&self) -> &StablePath {
         self.inner.component.stable_path()
     }
@@ -910,7 +1158,6 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             return Ok(());
         }
         let (fn_memo_rows, user_state_rows) = self
-            .app_ctx()
             .app_store()
             .prefetch_fn_processing_states(self.stable_path())
             .await?;
@@ -1052,15 +1299,17 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// component, so a tagged set at this level could never be resolved and
     /// would be observably identical to the flattened one.
     pub fn join_fn_call(&self, fn_ctx: &FnCallContext) {
-        let (logic_deps, target_provider_deps) = fn_ctx.update(|inner| {
+        let (logic_deps, target_provider_deps, data_deps) = fn_ctx.update(|inner| {
             (
                 inner.entry_logic_deps().collect::<Vec<_>>(),
                 inner.target_provider_deps.clone(),
+                std::mem::take(&mut inner.data_deps),
             )
         });
         fn_ctx.close();
         self.inner.logic_deps.lock().unwrap().extend(logic_deps);
         self.merge_target_provider_deps(target_provider_deps);
+        self.inner.data_deps.lock().unwrap().merge(data_deps);
     }
 
     /// Merge target-provider generation deps (from this component's own
@@ -1097,6 +1346,12 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// during cache-miss memo-state collection) has run.
     pub(crate) fn take_logic_deps(&self) -> HashSet<Fingerprint> {
         std::mem::take(&mut *self.inner.logic_deps.lock().unwrap())
+    }
+
+    /// Take the data dependencies this component's own run recorded. Like
+    /// [`take_logic_deps`](Self::take_logic_deps), an O(1) move for the store.
+    pub(crate) fn take_data_deps(&self) -> DataDeps {
+        std::mem::take(&mut *self.inner.data_deps.lock().unwrap())
     }
 
     /// Collect initial memo states for the change-detection context fingerprints
@@ -1142,17 +1397,103 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.operation_generation
     }
 
-    /// Whether this is a preview run. Only a build runs as a preview: a
-    /// preview plans no deletes of components.
-    pub fn preview(&self) -> bool {
-        self.preview_collector().is_some()
-    }
-
+    /// The collector of a preview run's actions. Only a build runs as a
+    /// preview: a preview plans no deletes of components.
     pub(crate) fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
             ComponentProcessingAction::Delete(_) => None,
         }
+    }
+
+    /// The selector this run is under. A delete has none: it is reached only
+    /// for a path a selector covers, and removes everything below.
+    pub(crate) fn component_selector(&self) -> Option<&ComponentSelector> {
+        match self.processing_state() {
+            ComponentProcessingAction::Build(build_ctx) => build_ctx.component_selector.as_ref(),
+            ComponentProcessingAction::Delete(_) => None,
+        }
+    }
+
+    /// The update this run belongs to leaves some components out, wherever this
+    /// run is: inside a selected subtree too. A change this run makes can reach
+    /// those components through what they share, as a container target state.
+    /// A delete does not count: the component it removes is selected and gone,
+    /// so nothing can declare under its containers any more.
+    pub(crate) fn update_leaves_out_components(&self) -> bool {
+        self.component_selector()
+            .is_some_and(|selector| !selector.selects_everything())
+    }
+
+    pub(crate) fn update_refusal(&self) -> &UpdateRefusal {
+        &self.inner.update_refusal
+    }
+
+    pub(crate) fn mark_left_out_children(&self) {
+        self.inner.left_out_children.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn left_out_children(&self) -> bool {
+        self.inner.left_out_children.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn left_out_children_flag(&self) -> Arc<AtomicBool> {
+        self.inner.left_out_children.clone()
+    }
+
+    /// Record a mount at `path` that the selector leaves out. It counts as a
+    /// mount of this run, so a second mount at the path is an error as usual,
+    /// and a directory it lies under counts as declared.
+    pub(crate) fn record_skipped_mount(&self, path: &StablePath) -> Result<()> {
+        self.mark_left_out_children();
+        let sub_path = path.as_ref().strip_parent(self.stable_path().as_ref())?;
+        self.update_building_state(|building_state| {
+            building_state
+                .child_path_set
+                .add_child(sub_path, StablePathSet::Skipped)
+        })
+    }
+
+    /// Whether the selector leaves out a mount at `path`, without recording
+    /// anything: for a host that prepares a mount it would then hand to
+    /// [`Component::mount`], which records the skip itself.
+    pub fn selector_leaves_out(&self, path: &StablePath) -> bool {
+        self.component_selector()
+            .is_some_and(|selector| selector.classify(path) == ComponentSelection::Unselected)
+    }
+
+    /// Whether the selector leaves out a mount at `path`, recording it if so.
+    /// For a host that wants to know before it prepares the mount: building a
+    /// processor can run user code, and costs per item. [`Component::mount`]
+    /// and `mount_live_prepare` decide alike for one that does not ask.
+    pub fn skips_mount(&self, fn_ctx: &FnCallContext, path: &StablePath) -> Result<bool> {
+        let Some(selector) = self.component_selector() else {
+            return Ok(false);
+        };
+        if selector.classify(path) != ComponentSelection::Unselected {
+            return Ok(false);
+        }
+        // Even a skipped child rules out memoizing the function that mounted it.
+        fn_ctx.update(|inner| inner.has_child_components = true);
+        self.record_skipped_mount(path)?;
+        Ok(true)
+    }
+
+    /// The keys a mount of one component per key under `path` (`mount_each`)
+    /// can run: `None` for every key, else only these, which may be none. A
+    /// host that gets a list need not list its source in full: it can read
+    /// just these keys, and with an empty list it need not read at all. The
+    /// run records that it leaves the other keys out, as
+    /// [`Self::skips_mount`] records one skip.
+    pub fn mount_each_keys(
+        &self,
+        fn_ctx: &FnCallContext,
+        path: &StablePath,
+    ) -> Option<Vec<StableKey>> {
+        let keys = self.component_selector()?.selected_child_keys(path)?;
+        fn_ctx.update(|inner| inner.has_child_components = true);
+        self.mark_left_out_children();
+        Some(keys)
     }
 
     pub fn live(&self) -> bool {
@@ -1203,6 +1544,10 @@ pub struct FnCallContextInner {
     /// `"self"` frame therefore records more after a hit than after a miss
     /// (its callee's own logic too) — more invalidation, never a stale entry.
     pub reoffered_logic_deps: HashSet<Fingerprint>,
+    /// Data dependencies recorded in this frame and the frames beneath it.
+    /// They ride up through every frame regardless of `logic_tracking`, as
+    /// `context_change_deps` do: they describe what the call read, not its code.
+    pub data_deps: DataDeps,
 }
 
 impl FnCallContextInner {
@@ -1321,6 +1666,7 @@ impl FnCallContext {
             inner
                 .reoffered_logic_deps
                 .extend(child_inner.reoffered_logic_deps);
+            inner.data_deps.merge(child_inner.data_deps);
             // Function logic deps conditionally propagate.
             if self.propagate_children_fn_logic {
                 inner.fn_logic_deps.extend(child_inner.fn_logic_deps);
@@ -1368,6 +1714,13 @@ impl FnCallContext {
     pub fn add_context_change_dep(&self, fp: Fingerprint) {
         self.update(|inner| {
             inner.context_change_deps.insert(fp);
+        });
+    }
+
+    /// Record a data dependency into this frame (see [`DataDeps::insert`]).
+    pub fn add_data_dep(&self, record: DataDepRecord) {
+        self.update(|inner| {
+            inner.data_deps.insert(record);
         });
     }
 
@@ -1451,7 +1804,10 @@ mod tests {
         let db = env.create_database(&mut wtxn, Some("test")).unwrap();
         wtxn.commit().unwrap();
         let storage = crate::state_store::Storage::from_env(env);
-        (AppStore::new(db, storage), dir)
+        (
+            AppStore::new(crate::state_store::Db::new(db, "test"), storage),
+            dir,
+        )
     }
 
     fn to_map(pairs: Vec<(StableKey, Vec<u8>)>) -> HashMap<StableKey, Vec<u8>> {
@@ -1528,11 +1884,11 @@ mod tests {
         path: &StablePath,
         cache: UserStateCache<TestData>,
     ) {
-        use crate::state_store::CommitPlan;
+        use crate::state_store::{CommitPlan, TrackingInfoWrite};
 
         let plan_data = cache.into_flush_plan().unwrap();
         let plan = CommitPlan {
-            new_tracking_info: None,
+            tracking_info: TrackingInfoWrite::Delete,
             target_owners_to_upsert: Vec::new(),
             target_owners_to_delete: Vec::new(),
             fn_memo_clear_all_first: false,
@@ -1553,7 +1909,7 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a")
             .await
@@ -1566,7 +1922,7 @@ mod tests {
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("c"), b"c")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let mut cache = UserStateCache::new();
         cache
@@ -1597,12 +1953,12 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let mut cache = UserStateCache::new(); // no populate
         cache.use_state(sym("new_k"), td("new_val")).unwrap();
@@ -1622,12 +1978,12 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let mut cache = UserStateCache::new();
         cache.populate(vec![(sym("a"), b("a_val"))]).unwrap();
@@ -1649,12 +2005,12 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"old")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let mut cache = UserStateCache::new();
         cache.populate(vec![(sym("k"), b("old"))]).unwrap();
@@ -1674,7 +2030,7 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
@@ -1683,7 +2039,7 @@ mod tests {
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("b"), b"b_val")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let mut cache = UserStateCache::new();
         cache
@@ -1704,12 +2060,12 @@ mod tests {
         let p = comp_path("comp");
 
         let env = store.env();
-        let mut wtxn = WriteTxn::new(env.write_txn().unwrap());
+        let mut wtxn = WriteTxn::applying(env.write_txn().unwrap());
         store
             .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old_val")
             .await
             .unwrap();
-        wtxn.into_inner().commit().unwrap();
+        wtxn.commit().unwrap();
 
         let cache = UserStateCache::new(); // no populate, no use_state
 
@@ -1721,7 +2077,7 @@ mod tests {
 
 #[cfg(test)]
 mod fn_call_context_tests {
-    use super::FnCallContext;
+    use super::{DataDepRecord, DataDeps, FnCallContext};
     use cocoindex_utils::fingerprint::Fingerprint;
     use std::collections::HashSet;
 
@@ -1731,6 +2087,53 @@ mod fn_call_context_tests {
 
     fn fn_logic_deps(ctx: &FnCallContext) -> HashSet<Fingerprint> {
         ctx.update(|inner| inner.fn_logic_deps.clone())
+    }
+
+    fn record(kind: &str, key: &str, state: &str) -> DataDepRecord {
+        DataDepRecord {
+            kind_fp: fp(kind),
+            key_fp: fp(key),
+            state_fp: fp(state),
+            key: bytes::Bytes::from(key.to_owned()),
+            state: bytes::Bytes::from(state.to_owned()),
+        }
+    }
+
+    #[test]
+    fn data_deps_dedupe_equal_observations_and_flag_conflicting_ones() {
+        let mut deps = DataDeps::default();
+        deps.insert(record("file", "a", "s1"));
+        deps.insert(record("file", "a", "s1"));
+        deps.insert(record("file", "b", "s1"));
+        assert_eq!(deps.sorted_records().len(), 2);
+        assert!(deps.conflict().is_none());
+
+        // The same key in another state: a conflict naming that key,
+        // whichever side merges.
+        let mut other = DataDeps::default();
+        other.insert(record("file", "a", "s2"));
+        let mut left = deps.clone();
+        left.merge(other.clone());
+        assert_eq!(left.conflict(), Some((fp("file"), fp("a"))));
+        other.merge(deps.clone());
+        assert_eq!(other.conflict(), Some((fp("file"), fp("a"))));
+
+        // Another kind with the same key is a different record.
+        deps.insert(record("dir", "a", "s2"));
+        assert!(deps.conflict().is_none());
+        assert_eq!(deps.sorted_records().len(), 3);
+    }
+
+    #[test]
+    fn data_deps_ride_through_a_frame_whatever_its_logic_tracking() {
+        let child = FnCallContext::new(true);
+        child.add_data_dep(record("file", "a", "s1"));
+        let parent = FnCallContext::new(false);
+        parent.join_child(&child);
+        assert_eq!(
+            parent.update(|inner| inner.data_deps.sorted_records().len()),
+            1
+        );
     }
 
     fn entry_logic_deps(ctx: &FnCallContext) -> HashSet<Fingerprint> {

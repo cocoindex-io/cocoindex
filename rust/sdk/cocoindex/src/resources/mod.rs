@@ -11,3 +11,4 @@ pub mod id;
 pub mod live_map;
 pub mod rate_limit;
 pub mod schema;
+pub mod view;

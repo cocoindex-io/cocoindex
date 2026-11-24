@@ -239,6 +239,7 @@ def test_engine_native_failure_keeps_cerror_mapping() -> None:
     app.update_blocking()
 
     assert len(seen) == 1
+    assert isinstance(seen[0], coco.AlreadyDeclaredError)
     assert isinstance(seen[0], ValueError)
     assert "Target state already declared" in str(seen[0])
 

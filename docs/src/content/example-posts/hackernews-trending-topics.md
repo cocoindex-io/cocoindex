@@ -8,7 +8,7 @@ tags: [llm, custom-source]
 
 ![Trending Topics from HackerNews](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/cover.png)
 
-What is the tech community talking about right now? In this tutorial, we'll build a pipeline that scrapes recent HackerNews stories and their comment threads, uses an LLM to pull out the topics each message is about, and stores everything in Postgres so you can rank what's trending and search by topic.
+Build a pipeline that scrapes recent HackerNews stories and their comment threads, uses an LLM to pull out the topics each message is about, and stores everything in Postgres so you can rank what's trending and search by topic.
 
 The data source here isn't a folder of files — it's a public HTTP API. We fetch threads on the fly with the [Algolia HackerNews API](https://hn.algolia.com/api), so this example doubles as a recipe for plugging any custom source into a CocoIndex pipeline. Each run catches up on the latest stories, and because CocoIndex memoizes per-message work, re-running only does the new work.
 
@@ -16,7 +16,7 @@ The data source here isn't a folder of files — it's a public HTTP API. We fetc
 
 ## Flow overview
 
-![Flow](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/flow-v1.svg)
+![Flow](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/flow-v1-dark.svg)
 
 1. Fetch a list of recent thread IDs from the Algolia HackerNews API
 2. For each thread, fetch the story and all of its comments
@@ -28,7 +28,7 @@ You declare the transformation logic with native Python without worrying about c
 Think:
 **target_state = transformation(source_state)**
 
-When the HackerNews feed moves on, or your processing logic changes (for example, switching to a different model, or refining the topic-extraction prompt), CocoIndex performs smart incremental processing that only reprocesses the minimum, and keeps your `hn_messages` and `hn_topics` tables in sync.
+When the HackerNews feed moves on, or your processing logic changes (for example, switching to a different model, or refining the topic-extraction prompt), CocoIndex reprocesses affected items and updates the `hn_messages` and `hn_topics` tables.
 
 ## Define the data models
 
@@ -99,7 +99,13 @@ Avoid acronyms unless very popular and unambiguous for common people even withou
 ```
 
 ```python title="main.py"
-@coco.fn
+@coco.fn(
+    memo=True,
+    deps={
+        "model": LLM_MODEL,
+        "prompt": TopicsResponse.model_fields["topics"].description,
+    },
+)
 async def extract_topics(text: str | None) -> list[str]:
     """Extract topics from text using LLM."""
     if not text or not text.strip():
@@ -120,7 +126,9 @@ async def extract_topics(text: str | None) -> list[str]:
     return TopicsResponse.model_validate_json(content).topics
 ```
 
-The prompt in `TopicsResponse` does the heavy lifting: it tells the model to normalize phrases into separate topics ("books for autistic kids" → "book", "autistic", "autistic kids"), keep proper nouns canonical ("PostgreSQL", "Claude"), and emit multiple aliases for the same thing ("JFK", "John Kennedy"). That normalization is what makes the trending ranking meaningful later.
+The prompt in `TopicsResponse` defines topic normalization: it tells the model to normalize phrases into separate topics ("books for autistic kids" → "book", "autistic", "autistic kids"), keep proper nouns canonical ("PostgreSQL", "Claude"), and emit multiple aliases for the same thing ("JFK", "John Kennedy"). That normalization is what makes the trending ranking meaningful later.
+
+`memo=True` caches each call's result by its input text, so a message CocoIndex has already seen does not go to the LLM again. The prompt and the model live outside the function body, so `deps` declares them: change either one and the cached results are invalidated.
 
 [→ Function](/docs/programming_guide/function/)
 
@@ -190,7 +198,7 @@ These are ordinary `async def` functions — no special CocoIndex decorators. An
 
 Each thread is processed by its own component. `process_thread` fetches the thread, extracts topics for the story and every comment, and declares the resulting rows.
 
-![Process thread](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/stage-file-process.svg)
+![Process thread](https://cocoindex.io/blobs/docs-v1/img/examples/hackernews-trending-topics/stage-file-process-dark.svg)
 
 ```python title="main.py"
 @coco.fn
@@ -384,16 +392,14 @@ The real power shows when you run the pipeline again:
 cocoindex update main
 ```
 
-New threads in the feed get processed; threads already in the database reuse their committed rows. Because per-message extraction is tracked, the expensive LLM calls only run for content CocoIndex hasn't seen.
+New threads in the feed get processed; threads already in the database reuse their committed rows. Because `extract_topics` is memoized (`memo=True`), the expensive LLM calls only run for content CocoIndex hasn't seen.
 
 **Change the extraction logic:**
 
-Edit the topic-extraction prompt or switch `LLM_MODEL`, then run `cocoindex update main` again. CocoIndex detects the changed logic and re-extracts, keeping the `hn_topics` table consistent with your new logic — no manual migration.
+Edit the topic-extraction prompt or switch `LLM_MODEL`, then run `cocoindex update main` again. Both values live outside the function body, so `extract_topics` lists them in `deps`; CocoIndex sees the changed logic and re-extracts, keeping the `hn_topics` table consistent with your new logic — no manual migration.
 
 ## Run it
 
 Full source on GitHub:
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/hn_trending_topics)
-
-If CocoIndex helps, give us a star ⭐ on [GitHub](https://github.com/cocoindex-io/cocoindex) and join the conversation on [Discord](https://discord.com/invite/zpA9S2DR7s) — we'd love to hear what you build.

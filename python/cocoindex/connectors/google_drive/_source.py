@@ -1,13 +1,14 @@
 """Google Drive source utilities.
 
-This module provides a read-only API for ingesting files from Google Drive.
-Change notifications will be added later.
+This module provides a read-only API for ingesting files from Google Drive,
+authenticated with a service account or with a personal account signed in
+through OAuth (``UserAccount``, experimental). Change notifications will be
+added later.
 """
 
 from __future__ import annotations
 
 import asyncio
-import io
 from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -21,7 +22,7 @@ try:
     from google.oauth2.service_account import Credentials  # type: ignore
     from google_auth_httplib2 import AuthorizedHttp  # type: ignore
     from googleapiclient.discovery import build  # type: ignore
-    from googleapiclient.http import HttpRequest, MediaIoBaseDownload  # type: ignore
+    from googleapiclient.http import HttpRequest  # type: ignore
 except ImportError as e:
     raise ImportError(
         "google-auth and google-api-python-client are required to use the Google Drive source. "
@@ -29,6 +30,8 @@ except ImportError as e:
     ) from e
 
 from cocoindex.resources import file
+
+from ._oauth import UserAccount
 
 
 class DriveFilePath(file.FilePath[str]):
@@ -80,6 +83,10 @@ class DriveFilePath(file.FilePath[str]):
 
 
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+# Attempts after the first for every Drive API request. googleapiclient retries
+# a 5xx, a 429 and a 403 whose reason is a rate limit, with randomized
+# exponential backoff; Drive's usage-limits guide asks clients to do exactly that.
+_RETRIES = 5
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 _DOCS_MIME = "application/vnd.google-apps.document"
 _SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
@@ -107,8 +114,7 @@ class DriveFile(file.FileLike[str]):
     """Represents a file entry from Google Drive."""
 
     _service: Any
-    _mime_type: str
-    _file_id: str
+    _info: DriveFileInfo
 
     def __init__(self, service: Any, info: DriveFileInfo) -> None:
         file_path = DriveFilePath(
@@ -121,8 +127,12 @@ class DriveFile(file.FileLike[str]):
         )
         super().__init__(file_path, _metadata=metadata)
         self._service = service
-        self._mime_type = info.mime_type
-        self._file_id = info.file_id
+        self._info = info
+
+    @property
+    def info(self) -> DriveFileInfo:
+        """What the listing said about the file: id, name, MIME type, size, modified time, MD5."""
+        return self._info
 
     async def _fetch_metadata(self) -> file.FileMetadata:
         """Fetch metadata from the Google Drive API."""
@@ -131,10 +141,10 @@ class DriveFile(file.FileLike[str]):
             response = (
                 self._service.files()
                 .get(
-                    fileId=self._file_id,
+                    fileId=self._info.file_id,
                     fields="size, modifiedTime, md5Checksum",
                 )
-                .execute()
+                .execute(num_retries=_RETRIES)
             )
             size_raw = response.get("size")
             size = int(size_raw) if size_raw is not None else 0
@@ -151,20 +161,16 @@ class DriveFile(file.FileLike[str]):
         if size != -1:
             raise ValueError("Partial reads are not supported for Google Drive files.")
 
-        if self._mime_type in _EXPORT_MIME_BY_TYPE:
-            export_mime = _EXPORT_MIME_BY_TYPE[self._mime_type]
+        file_id = self._info.file_id
+        if self._info.mime_type in _EXPORT_MIME_BY_TYPE:
+            export_mime = _EXPORT_MIME_BY_TYPE[self._info.mime_type]
             request = self._service.files().export_media(
-                fileId=self._file_id, mimeType=export_mime
+                fileId=file_id, mimeType=export_mime
             )
         else:
-            request = self._service.files().get_media(fileId=self._file_id)
-
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        return fh.getvalue()
+            request = self._service.files().get_media(fileId=file_id)
+        content: bytes = request.execute(num_retries=_RETRIES)
+        return content
 
     async def _read_impl(self, size: int = -1) -> bytes:
         """Read file content via Google Drive API in a thread pool."""
@@ -173,18 +179,38 @@ class DriveFile(file.FileLike[str]):
 
 @dataclass
 class GoogleDriveSourceSpec:
-    """Specification for a Google Drive source."""
+    """Specification for a Google Drive source.
 
-    service_account_credential_path: str
+    Authenticates with exactly one of ``service_account_credential_path`` and
+    ``user_account`` (a personal account signed in through OAuth; experimental).
+    """
+
+    service_account_credential_path: str | None
     root_folder_ids: Sequence[str]
     mime_types: Sequence[str] | None = None
+    user_account: UserAccount | None = None
+
+    def __post_init__(self) -> None:
+        if (self.service_account_credential_path is None) == (
+            self.user_account is None
+        ):
+            raise ValueError(
+                "GoogleDriveSourceSpec needs exactly one of "
+                "service_account_credential_path and user_account"
+            )
 
 
-def _build_service(credential_path: str) -> Any:
-    creds = Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
-        credential_path,
+def _credentials(spec: GoogleDriveSourceSpec) -> Any:
+    if spec.user_account is not None:
+        return spec.user_account._credentials()
+    return Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
+        spec.service_account_credential_path,
         scopes=[_DRIVE_SCOPE],
     )
+
+
+def _build_service(spec: GoogleDriveSourceSpec) -> Any:
+    creds = _credentials(spec)
 
     # googleapiclient is built on httplib2, which is *not* thread-safe.
     # The default service shares one Http (and one socket) across all
@@ -229,7 +255,7 @@ def _list_children(service: Any, folder_id: str) -> list[DriveFileInfo]:
                 ),
                 pageToken=page_token,
             )
-            .execute()
+            .execute(num_retries=_RETRIES)
         )
         for f in response.get("files", []):
             size_raw = f.get("size")
@@ -252,7 +278,7 @@ def _list_children(service: Any, folder_id: str) -> list[DriveFileInfo]:
 
 def list_files(spec: GoogleDriveSourceSpec) -> Iterator[DriveFile]:
     """List files under the given root folders (recursively)."""
-    service = _build_service(spec.service_account_credential_path)
+    service = _build_service(spec)
     folders = deque((folder_id, "") for folder_id in spec.root_folder_ids)
     seen_folders: set[str] = set()
     seen_files: set[str] = set()
@@ -282,19 +308,26 @@ def list_files(spec: GoogleDriveSourceSpec) -> Iterator[DriveFile]:
 
 
 class GoogleDriveSource:
-    """Source wrapper for Google Drive files."""
+    """Source wrapper for Google Drive files.
+
+    Authenticates with a service account (``service_account_credential_path``)
+    or with a personal account signed in through OAuth (``user_account``,
+    experimental); exactly one of the two.
+    """
 
     def __init__(
         self,
         *,
-        service_account_credential_path: str,
         root_folder_ids: Sequence[str],
+        service_account_credential_path: str | None = None,
+        user_account: UserAccount | None = None,
         mime_types: Sequence[str] | None = None,
     ) -> None:
         self._spec = GoogleDriveSourceSpec(
             service_account_credential_path=service_account_credential_path,
             root_folder_ids=root_folder_ids,
             mime_types=mime_types,
+            user_account=user_account,
         )
 
     async def files(self) -> AsyncIterator[DriveFile]:

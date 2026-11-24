@@ -32,6 +32,20 @@ pub fn entity_guidance(kind: &str) -> (&'static str, &'static str) {
     }
 }
 
+/// The entity-type lines of the statement-extraction prompt, one per entry in
+/// `ENTITY_TYPES`. `extract_statements` lists this in `deps`: CocoIndex
+/// fingerprints a function's own body, not the constants and plain helpers it
+/// reads, so without it an edit here would leave old extractions cached.
+pub fn entity_prompt_lines() -> String {
+    ENTITY_TYPES
+        .iter()
+        .map(|kind| {
+            let (desc, examples) = entity_guidance(kind);
+            format!("  - {kind}: {desc} Examples: {examples}.\n")
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Transcript / source
 // ---------------------------------------------------------------------------
@@ -147,6 +161,31 @@ pub struct ProcessedSession {
     /// Identified (named) speakers of the session.
     pub identified_persons: Vec<String>,
     pub statements: Vec<IdentifiedStatement>,
+}
+
+// ---------------------------------------------------------------------------
+// Graph rows: each struct is a SurrealDB table's schema (`TableSchema::from_row`)
+// and the record written to it. The record id is passed separately.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Serialize, cocoindex::SchemaFields)]
+pub struct SessionRow {
+    pub youtube_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub transcript: String,
+    pub date: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, cocoindex::SchemaFields)]
+pub struct StatementRow {
+    pub statement: String,
+}
+
+/// A person, tech or org node.
+#[derive(Clone, Debug, Serialize, cocoindex::SchemaFields)]
+pub struct EntityRow {
+    pub name: String,
 }
 
 // ---------------------------------------------------------------------------

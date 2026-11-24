@@ -7,11 +7,13 @@ use std::sync::Arc;
 
 use cocoindex_core::state::stable_path::{StableKey, StablePath};
 use cocoindex_core::state::target_state_path::TargetStatePath;
-use cocoindex_core::state_store::{AppStore, CommitPlan, Storage, StorageSettings};
+use cocoindex_core::state_store::{
+    AppStore, CommitPlan, Storage, StorageSettings, TrackingInfoWrite,
+};
 use cocoindex_utils::fingerprint::Fingerprint;
 use tempfile::TempDir;
 
-async fn make_test_store() -> (Storage, AppStore, TempDir) {
+async fn make_test_store() -> (AppStore, TempDir) {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("mdb");
     std::fs::create_dir_all(&db_path).unwrap();
@@ -22,7 +24,7 @@ async fn make_test_store() -> (Storage, AppStore, TempDir) {
     };
     let storage = Storage::new(&settings).await.unwrap();
     let store = storage.create_app_store("test_app").await.unwrap();
-    (storage, store, dir)
+    (store, dir)
 }
 
 fn comp_path(name: &str) -> StablePath {
@@ -41,18 +43,13 @@ fn target_path(name: &str) -> TargetStatePath {
     TargetStatePath::new(Fingerprint::from(name).unwrap(), None)
 }
 
-async fn upsert_owner(
-    storage: &Storage,
-    store: &AppStore,
-    path: &TargetStatePath,
-    owner: &StablePath,
-) {
-    let store = store.clone();
+async fn upsert_owner(store: &AppStore, path: &TargetStatePath, owner: &StablePath) {
+    let store_in_txn = store.clone();
     let path = path.clone();
     let owner = owner.clone();
-    storage
+    store
         .run_txn(move |wtxn| {
-            let store = store.clone();
+            let store = store_in_txn.clone();
             let path = path.clone();
             let owner = owner.clone();
             Box::pin(async move { store.upsert_target_state_owner(wtxn, &path, &owner).await })
@@ -61,16 +58,12 @@ async fn upsert_owner(
         .unwrap();
 }
 
-async fn read_owner(
-    storage: &Storage,
-    store: &AppStore,
-    path: &TargetStatePath,
-) -> Option<StablePath> {
-    let store = store.clone();
+async fn read_owner(store: &AppStore, path: &TargetStatePath) -> Option<StablePath> {
+    let store_in_txn = store.clone();
     let path = path.clone();
-    storage
+    store
         .run_txn(move |wtxn| {
-            let store = store.clone();
+            let store = store_in_txn.clone();
             let path = path.clone();
             Box::pin(async move {
                 Ok(store
@@ -89,7 +82,7 @@ async fn commit_owner_deletes(
     deletes: Vec<TargetStatePath>,
 ) {
     let plan = CommitPlan {
-        new_tracking_info: None,
+        tracking_info: TrackingInfoWrite::Delete,
         target_owners_to_upsert: Vec::new(),
         target_owners_to_delete: deletes,
         fn_memo_clear_all_first: false,
@@ -105,18 +98,18 @@ async fn commit_owner_deletes(
 
 #[tokio::test]
 async fn delete_preserves_owner_row_preempted_by_other_component() {
-    let (storage, store, _dir) = make_test_store().await;
+    let (store, _dir) = make_test_store().await;
     let old_owner = comp_path("comp");
     let new_owner = comp_path("comp_new");
     let tsp = target_path("mystore/D1");
 
     // A different component has since claimed the path.
-    upsert_owner(&storage, &store, &tsp, &new_owner).await;
+    upsert_owner(&store, &tsp, &new_owner).await;
 
     // The old owner's delete must not orphan the new owner.
     commit_owner_deletes(&store, &old_owner, vec![tsp.clone()]).await;
 
-    assert_eq!(read_owner(&storage, &store, &tsp).await, Some(new_owner));
+    assert_eq!(read_owner(&store, &tsp).await, Some(new_owner));
 }
 
 /// A component whose path contains a tuple segment must be able to delete its
@@ -124,7 +117,7 @@ async fn delete_preserves_owner_row_preempted_by_other_component() {
 /// bytes, the equality guard failed, and the row leaked.
 #[tokio::test]
 async fn delete_removes_own_owner_row_with_non_str_segments() {
-    let (storage, store, _dir) = make_test_store().await;
+    let (store, _dir) = make_test_store().await;
     for (label, owner) in [
         (
             "tuple",
@@ -143,16 +136,16 @@ async fn delete_removes_own_owner_row_with_non_str_segments() {
         ),
     ] {
         let tsp = target_path(label);
-        upsert_owner(&storage, &store, &tsp, &owner).await;
+        upsert_owner(&store, &tsp, &owner).await;
         assert_eq!(
-            read_owner(&storage, &store, &tsp).await,
+            read_owner(&store, &tsp).await,
             Some(owner.clone()),
             "{label}: owner path must read back unchanged"
         );
 
         commit_owner_deletes(&store, &owner, vec![tsp.clone()]).await;
         assert_eq!(
-            read_owner(&storage, &store, &tsp).await,
+            read_owner(&store, &tsp).await,
             None,
             "{label}: own owner row must be deleted"
         );
@@ -165,7 +158,7 @@ async fn delete_removes_own_owner_row_with_non_str_segments() {
 /// ownership guard treat these pairs as equal.
 #[tokio::test]
 async fn delete_preserves_owner_row_differing_only_by_segment_type() {
-    let (storage, store, _dir) = make_test_store().await;
+    let (store, _dir) = make_test_store().await;
     let tuple = StableKey::Array(Arc::from(vec![StableKey::Int(1), StableKey::Int(2)]));
     let tuple_as_bytes = StableKey::Bytes(Arc::from(&[1u8, 2u8][..]));
     let text = StableKey::Str(Arc::from("abc"));
@@ -182,11 +175,11 @@ async fn delete_preserves_owner_row_differing_only_by_segment_type() {
         assert_ne!(owner, deleter);
         let tsp = target_path(label);
 
-        upsert_owner(&storage, &store, &tsp, &owner).await;
+        upsert_owner(&store, &tsp, &owner).await;
         commit_owner_deletes(&store, &deleter, vec![tsp.clone()]).await;
 
         assert_eq!(
-            read_owner(&storage, &store, &tsp).await,
+            read_owner(&store, &tsp).await,
             Some(owner),
             "{label}: another component's owner row must survive"
         );

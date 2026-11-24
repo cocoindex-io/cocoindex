@@ -78,7 +78,7 @@ jobs:
             # mypy-check runs in the e2e_type_check workflow, and
             # update-rust-extern-locks in the fast_check one. cargo-clippy and
             # cargo-tree-sdk-no-pyo3 run in `rust-checks`. The rest are the
-            # Rust SDK hooks, which `_rust_sdk.yml` runs.
+            # Rust SDK hooks, which `rust_sdk_daily.yml` runs.
             skip: mypy-check,update-rust-extern-locks,cargo-clippy,cargo-tree-sdk-no-pyo3,cargo-test-sdk,cargo-clippy-sdk,cargo-test-rust-externs
 
         # Last, so it sees every object the job's hooks compiled.
@@ -91,7 +91,7 @@ jobs:
     # Rust SDK doesn't depend on pyo3. Linux x86_64 covers every platform for
     # both: the lints are the same on every platform bar a few
     # `cfg(not(unix))` lines, and the pyo3 check reads the dependencies of
-    # every platform. The Rust SDK's own hooks run in `_rust_sdk.yml`.
+    # every platform. The Rust SDK's own hooks run in `rust_sdk_daily.yml`.
     rust-checks:
         runs-on: ubuntu-latest
         timeout-minutes: 60

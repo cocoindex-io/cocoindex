@@ -1,0 +1,11 @@
+{
+  "alt": "An Entire checkpoints folder holds one directory per session with full.jsonl, prompt.txt, context.md and metadata.json; process_file routes each file by name, so transcript turns, the prompt and context chunks are embedded with all-MiniLM-L6-v2 into entire.session_embeddings while metadata.json becomes a row in entire.session_metadata; a new session picked up in live mode adds only its own rows, and the query \"how did I fix the auth bug\" returns the matching transcript turn with its checkpoint, session and content type.",
+  "needs": ["Docker (for Postgres with pgvector)", "Python 3.11+", "A repo where Entire captures sessions"],
+  "run": [
+    { "note": "Start Postgres with pgvector", "cmd": "docker compose -f ../../dev/postgres.yaml up -d" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Check out the checkpoints Entire captured (run from a repo that has them)", "cmd": "git worktree add entire_checkpoints entire/checkpoints/v1" },
+    { "note": "Build the index (add -L to keep picking up new sessions)", "cmd": "cocoindex update main" },
+    { "note": "Search it", "cmd": "python main.py \"how did I fix the auth bug\"" }
+  ]
+}

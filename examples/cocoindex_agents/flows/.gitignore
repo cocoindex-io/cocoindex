@@ -1,0 +1,3 @@
+# Each flow's outputs and CocoIndex state, written by run.py
+*/out/
+*/.coco_db/

@@ -7,13 +7,15 @@
 //!
 //! `topic_as_map` is a `LiveMapView`: in catch-up mode it scans the log up to the
 //! high-watermark, compacted to the latest value per key (tombstones drop keys);
-//! in `--live` mode it then tails new records. Each value becomes one child
-//! component via `mount_each_live` — here we just print it.
+//! in `--live` mode it then tails new records. Each message becomes one child
+//! component via `mount_each_live` — here we just print it. The consumer has a
+//! consumer group, so a `--live` run resumes from the offsets the previous live
+//! run committed instead of re-reading the topic.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use cocoindex::connectors::kafka;
+use cocoindex::connectors::kafka::{self, KafkaMessage};
 use cocoindex::{App, UpdateOptions};
 
 #[tokio::main]
@@ -29,7 +31,14 @@ async fn main() -> cocoindex::Result<()> {
     let brokers = std::env::var("KAFKA_BOOTSTRAP_SERVERS")
         .unwrap_or_else(|_| "localhost:9092".to_string());
     let broker_refs: Vec<&str> = brokers.split(',').collect();
-    let consumer = kafka::KafkaConsumer::connect(&broker_refs).await?;
+    let consumer = kafka::KafkaConsumer::connect_with_options(
+        &broker_refs,
+        kafka::KafkaConsumerOptions {
+            consumer_group: Some("kafka_consume".to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
 
     let count = Arc::new(AtomicUsize::new(0));
     let app = App::open("kafka_consume", ".cocoindex_db").await?;
@@ -44,11 +53,17 @@ async fn main() -> cocoindex::Result<()> {
             let count = count.clone();
             async move {
                 let feed = kafka::topic_as_map(&consumer, topic);
-                ctx.mount_each_live(&"messages", feed, move |_ctx, value: Vec<u8>| {
+                ctx.mount_each_live(&"messages", feed, move |_ctx, message: KafkaMessage| {
                     let count = count.clone();
                     async move {
                         count.fetch_add(1, Ordering::Relaxed);
-                        println!("message: {}", String::from_utf8_lossy(&value));
+                        println!(
+                            "message {}@{}/{}: {}",
+                            message.key_str().unwrap_or_default(),
+                            message.partition,
+                            message.offset,
+                            message.value_str().unwrap_or_default()
+                        );
                         Ok(())
                     }
                 })

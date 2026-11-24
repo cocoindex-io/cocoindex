@@ -8,15 +8,15 @@ tags: [postgres-source, vector-index]
 
 ![Postgres as a source with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/postgres-source/cover.png)
 
-Most data already lives in a database. This example takes an existing Postgres table of products, reads it row by row, derives a couple of fields, [embeds](/docs/ops/sentence_transformers/) each row, and writes the result — including the vector — back into Postgres with [pgvector](https://github.com/pgvector/pgvector). Point it at any table and you have a semantic index over your structured data, kept in sync as the table changes.
+Most data already lives in a database. This example takes an existing Postgres table of products, reads it row by row, derives a couple of fields, [embeds](/docs/ops/sentence_transformers/) each row, and writes the result (including the vector) back into Postgres with [pgvector](https://github.com/pgvector/pgvector). Point it at any table and you have a semantic index over your structured data, kept in sync as the table changes.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only the rows that changed get re-embedded and re-upserted.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and target management. As a result, only the rows that changed get re-embedded and re-upserted.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/postgres_source)
 
 ## Flow overview
 
-![CocoIndex Postgres source flow: read product rows from a Postgres table, derive fields and embed each row, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/postgres-source/flow-v1.svg)
+![CocoIndex Postgres source flow: read product rows from a Postgres table, derive fields and embed each row, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/postgres-source/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -51,7 +51,7 @@ You [declare the transformation logic](/docs/programming_guide/core_concepts/) w
 
 ## Define the data and shared resources
 
-[Apps](/docs/programming_guide/app/) are the top-level runnable unit in CocoIndex. Before the App, we set up the data shapes and the [shared resources](/docs/programming_guide/context/) the rest of the code builds on. `SourceProduct` describes one row read from the source table; `OutputProduct` describes one row written to the target, with the two derived fields and the embedding vector. `coco_lifespan` provides everything every step needs — a Postgres pool for the target, a pool for the source, and the embedding model — once at startup.
+[Apps](/docs/programming_guide/app/) are the top-level runnable unit in CocoIndex. Before the App, we set up the data shapes and the [shared resources](/docs/programming_guide/context/) the rest of the code builds on. `SourceProduct` describes one row read from the source table; `OutputProduct` describes one row written to the target, with the two derived fields and the embedding vector. `coco_lifespan` provides everything every step needs (a Postgres pool for the target, a pool for the source, and the embedding model) once at startup.
 
 ```python title="main.py"
 DATABASE_URL = os.getenv("POSTGRES_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex")
@@ -101,7 +101,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 ## Process a row
 
-![One processing component per row: each source row is derived and embedded, producing an OutputProduct row written to Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/postgres-source/stage-file-process.svg)
+![One processing component per row: each source row is derived and embedded, producing an OutputProduct row written to Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/postgres-source/stage-file-process-dark.svg)
 
 `process_product` runs once per source row. It builds a `full_description` from the category, name, and body, computes `total_value`, embeds the description, and declares the target row.
 

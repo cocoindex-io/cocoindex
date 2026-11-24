@@ -1,6 +1,62 @@
 ---
-// The one shared footer — identical links + logo on every CocoIndex surface.
-// Markup + styles live in @cocoindex/brand (Footer.astro + footer.css).
-import Footer from '@cocoindex/brand/Footer.astro';
+// The one shared footer. The markup mirrors @cocoindex/brand/Footer.astro
+// (styles still come from @cocoindex/brand/footer.css) so this site can add
+// links the package does not know about yet: "Comparison" under Resources.
+// Keep the columns in sync with the package when it is bumped.
+import Logo from '@cocoindex/brand/Logo.astro';
+
+const SITE = 'https://cocoindex.io';
+const DOCS_SITE = 'https://cocoindex.io';
+
+const COLS: { title: string; links: { label: string; href: string }[] }[] = [
+  {
+    title: 'Resources',
+    links: [
+      { label: 'Blog', href: `${SITE}/blogs/` },
+      { label: 'Documentation', href: `${DOCS_SITE}/docs/` },
+      { label: 'Examples', href: `${DOCS_SITE}/docs/examples/` },
+      { label: 'Comparison', href: `${SITE}/comparison/` },
+      { label: 'YouTube', href: 'https://www.youtube.com/@cocoindex-io' },
+      { label: 'Documentation (v0)', href: `${DOCS_SITE}/docs-v0/` },
+    ],
+  },
+  {
+    title: 'Community',
+    links: [
+      { label: 'GitHub', href: 'https://github.com/cocoindex-io/cocoindex' },
+      { label: 'Discord', href: 'https://discord.com/invite/zpA9S2DR7s' },
+      { label: 'X', href: 'https://x.com/cocoindex_io' },
+      { label: 'LinkedIn', href: 'https://www.linkedin.com/company/cocoindex' },
+    ],
+  },
+  {
+    title: 'Company',
+    links: [
+      { label: 'Enterprise', href: `${SITE}/enterprise/` },
+      { label: 'Careers', href: `${SITE}/careers/` },
+      { label: 'Brand & press kit', href: `${SITE}/brand/` },
+      { label: 'Privacy policy', href: `${SITE}/privacy-policy/` },
+      { label: 'Terms of use', href: `${SITE}/terms-of-use/` },
+      { label: 'hi@cocoindex.io', href: 'mailto:hi@cocoindex.io' },
+    ],
+  },
+];
 ---
-<Footer />
+
+<footer class="it-foot">
+  <div class="foot-grid">
+    <div class="foot-brand">
+      <Logo href={`${SITE}/`} src={`${SITE}/images/cocoindex.svg`} size="lg" />
+      <div class="foot-colo">
+        <span>© {new Date().getFullYear()} CocoIndex</span>
+        <span class="foot-tag">San Francisco</span>
+      </div>
+    </div>
+    {COLS.map((col) => (
+      <div class="foot-col">
+        <span class="foot-h">{col.title}</span>
+        {col.links.map((l) => <a href={l.href}>{l.label}</a>)}
+      </div>
+    ))}
+  </div>
+</footer>

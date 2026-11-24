@@ -1,0 +1,10 @@
+INVOICE 1044
+Vendor: Northwind Paper Co.
+Date: 2026-10-01
+Due: 2026-10-31
+Items:
+  - A4 paper, 10 boxes @ 24.00 = 240.00
+Subtotal: 240.00
+Tax (8%): 19.20
+Total: 259.20 USD
+Status: unpaid

@@ -1,0 +1,26 @@
+{
+  "alt": "An S3 bucket browser for cocoindex-example-data under the prefix markdown_files/ lists three Markdown objects; on a re-run, objects with the same LastModified are skipped and rfc8259.md, whose ETag changed, is re-embedded with RecursiveSplitter and all-MiniLM-L6-v2 into the Postgres table coco_examples.amazon_s3_doc_embeddings, and the query \"what is self-attention?\" returns a chunk from the Transformer paper.",
+  "needs": [
+    "Docker (Postgres + pgvector)",
+    "S3 bucket and AWS credentials",
+    "Python 3.11+"
+  ],
+  "run": [
+    {
+      "note": "Start Postgres with pgvector",
+      "cmd": "docker compose -f ../../dev/postgres.yaml up -d"
+    },
+    {
+      "note": "Set S3_BUCKET (optional S3_PREFIX) in .env, then install",
+      "cmd": "cp .env.example .env && pip install -e ."
+    },
+    {
+      "note": "Scan the bucket and build the index; re-run for changes",
+      "cmd": "cocoindex update main"
+    },
+    {
+      "note": "Search it",
+      "cmd": "python main.py \"what is self-attention?\""
+    }
+  ]
+}

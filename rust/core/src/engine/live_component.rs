@@ -1,10 +1,11 @@
+use crate::engine::context::UpdateRefusal;
 use std::collections::HashMap;
 use std::future::Future;
 
 use crate::engine::admission::{Lender, LiveShare};
 use crate::engine::component::{
     ActivityGuard, Component, ComponentBgChildReadinessChildGuard, ComponentExecutionHandle,
-    OnError,
+    OnError, RunCompleteness,
 };
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessorContext, FnCallContext, PreviewActionCollector,
@@ -13,9 +14,11 @@ use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::TargetStateProvider;
 use crate::prelude::*;
+use crate::state::component_selector::{ComponentSelector, MountDecision};
 use crate::state::stable_path::{StableKey, StablePath};
 use crate::state::target_state_path::TargetStatePath;
-use cocoindex_utils::error::{SharedError, SharedResult};
+use crate::state_store::AppStore;
+use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt};
 
 use tokio::sync::oneshot;
 
@@ -42,21 +45,42 @@ pub struct MountLivePending<Prof: EngineProfile> {
     parent_ctx: ComponentProcessorContext<Prof>,
     providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     live: bool,
+    component_selector: Option<ComponentSelector>,
 }
 
 /// Mount a live component. Split into two phases:
 /// - `prepare` (sync): registers the child component, borrows fn_ctx
 /// - `complete` (async): cancels existing live state, creates controller
+///
+/// `None` when the running update's selector leaves the component out: it does
+/// not start, and any incarnation already running keeps running.
 pub fn mount_live_prepare<Prof: EngineProfile>(
     parent_ctx: &ComponentProcessorContext<Prof>,
     fn_ctx: &FnCallContext,
     child_stable_path: StablePath,
     live: bool,
-) -> Result<MountLivePending<Prof>> {
+) -> Result<Option<MountLivePending<Prof>>> {
     // 1. Mount (or get existing) child component.
     let child = parent_ctx
         .component()
         .mount_child(fn_ctx, child_stable_path.clone())?;
+
+    let component_selector =
+        match ComponentSelector::for_mount(parent_ctx.component_selector(), &child_stable_path) {
+            MountDecision::Skip => {
+                parent_ctx.record_skipped_mount(&child_stable_path)?;
+                return Ok(None);
+            }
+            MountDecision::Run(component_selector) => component_selector,
+        };
+    // A live component reports nothing up (see `MountLivePending::complete`), so
+    // what its runs leave out is taken as left out here.
+    if component_selector
+        .as_ref()
+        .is_some_and(ComponentSelector::can_leave_out_children)
+    {
+        parent_ctx.mark_left_out_children();
+    }
 
     // Register the child in the parent's child_path_set and get providers
     // in a single lock acquisition.
@@ -75,12 +99,13 @@ pub fn mount_live_prepare<Prof: EngineProfile>(
             .clone())
     })?;
 
-    Ok(MountLivePending {
+    Ok(Some(MountLivePending {
         child,
         parent_ctx: parent_ctx.clone(),
         providers,
         live,
-    })
+        component_selector,
+    }))
 }
 
 impl<Prof: EngineProfile> MountLivePending<Prof> {
@@ -91,9 +116,24 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             parent_ctx,
             providers,
             live,
+            component_selector,
         } = self;
 
-        // 2. If existing live state, cancel and drain it (with 30s timeout).
+        // 2. An existing incarnation at this path is left alone, and the new
+        //    one runs beside it, uninstalled, in two cases:
+        //    - A run that applies nothing (a preview), or runs this component
+        //      only to reach selected paths below (a selective update), does
+        //      not stand in for what is already running: a preview from a UI
+        //      must not end the live update of the app it looks at.
+        //    - A catch-up (non-live) mount — a catch-up or preview update run
+        //      while a live update of the same app is running — leaves a
+        //      running live incarnation alone: replacing it would stop the
+        //      live update's watcher with no notice to anyone.
+        //    An incarnation running beside a running live one takes turns
+        //    with it (see `LiveComponentState::beside`) and is not installed
+        //    as the component's live state, so a later mount still finds, and
+        //    replaces, the live one. Any other existing incarnation is
+        //    cancelled and drained, with a 30s timeout.
         //
         // Without a timeout, a prior incarnation wedged in non-yielding
         // synchronous Python compute would hold the parent's
@@ -105,7 +145,17 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         // `update_full` reconciles. This trades quiescence for liveness —
         // same trade `App::drop_app` makes (see "drop_app" contract in
         // specs/live_component/design.md).
-        if let Some(existing_state) = child.live_state() {
+        let replaces_running = parent_ctx.preview_collector().is_none()
+            && !component_selector
+                .as_ref()
+                .is_some_and(ComponentSelector::can_leave_out_children);
+        let existing_state = child.live_state();
+        let existing_runs_live = existing_state
+            .as_ref()
+            .is_some_and(|state| state.is_running_live());
+        let leaves_existing =
+            existing_state.is_some() && (!replaces_running || (!live && existing_runs_live));
+        if let Some(existing_state) = existing_state.as_ref().filter(|_| !leaves_existing) {
             let drain_fut = existing_state.cancel_and_drain();
             if tokio::time::timeout(
                 std::time::Duration::from_secs(LIVE_COMPONENT_DRAIN_TIMEOUT_SECS),
@@ -123,36 +173,71 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             }
         }
 
+        // 2b. Write the live component's own `ChildExistence` row (and any
+        // missing ancestor rows) before any of its children can run.
+        //
+        // A regular mounted child gets this from `eager_existence_upsert`
+        // at the start of its Build; a live component has no Build of its
+        // own at mount time, so without this write its row would only
+        // appear at the parent's commit. In the gap, the first
+        // `operator.update()` child's eager upsert finds no row for this
+        // path and fills it in as `Directory`. The parent's commit then
+        // sees `Directory` → `Component` and reconciles the subtree with
+        // no `child_path_set`, tombstoning every child mounted so far —
+        // silently deleting their target states on a first run that calls
+        // `update()` before `update_full()` (e.g. a watch-only feed).
+        //
+        // Writing the row here means both installer paths (`coco.mount`
+        // from `process()` and `operator.update` from `process_live`)
+        // produce the same on-disk state at mount, and the parent's
+        // commit sees `Component` → `Component` (a no-op). It comes
+        // before the readiness guard (step 3) on purpose: a parent waits
+        // for its children's readiness even when its own `process()`
+        // failed, so a failed write must leave no guard outstanding.
+        // Failing here returns with nothing installed.
+        parent_ctx
+            .app_store()
+            .ensure_existence_chain(child.stable_path(), parent_ctx.stable_path())
+            .await?;
+
         // 3. Create readiness guard from parent's components_readiness.
-        let readiness_guard = parent_ctx.components_readiness().clone().add_child();
+        // A live component resolves its registration with a default outcome
+        // (no bit, no open children): live re-runs report nothing upward.
+        let readiness_guard = parent_ctx.components_readiness().clone().add_child(None);
 
         // 4. Create cancellation token as child of app's root token.
         let cancellation_token = parent_ctx.app_ctx().cancellation_token().child_token();
 
         // 5. Create LiveComponentState.
+        let beside = if leaves_existing && existing_runs_live {
+            existing_state.clone()
+        } else {
+            None
+        };
         let state = Arc::new(LiveComponentState::<Prof>::new(
             readiness_guard,
             cancellation_token,
+            live,
+            beside,
         ));
 
         // 6. Install ordering (matters for drop_app race coverage):
         //    (i)   app_store the new state in `child.live_state` (strong-ref anchor)
         //    (ii)  register Weak in `app_ctx.live_components` (compaction-on-push)
         //
-        // The DB `ChildExistence` row is written separately:
-        //   - For `coco.mount(LiveCompClass)` from inside `process()`: by
-        //     submit/commit, via `update_building_state`'s `child_path_set`.
-        //   - For `operator.update(LiveCompClass)` from `process_live`: by
-        //     `mount_inner_live` directly via `Storage::run_txn`, just below this
-        //     `complete()` call. (See `LiveComponentController::mount_inner_live`.)
-        // Both paths produce the same on-disk state.
+        // The DB `ChildExistence` row was written in step 2b above; the
+        // parent's submit/commit (for `coco.mount` from `process()`) later
+        // sees it already as `Component` and leaves it alone.
         //
         // (i) → (ii) order is required: a Weak registered before its strong
         // owner exists would die on `upgrade()`. With the strong owner held
         // by `child.live_state`, the Weak in `live_components` upgrades for
         // the lifetime of the live component (or until cancel-and-drain
-        // releases the strong ref).
-        child.set_live_state(state.clone());
+        // releases the strong ref). An incarnation running beside an existing
+        // one (step 2) is anchored by its controller alone.
+        if !leaves_existing {
+            child.set_live_state(state.clone());
+        }
         parent_ctx
             .app_ctx()
             .register_live_component(Arc::downgrade(&state));
@@ -166,6 +251,9 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             parent_ctx.full_reprocess(),
             live,
             parent_ctx.preview_collector().cloned(),
+            component_selector,
+            parent_ctx.update_refusal().clone(),
+            parent_ctx.app_store().clone(),
             providers,
             parent_ctx.admission().lender().clone(),
             parent_ctx.admission().share().new_live(),
@@ -302,12 +390,26 @@ pub struct LiveComponentState<Prof: EngineProfile> {
 
     /// JoinHandle of the tokio task running `process_live`. Set by `start()`.
     live_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+
+    /// Whether this incarnation was mounted by a live update.
+    live: bool,
+
+    /// For a catch-up incarnation mounted beside a running live one: that
+    /// live incarnation. The catch-up's `update_full` also takes the live
+    /// one's `update_full_lock` and `update_full_active` gate and waits for
+    /// its drains, so a live `update()` cannot land between the catch-up's
+    /// source listing and its commit (which would reconcile it away). A
+    /// live `update()` that arrives meanwhile queues and runs after the
+    /// catch-up's commit.
+    beside: Option<Arc<LiveComponentState<Prof>>>,
 }
 
 impl<Prof: EngineProfile> LiveComponentState<Prof> {
     pub fn new(
         readiness_guard: ComponentBgChildReadinessChildGuard,
         cancellation_token: tokio_util::sync::CancellationToken,
+        live: bool,
+        beside: Option<Arc<LiveComponentState<Prof>>>,
     ) -> Self {
         Self {
             update_full_lock: tokio::sync::Mutex::new(()),
@@ -320,7 +422,24 @@ impl<Prof: EngineProfile> LiveComponentState<Prof> {
             ready_notify: tokio::sync::Notify::new(),
             cancellation_token,
             live_task: Mutex::new(None),
+            live,
+            beside,
         }
+    }
+
+    /// Whether this is a live update's incarnation whose `process_live`
+    /// may still be following its source: it is not cancelled, and its task
+    /// has not finished. (Before `start()` sets the task, a mounted live
+    /// incarnation is about to run, so it counts as running.)
+    fn is_running_live(&self) -> bool {
+        self.live
+            && !self.cancellation_token.is_cancelled()
+            && !self
+                .live_task
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|task| task.is_finished())
     }
 
     pub fn cancellation_token(&self) -> &tokio_util::sync::CancellationToken {
@@ -368,13 +487,16 @@ impl<Prof: EngineProfile> LiveComponentState<Prof> {
         }
     }
 
-    /// Resolve readiness with error. Drops the guard without calling
-    /// resolve(); the guard's Drop reports failure to the parent.
-    fn resolve_ready_with_error(&self, _err: Error) {
+    /// Resolve readiness with `err`: the parent's readiness fails with this
+    /// error, so the caller that waits on it sees why `process_live` failed
+    /// rather than a generic "build cancelled".
+    fn resolve_ready_with_error(&self, err: Error) {
         let mut state = self.readiness.lock().unwrap();
         if !state.ready {
             state.ready = true;
-            state.guard.take();
+            if let Some(guard) = state.guard.take() {
+                guard.resolve_result(Err(SharedError::from(err)));
+            }
             self.ready_notify.notify_waiters();
         }
     }
@@ -457,11 +579,22 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     /// The mounting run's preview collector: in a preview, this component's
     /// runs preview too rather than apply.
     preview_collector: Option<PreviewActionCollector<Prof>>,
-    /// What a preview "committed" through [`Self::write_committed_state`]:
-    /// kept for this run only, so a later read in the same run sees it as
-    /// an update's would, and nothing persists. Shared by the clones of
-    /// this controller, as the preview collector is.
-    preview_committed_state: Arc<parking_lot::Mutex<HashMap<StableKey, Vec<u8>>>>,
+    /// The selector this component's runs are under, as in
+    /// [`ComponentProcessorContext::component_selector`]. It holds for the whole
+    /// update, live events included.
+    component_selector: Option<ComponentSelector>,
+    /// The mounting update's refusal slot (see [`UpdateRefusal`]), shared by
+    /// this component's runs.
+    update_refusal: UpdateRefusal,
+    /// What a run under a selector wrote through
+    /// [`Self::write_committed_state`]: it keeps it for its own reads, and does
+    /// not persist it. Such a value says something about the whole component
+    /// (a full scan is done, a logic version is current), which a run that left
+    /// children out has not earned.
+    selective_committed_state: Arc<parking_lot::Mutex<HashMap<StableKey, Vec<u8>>>>,
+    /// The mounting run's store handle, which persists nothing in a preview
+    /// (see [`ComponentProcessorContext::app_store`]).
+    app_store: AppStore,
 
     /// Providers inherited from the parent component context at creation time.
     /// Immutable — process() may not call use_mount(), so no new providers are created.
@@ -490,6 +623,9 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         full_reprocess: bool,
         live: bool,
         preview_collector: Option<PreviewActionCollector<Prof>>,
+        component_selector: Option<ComponentSelector>,
+        update_refusal: UpdateRefusal,
+        app_store: AppStore,
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         lender: Lender,
         share: LiveShare,
@@ -502,7 +638,10 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             full_reprocess,
             live,
             preview_collector,
-            preview_committed_state: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            component_selector,
+            update_refusal,
+            selective_committed_state: Default::default(),
+            app_store,
             providers,
             lender,
             share,
@@ -534,14 +673,10 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// set-reduces, and not participating in any commit, so it is safe in the
     /// non-committing `process_live` context.
     pub async fn read_committed_state(&self, key: &StableKey) -> Result<Option<Vec<u8>>> {
-        if self.preview_collector.is_some()
-            && let Some(value) = self.preview_committed_state.lock().get(key)
-        {
+        if let Some(value) = self.selective_committed_state.lock().get(key) {
             return Ok(Some(value.clone()));
         }
-        self.component
-            .app_ctx()
-            .app_store()
+        self.app_store
             .read_user_state(
                 self.component.stable_path(),
                 db_schema::StateKind::Live,
@@ -558,18 +693,21 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// `coco.use_state` (which targets the prune-eligible `Regular` keyspace).
     ///
     /// A preview persists nothing: a marker it committed would make the next
-    /// real run skip work the preview never did. It keeps the value for this
-    /// run, so a later [`Self::read_committed_state`] reads it back.
+    /// real run skip work the preview never did. Its store handle keeps the
+    /// value for the run instead, so a later [`Self::read_committed_state`]
+    /// reads it back.
     pub async fn write_committed_state(&self, key: &StableKey, value: Vec<u8>) -> Result<()> {
-        if self.preview_collector.is_some() {
-            self.preview_committed_state
+        if self
+            .component_selector
+            .as_ref()
+            .is_some_and(ComponentSelector::can_leave_out_children)
+        {
+            self.selective_committed_state
                 .lock()
                 .insert(key.clone(), value);
             return Ok(());
         }
-        self.component
-            .app_ctx()
-            .app_store()
+        self.app_store
             .write_user_state_standalone(
                 self.component.stable_path(),
                 db_schema::StateKind::Live,
@@ -582,12 +720,22 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// Full processing cycle. Acquires `update_full_lock` (serializes with
     /// concurrent `update_full()` calls), waits for any in-flight subpath
     /// drains to quiesce, then runs `process()` via `run_in_background`.
+    ///
+    /// Returns whether the pass reached every component under it: a failure
+    /// that `on_error` absorbs (or that is only logged) does not fail the call,
+    /// so a host that records its source as fully processed checks this first.
     pub async fn update_full(
         &self,
         processor: Prof::ComponentProc,
         on_error: Option<OnError>,
-    ) -> Result<()> {
+    ) -> Result<RunCompleteness> {
         let _full_guard = self.state.update_full_lock.lock().await;
+        // A catch-up incarnation beside a running live one also holds the
+        // live one's lock (always after its own: one lock order).
+        let _beside_full_guard = match &self.state.beside {
+            Some(live) => Some(live.update_full_lock.lock().await),
+            None => None,
+        };
 
         // Step-1 cancellation gate (mirrors design.md Section "update_full
         // body, step 1"). Avoids paying drain cost on a cancelled controller.
@@ -599,12 +747,16 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // observing it know to gate themselves before promoting queued ops.
         // Use an RAII guard so we always clear it on every exit path.
         let _active_guard = UpdateFullActiveGuard::new(&self.state);
+        let _beside_active_guard = self.state.beside.as_deref().map(UpdateFullActiveGuard::new);
 
         // Wait until no subpath has `processing == true`. We allow queued
         // ops to remain — they'll be re-collapsed to `Superseded` once
         // process() completes, since `update_full` re-derives all subpaths
         // authoritatively.
         self.state.wait_until_quiescent().await;
+        if let Some(live) = &self.state.beside {
+            live.wait_until_quiescent().await;
+        }
 
         // Now run process() via run_in_background. Errors from process() are
         // routed via `on_error` (parent's exception handler chain), matching
@@ -626,18 +778,28 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.live,
                 on_error.clone(),
                 self.preview_collector.clone(),
+                self.component_selector.clone(),
             ),
+            self.app_store.clone(),
+            self.update_refusal.clone(),
         );
 
-        let handle = self
+        let run = self
             .component
             .clone()
-            .run_in_background(processor, context, on_error)
+            .run_in_background_to_completeness(processor, context, on_error)
             .await?;
+        run.await.into_result()
+    }
 
-        handle.ready().await?;
-
-        Ok(())
+    /// The update's selector leaves out a mount at `subpath`. [`Self::update`]
+    /// and [`Self::mount_inner_live`] act on it themselves; a host may ask first,
+    /// to avoid preparing the mount.
+    pub fn skips_subpath(&self, subpath: &StablePath) -> bool {
+        matches!(
+            ComponentSelector::for_mount(self.component_selector.as_ref(), subpath),
+            MountDecision::Skip
+        )
     }
 
     /// Mount a child component incrementally. Same-subpath rapid calls are
@@ -654,6 +816,9 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         processor: Prof::ComponentProc,
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
+        if self.skips_subpath(&subpath) {
+            return Ok(ComponentExecutionHandle::finished());
+        }
         self.dispatch(
             subpath,
             Op::Update {
@@ -675,48 +840,28 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// returned handle. The tombstone always remains in the DB, so even
     /// a failed delete is retried by the next reconcile's GC sweep.
     ///
-    /// A preview writes no tombstone and deletes nothing: like the deletes of
-    /// the components an update no longer mounts, a live delete is not
-    /// previewed.
+    /// A preview deletes nothing: like the deletes of the components an update
+    /// no longer mounts, a live delete is not previewed (the tombstone never
+    /// persists, and the drain task skips the op).
+    ///
+    /// Under a selector, only a covered path is deleted: an ancestor of a
+    /// selected path holds unselected descendants too (the same call as
+    /// `reconcile_child_existence` makes for a child no longer declared).
     pub async fn delete(
         &self,
         subpath: StablePath,
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
-        // Synchronously remove the existence entry and write a tombstone,
-        // matching the prior implementation's contract.
-        if self.preview_collector.is_none()
-            && let Some((parent_ref, child_key)) = subpath.as_ref().split_parent()
+        if let Some(selector) = &self.component_selector
+            && !selector.covers(&subpath)
         {
-            let app_store = self.component.app_ctx().app_store().clone();
-            let parent_path: StablePath = parent_ref.into();
-            let child_key = child_key.clone();
-            let component_path = self.component.stable_path().clone();
-            let relative_child = subpath.as_ref().strip_parent(component_path.as_ref())?;
-            let relative_child: StablePath = relative_child.into();
-            self.component
-                .app_ctx()
-                .env()
-                .run_txn(move |wtxn| {
-                    let app_store = app_store.clone();
-                    let parent_path = parent_path.clone();
-                    let child_key = child_key.clone();
-                    let component_path = component_path.clone();
-                    let relative_child = relative_child.clone();
-                    Box::pin(async move {
-                        app_store
-                            .remove_child_with_tombstone(
-                                wtxn,
-                                &parent_path,
-                                &child_key,
-                                &component_path,
-                                &relative_child,
-                            )
-                            .await
-                    })
-                })
-                .await?;
+            return Ok(ComponentExecutionHandle::finished());
         }
+        // Synchronously remove the existence entry and write a tombstone,
+        // matching the prior implementation's contract. The drain task does
+        // it again when the op runs (see `run_op`).
+        remove_existence_with_tombstone(&self.app_store, self.component.stable_path(), &subpath)
+            .await?;
         self.dispatch(subpath, Op::Delete { on_error }).await
     }
 
@@ -784,6 +929,9 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let full_reprocess = self.full_reprocess;
         let live = self.live;
         let preview_collector = self.preview_collector.clone();
+        let component_selector = self.component_selector.clone();
+        let update_refusal = self.update_refusal.clone();
+        let app_store = self.app_store.clone();
         let lender = self.lender.clone();
         let share = self.share.clone();
 
@@ -802,6 +950,9 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 full_reprocess,
                 live,
                 preview_collector,
+                component_selector,
+                update_refusal,
+                app_store,
                 lender,
                 share,
             )
@@ -915,7 +1066,13 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// Cancellation contract: returns `Err(<cancelled>)` if the controller's
     /// token fires before or during the lock acquire / mount. The Python
     /// wrapper maps this to `MountOutcome.cancelled` if needed.
-    pub async fn mount_inner_live(&self, child_path: StablePath) -> Result<MountLiveResult<Prof>> {
+    ///
+    /// `None` when the selector leaves the child out (see
+    /// [`mount_live_prepare`]).
+    pub async fn mount_inner_live(
+        &self,
+        child_path: StablePath,
+    ) -> Result<Option<MountLiveResult<Prof>>> {
         // Cancellable lock acquisition: shutdown breaks out within one poll.
         let _full_guard = tokio::select! {
             biased;
@@ -933,7 +1090,8 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // (mirroring `update_full`'s ctx construction). The building state
         // is local to this context — child registration in `child_path_set`
         // is benign: nothing else reads this isolated state.
-        // Its update share puts the inner live component under this one.
+        // Its update share puts the inner live component under this one. It
+        // has no lender: it admits nothing itself.
         let parent_ctx = ComponentProcessorContext::new_borrowing_from(
             self.component.clone(),
             None,
@@ -949,49 +1107,23 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.live,
                 None,
                 self.preview_collector.clone(),
+                self.component_selector.clone(),
             ),
+            self.app_store.clone(),
+            self.update_refusal.clone(),
         );
         let fn_ctx = FnCallContext::default();
 
-        let pending = mount_live_prepare(&parent_ctx, &fn_ctx, child_path.clone(), self.live)?;
+        // `complete()` writes the child's `ChildExistence` DB row, so the
+        // next `update_full`'s tombstone scan can see this child and
+        // reconcile its target states on parent re-runs that don't
+        // re-issue this `operator.update` call.
+        let Some(pending) = mount_live_prepare(&parent_ctx, &fn_ctx, child_path, self.live)? else {
+            return Ok(None);
+        };
         let result = pending.complete().await?;
 
-        // Polish 4: write the `ChildExistence` DB row symmetric with the
-        // through-`process()` install path (where it's written via
-        // submit/commit). Without this row, the next `update_full`'s
-        // tombstone scan can't see this child and won't reconcile its
-        // target states on parent re-runs that DON'T re-issue this
-        // operator.update call. With this row, the install/tombstone
-        // state machine is symmetric across both installer paths. A preview
-        // writes no state, so it skips this as submit/commit does.
-        if self.preview_collector.is_none()
-            && let Some((parent_path_ref, child_key)) = child_path.as_ref().split_parent()
-        {
-            let app_store = self.component.app_ctx().app_store().clone();
-            let parent_path: StablePath = parent_path_ref.into();
-            let child_key = child_key.clone();
-            self.component
-                .app_ctx()
-                .env()
-                .run_txn(move |wtxn| {
-                    let app_store = app_store.clone();
-                    let parent_path = parent_path.clone();
-                    let child_key = child_key.clone();
-                    Box::pin(async move {
-                        crate::engine::execution::ensure_path_node_type(
-                            &app_store,
-                            wtxn,
-                            parent_path.as_ref(),
-                            &child_key,
-                            crate::state::db_schema::StablePathNodeType::Component,
-                        )
-                        .await
-                    })
-                })
-                .await?;
-        }
-
-        Ok(result)
+        Ok(Some(result))
         // _full_guard drops here, releasing update_full_lock.
     }
 }
@@ -1116,6 +1248,9 @@ async fn drain_task_body<Prof: EngineProfile>(
     full_reprocess: bool,
     live: bool,
     preview_collector: Option<PreviewActionCollector<Prof>>,
+    component_selector: Option<ComponentSelector>,
+    update_refusal: UpdateRefusal,
+    app_store: AppStore,
     lender: Lender,
     share: LiveShare,
 ) {
@@ -1185,6 +1320,9 @@ async fn drain_task_body<Prof: EngineProfile>(
             full_reprocess,
             live,
             &preview_collector,
+            component_selector.as_ref(),
+            &update_refusal,
+            &app_store,
             &lender,
             &share,
         )
@@ -1230,6 +1368,47 @@ async fn drain_task_body<Prof: EngineProfile>(
     }
 }
 
+/// Remove `subpath`'s existence entry under its parent and write its
+/// tombstone under `component_path` (the live component), in one txn. Both
+/// writes are idempotent.
+async fn remove_existence_with_tombstone(
+    app_store: &AppStore,
+    component_path: &StablePath,
+    subpath: &StablePath,
+) -> Result<()> {
+    let Some((parent_ref, child_key)) = subpath.as_ref().split_parent() else {
+        return Ok(());
+    };
+    let parent_path: StablePath = parent_ref.into();
+    let child_key = child_key.clone();
+    let relative_child: StablePath = subpath
+        .as_ref()
+        .strip_parent(component_path.as_ref())?
+        .into();
+    let component_path = component_path.clone();
+    let store = app_store.clone();
+    app_store
+        .run_txn(move |wtxn| {
+            let store = store.clone();
+            let parent_path = parent_path.clone();
+            let child_key = child_key.clone();
+            let component_path = component_path.clone();
+            let relative_child = relative_child.clone();
+            Box::pin(async move {
+                store
+                    .remove_child_with_tombstone(
+                        wtxn,
+                        &parent_path,
+                        &child_key,
+                        &component_path,
+                        &relative_child,
+                    )
+                    .await
+            })
+        })
+        .await
+}
+
 /// Execute a single op. Returns `Result<()>` from the underlying child
 /// `run_in_background` / `delete` flow.
 #[allow(clippy::too_many_arguments)]
@@ -1244,6 +1423,9 @@ async fn run_op<Prof: EngineProfile>(
     full_reprocess: bool,
     live: bool,
     preview_collector: &Option<PreviewActionCollector<Prof>>,
+    component_selector: Option<&ComponentSelector>,
+    update_refusal: &UpdateRefusal,
+    app_store: &AppStore,
     lender: &Lender,
     share: &LiveShare,
 ) -> Result<()> {
@@ -1269,7 +1451,11 @@ async fn run_op<Prof: EngineProfile>(
                     live,
                     on_error.clone(),
                     preview_collector.clone(),
+                    // `update` already skipped an unselected subpath.
+                    ComponentSelector::scoped_to(component_selector, subpath),
                 ),
+                app_store.clone(),
+                update_refusal.clone(),
             );
             let inner_handle = child
                 .run_in_background(processor, context, on_error)
@@ -1277,11 +1463,20 @@ async fn run_op<Prof: EngineProfile>(
             inner_handle.ready().await
         }
         Op::Delete { on_error } => {
-            // A preview previews no deletes of components (see
-            // `LiveComponentController::delete`).
-            if preview_collector.is_some() {
+            // A run that persists nothing (a preview) previews no deletes of
+            // components (see `LiveComponentController::delete`).
+            if app_store.write_scope() != crate::state_store::WriteScope::Persisted {
                 return Ok(());
             }
+            // Remove the existence entry again, now that this subpath's
+            // earlier ops have finished. An update that was already running
+            // when the delete was dispatched wrote it back (its build's eager
+            // existence upsert), and the delete run below takes an existing
+            // `Component` entry for a re-mount and deletes nothing, which
+            // would leave the update's target states behind. Ops of one
+            // subpath run one at a time, and none runs during `update_full`,
+            // so nothing writes the entry between here and the delete run.
+            remove_existence_with_tombstone(app_store, component.stable_path(), subpath).await?;
             let context = ComponentProcessorContext::new_borrowing_from(
                 child.clone(),
                 Some(lender.clone()),
@@ -1289,6 +1484,8 @@ async fn run_op<Prof: EngineProfile>(
                 processing_stats.clone(),
                 host_ctx.clone(),
                 ComponentProcessingAction::new_delete(providers.clone(), on_error),
+                app_store.clone(),
+                update_refusal.clone(),
             );
             let inner_handle = child.delete(context)?;
             inner_handle.ready().await

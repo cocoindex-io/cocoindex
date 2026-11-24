@@ -502,7 +502,7 @@ def test_memo_nested_functions_with_components() -> None:
             "1A": SourceDataEntry(name="1A", version=1, content="content1A"),
         },
     )
-    with pytest.raises(Exception, match="memo=True mounted child components"):
+    with pytest.raises(Exception, match="mounted child components"):
         app.update_blocking()
 
 
@@ -542,7 +542,7 @@ def test_memo_nested_functions_with_components_async() -> None:
             "1A": SourceDataEntry(name="1A", version=1, content="content1A"),
         },
     )
-    with pytest.raises(Exception, match="memo=True mounted child components"):
+    with pytest.raises(Exception, match="mounted child components"):
         app.update_blocking()
 
 

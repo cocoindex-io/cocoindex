@@ -10,6 +10,7 @@
 //!
 //! What the Rust SDK provides vs. what this example hand-rolls:
 //!   - mount_each / memo / ContextKey            -> from `cocoindex`
+//!     (one processing component per thread declaring its rows, cf. Python `process_thread`)
 //!   - HN scraping (Algolia API) + LLM topics    -> `reqwest` (OpenAI JSON mode)
 //!   - Postgres TableTarget incremental sync      -> from `cocoindex`
 //!
@@ -174,12 +175,6 @@ struct HnTopicRow {
     created_at: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct ProcessedThread {
-    messages: Vec<HnMessageRow>,
-    topics: Vec<HnTopicRow>,
-}
-
 async fn fetch_thread_ids(max_threads: usize) -> Result<Vec<String>> {
     let v: serde_json::Value = HTTP
         .get("https://hn.algolia.com/api/v1/search_by_date")
@@ -271,44 +266,51 @@ fn max_comments() -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// Fetch one thread and extract topics for every message.
-/// Memoized by thread id: re-runs skip already-processed threads, while target
-/// row declarations still happen in the active pipeline.
+/// Fetch one thread, extract topics for every message and declare the rows
+/// (cf. Python `process_thread`). Mounted as a per-thread processing component:
+/// the component memo skips a thread already processed, and a thread that
+/// drops out of the latest list takes its rows with it.
 #[cocoindex::function]
-async fn process_thread(ctx: &Ctx, thread_id: String) -> Result<ProcessedThread> {
+async fn process_thread(
+    ctx: &Ctx,
+    thread_id: String,
+    messages: postgres::TableTarget,
+    topics: postgres::TableTarget,
+) -> Result<()> {
     let llm = ctx.get_key(&LLM)?;
     let thread = fetch_thread(&thread_id, max_comments()).await?;
-    let mut messages = Vec::with_capacity(thread.messages.len());
-    let mut topic_rows = Vec::new();
 
     for msg in &thread.messages {
-        let topics = match &msg.text {
+        let msg_topics = match &msg.text {
             Some(t) => llm.extract_topics(t).await?,
             None => Vec::new(),
         };
-        messages.push(HnMessageRow {
-            id: msg.id.clone(),
-            thread_id: thread.id.clone(),
-            content_type: msg.content_type.to_string(),
-            author: msg.author.clone(),
-            text: msg.text.clone(),
-            url: msg.url.clone(),
-            created_at: msg.created_at.clone(),
-        });
-        for topic in topics {
-            topic_rows.push(HnTopicRow {
-                topic,
-                message_id: msg.id.clone(),
+        messages.declare_row(
+            ctx,
+            &HnMessageRow {
+                id: msg.id.clone(),
                 thread_id: thread.id.clone(),
                 content_type: msg.content_type.to_string(),
+                author: msg.author.clone(),
+                text: msg.text.clone(),
+                url: msg.url.clone(),
                 created_at: msg.created_at.clone(),
-            });
+            },
+        )?;
+        for topic in msg_topics {
+            topics.declare_row(
+                ctx,
+                &HnTopicRow {
+                    topic,
+                    message_id: msg.id.clone(),
+                    thread_id: thread.id.clone(),
+                    content_type: msg.content_type.to_string(),
+                    created_at: msg.created_at.clone(),
+                },
+            )?;
         }
     }
-    Ok(ProcessedThread {
-        messages,
-        topics: topic_rows,
-    })
+    Ok(())
 }
 
 async fn app_main(ctx: Ctx, max_threads: usize) -> Result<()> {
@@ -332,23 +334,12 @@ async fn app_main(ctx: Ctx, max_threads: usize) -> Result<()> {
     let thread_ids = fetch_thread_ids(max_threads).await?;
     println!("fetched {} threads from HackerNews", thread_ids.len());
 
-    let processed = mount_each!(thread_ids.into_iter().map(|id| (id.clone(), id)), |id| {
-        process_thread(ctx, id)
+    // One processing component per thread, declaring its own rows
+    // (cf. Python `coco.mount_each(process_thread, ((tid, tid) for tid in thread_ids), targets)`).
+    mount_each!(thread_ids.into_iter().map(|id| (id.clone(), id)), |id| {
+        process_thread(ctx, id, messages, topics)
     })
     .await?;
-
-    let mut count = 0usize;
-    for thread in &processed {
-        count += thread.messages.len();
-        for row in &thread.messages {
-            messages.declare_row(&ctx, row)?;
-        }
-        for row in &thread.topics {
-            topics.declare_row(&ctx, row)?;
-        }
-    }
-
-    println!("processed {count} messages across threads");
     Ok(())
 }
 

@@ -1,0 +1,11 @@
+INVOICE 1042
+Vendor: Harbor Cloud Hosting
+Date: 2026-09-10
+Due: 2026-09-24
+Items:
+  - Compute, September, 1 @ 1200.00 = 1200.00
+  - Object storage, 3 TB @ 20.00 = 60.00
+Subtotal: 1260.00
+Tax (0%): 0.00
+Total: 1260.00 USD
+Status: unpaid

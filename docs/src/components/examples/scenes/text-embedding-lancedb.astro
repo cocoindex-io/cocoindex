@@ -1,0 +1,118 @@
+---
+// Semantic search with LanceDB: the hero is the folder on disk. There is no
+// server; lancedb.connect_async("./lancedb_data") opens a directory, and the
+// doc_embeddings table lives inside it as doc_embeddings.lance/. Rows are the
+// DocEmbedding dataclass; offsets are the RecursiveSplitter's real output for
+// the three shipped files (chunk_size=2000, chunk_overlap=500). The hits are
+// the real top two for the README query with all-MiniLM-L6-v2.
+// rfc8259.md is the edited file (Δ).
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="ld">
+    <div class="sc-row">
+      <div class="sc-col ld-src">
+        <span class="sc-cap">Source</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span>markdown_files/</div>
+          <div class="sc-panel-b">
+            <div class="sc-li"><span class="sc-ico i-file"></span><span>1706.03762v7.md</span></div>
+            <div class="sc-li"><span class="sc-ico i-file"></span><span>1810.04805v2.md</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>rfc8259.md</span><span class="sc-dmark">Δ</span></div>
+          </div>
+        </div>
+        <div class="sc-stack ld-ops">
+          <span class="sc-chip"><span class="sc-ico i-code"></span>RecursiveSplitter</span>
+          <span class="sc-chip"><span class="sc-ico i-model"></span>all-MiniLM-L6-v2</span>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col ld-wide">
+        <span class="sc-cap">A folder on disk, no server</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span>text_embedding_lancedb/</div>
+          <div class="ld-tree">
+            <div class="ld-t ld-d1"><span class="sc-ico i-code"></span><span>main.py</span></div>
+            <div class="ld-t ld-d1"><span class="sc-ico i-folder"></span><span>markdown_files/</span></div>
+            <div class="ld-t ld-d1"><span class="sc-ico i-folder"></span><span>lancedb_data/</span><span class="ld-meta">created on first run</span></div>
+            <div class="ld-t ld-d2 ld-on"><span class="sc-ico i-table"></span><span>doc_embeddings.lance/</span></div>
+          </div>
+          <table class="sc-table ld-table">
+            <thead><tr><th>filename</th><th class="ld-n">chunk_start</th><th class="ld-txt sc-hide-narrow">text</th></tr></thead>
+            <tbody>
+              <tr><td>1706.03762v7.md</td><td class="sc-dim ld-n">0</td><td class="sc-dim ld-txt sc-hide-narrow">Provided proper attribution…</td></tr>
+              <tr><td>1706.03762v7.md</td><td class="sc-dim ld-n">1758</td><td class="sc-dim ld-txt sc-hide-narrow">Equal contribution. Listing order…</td></tr>
+              <tr><td>1810.04805v2.md</td><td class="sc-dim ld-n">0</td><td class="sc-dim ld-txt sc-hide-narrow"># BERT: Pre-training…</td></tr>
+              <tr class="sc-delta"><td>rfc8259.md</td><td class="ld-n"><span class="sc-dtext">0</span></td><td class="ld-txt sc-hide-narrow"><span class="sc-dtext">Internet Engineering…</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <pre class="sc-code ld-code"><span class="f">lancedb</span>.connect_async(<span class="s">"./lancedb_data"</span>)</pre>
+      </div>
+    </div>
+
+    <div class="ld-search">
+      <span class="sc-cap">Search by meaning, straight from the folder</span>
+      <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py "what is self-attention?"</span></div>
+      <div class="sc-panel"><div class="sc-panel-b ld-hits">
+        <div class="sc-hit"><span class="r">1</span><span><span class="src">1706.03762v7.md</span><span class="sc-quote sc-clip2">Figure 3: An example of the attention mechanism following long-distance dependencies in the encoder self-attention in layer 5 of 6.</span></span></div>
+        <div class="sc-hit"><span class="r">2</span><span><span class="src">1706.03762v7.md</span><span class="sc-quote sc-clip2">The Transformer uses multi-head attention in three different ways…</span></span></div>
+      </div></div>
+      <span class="sc-cap ld-fine">Copy lancedb_data/ to move the whole index; delete it to start fresh.</span>
+    </div>
+  </div>
+) : (
+  <div class="ld-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel ld-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-folder"></span>markdown_files/</div>
+        <div class="sc-panel-b">
+          <div class="sc-li"><span class="sc-ico i-file"></span><span>1706.03762v7.md</span></div>
+          <div class="sc-li"><span class="sc-ico i-file"></span><span>1810.04805v2.md</span></div>
+          <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>rfc8259.md</span></div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel ld-card-dst">
+        <div class="sc-panel-h"><span class="sc-ico i-folder"></span>lancedb_data/</div>
+        <div class="sc-panel-b">
+          <div class="sc-li"><span class="sc-ico i-table"></span><span>doc_embeddings.lance/</span></div>
+          <span class="sc-cap">No server, one folder</span>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .ld { display: flex; flex-direction: column; gap: 18px; }
+  .ld > .sc-row { gap: 10px; }
+  .ld-src { flex: 0.85 1 0; }
+  .ld-wide { flex: 1.7 1 0; }
+  .ld-ops { align-items: flex-start; }
+  .ld .sc-li { font-size: 12px; }
+  .ld-tree { display: flex; flex-direction: column; gap: 1px; padding: 8px 10px; border-bottom: 1px solid var(--sc-line); font-family: var(--mono); font-size: 12px; color: var(--sc-muted); }
+  .ld-t { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 2px 0; }
+  .ld-t > span:not(.sc-ico) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ld-d2 { padding-left: 22px; }
+  .ld-on { color: var(--sc-ink); }
+  .ld-meta { margin-left: auto; padding-left: 8px; font-family: var(--sans); font-size: 11.5px; color: var(--sc-dim); }
+  .ld-table th:first-child, .ld-table td:first-child { padding-left: 22px; }
+  .ld-n { width: 84px; text-align: right; }
+  .ld-txt { width: 38%; }
+  .ld-code { align-self: flex-start; max-width: 100%; text-overflow: ellipsis; }
+  .ld-fine { font-weight: 400; }
+  .ld-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .ld-hits { gap: 0; }
+
+  .ld-card { height: 100%; display: flex; align-items: center; }
+  .ld-card { min-width: 0; contain: inline-size; }
+  .ld-card > .sc-row { width: 100%; min-width: 0; align-items: center; }
+  .ld-card-src { flex: 1 1 0; }
+  .ld-card-dst { flex: 1 1 0; }
+  @container (max-width: 560px) {
+    .ld-table th:first-child, .ld-table td:first-child { padding-left: 8px; }
+    .ld-n { width: 76px; }
+  }
+</style>

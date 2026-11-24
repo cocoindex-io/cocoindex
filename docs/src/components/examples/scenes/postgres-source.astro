@@ -1,0 +1,142 @@
+---
+// Postgres as a source: the rows prepare_source_data.sql seeds into
+// source_products (real columns and values), process_product's two derived
+// fields (full_description, total_value = price * amount, computed from the
+// seed values) and the embedding, the target table coco_examples_v1.output,
+// and the README's query with main.py's result line format. The UPDATE to
+// Wireless Headphones is an illustrative edit (Δ): only that row is re-derived
+// and re-embedded on the next `cocoindex update main`.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="ps">
+    <div class="sc-col">
+      <span class="sc-cap">Your table</span>
+      <div class="sc-panel">
+        <div class="sc-panel-h"><span class="sc-ico i-db"></span>source_products<span class="ps-pk">PRIMARY KEY (product_category, product_name)</span></div>
+        <table class="sc-table">
+          <thead><tr><th class="ps-cat">product_category</th><th class="ps-name">product_name</th><th>description</th><th class="ps-num">price</th><th class="ps-amt">amount</th></tr></thead>
+          <tbody>
+            <tr class="sc-delta"><td class="ps-cat">Electronics</td><td class="ps-name">Wireless Headphones</td><td><span class="sc-dtext">High-quality wireless headphones with active noise cancellation</span></td><td class="ps-num">199.99</td><td class="ps-amt">50</td></tr>
+            <tr><td class="ps-cat">Electronics</td><td class="ps-name">Smartphone</td><td class="sc-dim">Latest flagship smartphone with advanced camera</td><td class="ps-num">899.99</td><td class="ps-amt">25</td></tr>
+            <tr><td class="ps-cat">Electronics</td><td class="ps-name">Laptop</td><td class="sc-dim">High-performance laptop for work and gaming</td><td class="ps-num">1299.99</td><td class="ps-amt">15</td></tr>
+            <tr class="sc-hide-narrow"><td class="ps-cat">Appliances</td><td class="ps-name">Coffee Maker</td><td class="sc-dim">Programmable coffee maker with 12-cup capacity</td><td class="ps-num">89.99</td><td class="ps-amt">30</td></tr>
+            <tr class="sc-hide-narrow"><td class="ps-cat">Sports</td><td class="ps-name">Running Shoes</td><td class="sc-dim">Lightweight running shoes for daily training</td><td class="ps-num">129.5</td><td class="ps-amt">60</td></tr>
+          </tbody>
+        </table>
+        <div class="ps-upd"><span class="sc-dmark">Δ</span><code>UPDATE source_products SET description = '… with <b>active</b> noise cancellation' WHERE product_name = 'Wireless Headphones';</code></div>
+      </div>
+    </div>
+
+    <div class="sc-row ps-mid">
+      <div class="sc-col ps-fn">
+        <span class="sc-cap">process_product, once per row</span>
+        <pre class="sc-code"><span class="f">@coco.fn</span>(memo=<span class="n">True</span>)
+<span class="k">async def</span> <span class="f">process_product</span>(product, table):
+    full_description = <span class="s">f"Category: …\nName: …"</span>
+    total_value = product.price * product.amount
+    embedding = <span class="k">await</span> coco.use_context(
+        EMBEDDER).embed(full_description)
+    table.declare_row(row=OutputProduct(…))</pre>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col ps-derived">
+        <span class="sc-cap">Derived for the edited row</span>
+        <div class="sc-panel sc-delta"><div class="sc-panel-b ps-dv">
+          <span class="ps-k">full_description</span>
+          <pre class="ps-fd">Category: Electronics
+Name: Wireless Headphones
+
+High-quality wireless headphones with <span class="sc-dtext">active</span> noise cancellation</pre>
+          <div class="ps-kv"><span class="ps-k">total_value</span><span class="sc-mono">199.99 × 50 = 9999.5</span></div>
+          <div class="ps-kv"><span class="ps-k">embedding</span><span class="sc-mono sc-dtext">all-MiniLM-L6-v2 [ … ]</span></div>
+        </div></div>
+      </div>
+    </div>
+
+    <div class="sc-col">
+      <span class="sc-cap">Postgres + pgvector</span>
+      <div class="sc-panel">
+        <div class="sc-panel-h"><span class="sc-ico i-table"></span>coco_examples_v1.output</div>
+        <table class="sc-table">
+          <thead><tr><th class="ps-cat">product_category</th><th class="ps-name">product_name</th><th class="ps-tv">total_value</th><th>embedding</th></tr></thead>
+          <tbody>
+            <tr class="sc-delta"><td class="ps-cat">Electronics</td><td class="ps-name">Wireless Headphones</td><td class="ps-tv">9999.5</td><td><span class="sc-dtext">[ … ] re-embedded</span></td></tr>
+            <tr><td class="ps-cat">Electronics</td><td class="ps-name">Smartphone</td><td class="ps-tv">22499.75</td><td class="sc-dim">[ … ]</td></tr>
+            <tr><td class="ps-cat">Electronics</td><td class="ps-name">Laptop</td><td class="ps-tv">19499.85</td><td class="sc-dim">[ … ]</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <span class="sc-cap ps-fine">One row changed in the source, one row re-embedded in the target.</span>
+    </div>
+
+    <div class="ps-search">
+      <span class="sc-cap">Search your rows by meaning</span>
+      <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py "wireless headphones"</span></div>
+      <div class="sc-panel"><div class="sc-panel-b">
+        <div class="sc-hit"><span class="r">1</span><span><span class="src">Electronics | Wireless Headphones | 50 | 9999.5</span><span class="sc-quote">High-quality wireless headphones with active noise cancellation</span></span></div>
+      </div></div>
+    </div>
+  </div>
+) : (
+  <div class="ps-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel ps-card-t">
+        <div class="sc-panel-h"><span class="sc-ico i-db"></span>source_products</div>
+        <div class="sc-panel-b">
+          <div class="sc-li sc-delta"><span>Wireless Headphones</span><span class="sc-dmark">Δ</span></div>
+          <div class="sc-li"><span>Smartphone</span></div>
+          <div class="sc-li"><span>Laptop</span></div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel ps-card-t">
+        <div class="sc-panel-h"><span class="sc-ico i-table"></span>output</div>
+        <div class="sc-panel-b">
+          <div class="sc-li sc-delta"><span>Wireless Headphones</span><span class="sc-meta ps-card-v">[ … ]</span></div>
+          <div class="sc-li"><span>Smartphone</span><span class="sc-meta">[ … ]</span></div>
+          <div class="sc-li"><span>Laptop</span><span class="sc-meta">[ … ]</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .ps { display: flex; flex-direction: column; gap: 16px; }
+  .ps-pk { margin-left: auto; padding-left: 8px; font-size: 11.5px; color: var(--sc-dim); overflow: hidden; text-overflow: ellipsis; }
+  .ps-cat { width: 128px; }
+  .ps-name { width: 158px; }
+  .ps-num { width: 72px; text-align: right !important; }
+  .ps-amt { width: 64px; text-align: right !important; }
+  .ps-tv { width: 104px; text-align: right !important; }
+  .ps-upd { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-top: 1px solid var(--sc-line); min-width: 0; }
+  .ps-upd code { min-width: 0; font-family: var(--mono); font-size: 12px; color: var(--sc-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: none; border: 0; padding: 0; contain: inline-size; flex: 1 1 0; }
+  .ps-upd b { font-weight: 400; color: var(--sc-delta-text); }
+
+  .ps-mid { gap: 10px; }
+  .ps-fn { flex: 1.45 1 0; }
+  .ps-fn .sc-code { text-overflow: ellipsis; contain: inline-size; }
+  .ps-derived { flex: 1 1 0; }
+  .ps-dv { gap: 6px; }
+  .ps-k { font-family: var(--sans); font-size: 12px; color: var(--sc-dim); }
+  .ps-fd { margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.45; color: var(--sc-ink); white-space: pre-wrap; }
+  .ps-kv { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; padding-top: 6px; border-top: 1px solid var(--sc-line); }
+  .ps-kv .sc-mono { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ps-fine { font-weight: 400; }
+
+  .ps-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .ps-search .sc-hit { padding: 2px 0; }
+  .ps-search .src { color: var(--sc-ink); }
+
+  .ps-card { height: 100%; display: flex; align-items: center; }
+  .ps-card > .sc-row { width: 100%; }
+  .ps-card-t { flex: 1 1 0; contain: inline-size; }
+  .ps-card-v { color: var(--sc-delta-text) !important; }
+
+  @container (max-width: 560px) {
+    .ps-cat, .ps-amt, .ps-num, .ps-tv, .ps-pk { display: none; }
+    .ps-name { width: 46%; }
+  }
+</style>

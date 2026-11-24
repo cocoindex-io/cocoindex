@@ -116,6 +116,9 @@ pub struct UpdateStats {
     pub by_component: BTreeMap<String, ComponentStats>,
     /// Whether initial processing has caught up.
     pub status: UpdateStatus,
+    /// What the stats groups under this scope count, at any depth. Their work is
+    /// split out of `by_component`, and of [`UpdateStats::total`].
+    pub in_groups: ComponentStats,
 }
 
 impl UpdateStats {

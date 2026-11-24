@@ -1,6 +1,6 @@
 /* Brand fonts — self-hosted WOFF2, the single font source for every surface
    (provided by @cocoindex/brand; docs no longer self-hosts its own). */
-@import '@cocoindex/brand/fonts.css';
+/* Brand fonts (Plus Jakarta / JetBrains Mono) replaced by Geist in site.css. */
 /* Shared design layer — from @cocoindex/brand, the single source of truth across
    home, blog, and docs. tokens.css = :root tokens; components.css = the shared
    primitives (callouts, .btn, .t-* tags, inline code + .code-figure, cards, prose). */
@@ -18,3 +18,6 @@
    used on the docs landing/section overview pages. */
 @import '@cocoindex/brand/doc-card.css';
 @import '@cocoindex/brand/doc-card-grid.css';
+
+/* Category Standard layer — must load last. */
+@import './site.css';

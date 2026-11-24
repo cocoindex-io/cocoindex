@@ -73,6 +73,7 @@ use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::prelude::*;
+use crate::state::component_selector::{ComponentSelection, ComponentSelector};
 use crate::state::db_schema::{
     ChildExistenceInfo, StablePathEntryTrackingInfo, StablePathNodeType, StateKind,
 };
@@ -97,9 +98,6 @@ use crate::state_store::WriteTxn;
 pub struct PrecommitReadPlan {
     /// Self path. Stage marker scope.
     pub self_path: StablePath,
-    /// This process's stage token. Stored in the on-disk tracking-info
-    /// blob's `pending_process_token` field.
-    pub self_token: u128,
 }
 
 /// Output of [`PrecommitSession::precommit_read`]. Pure read — the
@@ -111,13 +109,6 @@ pub struct PrecommitReadResult {
     /// Existing committed tracking-info bytes for `self_path`. `None`
     /// if no row yet.
     pub existing_tracking_info: Option<Vec<u8>>,
-    /// Pending-stage token observed on `self_path` — `self_token` if no
-    /// other writer is in flight, otherwise the other writer's token.
-    /// The engine compares it to `self_token` to detect the "another
-    /// process is in flight on this same component" case. (Intra-process
-    /// is already serialized by the per-component semaphore, so a
-    /// mismatch implies a different process.)
-    pub post_stage_token: u128,
 }
 
 /// Inputs to [`PrecommitSession::precommit_claim_targets`].
@@ -174,11 +165,14 @@ pub struct PrecommitWritePlan {
     /// Self path.
     pub self_path: StablePath,
     /// New tracking-info bytes for this component. `None` skips the
-    /// write (e.g. nothing to track yet).
+    /// write (nothing to track yet, or nothing the build changed).
     pub new_tracking_info: Option<Vec<u8>>,
     /// For each preempted other-owner: their new tracking-info bytes
     /// (with the preempted item removed by the engine).
     pub preempted_owner_updates: BTreeMap<StablePath, Vec<u8>>,
+    /// The preempted owners the update does not run: their memos, and their
+    /// ancestors', are dropped with the takeover.
+    pub preempted_owners_left_out: Vec<StablePath>,
     /// Readable names for the provider segments of the declared
     /// target-state paths, keyed by lone segment fingerprint. Applied
     /// write-once (existing entries left untouched) so inspection can
@@ -236,18 +230,8 @@ impl PrecommitSession {
             .app_store
             .read_tracking_info_in_txn(wtxn, &plan.self_path)
             .await?;
-        let existing_pending = match raw.as_deref() {
-            Some(bytes) => {
-                let info: StablePathEntryTrackingInfo<'_> = from_msgpack_slice(bytes)?;
-                info.pending_process_token
-            }
-            None => None,
-        };
-        let post_stage_token = existing_pending.unwrap_or(plan.self_token);
-
         Ok(PrecommitReadResult {
             existing_tracking_info: raw,
-            post_stage_token,
         })
     }
 
@@ -322,11 +306,22 @@ impl PrecommitSession {
 // Phase 4 — Commit
 // ---------------------------------------------------------------------------
 
+/// What [`AppStore::commit`] does to the component's tracking-info row.
+pub enum TrackingInfoWrite {
+    /// Write these final bytes (`Build` mode).
+    Write(Vec<u8>),
+    /// Delete the row (`Delete` mode).
+    Delete,
+    /// Leave the row as it is: the build queued no action and the bytes it
+    /// would write equal the stored ones, so its precommit wrote nothing
+    /// either (see `pre_commit` in the engine).
+    Keep,
+}
+
 /// Inputs to [`AppStore::commit`].
 pub struct CommitPlan {
-    /// Final tracking-info bytes for self. `None` in `Delete` mode
-    /// (AppStore deletes the row instead).
-    pub new_tracking_info: Option<Vec<u8>>,
+    /// What happens to self's tracking-info row.
+    pub tracking_info: TrackingInfoWrite,
     /// Bulk upserts on `__target`.
     pub target_owners_to_upsert: Vec<(TargetStatePath, StablePath)>,
     /// Bulk deletes from `__target` (pruned-item cleanup).
@@ -384,7 +379,7 @@ impl AppStore {
     /// writes if the callback returns `None` (PendingRetry; the batched
     /// WTxn still commits whatever other bodies wrote).
     ///
-    /// Routes through [`crate::state_store::Storage::run_txn`] so
+    /// Routes through [`AppStore::run_txn`] so
     /// concurrent precommits coalesce into one WTxn → one fsync (per
     /// AGENTS.md "LMDB write paths"). LMDB has no savepoints — to
     /// "abort" on PendingRetry, the body contributes no writes.
@@ -395,12 +390,12 @@ impl AppStore {
     /// write batch fails, keeping only the last run's output. So the
     /// callback must be side-effect-free on its captures: clone what the
     /// body consumes inside the closure (typically a few `Arc::clone`s)
-    /// rather than moving it out. A result handed out through a captured
-    /// slot rather than the return value (as the preview path does) must
-    /// overwrite the slot on each run, never accumulate into it.
+    /// rather than moving it out.
     ///
     /// A callback error fails only this call: none of its writes commit,
-    /// while the other bodies of the batch commit without it.
+    /// while the other bodies of the batch commit without it. On a handle
+    /// from [`AppStore::discarding_writes`] the writes stay in the run's
+    /// overlay: a preview plans its actions through here like a real submit.
     pub async fn precommit<T, F>(
         &self,
         component_path: &StablePath,
@@ -420,47 +415,62 @@ impl AppStore {
         let component_path_outer = component_path.clone();
         let callback = Arc::new(callback);
 
-        self.storage
-            .run_txn(move |wtxn: &mut WriteTxn<'_>| {
-                let app_store = app_store.clone();
-                let component_path = component_path_outer.clone();
-                let callback = Arc::clone(&callback);
-                Box::pin(async move {
-                    let mut session = PrecommitSession::new(app_store.clone());
-                    let cb_result = callback(wtxn, &mut session).await?;
-                    match cb_result {
-                        Some((plan, output)) => {
-                            // Apply __target claims (the work deferred from
-                            // `precommit_claim_targets`).
-                            if let Some(paths) = session.paths_to_claim.take() {
-                                for path in paths {
-                                    app_store
-                                        .upsert_target_state_owner(wtxn, &path, &component_path)
-                                        .await?;
-                                }
-                            }
-                            if let Some(bytes) = plan.new_tracking_info.as_ref() {
+        self.run_txn(move |wtxn: &mut WriteTxn<'_>| {
+            let app_store = app_store.clone();
+            let component_path = component_path_outer.clone();
+            let callback = Arc::clone(&callback);
+            Box::pin(async move {
+                let mut session = PrecommitSession::new(app_store.clone());
+                let cb_result = callback(wtxn, &mut session).await?;
+                match cb_result {
+                    Some((plan, output)) => {
+                        // Apply __target claims (the work deferred from
+                        // `precommit_claim_targets`).
+                        if let Some(paths) = session.paths_to_claim.take() {
+                            for path in paths {
                                 app_store
-                                    .write_tracking_info_raw(wtxn, &plan.self_path, bytes)
+                                    .upsert_target_state_owner(wtxn, &path, &component_path)
                                     .await?;
                             }
-                            for (owner_path, bytes) in plan.preempted_owner_updates {
-                                app_store
-                                    .write_tracking_info_raw(wtxn, &owner_path, &bytes)
-                                    .await?;
-                            }
-                            for (fp, segment_key) in &plan.segment_names {
-                                app_store
-                                    .write_target_segment_name_if_missing(wtxn, *fp, segment_key)
-                                    .await?;
-                            }
-                            Ok(Some(output))
                         }
-                        None => Ok(None),
+                        if let Some(bytes) = plan.new_tracking_info.as_ref() {
+                            app_store
+                                .write_tracking_info_raw(wtxn, &plan.self_path, bytes)
+                                .await?;
+                        }
+                        for (owner_path, bytes) in plan.preempted_owner_updates {
+                            app_store
+                                .write_tracking_info_raw(wtxn, &owner_path, &bytes)
+                                .await?;
+                        }
+                        // An owner left out of the update no longer holds what
+                        // its memo, and each ancestor's, say it declares: a hit
+                        // in a later update would leave the target state to
+                        // whoever took it, and delete it with them.
+                        for owner_path in &plan.preempted_owners_left_out {
+                            let mut memo_path = owner_path.as_ref();
+                            loop {
+                                app_store
+                                    .delete_component_memo_in_txn(wtxn, &memo_path.into())
+                                    .await?;
+                                let Some((parent, _)) = memo_path.split_parent() else {
+                                    break;
+                                };
+                                memo_path = parent;
+                            }
+                        }
+                        for (fp, segment_key) in &plan.segment_names {
+                            app_store
+                                .write_target_segment_name_if_missing(wtxn, *fp, segment_key)
+                                .await?;
+                        }
+                        Ok(Some(output))
                     }
-                })
+                    None => Ok(None),
+                }
             })
-            .await
+        })
+        .await
     }
 
     /// Phase 4 success: open commit txn, apply finalized writes, invoke
@@ -482,80 +492,83 @@ impl AppStore {
         // the body, so `Arc`-sharing is safe.
         let plan = Arc::new(plan);
         let existence_reconciler = Arc::new(existence_reconciler);
-        self.storage
-            .run_txn(move |wtxn: &mut WriteTxn<'_>| {
-                let app_store = app_store.clone();
-                let component_path = component_path.clone();
-                let plan = Arc::clone(&plan);
-                let existence_reconciler = Arc::clone(&existence_reconciler);
-                Box::pin(async move {
-                    if let Some(bytes) = plan.new_tracking_info.as_ref() {
+        self.run_txn(move |wtxn: &mut WriteTxn<'_>| {
+            let app_store = app_store.clone();
+            let component_path = component_path.clone();
+            let plan = Arc::clone(&plan);
+            let existence_reconciler = Arc::clone(&existence_reconciler);
+            Box::pin(async move {
+                match &plan.tracking_info {
+                    TrackingInfoWrite::Write(bytes) => {
                         app_store
                             .write_tracking_info_raw(wtxn, &component_path, bytes)
                             .await?;
-                    } else {
+                    }
+                    TrackingInfoWrite::Delete => {
                         app_store
                             .delete_tracking_info(wtxn, &component_path)
                             .await?;
                     }
-                    for (target_path, owner_path) in &plan.target_owners_to_upsert {
+                    TrackingInfoWrite::Keep => {}
+                }
+                for (target_path, owner_path) in &plan.target_owners_to_upsert {
+                    app_store
+                        .upsert_target_state_owner(wtxn, target_path, owner_path)
+                        .await?;
+                }
+                for target_path in &plan.target_owners_to_delete {
+                    // Only drop the owner row if it still points at us. A
+                    // component that preempted this path between our last
+                    // run and this delete has already upserted itself as
+                    // owner; deleting unconditionally would orphan it.
+                    let still_ours = app_store
+                        .read_target_state_owner_in_txn(wtxn, target_path)
+                        .await?
+                        .is_some_and(|info| info.component_path == component_path);
+                    if still_ours {
                         app_store
-                            .upsert_target_state_owner(wtxn, target_path, owner_path)
+                            .delete_target_state_owner(wtxn, target_path)
                             .await?;
                     }
-                    for target_path in &plan.target_owners_to_delete {
-                        // Only drop the owner row if it still points at us. A
-                        // component that preempted this path between our last
-                        // run and this delete has already upserted itself as
-                        // owner; deleting unconditionally would orphan it.
-                        let still_ours = app_store
-                            .read_target_state_owner_in_txn(wtxn, target_path)
-                            .await?
-                            .is_some_and(|info| info.component_path == component_path);
-                        if still_ours {
-                            app_store
-                                .delete_target_state_owner(wtxn, target_path)
-                                .await?;
-                        }
-                    }
-                    if plan.fn_memo_clear_all_first {
-                        app_store.delete_all_fn_memos(wtxn, &component_path).await?;
-                    }
-                    for fp in &plan.fn_memo_deletes {
-                        app_store.delete_fn_memo(wtxn, &component_path, *fp).await?;
-                    }
-                    for (fp, bytes) in &plan.fn_memo_writes {
-                        app_store
-                            .write_fn_memo_raw(wtxn, &component_path, *fp, bytes)
-                            .await?;
-                    }
-                    if plan.user_state_clear_all_first {
-                        app_store
-                            .delete_user_states_of_kind(wtxn, &component_path, StateKind::Regular)
-                            .await?;
-                    }
-                    if plan.user_state_clear_live {
-                        app_store
-                            .delete_user_states_of_kind(wtxn, &component_path, StateKind::Live)
-                            .await?;
-                    }
-                    for key in &plan.user_state_deletes {
-                        app_store
-                            .delete_user_state(wtxn, &component_path, StateKind::Regular, key)
-                            .await?;
-                    }
-                    for (key, bytes) in &plan.user_state_writes {
-                        app_store
-                            .write_user_state(wtxn, &component_path, StateKind::Regular, key, bytes)
-                            .await?;
-                    }
-                    if let Some(reconcile) = existence_reconciler.as_ref() {
-                        reconcile(wtxn).await?;
-                    }
-                    Ok(())
-                })
+                }
+                if plan.fn_memo_clear_all_first {
+                    app_store.delete_all_fn_memos(wtxn, &component_path).await?;
+                }
+                for fp in &plan.fn_memo_deletes {
+                    app_store.delete_fn_memo(wtxn, &component_path, *fp).await?;
+                }
+                for (fp, bytes) in &plan.fn_memo_writes {
+                    app_store
+                        .write_fn_memo_raw(wtxn, &component_path, *fp, bytes)
+                        .await?;
+                }
+                if plan.user_state_clear_all_first {
+                    app_store
+                        .delete_user_states_of_kind(wtxn, &component_path, StateKind::Regular)
+                        .await?;
+                }
+                if plan.user_state_clear_live {
+                    app_store
+                        .delete_user_states_of_kind(wtxn, &component_path, StateKind::Live)
+                        .await?;
+                }
+                for key in &plan.user_state_deletes {
+                    app_store
+                        .delete_user_state(wtxn, &component_path, StateKind::Regular, key)
+                        .await?;
+                }
+                for (key, bytes) in &plan.user_state_writes {
+                    app_store
+                        .write_user_state(wtxn, &component_path, StateKind::Regular, key, bytes)
+                        .await?;
+                }
+                if let Some(reconcile) = existence_reconciler.as_ref() {
+                    reconcile(wtxn).await?;
+                }
+                Ok(())
             })
-            .await
+        })
+        .await
     }
 
     /// Phase 4 failure: clear the stage marker so a subsequent
@@ -593,6 +606,11 @@ impl AppStore {
 /// at all (whole-component delete): every on-disk child is removed and
 /// every Component leaf below it tombstoned, cascading the delete.
 ///
+/// `selector` is the selector the component's run is under, if any. The run
+/// did not decide about an on-disk child the selector does not cover, so that
+/// child is neither removed nor tombstoned (see [`remove_undeclared_child`]).
+/// Returns whether any such child stayed: the subtree is then not up to date.
+///
 /// Used by [`AppStore::commit`]: the AppStore opens the commit txn,
 /// then invokes the engine-supplied [`ExistenceReconciler`] which in
 /// turn calls this function. Lives on the storage side because the
@@ -602,7 +620,9 @@ pub async fn reconcile_child_existence<'a>(
     app_store: &AppStore,
     component_path: &StablePath,
     child_path_set: Option<&'a ChildStablePathSet>,
-) -> Result<()> {
+    selector: Option<&ComponentSelector>,
+) -> Result<bool> {
+    let mut kept_unselected = false;
     let mut queue: VecDeque<Level<'a>> = VecDeque::new();
     queue.push_back(Level {
         path: component_path.clone(),
@@ -636,30 +656,32 @@ pub async fn reconcile_child_existence<'a>(
                 }
                 (None, Some(_)) => {
                     if let Some((key, info)) = existing_next.take() {
-                        app_store
-                            .delete_child_existence(wtxn, &level.path, &key)
-                            .await?;
-                        del_child(
+                        kept_unselected |= remove_undeclared_child(
+                            wtxn,
+                            app_store,
+                            selector,
                             &key,
                             &info,
                             &level.path,
                             component_path,
                             &mut queue,
                             &mut buffered_tombstones,
-                        )?;
+                        )
+                        .await?;
                     }
                     for (key, info) in existing_iter.by_ref() {
-                        app_store
-                            .delete_child_existence(wtxn, &level.path, &key)
-                            .await?;
-                        del_child(
+                        kept_unselected |= remove_undeclared_child(
+                            wtxn,
+                            app_store,
+                            selector,
                             &key,
                             &info,
                             &level.path,
                             component_path,
                             &mut queue,
                             &mut buffered_tombstones,
-                        )?;
+                        )
+                        .await?;
                     }
                     break;
                 }
@@ -677,17 +699,18 @@ pub async fn reconcile_child_existence<'a>(
                         let (key, info) = existing_next
                             .take()
                             .ok_or_else(|| internal_error!("invariance violation"))?;
-                        app_store
-                            .delete_child_existence(wtxn, &level.path, &key)
-                            .await?;
-                        del_child(
+                        kept_unselected |= remove_undeclared_child(
+                            wtxn,
+                            app_store,
+                            selector,
                             &key,
                             &info,
                             &level.path,
                             component_path,
                             &mut queue,
                             &mut buffered_tombstones,
-                        )?;
+                        )
+                        .await?;
                         existing_next = existing_iter.next();
                     }
                     Ordering::Equal => {
@@ -697,9 +720,26 @@ pub async fn reconcile_child_existence<'a>(
                         let (_, existing_info) = existing_next
                             .take()
                             .ok_or_else(|| internal_error!("invariance violation"))?;
+                        // A skipped mount: whatever the store holds here stays.
+                        if matches!(curr_path_set, StablePathSet::Skipped) {
+                            curr_next = curr_iter.next();
+                            existing_next = existing_iter.next();
+                            continue;
+                        }
                         let new_node_type = node_type_for(curr_path_set);
+                        // Declared as a directory only because a selected path
+                        // lies below, the component on disk is unselected: it
+                        // stays what it is, with no tombstone, and the next run
+                        // that covers it replaces it.
+                        let keeps_unselected_component = existing_info.node_type
+                            == StablePathNodeType::Component
+                            && new_node_type == StablePathNodeType::Directory
+                            && selector.is_some_and(|selector| {
+                                !selector.covers(&level.path.concat_part(curr_key.clone()))
+                            });
+                        kept_unselected |= keeps_unselected_component;
 
-                        if existing_info.node_type != new_node_type {
+                        if existing_info.node_type != new_node_type && !keeps_unselected_component {
                             app_store
                                 .write_child_existence(
                                     wtxn,
@@ -713,7 +753,9 @@ pub async fn reconcile_child_existence<'a>(
                         }
 
                         if let StablePathSet::Directory(curr_dir_set) = curr_path_set {
-                            if existing_info.node_type == StablePathNodeType::Component {
+                            if existing_info.node_type == StablePathNodeType::Component
+                                && !keeps_unselected_component
+                            {
                                 buffered_tombstones.push(
                                     relative_to(&level.path, component_path)?
                                         .concat_part(curr_key.clone()),
@@ -739,6 +781,11 @@ pub async fn reconcile_child_existence<'a>(
         }
 
         for (stable_key, path_set) in children_to_add {
+            // A mount the selector left out, or a directory of nothing else,
+            // leaves no trace in the store.
+            if !path_set.has_executed_component() {
+                continue;
+            }
             let node_type = node_type_for(path_set);
             app_store
                 .write_child_existence(
@@ -762,12 +809,66 @@ pub async fn reconcile_child_existence<'a>(
                 .await?;
         }
     }
-    Ok(())
+    Ok(kept_unselected)
 }
 
 struct Level<'a> {
     path: StablePath,
     child_path_set: Option<&'a ChildStablePathSet>,
+}
+
+/// An on-disk child the run did not declare: remove it, unless the run's
+/// selector says the run did not get to decide about it.
+///
+/// - Unselected: it stays, its row and everything below untouched. This is the
+///   source of "an unselected component is not treated as gone": it never gets
+///   a tombstone, so nothing deletes its target states.
+/// - Above a selected path: its row stays. A directory is walked, since selected
+///   components below it did go away. A component stays whole: what lies below
+///   it is its own to reconcile, and deleting it would delete unselected
+///   descendants too.
+///
+/// Returns whether the child stayed.
+#[allow(clippy::too_many_arguments)]
+async fn remove_undeclared_child<'a>(
+    wtxn: &mut WriteTxn<'_>,
+    app_store: &AppStore,
+    selector: Option<&ComponentSelector>,
+    stable_key: &StableKey,
+    info: &ChildExistenceInfo,
+    parent_path: &StablePath,
+    component_path: &StablePath,
+    queue: &mut VecDeque<Level<'a>>,
+    buffered_tombstones: &mut Vec<StablePath>,
+) -> Result<bool> {
+    if let Some(selector) = selector {
+        let path = parent_path.concat_part(stable_key.clone());
+        match selector.classify(&path) {
+            ComponentSelection::Selected => {}
+            ComponentSelection::Unselected => return Ok(true),
+            ComponentSelection::AncestorOfSelected => {
+                if info.node_type == StablePathNodeType::Directory {
+                    queue.push_back(Level {
+                        path,
+                        child_path_set: None,
+                    });
+                }
+                return Ok(true);
+            }
+        }
+    }
+    app_store
+        .delete_child_existence(wtxn, parent_path, stable_key)
+        .await?;
+    del_child(
+        stable_key,
+        info,
+        parent_path,
+        component_path,
+        queue,
+        buffered_tombstones,
+    )?;
+    Ok(false)
 }
 
 fn del_child<'a>(
@@ -796,7 +897,7 @@ fn del_child<'a>(
 fn node_type_for(path_set: &StablePathSet) -> StablePathNodeType {
     match path_set {
         StablePathSet::Directory(_) => StablePathNodeType::Directory,
-        StablePathSet::Component => StablePathNodeType::Component,
+        StablePathSet::Component | StablePathSet::Skipped => StablePathNodeType::Component,
     }
 }
 

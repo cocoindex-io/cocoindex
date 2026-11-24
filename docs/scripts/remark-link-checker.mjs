@@ -253,6 +253,11 @@ export default function remarkLinkChecker(options = {}) {
         const joined = posix.join('/', base.replace(/^\//, ''), slug);
         const absPath = joined.endsWith('/') ? joined : `${joined}/`;
         node.url = fragment ? `${absPath}#${fragment}` : absPath;
+        // Mark it as a page link so LangLink (src/components/LangLink.astro)
+        // points it into the reader's SDK language tree (/docs/rust/<slug>/
+        // on a Rust page). Root-relative links an author writes stay exact.
+        node.data = node.data ?? {};
+        node.data.hProperties = { ...(node.data.hProperties ?? {}), 'data-doc-link': slug };
       }
     });
 

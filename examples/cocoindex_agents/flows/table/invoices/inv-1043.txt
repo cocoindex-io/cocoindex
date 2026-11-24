@@ -1,0 +1,11 @@
+INVOICE 1043
+Vendor: Bright Desk Furniture
+Date: 2026-09-18
+Due: 2026-10-18
+Items:
+  - Standing desk, 3 @ 540.00 = 1620.00
+  - Monitor arm, 3 @ 85.00 = 255.00
+Subtotal: 1875.00
+Tax (8%): 150.00
+Total: 2025.00 USD
+Status: paid

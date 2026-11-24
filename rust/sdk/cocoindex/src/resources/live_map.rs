@@ -14,16 +14,23 @@
 //! it (or disappears), the entry is removed.
 //!
 //! ```ignore
-//! let lm: LiveMap<String> = LiveMap::create(&ctx).await?; // inside the component tree
-//! lm.declare_entry(&ctx, key, value)?;                    // producer: inside any component
-//! ctx.mount_each_live(lm.clone(), process_entry).await?;  // consumer: one component per entry
+//! let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?; // inside the component tree
+//! lm.declare_entry(&ctx, key, value)?;                            // producer: inside any component
+//! ctx.mount_each_live(&"entries", lm.clone(), process_entry).await?; // consumer: one component per entry
 //! ```
+//!
+//! The key type `K` is any [`LiveMapKey`]: a stable key (`String`, `i64`,
+//! `u64`, or a [`StableKey`] itself), as Python's `LiveMap[K, V]` takes any
+//! `StableKey`.
 
 use std::collections::HashMap;
+use std::fmt::Display;
+use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -32,9 +39,9 @@ use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView};
 use crate::target_state::{
-    ChildTargetDef, SinkCache, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetStateProvider, declare_target_state, mount_target,
-    register_root_target_states_provider,
+    ChildTargetDef, IntoStableKey, SinkCache, StableKey, TargetAction, TargetActionSink,
+    TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetStateProvider,
+    declare_target_state, mount_target, register_root_target_states_provider,
 };
 
 /// Process-wide counter giving each [`LiveMap`] a distinct container provider
@@ -55,40 +62,90 @@ impl<V: Serialize + DeserializeOwned + Clone + PartialEq + Send + Sync + 'static
 {
 }
 
-enum Change<V> {
-    Upsert(String, V),
-    Delete(String),
+/// The bound a [`LiveMap`] key must satisfy: it becomes both the entry's
+/// target-state key and the consumer's per-entry component subpath, so it is a
+/// stable key ([`IntoStableKey`]) that the map can read back from the engine
+/// ([`from_stable_key`](LiveMapKey::from_stable_key)). Implemented for
+/// `String`, `i64`, `u64` and [`StableKey`].
+pub trait LiveMapKey: IntoStableKey + Clone + Display + Eq + Hash + Send + Sync + 'static {
+    /// The key the engine handed back, decoded; `None` if it is not a key this
+    /// type produces (a bug, reported as an error by the map).
+    fn from_stable_key(key: &StableKey) -> Option<Self>;
+}
+
+impl LiveMapKey for String {
+    fn from_stable_key(key: &StableKey) -> Option<Self> {
+        match key {
+            StableKey::Str(s) | StableKey::Symbol(s) => Some(s.to_string()),
+            _ => None,
+        }
+    }
+}
+
+impl LiveMapKey for i64 {
+    fn from_stable_key(key: &StableKey) -> Option<Self> {
+        match key {
+            StableKey::Int(i) => Some(*i),
+            _ => None,
+        }
+    }
+}
+
+impl LiveMapKey for u64 {
+    fn from_stable_key(key: &StableKey) -> Option<Self> {
+        // The inverse of `IntoStableKey for u64`: `[Symbol("u64"), Str(n)]`.
+        match key {
+            StableKey::Array(parts) => match parts.as_ref() {
+                [StableKey::Symbol(tag), StableKey::Str(n)] if tag.as_ref() == "u64" => {
+                    n.parse().ok()
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+impl LiveMapKey for StableKey {
+    fn from_stable_key(key: &StableKey) -> Option<Self> {
+        Some(key.clone())
+    }
+}
+
+enum Change<K, V> {
+    Upsert(K, V),
+    Delete(K),
 }
 
 /// A change, numbered so a watcher can drop what its scan already covered.
-struct SeqChange<V> {
+struct SeqChange<K, V> {
     seq: u64,
-    change: Change<V>,
+    change: Change<K, V>,
 }
 
-struct LiveMapState<V> {
-    entries: HashMap<String, V>,
+struct LiveMapState<K, V> {
+    entries: HashMap<K, V>,
     /// Number of changes applied so far.
     seq: u64,
     /// `seq` as of the latest scan.
     scan_seq: u64,
     /// The active `watch()`'s queue. Changes are queued only while a watcher
     /// is armed, so a map nobody watches does not accumulate them.
-    watcher: Option<mpsc::UnboundedSender<SeqChange<V>>>,
+    watcher: Option<mpsc::UnboundedSender<SeqChange<K, V>>>,
 }
 
-struct LiveMapInner<V> {
-    state: Mutex<LiveMapState<V>>,
+struct LiveMapInner<K, V> {
+    state: Mutex<LiveMapState<K, V>>,
 }
 
-impl<V: LiveMapValue> LiveMapInner<V> {
-    fn lock(&self) -> std::sync::MutexGuard<'_, LiveMapState<V>> {
+impl<K: LiveMapKey, V: LiveMapValue> LiveMapInner<K, V> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, LiveMapState<K, V>> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Apply one entry action to the in-memory map, emitting a change to the
     /// watcher only when the value actually changed (the `==` gate).
-    fn apply(&self, key: String, value: Option<V>) {
+    fn apply(&self, key: K, value: Option<V>) {
         let mut state = self.lock();
         let change = match value {
             Some(v) => {
@@ -115,9 +172,9 @@ impl<V: LiveMapValue> LiveMapInner<V> {
 
 /// Disarms the watcher when `watch()` ends (returns, fails or is cancelled),
 /// so the map can be watched again, like Python's `finally` reset.
-struct WatcherGuard<'a, V: LiveMapValue>(&'a LiveMapInner<V>);
+struct WatcherGuard<'a, K: LiveMapKey, V: LiveMapValue>(&'a LiveMapInner<K, V>);
 
-impl<V: LiveMapValue> Drop for WatcherGuard<'_, V> {
+impl<K: LiveMapKey, V: LiveMapValue> Drop for WatcherGuard<'_, K, V> {
     fn drop(&mut self) {
         self.0.lock().watcher = None;
     }
@@ -126,12 +183,12 @@ impl<V: LiveMapValue> Drop for WatcherGuard<'_, V> {
 /// An in-memory, keyed collection that is both a target (declare entries into it)
 /// and a [`LiveMapView`] (consume it with [`Ctx::mount_each_live`]). See the
 /// [module docs](self). Cheap to clone — the producer and consumer share state.
-pub struct LiveMap<V> {
-    inner: Arc<LiveMapInner<V>>,
+pub struct LiveMap<K, V> {
+    inner: Arc<LiveMapInner<K, V>>,
     entry_provider: TargetStateProvider<V>,
 }
 
-impl<V> Clone for LiveMap<V> {
+impl<K, V> Clone for LiveMap<K, V> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -140,7 +197,7 @@ impl<V> Clone for LiveMap<V> {
     }
 }
 
-impl<V: LiveMapValue> LiveMap<V> {
+impl<K: LiveMapKey, V: LiveMapValue> LiveMap<K, V> {
     /// Create a LiveMap and mount its backing target. Call inside a component
     /// context (an `App::update`/`run` closure or a mounted component).
     pub async fn create(ctx: &Ctx) -> Result<Self> {
@@ -171,19 +228,14 @@ impl<V: LiveMapValue> LiveMap<V> {
 
     /// Declare an entry, owned by the calling component. Call inside a component
     /// context. The entry lives until its declaring component stops declaring it.
-    pub fn declare_entry(&self, ctx: &Ctx, key: impl Into<String>, value: V) -> Result<()> {
-        let key = key.into();
-        declare_target_state(
-            ctx,
-            self.entry_provider
-                .target_state(StableKey::Str(Arc::from(key.as_str())), value),
-        )
+    pub fn declare_entry(&self, ctx: &Ctx, key: K, value: V) -> Result<()> {
+        declare_target_state(ctx, self.entry_provider.target_state(key, value))
     }
 }
 
 #[async_trait]
-impl<V: LiveMapValue> LiveMapView<String, V> for LiveMap<V> {
-    async fn scan(&self) -> Result<Vec<(String, V)>> {
+impl<K: LiveMapKey, V: LiveMapValue> LiveMapView<K, V> for LiveMap<K, V> {
+    async fn scan(&self) -> Result<Vec<(K, V)>> {
         let mut state = self.inner.lock();
         state.scan_seq = state.seq;
         Ok(state
@@ -195,8 +247,8 @@ impl<V: LiveMapValue> LiveMapView<String, V> for LiveMap<V> {
 }
 
 #[async_trait]
-impl<V: LiveMapValue> LiveMapFeed<String, V> for LiveMap<V> {
-    async fn watch(&self, subscriber: LiveMapSubscriber<String, V>) -> Result<()> {
+impl<K: LiveMapKey, V: LiveMapValue> LiveMapFeed<K, V> for LiveMap<K, V> {
+    async fn watch(&self, subscriber: LiveMapSubscriber<K, V>) -> Result<()> {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let changed_since_scan = {
             let mut state = self.inner.lock();
@@ -217,14 +269,31 @@ impl<V: LiveMapValue> LiveMapFeed<String, V> for LiveMap<V> {
             subscriber.update_all().await?;
         }
         let snapshot_seq = self.inner.lock().scan_seq;
-        while let Some(SeqChange { seq, change }) = rx.recv().await {
-            if seq <= snapshot_seq {
-                continue;
+        // Each change is queued without waiting for the one before it: the
+        // engine runs different keys' children concurrently and coalesces a
+        // key's queued changes into its latest, so a burst is not consumed one
+        // entry at a time. A key's changes still apply in the order they were
+        // made. A failure a handler propagates ends the watch, as when each
+        // change was awaited in turn.
+        let mut in_flight = futures::stream::FuturesUnordered::new();
+        loop {
+            tokio::select! {
+                change = rx.recv() => {
+                    let Some(SeqChange { seq, change }) = change else { break };
+                    if seq <= snapshot_seq {
+                        continue;
+                    }
+                    let handle = match change {
+                        Change::Upsert(key, value) => subscriber.start_update(key, value).await?,
+                        Change::Delete(key) => subscriber.start_delete(key).await?,
+                    };
+                    in_flight.push(handle.ready());
+                }
+                Some(result) = in_flight.next(), if !in_flight.is_empty() => result?,
             }
-            match change {
-                Change::Upsert(key, value) => subscriber.update(key, value).await?,
-                Change::Delete(key) => subscriber.delete(key).await?,
-            }
+        }
+        while let Some(result) = in_flight.next().await {
+            result?;
         }
         Ok(())
     }
@@ -252,19 +321,21 @@ struct ContainerAction;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct EntryRecord;
 
+/// An action travels through the engine serialized, so it carries the engine's
+/// [`StableKey`]; the sink decodes it to `K` with [`LiveMapKey::from_stable_key`].
 #[derive(Clone, Serialize, Deserialize)]
 struct EntryAction<V> {
-    key: String,
+    key: StableKey,
     /// `Some` to upsert, `None` to remove.
     value: Option<V>,
 }
 
-struct ContainerHandler<V> {
-    inner: Arc<LiveMapInner<V>>,
+struct ContainerHandler<K, V> {
+    inner: Arc<LiveMapInner<K, V>>,
     sink: SinkCache<ContainerAction>,
 }
 
-impl<V: LiveMapValue> TargetHandler<ContainerSpec> for ContainerHandler<V> {
+impl<K: LiveMapKey, V: LiveMapValue> TargetHandler<ContainerSpec> for ContainerHandler<K, V> {
     type TrackingRecord = ContainerRecord;
     type Action = ContainerAction;
 
@@ -292,7 +363,7 @@ impl<V: LiveMapValue> TargetHandler<ContainerSpec> for ContainerHandler<V> {
     }
 }
 
-impl<V: LiveMapValue> ContainerHandler<V> {
+impl<K: LiveMapKey, V: LiveMapValue> ContainerHandler<K, V> {
     fn sink(&self) -> TargetActionSink<ContainerAction> {
         self.sink.get(|| {
             let inner = self.inner.clone();
@@ -308,11 +379,11 @@ impl<V: LiveMapValue> ContainerHandler<V> {
     }
 }
 
-struct EntryHandler<V> {
-    inner: Arc<LiveMapInner<V>>,
+struct EntryHandler<K, V> {
+    inner: Arc<LiveMapInner<K, V>>,
 }
 
-impl<V: LiveMapValue> TargetHandler<V> for EntryHandler<V> {
+impl<K: LiveMapKey, V: LiveMapValue> TargetHandler<V> for EntryHandler<K, V> {
     type TrackingRecord = EntryRecord;
     type Action = EntryAction<V>;
 
@@ -323,10 +394,8 @@ impl<V: LiveMapValue> TargetHandler<V> for EntryHandler<V> {
         _prev: Vec<EntryRecord>,
         _prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<EntryAction<V>, EntryRecord>>> {
-        let key = match &key {
-            StableKey::Str(s) | StableKey::Symbol(s) => s.to_string(),
-            other => return Err(Error::engine(format!("unsupported LiveMap key: {other:?}"))),
-        };
+        // Fail here, before anything is applied, if the key is not a `K`.
+        decode_key::<K>(&key)?;
         // Never skip: applying to the in-memory map is cheap and the `==` gate in
         // the sink decides whether to notify the consumer.
         match desired {
@@ -349,7 +418,7 @@ impl<V: LiveMapValue> TargetHandler<V> for EntryHandler<V> {
     }
 }
 
-impl<V: LiveMapValue> EntryHandler<V> {
+impl<K: LiveMapKey, V: LiveMapValue> EntryHandler<K, V> {
     fn sink(&self) -> TargetActionSink<EntryAction<V>> {
         let inner = self.inner.clone();
         TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<EntryAction<V>>>| {
@@ -361,10 +430,19 @@ impl<V: LiveMapValue> EntryHandler<V> {
                         | TargetAction::Update(a)
                         | TargetAction::Delete(a) => a,
                     };
-                    inner.apply(a.key, a.value);
+                    inner.apply(decode_key::<K>(&a.key)?, a.value);
                 }
                 Ok(())
             }
         })
     }
+}
+
+fn decode_key<K: LiveMapKey>(key: &StableKey) -> Result<K> {
+    K::from_stable_key(key).ok_or_else(|| {
+        Error::engine(format!(
+            "LiveMap entry key {key:?} is not a {}",
+            std::any::type_name::<K>()
+        ))
+    })
 }

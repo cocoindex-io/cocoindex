@@ -726,11 +726,11 @@ dependencies = [
  "rmp-serde",
  "rustc-hash",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "tracing",
  "uuid",
- "walkdir",
 ]
 
 [[package]]
@@ -760,6 +760,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "unicode-width",
  "uuid",
 ]
 

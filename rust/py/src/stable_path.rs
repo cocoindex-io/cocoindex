@@ -124,6 +124,12 @@ impl PyStablePath {
         Self(self.0.concat_part(part.0))
     }
 
+    /// Parses a path as `to_string()` writes it.
+    #[staticmethod]
+    pub fn parse(text: &str) -> PyResult<Self> {
+        text.parse::<StablePath>().map(Self).into_py_result()
+    }
+
     #[allow(
         clippy::inherent_to_string,
         reason = "Python API: `StablePath.to_string()`"

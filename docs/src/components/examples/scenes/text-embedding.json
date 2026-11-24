@@ -1,0 +1,10 @@
+{
+  "alt": "Three Markdown files (two papers and the JSON RFC) are split into overlapping chunks, embedded with all-MiniLM-L6-v2 into 384-dimension vectors, and stored as rows in the doc_embeddings table in Postgres; editing rfc8259.md re-embeds only its rows, and the query \"what is self-attention?\" returns the nearest chunks from the Transformer and BERT papers.",
+  "needs": ["Docker (for Postgres with pgvector)", "Python 3.11+"],
+  "run": [
+    { "note": "Start Postgres with pgvector", "cmd": "docker compose -f ../../dev/postgres.yaml up -d" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Build the index from markdown_files/", "cmd": "cocoindex update main" },
+    { "note": "Search it", "cmd": "python main.py \"what is self-attention?\"" }
+  ]
+}

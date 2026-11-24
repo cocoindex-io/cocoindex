@@ -109,6 +109,7 @@ A walkthrough URL means there's a step-by-step guide at
 - `pdf_embedding` — PDFs → markdown → chunks → pgvector.
 - `paper_metadata` — extract title/authors/abstract from PDFs → Postgres + embeddings.
 - `amazon_s3_embedding` / `gdrive_text_embedding` / `oci_object_storage_embedding` — same flow, remote source (S3 / Google Drive / OCI).
+- `discord_text_embedding` — Discord forum posts and messages → chunks → pgvector, with a script that seeds a forum.
 - `postgres_source` — read from an existing Postgres table as the source.
 - `entire_session_search` — semantic search over AI coding sessions captured by Entire.
 - `sec_edgar_analytics` — multi-format SEC filings → Apache Doris with a vector **and** a full-text index; hybrid (semantic + keyword) RRF search. *(walkthrough: sec-edgar-analytics)*
@@ -116,6 +117,7 @@ A walkthrough URL means there's a step-by-step guide at
 ### Multimodal
 - `image_search` — CLIP embeddings + Qdrant, queried via FastAPI + React.
 - `image_search_colpali` — ColPali multi-vector model + Qdrant MaxSim.
+- `pdf_elements_embedding` — PDF pages → text chunks (MiniLM) + images (CLIP) → two Qdrant collections; one query searches both.
 - `multi_format_indexing` — PDFs + images as page screenshots → ColPali → Qdrant; no OCR, no chunking. *(walkthrough: multi-format-indexing)*
 - `face_recognition` — detect faces (dlib) → 128-d embeddings → Qdrant face search. *(walkthrough: face-recognition)*
 - `audio_to_text` — transcribe audio with LiteLLM → Postgres.
@@ -126,6 +128,7 @@ A walkthrough URL means there's a step-by-step guide at
 - `hn_trending_topics` — scrape HackerNews → LLM topic extraction → Postgres.
 - `manuals_llm_extraction` — PDF manuals → Markdown (docling) → typed module records → Postgres. *(walkthrough: manuals-llm-extraction)*
 - `patient_intake_extraction_baml` / `patient_intake_extraction_dspy` — structured PDF extraction with BAML / DSPy (Gemini vision).
+- `discord_support_faq` — Discord support threads → LLM question and answer → entity resolution merges repeats → `FAQ.md`, a knowledge base for an agent that stays current, with a script that seeds a forum.
 
 ### Knowledge graphs
 - `conversation_to_knowledge` — YouTube podcasts → SurrealDB knowledge graph. *(walkthrough: podcast-to-knowledge-graph)*

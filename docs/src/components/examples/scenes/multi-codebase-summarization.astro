@@ -1,0 +1,134 @@
+---
+// A wiki page per project: every subfolder of examples/ is a project, each .py
+// file goes through one instructor + LiteLLM call that fills a CodebaseInfo
+// (models.py), and the project's page is written to output/<project>.md.
+// The page drawn is output/code_embedding.md: its Components list uses the
+// real signatures from examples/code_embedding/main.py (★ = @coco.fn), and its
+// pipeline graph follows the Mermaid rules in models.py (thick ==> for mounts,
+// normal --> for calls): app_main mounts process_file with mount_each, which
+// maps process_chunk with coco.map. code_embedding/main.py is the edited file (Δ).
+// The LLM-written Overview section is left out: no sample text ships with it.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="mc">
+    <div class="sc-row mc-top">
+      <div class="sc-col mc-src">
+        <span class="sc-cap">Projects</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span>examples/</div>
+          <div class="sc-panel-b">
+            <div class="sc-li"><span class="sc-ico i-folder"></span><span>code_embedding/</span></div>
+            <div class="sc-li sc-delta mc-in"><span class="sc-ico i-code"></span><span>main.py</span><span class="sc-dmark">Δ</span></div>
+            <div class="sc-li"><span class="sc-ico i-folder"></span><span>paper_metadata/</span></div>
+            <div class="sc-li mc-in"><span class="sc-ico i-code"></span><span>main.py</span></div>
+            <div class="sc-li mc-in"><span class="sc-ico i-code"></span><span>models.py</span></div>
+            <div class="sc-li"><span class="sc-ico i-folder"></span><span>text_embedding/</span></div>
+            <div class="sc-li mc-in"><span class="sc-ico i-code"></span><span>main.py</span></div>
+          </div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col mc-mid">
+        <span class="sc-cap">One LLM call per file</span>
+        <pre class="sc-code"><span class="k">class</span> <span class="f">CodebaseInfo</span>(BaseModel):
+    name: <span class="f">str</span>
+    summary: <span class="f">str</span>
+    public_classes: <span class="f">list</span>[ClassInfo]
+    public_functions: <span class="f">list</span>[FunctionInfo]
+    mermaid_graphs: <span class="f">list</span>[<span class="f">str</span>]</pre>
+        <div class="mc-chips">
+          <span class="sc-chip is-strong"><span class="sc-ico i-model"></span>gemini/gemini-2.5-flash</span>
+          <span class="sc-chip">instructor + LiteLLM</span>
+        </div>
+        <span class="sc-cap mc-fine">Files merge into one project summary.</span>
+      </div>
+    </div>
+
+    <div class="mc-out">
+      <span class="sc-cap">A wiki page per project</span>
+      <div class="sc-panel sc-delta mc-page">
+        <div class="sc-panel-h"><span class="sc-ico i-file"></span><span class="mc-path">output/code_embedding.md</span><span class="sc-dmark">Δ</span></div>
+        <div class="sc-row mc-doc">
+          <div class="sc-col mc-comp">
+            <span class="mc-h1"># code_embedding</span>
+            <span class="mc-h2">## Components</span>
+            <div class="mc-fn"><span class="mc-sig">async def app_main(sourcedir: pathlib.Path) -&gt; None</span><span class="mc-star">★</span></div>
+            <div class="mc-fn"><span class="mc-sig">async def process_file(file: FileLike, table) -&gt; None</span><span class="mc-star">★</span></div>
+            <div class="mc-fn"><span class="mc-sig">async def process_chunk(chunk: Chunk, filename, id_gen, table) -&gt; None</span><span class="mc-star">★</span></div>
+            <span class="mc-h2">## CocoIndex Pipeline</span>
+            <span class="sc-cap mc-fine mc-legend">★ = CocoIndex function</span>
+          </div>
+          <div class="mc-graph" aria-label="Pipeline graph">
+            <span class="sc-node"><b>app_main</b></span>
+            <span class="mc-edge is-thick"><span class="sc-edge">==&gt; mount_each</span></span>
+            <span class="sc-node"><b>process_file</b></span>
+            <span class="mc-edge"><span class="sc-edge">--&gt; coco.map</span></span>
+            <span class="sc-node"><b>process_chunk</b></span>
+          </div>
+        </div>
+      </div>
+      <p class="sc-quote mc-note">Edit one file and only that file is re-analyzed. Its project page is rewritten; the others stay as they are.</p>
+    </div>
+  </div>
+) : (
+  <div class="mc-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel mc-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-folder"></span>examples/</div>
+        <div class="sc-panel-b">
+          <div class="sc-li sc-delta"><span class="sc-ico i-folder"></span><span>code_embedding/</span></div>
+          <div class="sc-li"><span class="sc-ico i-folder"></span><span>paper_metadata/</span></div>
+          <div class="sc-li"><span class="sc-ico i-folder"></span><span>text_embedding/</span></div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel mc-card-out">
+        <div class="sc-panel-h"><span class="sc-ico i-file"></span>code_embedding.md</div>
+        <div class="mc-graph is-card">
+          <span class="sc-node"><b>app_main</b></span>
+          <span class="mc-edge is-thick"></span>
+          <span class="sc-node"><b>process_file</b></span>
+          <span class="mc-edge"></span>
+          <span class="sc-node"><b>process_chunk</b></span>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .mc { display: flex; flex-direction: column; gap: 18px; }
+  .mc-top { gap: 10px; }
+  .mc-src { flex: 0.85 1 0; }
+  .mc-mid { flex: 1.25 1 0; }
+  .mc-in { padding-left: 26px; }
+  .mc .sc-li { font-size: 12px; }
+  .mc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .mc-fine { font-weight: 400; }
+  .mc-out { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .mc-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .mc-page .sc-dmark { margin-left: auto; }
+  .mc-doc { padding: 10px 12px 12px; gap: 16px; }
+  .mc-comp { flex: 1.5 1 0; gap: 5px; }
+  .mc-h1 { font-family: var(--mono); font-size: 13px; color: var(--sc-ink); }
+  .mc-h2 { font-family: var(--mono); font-size: 12px; color: var(--sc-muted); margin-top: 2px; }
+  .mc-fn { display: flex; align-items: baseline; gap: 6px; min-width: 0; padding-left: 10px; font-family: var(--mono); font-size: 12px; color: var(--sc-ink); }
+  .mc-fn::before { content: "-"; color: var(--sc-dim); flex: none; }
+  .mc-sig { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mc-star { flex: none; color: var(--sc-muted); }
+  .mc-legend { margin-top: 2px; }
+  .mc-graph { flex: 0 0 196px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; min-width: 0; padding: 10px; background: #0A0A0A; border: 1px solid var(--sc-line); border-radius: 6px; }
+  .mc-graph .sc-node b { font-weight: 600; }
+  .mc-edge { position: relative; display: flex; align-items: center; height: 30px; padding-left: 12px; }
+  .mc-edge::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 1px; background: rgba(255, 255, 255, 0.28); }
+  .mc-edge.is-thick::before { width: 3px; left: -1px; background: rgba(255, 255, 255, 0.4); }
+  .mc-note { margin: 0; max-width: 64ch; font-size: 12px; color: var(--sc-dim); }
+  .mc-card { height: 100%; display: flex; align-items: center; }
+  .mc-card > .sc-row { width: 100%; align-items: center; }
+  .mc-card-src { flex: 1 1 0; }
+  .mc-card-out { flex: 1.1 1 0; }
+  .mc-graph.is-card { flex: 1 1 auto; padding: 6px; border: 0; border-radius: 0; background: transparent; }
+  .mc-graph.is-card .mc-edge { height: 12px; padding: 0; }
+</style>

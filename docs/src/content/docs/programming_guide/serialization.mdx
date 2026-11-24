@@ -4,16 +4,43 @@ description: >
   How CocoIndex serializes memoized function returns with msgspec — supported
   types (primitives, collections, dataclasses, Pydantic, NumPy), required type
   annotations, custom type registration, and troubleshooting tips.
+rust_description: >
+  How CocoIndex serializes memoized function returns with serde — the
+  Serialize and Deserialize bounds, MemoInput for memo keys, and SchemaFields
+  for connector rows.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 ## Overview
 
-CocoIndex serializes and caches the return values of [memoized functions](./function#memoization) so that unchanged work can be skipped on subsequent runs. Most Python types work automatically — the key thing to get right is the **return type annotation**, which tells CocoIndex how to reconstruct your objects:
+CocoIndex serializes and caches the return values of [memoized functions](./function#memoization) so that unchanged work can be skipped on subsequent runs. <Lang only="python">Most Python types work automatically — the key thing to get right is the **return type annotation**, which tells CocoIndex how to reconstruct your objects:</Lang><Lang only="rust">The return type of a memoized function is static, so there is nothing to annotate: it must implement `serde::Serialize` and `serde::Deserialize`, which is how CocoIndex stores the value and reads it back:</Lang>
+
+{/* Rust: rust/sdk/SHOWCASE.md "Define functions", verified against rust/sdk/cocoindex/src/memo.rs (`cached` bounds) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 @coco.fn(memo=True)
 async def process_chunk(chunk: Chunk) -> Embedding:  # return type annotation
     return embed(chunk.text)
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::function(memo)]
+async fn parse_file(_ctx: &Ctx, file: FileEntry) -> Result<Vec<Section>> {
+    // ...
+}
+```
+
+Derive both on `Section`: `#[derive(Serialize, Deserialize)]`.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 Without annotations, values may deserialize as basic Python types (`dict`, `list`, `str`, etc.) instead of their original types.
 
@@ -135,3 +162,65 @@ If you see this error after upgrading, previously cached data may reference type
 - Add `@coco.serialize_by_pickle` to the type and re-run.
 - If the type is already a dataclass or NamedTuple, add `@coco.unpickle_safe` to allow reading the old cached data. Once the cache is rebuilt, the decorator can be removed.
 :::
+
+</Lang>
+
+<Lang only="rust">
+
+Three traits cover every value CocoIndex serializes or fingerprints; there is no registration step.
+
+## Return values
+
+A memoized return value is stored through `serde::Serialize` and read back through `serde::Deserialize`. Any type with both implementations works: primitives, `String`, every `serde` container, `Option`, tuples, and structs and enums with `#[derive(Serialize, Deserialize)]`, nested to any depth.
+
+A cache hit deserializes the stored value into the function's return type. If you change that type's shape (rename or retype a field) without changing the function, a stored value that no longer deserializes fails the call with an error. Bump the function's [`version`](./function#version), or rebuild the cache with `UpdateOptions { full_reprocess: true, .. }` or [`cocoindex update --full-reprocess`](../cli_rust).
+
+## Memo keys
+
+Memo keys (function arguments, `deps` values, change-detected context values) are fingerprinted through the `MemoInput` trait. Derive it with `#[derive(cocoindex::MemoInput)]`; every field is handled recursively, so the type needs no `Serialize`. It composes through `Option`, sequences, tuples, maps, sets, `Box` and `Arc`. `uuid::Uuid` and `serde_json::Value` are always available; the `chrono` and `rust_decimal` features add those leaf types, and a connector feature enables the leaf features it needs. Wrap another third-party type in a newtype when it appears inside derived data. A type with only `Serialize` is keyed by its serialized value; a target handle that is `Serialize` is keyed that way, by its stable key. A memoized function skips any other handle with `memo_key(table = skip)` (see [Function](./function#customizing-data-fingerprinting) and [target handles](../advanced_topics/memoization_keys)).
+
+## Connector rows
+
+Connector rows are `serde::Serialize` structs with `#[derive(SchemaFields)]`. The connector's `TableSchema::from_row::<Row>(primary_key)` derives the columns from the struct: an `Option<T>` field is a nullable column, every other field is `NOT NULL`.
+
+{/* Rust: rust/sdk/cocoindex/tests/schema_from_row.rs (`postgres_from_row_matches_explicit_schema`), rust/sdk/SHOWCASE.md "Derive connector schemas from row types" (verified) */}
+```rust
+use cocoindex::SchemaFields;
+use cocoindex::connectors::postgres::TableSchema;
+
+#[derive(Serialize, SchemaFields)]
+struct Row {
+    id: i64,
+    title: Option<String>,          // text, nullable
+    views: i32,
+    #[coco(vector)]
+    embedding: Vec<f32>,            // vector(N): N comes from the embedder
+    #[coco(vector = 8, half)]
+    embedding_half: Vec<f32>,       // halfvec(8)
+    #[coco(json)]
+    meta: Vec<String>,              // jsonb
+}
+
+// A dimension known up front:
+let schema = TableSchema::from_row::<Row>(["id"])?.with_vector_dim("embedding", 8)?;
+
+// A dimension reported by the loaded embedder:
+let schema = TableSchema::from_row::<Row>(["id"])?
+    .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+    .await?;
+```
+
+The field attributes are:
+
+| Attribute | Column |
+|-----------|--------|
+| `#[coco(vector)]` | A dense `f32` vector; the dimension comes from `with_vector_schema` or `with_vector_dim` |
+| `#[coco(vector = N)]` | A dense `f32` vector of dimension `N` |
+| `#[coco(vector = N, half)]` | A 16-bit vector of dimension `N` |
+| `#[coco(json)]` | JSON storage for the field |
+| `#[coco(type = "...")]` | A raw connector column type, used as written |
+| `#[coco(rename = "...")]` | A different column name |
+
+`with_column_type(field, type)` replaces one column's type for this schema only; use it when one row struct feeds two connectors. To encode one field's value differently, put `#[serde(serialize_with = "...")]` on it: the row is encoded by its `Serialize` implementation.
+
+</Lang>

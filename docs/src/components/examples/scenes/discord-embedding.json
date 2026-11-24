@@ -1,0 +1,11 @@
+{
+  "alt": "A Discord forum's posts, a text channel's messages and an announcement's rich embed are read as one item each, rendered as text, split into chunks, embedded with all-MiniLM-L6-v2 and stored in the discord_embeddings table in Postgres, each row with its title and a link back to Discord; a reply to one post re-embeds only that post, and the query \"notes stop syncing in the morning\" returns the post \"Sync stops after my laptop wakes from sleep\".",
+  "needs": ["Discord bot in your server (Message Content intent on)", "Docker (for Postgres with pgvector)", "Python 3.11+"],
+  "run": [
+    { "note": "Start Postgres with pgvector", "cmd": "docker compose -f ../../dev/postgres.yaml up -d" },
+    { "note": "Configure (set DISCORD_BOT_TOKEN and DISCORD_CHANNEL_IDS in .env) and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Optional: fill the channels with made-up posts through their webhooks", "cmd": "python seed_server.py" },
+    { "note": "Build the index (re-run after the channels change)", "cmd": "cocoindex update main" },
+    { "note": "Search it", "cmd": "python main.py \"notes stop syncing in the morning\"" }
+  ]
+}

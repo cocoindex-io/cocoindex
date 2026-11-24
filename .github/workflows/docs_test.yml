@@ -6,7 +6,7 @@ name: Test Docs
 # checks. Keep both path lists below in sync with those reads.
 on:
   pull_request:
-    branches: [main, v1]
+    branches: [main, 'release/**']
     types: [opened, synchronize, reopened, ready_for_review, stacked]
     paths:
       - "docs/**"
@@ -16,7 +16,7 @@ on:
       - "examples/*/.env.example"
       - ".github/workflows/docs_test.yml"
   push:
-    branches: [main, v1]
+    branches: [main, 'release/**']
     paths:
       - "docs/**"
       - "skills/**"
@@ -50,8 +50,14 @@ jobs:
           cache-dependency-path: docs/package-lock.json
       - name: Install dependencies
         run: npm --prefix docs ci
+      - name: Test the search content scripts
+        run: node --test docs/scripts/export-search-content.test.mjs docs/scripts/publish-search-content.test.mjs
       - name: Build docs site
         run: npm --prefix docs run build
+      # A change that breaks one of the export's rules (a new kind of .md file,
+      # a different banner) fails here, in its own pull request.
+      - name: Export the search content from the build
+        run: node docs/scripts/export-search-content.mjs docs/dist "$RUNNER_TEMP/search-content"
       - name: Verify docs build output exists
         run: |
           if [ ! -d "docs/dist" ]; then

@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
 
 use crate::cypher_graph;
 use crate::error::{Error, Result};
@@ -11,10 +10,22 @@ use crate::target_state::{STATIC_ROOT_PROVIDERS, StaticRootProvider};
 
 pub use cypher_graph::{ColumnDef, TableSchema, TableSpec, VectorMetric};
 
+/// A FalkorDB graph. The multiplexed connection is cheap to clone and runs
+/// commands from every clone concurrently, so statements of different
+/// batches never queue behind one another.
 #[derive(Clone)]
 pub struct Graph {
-    conn: Arc<Mutex<redis::aio::MultiplexedConnection>>,
+    conn: redis::aio::MultiplexedConnection,
     graph: Arc<str>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for Graph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Graph")
+            .field("graph", &&*self.graph)
+            .finish_non_exhaustive()
+    }
 }
 
 fn normalize_uri(uri: &str) -> String {
@@ -33,7 +44,7 @@ impl Graph {
             .await
             .map_err(|e| Error::engine(format!("falkordb connect: {e}")))?;
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn,
             graph: Arc::from(graph.to_string()),
         })
     }
@@ -56,11 +67,11 @@ impl cypher_graph::CypherExecutor for Graph {
     }
 
     async fn execute(&self, cypher: &str) -> Result<()> {
-        let mut conn = self.conn.lock().await;
+        let mut conn = self.conn.clone();
         let _: redis::Value = redis::cmd("GRAPH.QUERY")
             .arg(self.graph.as_ref())
             .arg(cypher)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .map_err(|e| Error::engine(format!("falkordb: {e}; query: {cypher}")))?;
         Ok(())
@@ -95,7 +106,7 @@ impl cypher_graph::CypherExecutor for Graph {
         label: &str,
         field: &str,
     ) -> Result<()> {
-        let mut conn = self.conn.lock().await;
+        let mut conn = self.conn.clone();
         let _: redis::Value = redis::cmd("GRAPH.CONSTRAINT")
             .arg(op)
             .arg(self.graph.as_ref())
@@ -105,7 +116,7 @@ impl cypher_graph::CypherExecutor for Graph {
             .arg("PROPERTIES")
             .arg("1")
             .arg(field)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .map_err(|e| {
                 Error::engine(format!(
@@ -220,11 +231,11 @@ mod tests {
     }
 
     async fn count(graph: &Graph, cypher: &str) -> Result<i64> {
-        let mut conn = graph.conn.lock().await;
+        let mut conn = graph.conn.clone();
         let value: redis::Value = redis::cmd("GRAPH.QUERY")
             .arg(graph.graph.as_ref())
             .arg(cypher)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .map_err(|e| Error::engine(format!("falkordb count query: {e}")))?;
         first_count(&value)
@@ -232,10 +243,10 @@ mod tests {
     }
 
     async fn delete_graph(graph: &Graph) {
-        let mut conn = graph.conn.lock().await;
+        let mut conn = graph.conn.clone();
         let _: redis::RedisResult<redis::Value> = redis::cmd("GRAPH.DELETE")
             .arg(graph.graph.as_ref())
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await;
     }
 

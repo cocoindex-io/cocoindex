@@ -1,0 +1,17 @@
+[project]
+name = "pdf-elements-embedding-v1"
+version = "0.1.0"
+description = "CocoIndex v1 example: extract text and images from PDFs, embed each with its own model, store in Qdrant."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[qdrant,sentence_transformers]>=1.0.7",
+    "pypdf[crypto]>=5.7.0",  # crypto: some PDFs are AES-encrypted with an empty password
+    "pillow>=10.0.0",
+    "torch>=2.0.0",
+    "transformers>=4.29.0",
+    "qdrant-client>=1.14.2",
+    "python-dotenv>=1.0.1",
+]
+
+[tool.setuptools]
+packages = []

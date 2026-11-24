@@ -1,0 +1,119 @@
+---
+// Files transform: the example's own data/chuck_norris.md beside the HTML
+// that MarkdownIt("gfm-like").render() writes for it (output rendered with
+// markdown-it-py from the real file). The output name is
+// "__".join(file_path.path.parts) + ".html", so chuck_norris.md becomes
+// output_html/chuck_norris.md.html. chuck_norris.md is the edited file (Δ);
+// live mode (-L) keeps watching ./data.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="ft">
+    <div class="ft-head">
+      <span class="sc-live"><span>cocoindex update -L main, watching ./data</span></span>
+    </div>
+
+    <div class="sc-row ft-main">
+      <div class="sc-col">
+        <span class="sc-cap">Markdown in data/</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-file"></span><span class="sc-t">chuck_norris.md</span></div>
+<pre class="sc-code ft-code"><span class="k"># Chuck Norris Project Facts</span>
+Date: 2025-07-20
+Author: Anonymous (because Chuck Norris knows who you are)
+
+<span class="n">1.</span> Chuck Norris doesn't write code; he stares at the computer until it writes itself out of fear.
+<span class="n">2.</span> The project deadline was yesterday, but time…</pre>
+        </div>
+      </div>
+
+      <div class="sc-col ft-op">
+        <span class="sc-to ft-arrow"></span>
+        <span class="sc-chip is-strong">MarkdownIt("gfm-like")</span>
+        <span class="sc-chip">.render(text)</span>
+      </div>
+
+      <div class="sc-col">
+        <span class="sc-cap">HTML out in output_html/</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-code"></span><span class="sc-t">chuck_norris.md.html</span></div>
+<pre class="sc-code ft-code"><span class="f">&lt;h1&gt;</span>Chuck Norris Project Facts<span class="f">&lt;/h1&gt;</span>
+<span class="f">&lt;p&gt;</span>Date: 2025-07-20
+Author: Anonymous (because Chuck Norris knows who you are)<span class="f">&lt;/p&gt;</span>
+<span class="f">&lt;ol&gt;</span>
+<span class="f">&lt;li&gt;</span>Chuck Norris doesn't write code; he stares at the computer until it writes itself out of fear.<span class="f">&lt;/li&gt;</span>
+<span class="f">&lt;li&gt;</span>The project deadline was…</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="ft-sync">
+      <span class="sc-cap">One output file per source file, kept in sync</span>
+      <div class="sc-row ft-sync-row">
+        <div class="sc-panel sc-grow">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span><span class="sc-t">data/</span></div>
+          <div class="sc-panel-b">
+            <div class="sc-li"><span class="sc-ico i-file"></span><span>bizarre_animals.md</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>chuck_norris.md</span><span class="sc-dmark">Δ</span></div>
+          </div>
+        </div>
+        <span class="sc-to"></span>
+        <div class="sc-panel sc-grow">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span><span class="sc-t">output_html/</span></div>
+          <div class="sc-panel-b">
+            <div class="sc-li"><span class="sc-ico i-code"></span><span>bizarre_animals.md.html</span><span class="sc-meta">untouched</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-code"></span><span class="sc-dtext">chuck_norris.md.html</span><span class="sc-meta">re-rendered</span></div>
+          </div>
+        </div>
+      </div>
+      <p class="sc-quote ft-note">Delete a .md and its .html is removed from output_html/.</p>
+    </div>
+  </div>
+) : (
+  <div class="ft-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel ft-card-p">
+        <div class="sc-panel-h"><span class="sc-ico i-file"></span><span class="sc-t">chuck_norris.md</span></div>
+<pre class="sc-code ft-code"><span class="k"># Chuck Norris Project Facts</span>
+Date: 2025-07-20
+Author: Anonymous…</pre>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel ft-card-p">
+        <div class="sc-panel-h"><span class="sc-ico i-code"></span><span class="sc-t">chuck_norris.md.html</span></div>
+<pre class="sc-code ft-code"><span class="f">&lt;h1&gt;</span>Chuck Norris Project Facts<span class="f">&lt;/h1&gt;</span>
+<span class="f">&lt;p&gt;</span>Date: 2025-07-20
+Author: Anonymous…</pre>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .sc-panel-h > .sc-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ft { display: flex; flex-direction: column; gap: 14px; }
+  .ft-head { display: flex; min-width: 0; }
+  .ft-head .sc-live { font-family: var(--mono); font-size: 12px; min-width: 0; max-width: 100%; }
+  .ft-head .sc-live::before { flex: none; }
+  .ft-head .sc-live > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ft-main { gap: 10px; }
+  .ft-code { border: 0; border-radius: 0; background: transparent; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ft-op { flex: none; width: 180px; align-items: center; justify-content: center; gap: 6px; padding-top: 20px; }
+  .ft-op .sc-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .ft-arrow { margin-bottom: 4px; }
+
+  .ft-sync { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .ft-sync-row { gap: 10px; }
+  .ft-note { margin: 0; font-size: 12px; color: var(--sc-dim); }
+
+  @container (max-width: 560px) {
+    .ft-op { width: 100%; flex-direction: row; flex-wrap: wrap; padding-top: 0; }
+    .ft-arrow { transform: rotate(90deg); margin: 0 4px 0 0; }
+  }
+
+  .ft-card { height: 100%; display: flex; align-items: center; }
+  .ft-card > .sc-row { width: 100%; align-items: center; }
+  .ft-card-p { flex: 1 1 0; }
+  .ft-card .ft-code { font-size: 11px; line-height: 1.45; }
+</style>

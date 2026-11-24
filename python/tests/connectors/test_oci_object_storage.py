@@ -207,6 +207,10 @@ from cocoindex.connectors.oci_object_storage._source import (  # noqa: E402
     _SCAN_VERSION_KEY,
 )
 from cocoindex.resources.file import PatternFilePathMatcher  # noqa: E402
+from tests.common.object_store_exclusions import (  # noqa: E402
+    EXCLUDED_DIRECTORY_CASES,
+    EXCLUSION_TEST_KEYS,
+)
 
 
 def _live_items(walker: OCIWalker) -> LiveMapView[str, OCIFile]:
@@ -373,8 +377,9 @@ class _MockMapSubscriber:
         self.deletes: list[str] = []
         self.committed: dict[Any, Any] = {} if committed is None else committed
 
-    async def update_all(self) -> None:
+    async def _update_all(self) -> bool:
         self.update_all_called = True
+        return True
 
     async def mark_ready(self) -> None:
         self.mark_ready_called = True
@@ -505,9 +510,9 @@ async def test_oci_live_view_event_after_cutoff_blocks_until_ready(
     scan_gate = asyncio.Event()
 
     class _SlowSub(_MockMapSubscriber):
-        async def update_all(self) -> None:
+        async def _update_all(self) -> bool:
             await scan_gate.wait()
-            await super().update_all()
+            return await super()._update_all()
 
     sub = _SlowSub()
     items = _live_items(walker)
@@ -608,12 +613,13 @@ async def test_oci_live_view_ready_complete_set_after_mark_ready(
     observations: list[tuple[str, bool, bool]] = []
 
     class _ObservingSub(_MockMapSubscriber):
-        async def update_all(self) -> None:
+        async def _update_all(self) -> bool:
             observations.append(("update_all_enter", False, False))
-            await super().update_all()
+            completed = await super()._update_all()
             observations.append(
                 ("update_all_exit", self.update_all_called, self.mark_ready_called)
             )
+            return completed
 
         async def mark_ready(self) -> None:
             observations.append(
@@ -900,9 +906,9 @@ async def test_oci_live_view_cancel_while_send_blocked_on_ready(
     scan_gate = asyncio.Event()
 
     class _SlowSub(_MockMapSubscriber):
-        async def update_all(self) -> None:
+        async def _update_all(self) -> bool:
             await scan_gate.wait()
-            await super().update_all()
+            return await super()._update_all()
 
     class _SendingStream:
         """Simulates a stream that delivers one post-cutoff event inline."""
@@ -944,7 +950,7 @@ async def test_oci_live_view_scan_failure_propagates(
     stream = _ManualLiveStream()
 
     class _FailingSub(_MockMapSubscriber):
-        async def update_all(self) -> None:
+        async def _update_all(self) -> bool:
             raise RuntimeError("scan boom")
 
     walker = list_objects(oci_client, "ns", "bucket", live_stream=stream)
@@ -1140,6 +1146,125 @@ def test_oci_walker_scan_through_real_mount_each() -> None:
     )
 
 
+# --- logic_version across restarts ---
+
+
+# Object names whose processing raises.
+_failing_objects: set[str] = set()
+
+
+@coco.fn
+async def _declare_object(file: OCIFile) -> None:
+    name = file.file_path.object_name
+    if name in _failing_objects:
+        raise RuntimeError(f"processing {name} failed")
+    coco.declare_target_state(GlobalDictTarget.target_state(name, await file.read()))
+
+
+class _NoEvents:
+    """A ``LiveStream[bytes]`` with no events that ends at once: a live view over
+    it stops right after its startup (the scan or its skip, then the version
+    write), so a test can run an app live and start it again on the same state.
+    """
+
+    async def watch(self, subscriber: LiveStreamSubscriber[bytes]) -> None:
+        return
+
+
+def _versioned_live_app(
+    env: coco.Environment, client: MockObjectStorageClient
+) -> coco.App[Any, Any]:
+    """An app that watches the bucket with ``logic_version="v1"``."""
+
+    @coco.fn
+    async def app_main() -> None:
+        walker = list_objects(
+            client, "ns", "bucket", live_stream=_NoEvents(), logic_version="v1"
+        )
+        await coco.mount_each(_declare_object, walker.items())
+
+    return coco.App(
+        coco.AppConfig(name="oci_versioned_live", environment=env), app_main
+    )
+
+
+async def _run_live(app: coco.App[Any, Any]) -> None:
+    await asyncio.wait_for(app.update(live=True).result(), timeout=30)
+
+
+def _stored() -> dict[str, Any]:
+    return {k: v.data for k, v in GlobalDictTarget.store.data.items()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["item", "listing"])
+async def test_oci_live_view_rescans_after_a_failed_scan(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    oci_client: MockObjectStorageClient,
+    failure: str,
+) -> None:
+    """A scan whose failure an exception handler absorbs does not record the
+    version, so the next start scans again and processes what the failed scan
+    missed: an item whose processing raised, or one the listing never reached.
+    """
+    GlobalDictTarget.store.clear()
+    oci_client.put("a.txt", b"a")
+    oci_client.put("b.txt", b"b")
+    handled: list[BaseException] = []
+    env = common.create_test_env(
+        __file__,
+        suffix=request.node.name,
+        exception_handler=lambda exc, ctx: handled.append(exc),
+    )
+    app = _versioned_live_app(env, oci_client)
+
+    if failure == "item":
+        _failing_objects.add("b.txt")
+    else:
+        # One object per page, and the second page fails: b.txt is never listed.
+        oci_client.set_page_size(1)
+        list_page = oci_client.list_objects
+
+        def list_first_page_only(**kwargs: Any) -> _MockListObjectsResponse:
+            if "start" in kwargs:
+                raise RuntimeError("listing failed")
+            return list_page(**kwargs)
+
+        monkeypatch.setattr(oci_client, "list_objects", list_first_page_only)
+    try:
+        await _run_live(app)
+    finally:
+        _failing_objects.clear()
+        monkeypatch.undo()
+    assert handled
+    assert _stored() == {"a.txt": b"a"}
+
+    await _run_live(app)
+    assert _stored() == {"a.txt": b"a", "b.txt": b"b"}
+
+
+@pytest.mark.asyncio
+async def test_oci_live_view_skips_scan_after_a_clean_scan(
+    request: pytest.FixtureRequest, oci_client: MockObjectStorageClient
+) -> None:
+    """After a scan that completed, the next start with the same version skips
+    the scan: an object put while the app was down (with no event) stays out."""
+    GlobalDictTarget.store.clear()
+    oci_client.put("a.txt", b"a")
+    env = common.create_test_env(__file__, suffix=request.node.name)
+    app = _versioned_live_app(env, oci_client)
+
+    await _run_live(app)
+    assert _stored() == {"a.txt": b"a"}
+
+    oci_client.put("b.txt", b"b")
+    oci_client.list_objects_calls.clear()
+    await _run_live(app)
+    assert oci_client.list_objects_calls == []
+    assert _stored() == {"a.txt": b"a"}
+
+
 # ===========================================================================
 # Item keys: scan and live events agree
 # ===========================================================================
@@ -1207,6 +1332,48 @@ async def test_oci_live_events_use_scan_keys(
     oci_client.remove("docs/sub/")
     await stream.send_event(_event("ns", "bucket", "docs/sub/"))
     assert sub.deletes == ["/a.md"]
+
+    stream.end()
+    await watch_task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prefix", "excluded_patterns", "expected"), EXCLUDED_DIRECTORY_CASES
+)
+async def test_oci_excluded_directory_excludes_the_objects_under_it(
+    oci_client: MockObjectStorageClient,
+    prefix: str,
+    excluded_patterns: list[str],
+    expected: list[str],
+) -> None:
+    """The scan and live events both skip the objects under an excluded directory."""
+    for name in EXCLUSION_TEST_KEYS:
+        oci_client.put(name, b"x")
+    stream = _ManualLiveStream()
+    walker = list_objects(
+        oci_client,
+        "ns",
+        "bucket",
+        prefix=prefix,
+        path_matcher=PatternFilePathMatcher(excluded_patterns=excluded_patterns),
+        live_stream=stream,
+    )
+    items = _live_items(walker)
+    assert sorted([key async for key, _ in items]) == expected
+
+    sub = _MockMapSubscriber()
+    watch_task = asyncio.create_task(items.watch(sub))  # type: ignore[arg-type]
+    await _drive_to_ready(stream, sub)
+
+    for name in EXCLUSION_TEST_KEYS:
+        await stream.send_event(_event("ns", "bucket", name))
+    assert sorted(key for key, _ in sub.updates) == expected
+
+    for name in EXCLUSION_TEST_KEYS:
+        oci_client.remove(name)
+        await stream.send_event(_event("ns", "bucket", name))
+    assert sorted(sub.deletes) == expected
 
     stream.end()
     await watch_task

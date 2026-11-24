@@ -1,0 +1,11 @@
+{
+  "alt": "David Thompson's synthetic patient intake PDF goes into ExtractPatientInfo, a type-safe BAML function defined in baml_src/patient.baml and compiled by baml generate; one await b.ExtractPatientInfo(pdf) call on Gemini returns a typed Patient, written as output_patients/Patient_Intake_Form_David_Artificial.json with his name, date of birth, address, emergency contact, reason for visit and medications; editing that form rewrites only its JSON.",
+  "needs": ["Python 3.11+", "GEMINI_API_KEY"],
+  "run": [
+    { "note": "Install", "cmd": "pip install -e ." },
+    { "note": "Compile baml_src/ into the baml_client package", "cmd": "baml generate" },
+    { "note": "Configure", "cmd": "cp .env.example .env" },
+    { "note": "Extract one JSON record per form", "cmd": "cocoindex update main.py" },
+    { "note": "See the records", "cmd": "ls output_patients/" }
+  ]
+}

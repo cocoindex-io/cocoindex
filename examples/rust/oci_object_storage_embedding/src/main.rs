@@ -7,6 +7,12 @@
 //!   cargo run -- index                 # one-shot (the OCI source is not live)
 //!   cargo run -- query "your query"    # pgvector similarity search
 //!
+//! Parallels the Python example:
+//!   - source            : `oci_object_storage::list_objects(..).items()` + `mount_each!` (cf. `list_objects` + `coco.mount_each`;
+//!                         the Python example's optional OCI Streaming live feed has its Rust analogue in `list_objects_live`)
+//!   - per-file compute  : `#[cocoindex::function(memo)]` declaring its rows (cf. `@coco.fn(memo=True)`)
+//!   - per-chunk compute : `#[cocoindex::function]` under `ctx.map` (cf. `@coco.fn` under `coco.map`)
+//!
 //! Auth comes from an `~/.oci/config` profile (the same file the OCI CLI and
 //! Python SDK use). Set `OCI_NAMESPACE` and `OCI_BUCKET` (and optional
 //! `OCI_PREFIX`); `OCI_CONFIG_FILE` / `OCI_PROFILE` override the config location
@@ -46,11 +52,37 @@ struct DocEmbeddingRow {
     embedding: Vec<f32>,
 }
 
+/// Embed one chunk and declare its row (cf. Python `process_chunk`).
 #[cocoindex::function]
-async fn process_file(ctx: &Ctx, file: OciFile) -> Result<Vec<DocEmbeddingRow>> {
-    let text = ctx.get_key(&OCI)?.read_text(&file).await?;
-    let splitter = RecursiveSplitter::new()?;
-    let chunks = splitter.split_with(
+async fn process_chunk(
+    ctx: &Ctx,
+    chunk: Chunk,
+    text: &str,
+    filename: &str,
+    id_gen: &IdGenerator,
+    table: &postgres::TableTarget,
+) -> Result<()> {
+    let chunk_text = chunk.text(text);
+    let id = i64::try_from(id_gen.next_id(ctx, chunk_text).await?)
+        .map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
+    table.declare_row(
+        ctx,
+        &DocEmbeddingRow {
+            id,
+            filename: filename.to_string(),
+            text: chunk_text.to_string(),
+            embedding: ctx.get_key(&EMBEDDER)?.embed(ctx, chunk_text).await?,
+        },
+    )
+}
+
+/// Chunk and embed one object, declaring its rows (cf. Python `process_file`).
+/// Memoized on the object: an unchanged object keeps its rows without re-running.
+/// The table target is one per app, so it is not part of the memo key.
+#[cocoindex::function(memo, memo_key(table = skip))]
+async fn process_file(ctx: &Ctx, file: OciFile, table: postgres::TableTarget) -> Result<()> {
+    let text = file.read_text().await?;
+    let chunks = RecursiveSplitter::new()?.split_with(
         &text,
         RecursiveChunkConfig {
             chunk_size: 2000,
@@ -59,28 +91,13 @@ async fn process_file(ctx: &Ctx, file: OciFile) -> Result<Vec<DocEmbeddingRow>> 
             language: Some("markdown".to_string()),
         },
     );
-    if chunks.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
-    let embeddings = ctx.get_key(&EMBEDDER)?.embed_batch(texts.clone()).await?;
-
     let filename = file.key();
-    let mut id_gen = IdGenerator::new();
-    let mut rows = Vec::with_capacity(texts.len());
-    for (chunk_text, embedding) in texts.into_iter().zip(embeddings) {
-        let id = id_gen.next_id(&ctx, &chunk_text).await?;
-        let id =
-            i64::try_from(id).map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
-        rows.push(DocEmbeddingRow {
-            id,
-            filename: filename.clone(),
-            text: chunk_text,
-            embedding,
-        });
-    }
-    Ok(rows)
+    let id_gen = IdGenerator::new();
+    ctx.map(chunks, async |chunk| {
+        process_chunk(ctx, chunk, &text, &filename, &id_gen, &table).await
+    })
+    .await?;
+    Ok(())
 }
 
 async fn app_main(ctx: Ctx, namespace: String, bucket: String, prefix: String) -> Result<()> {
@@ -103,34 +120,20 @@ async fn app_main(ctx: Ctx, namespace: String, bucket: String, prefix: String) -
         &bucket,
         ListOptions {
             prefix,
-            path_matcher: Some(Arc::new(
-                PatternFilePathMatcher::include(["**/*.md"])
-                    .map_err(|e| Error::engine(format!("matcher: {e}")))?,
-            )),
+            path_matcher: Some(Arc::new(PatternFilePathMatcher::include(["**/*.md"])?)),
             ..Default::default()
         },
     )
-    .list()
+    .items()
     .await?;
     println!(
         "indexing {} markdown file(s) from oci://{namespace}/{bucket}",
         files.len()
     );
 
-    let rows_by_file = mount_each!(
-        files.into_iter().map(|f| (f.key(), f)),
-        |file| process_file(ctx, file)
-    )
-    .await?;
-
-    let mut count = 0usize;
-    for rows in &rows_by_file {
-        count += rows.len();
-        for row in rows {
-            table.declare_row(&ctx, row)?;
-        }
-    }
-    println!("indexed {count} chunk(s) total");
+    // One processing component per object: each object's rows sync and clean up
+    // with that object (cf. Python `coco.mount_each(process_file, files.items(), target_table)`).
+    mount_each!(files, |file| process_file(ctx, file, table)).await?;
     Ok(())
 }
 
@@ -139,7 +142,7 @@ async fn query_once(
     embedder: &SentenceTransformerEmbedder,
     query: &str,
 ) -> Result<()> {
-    let query_vec = vector_param(&Embedder::embed(embedder, query).await?);
+    let query_vec = vector_param(&embedder.embed_batch(vec![query.to_string()]).await?.remove(0));
     let rows = sqlx::query(&format!(
         "SELECT filename, text, embedding <=> $1::vector AS distance \
          FROM \"{PG_SCHEMA}\".\"{TABLE}\" ORDER BY distance ASC LIMIT $2"

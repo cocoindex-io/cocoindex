@@ -1,0 +1,114 @@
+---
+// Semantic search with Turbopuffer: the hero is the hosted namespace. Your
+// machine chunks and embeds (all-MiniLM-L6-v2 runs locally); the managed
+// namespace TextEmbedding in gcp-us-central1 holds one row per chunk: an id,
+// the vector, and attributes {filename, chunk_start, chunk_end, text}.
+// Offsets are the RecursiveSplitter's real output for the shipped sample
+// rfc8259.md. The query is the example's own ns.query(rank_by=("vector",
+// "ANN", ...)); its top hit was run against that file. The edited row (Δ) is
+// the "7. Strings" chunk.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="tp">
+    <div class="sc-row">
+      <div class="sc-col tp-src">
+        <span class="sc-cap">On your machine</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span>markdown_files/</div>
+          <div class="sc-panel-b">
+            <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>rfc8259.md</span><span class="sc-dmark">Δ</span></div>
+          </div>
+        </div>
+        <div class="sc-stack tp-ops">
+          <span class="sc-chip"><span class="sc-ico i-code"></span>RecursiveSplitter</span>
+          <span class="sc-chip"><span class="sc-ico i-model"></span>all-MiniLM-L6-v2</span>
+        </div>
+        <span class="sc-chip tp-key">TURBOPUFFER_API_KEY</span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col tp-wide">
+        <span class="sc-cap">Turbopuffer, managed and serverless</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-cloud"></span>namespace TextEmbedding<span class="tp-h-meta">gcp-us-central1</span></div>
+          <div class="tp-rows">
+            <div class="tp-head">Each row: an id, a vector, and attributes</div>
+            <div class="tp-r"><div class="tp-l1"><span>rfc8259.md</span><span class="tp-off">0 → 1064</span></div><span class="tp-t">Internet Engineering Task Force (IETF) T. Bray, Ed. Request for Comments: 8259…</span></div>
+            <div class="tp-r"><div class="tp-l1"><span>rfc8259.md</span><span class="tp-off">7788 → 9680</span></div><span class="tp-t">## 4. Objects  An object structure is represented as a pair of curly brackets…</span></div>
+            <div class="tp-r sc-delta"><div class="tp-l1"><span class="sc-dtext">rfc8259.md</span><span class="tp-off sc-dtext">11262 → 13058</span><span class="sc-dmark">Δ</span></div><span class="tp-t">## 7. Strings  The representation of strings is similar to conventions…</span></div>
+          </div>
+        </div>
+        <span class="sc-cap tp-fine">Each row's id comes from its chunk text, so an edit upserts one row, not the file.</span>
+      </div>
+    </div>
+
+    <div class="tp-search">
+      <span class="sc-cap">Search by meaning</span>
+      <div class="sc-query"><span class="sc-ico i-search"></span><span>python main.py "how is a JSON object written?"</span></div>
+      <div class="sc-row tp-qrow">
+        <pre class="sc-code tp-code"><span class="k">await</span> ns.<span class="f">query</span>(
+  rank_by=(<span class="s">"vector"</span>, <span class="s">"ANN"</span>, query_vec),
+  top_k=<span class="n">5</span>,
+  include_attributes=<span class="k">True</span>,
+)</pre>
+        <div class="sc-panel tp-hit"><div class="sc-panel-b">
+          <div class="sc-hit"><span class="r">1</span><span><span class="src">rfc8259.md</span><span class="sc-quote sc-clip3">An object structure is represented as a pair of curly brackets surrounding zero or more name/value pairs (or members).</span></span></div>
+        </div></div>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="tp-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel tp-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-folder"></span>markdown_files/</div>
+        <div class="sc-panel-b">
+          <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>rfc8259.md</span></div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-panel tp-card-dst">
+        <div class="sc-panel-h"><span class="sc-ico i-cloud"></span>TextEmbedding</div>
+        <div class="sc-panel-b">
+          <span class="sc-mono sc-muted">rank_by=("vector", "ANN", …)</span>
+          <span class="sc-quote sc-clip2">An object structure is represented as a pair of curly brackets…</span>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .tp { display: flex; flex-direction: column; gap: 18px; }
+  .tp > .sc-row { gap: 10px; }
+  .tp-src { flex: 0.85 1 0; }
+  .tp-wide { flex: 1.6 1 0; }
+  .tp-ops { align-items: flex-start; }
+  .tp-key { align-self: flex-start; color: var(--sc-dim); }
+  .tp .sc-li { font-size: 12px; }
+  .tp-h-meta { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 11.5px; color: var(--sc-dim); }
+  .tp-rows { display: flex; flex-direction: column; padding: 4px 6px 6px; gap: 0; }
+  .tp-head { padding: 4px 6px 6px; font-family: var(--sans); font-size: 11.5px; color: var(--sc-dim); }
+  .tp-r { display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid transparent; border-top-color: var(--sc-line); min-width: 0; }
+  .tp-r.sc-delta { border-radius: 6px; }
+  .tp-l1 { display: flex; align-items: center; gap: 8px; min-width: 0; font-family: var(--mono); font-size: 12px; color: var(--sc-ink); }
+  .tp-l1 > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tp-off { margin-left: auto; font-size: 11.5px; color: var(--sc-dim); white-space: nowrap; }
+  .tp-t { font-size: 12px; color: var(--sc-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .tp-fine { font-weight: 400; }
+  .tp-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .tp-qrow { gap: 10px; }
+  .tp-code { flex: 1 1 0; min-width: 0; }
+  .tp-hit { flex: 1 1 0; }
+
+  @container (max-width: 560px) {
+    .tp-code, .tp-hit { flex: none; }
+  }
+
+  .tp-card { height: 100%; display: flex; align-items: center; }
+  .tp-card { min-width: 0; contain: inline-size; }
+  .tp-card > .sc-row { width: 100%; min-width: 0; align-items: center; }
+  .tp-card-src { flex: 0.8 1 0; }
+  .tp-card-dst { flex: 1.3 1 0; }
+</style>

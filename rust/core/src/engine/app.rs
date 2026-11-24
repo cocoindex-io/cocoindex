@@ -9,6 +9,7 @@ use crate::engine::live_component::{LIVE_COMPONENT_DRAIN_TIMEOUT_SECS, LiveCompo
 
 use crate::engine::environment::{AppRegistration, Environment};
 use crate::engine::runtime::get_runtime;
+use crate::state::component_selector::ComponentSelector;
 use crate::state::stable_path::StablePath;
 use tokio::sync::watch;
 
@@ -21,6 +22,9 @@ pub struct AppUpdateOptions {
     pub live: bool,
     /// Deadline for the root processor and for observing the update result.
     pub deadline: DeadlineContext,
+    /// If set, run only the selected components (and what reaches them),
+    /// leaving every other component as it is.
+    pub component_selector: Option<ComponentSelector>,
 }
 
 impl Default for AppUpdateOptions {
@@ -29,6 +33,7 @@ impl Default for AppUpdateOptions {
             full_reprocess: false,
             live: false,
             deadline: DeadlineContext::NONE,
+            component_selector: None,
         }
     }
 }
@@ -145,8 +150,15 @@ impl<Prof: EngineProfile> App<Prof> {
             // failed" with "the whole update failed", which is too strict;
             // tombstones survive for retry on the next reconcile.)
             None,
+            // The root always runs: a parent has to run to reach what is
+            // selected below it.
+            ComponentSelector::scoped_to(
+                options.component_selector.as_ref(),
+                self.root_component.stable_path(),
+            ),
         )?;
 
+        let update_refusal = context.update_refusal().clone();
         let root_component = self.root_component.clone();
         let stats_for_task = processing_stats.clone();
         let cancel_token = self.app_ctx().cancellation_token();
@@ -172,7 +184,12 @@ impl<Prof: EngineProfile> App<Prof> {
                     root_component.wait_until_inactive().await;
                 }
                 stats_for_task.notify_terminated();
-                result
+                // A change refused for the selector's sake fails the update,
+                // wherever the run that refused it was (see `UpdateRefusal`).
+                match (result, update_refusal.take()) {
+                    (Ok(_), Some(refusal)) => Err(Error::client(refusal)),
+                    (result, _) => result,
+                }
             }
             .instrument(span),
         );
@@ -220,7 +237,7 @@ impl<Prof: EngineProfile> App<Prof> {
 
         let processing_stats = ProcessingStats::default();
         let version_rx = processing_stats.subscribe();
-        let providers = self
+        let mut providers = self
             .app_ctx()
             .env()
             .target_states_providers()
@@ -228,6 +245,14 @@ impl<Prof: EngineProfile> App<Prof> {
             .unwrap()
             .providers
             .clone();
+        // Root providers this app's runs registered at run time are not in
+        // the environment's registry; add them so their target states are
+        // reverted too.
+        for (path, provider) in self.app_ctx().run_root_providers() {
+            if !providers.contains_key(&path) {
+                providers.insert_mut(path, provider);
+            }
+        }
 
         // Install a single on_error handler that always propagates: app.drop
         // is an explicit operation, so root-delete failures (and any
@@ -281,7 +306,7 @@ impl<Prof: EngineProfile> App<Prof> {
                 // are still releasing.
                 root_component.app_ctx().app_reg().unregister();
 
-                info!("App dropped successfully");
+                debug!("App dropped successfully");
                 stats_for_task.notify_terminated();
                 Ok(())
             }

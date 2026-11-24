@@ -1,0 +1,158 @@
+---
+// One type-safe function call per intake form. The form is the real text of
+// data/patient_forms/Patient_Intake_Form_David_Artificial.pdf; the schema and
+// function are baml_src/patient.baml (Patient, ExtractPatientInfo, client
+// Gemini on gemini-2.5-flash, reading the PDF natively); `baml generate`
+// compiles it to baml_client, and main.py calls `await b.ExtractPatientInfo(pdf)`.
+// The JSON values are the ones printed on that form. The output file name is
+// the form's stem + .json in output_patients/. David's form is the edited one (Δ).
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="pb">
+    <div class="sc-row pb-top">
+      <div class="sc-col pb-src">
+        <span class="sc-cap">Intake form PDF</span>
+        <div class="sc-panel sc-delta">
+          <div class="sc-panel-h"><span class="sc-ico i-pdf"></span><span class="pb-path">Patient_Intake_Form_David_Artificial.pdf</span><span class="sc-dmark">Δ</span></div>
+          <div class="pb-form">
+            <span class="pb-sec">Patient Information</span>
+            <span class="pb-f"><i>Name:</i>David Thompson</span>
+            <span class="pb-f"><i>DOB (MM/DD/YYYY):</i>05/10/1980</span>
+            <span class="pb-f"><i>Address:</i>789 Pine Street, Austin, TX 73301</span>
+            <span class="pb-sec">Emergency Contact</span>
+            <span class="pb-f"><i>Name:</i>Sarah Thompson</span>
+            <span class="pb-f"><i>Relationship:</i>Wife</span>
+            <span class="pb-sec">Reason for Visit</span>
+            <span class="pb-f"><i>Primary Reason for Visit:</i>Knee pain</span>
+            <span class="pb-f"><i>How long have you had this issue?:</i>4 months</span>
+            <span class="pb-sec">Medical History Summary</span>
+            <span class="pb-f"><i>Current Medications:</i>Lisinopril 10mg daily</span>
+          </div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col pb-mid">
+        <span class="sc-cap">baml_src/patient.baml</span>
+        <pre class="sc-code pb-baml"><span class="k">function</span> <span class="f">ExtractPatientInfo</span>(
+  intake_form: <span class="n">pdf</span>
+) -&gt; <span class="n">Patient</span> &#123;
+  client <span class="f">Gemini</span>
+&#125;
+
+<span class="k">class</span> <span class="n">Patient</span> &#123;
+  name <span class="f">string</span>
+  dob <span class="f">string</span>
+  address <span class="n">Address</span>
+  emergency_contact <span class="n">Contact</span>
+  reason_for_visit <span class="f">string</span>
+  current_medications <span class="n">Medication</span>[]
+  <span class="c">…</span>
+&#125;</pre>
+        <div class="sc-row sc-keep pb-gen">
+          <span class="sc-chip">baml generate</span>
+          <span class="sc-to"></span>
+          <span class="sc-chip is-strong">baml_client</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="pb-call">
+      <span class="sc-cap">One typed call in main.py</span>
+      <div class="sc-query pb-q"><span class="sc-ico i-code"></span><span><span class="pb-k">return await</span> b.ExtractPatientInfo(pdf) <span class="pb-k">→</span> Patient</span></div>
+      <div class="sc-row pb-out">
+        <div class="sc-col pb-json-col">
+          <div class="sc-panel sc-delta">
+            <div class="sc-panel-h"><span class="sc-ico i-json"></span><span class="pb-path">output_patients/Patient_Intake_Form_David_Artificial.json</span></div>
+            <pre class="sc-code pb-json">&#123;
+  <span class="s">"name"</span>: <span class="s">"David Thompson"</span>,
+  <span class="s">"dob"</span>: <span class="s">"05/10/1980"</span>,
+  <span class="s">"address"</span>: &#123;
+    <span class="s">"street"</span>: <span class="s">"789 Pine Street"</span>, <span class="s">"city"</span>: <span class="s">"Austin"</span>,
+    <span class="s">"state"</span>: <span class="s">"TX"</span>, <span class="s">"zip_code"</span>: <span class="s">"73301"</span>
+  &#125;,
+  <span class="s">"emergency_contact"</span>: &#123;
+    <span class="s">"name"</span>: <span class="s">"Sarah Thompson"</span>, <span class="s">"relationship"</span>: <span class="s">"Wife"</span>, <span class="c">…</span>
+  &#125;,
+  <span class="s">"reason_for_visit"</span>: <span class="s">"Knee pain"</span>,
+  <span class="s">"symptoms_duration"</span>: <span class="s">"4 months"</span>,
+  <span class="s">"current_medications"</span>: [
+    &#123;<span class="s">"name"</span>: <span class="s">"Lisinopril"</span>, <span class="s">"dosage"</span>: <span class="s">"10mg daily"</span>&#125;
+  ],
+  <span class="c">…</span>
+&#125;</pre>
+          </div>
+        </div>
+        <div class="sc-col pb-files">
+          <div class="sc-panel">
+            <div class="sc-panel-h"><span class="sc-ico i-folder"></span>output_patients/</div>
+            <div class="sc-panel-b">
+              <div class="sc-li sc-delta"><span class="sc-ico i-json"></span><span>…David_Artificial.json</span></div>
+              <div class="sc-li"><span class="sc-ico i-json"></span><span>…Emily_Artificial.json</span></div>
+              <div class="sc-li"><span class="sc-ico i-json"></span><span>…Joe_Artificial.json</span></div>
+              <div class="sc-li"><span class="sc-ico i-json"></span><span>…Jane_Artificial.json</span></div>
+            </div>
+          </div>
+          <p class="sc-quote pb-note">One file per form, the same shape every time. Edit a form and only its JSON is rewritten.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="pb-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel pb-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-pdf"></span>Intake form</div>
+        <div class="pb-form is-card">
+          <span class="pb-f"><i>Name:</i>David Thompson</span>
+          <span class="pb-f"><i>DOB:</i>05/10/1980</span>
+          <span class="pb-f"><i>Reason:</i>Knee pain</span>
+          <span class="pb-f"><i>Medications:</i>Lisinopril</span>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col pb-card-out">
+        <span class="sc-chip is-strong pb-card-fn">b.ExtractPatientInfo(pdf)</span>
+        <pre class="sc-code">&#123;
+  <span class="s">"name"</span>: <span class="s">"David Thompson"</span>,
+  <span class="s">"dob"</span>: <span class="s">"05/10/1980"</span>,
+  <span class="s">"current_medications"</span>: [<span class="c">…</span>]
+&#125;</pre>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .pb { display: flex; flex-direction: column; gap: 18px; }
+  .pb-top { gap: 10px; }
+  .pb-src { flex: 1.1 1 0; }
+  .pb-mid { flex: 1 1 0; }
+  .pb-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .pb-src .sc-dmark { margin-left: auto; }
+  .pb-form { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px 12px; background: #141414; min-width: 0; }
+  .pb-sec { margin-top: 6px; padding-bottom: 2px; border-bottom: 1px solid var(--sc-line); font-size: 12px; font-weight: 600; color: var(--sc-ink); }
+  .pb-sec:first-child { margin-top: 0; }
+  .pb-f { display: flex; gap: 6px; min-width: 0; font-size: 12px; color: var(--sc-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pb-f i { flex: none; font-style: normal; color: var(--sc-dim); }
+  .pb-baml { flex: 1 1 auto; }
+  .pb-gen { gap: 8px; align-items: center; flex-wrap: wrap; }
+  .pb-call { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .pb-k { color: var(--sc-delta-text); color: #8E96FF; }
+  .pb-out { gap: 10px; }
+  .pb-json-col { flex: 1.9 1 0; }
+  .pb-json { border: 0; border-radius: 0; background: transparent; }
+  .pb-files { flex: 1 1 0; }
+  .pb-note { margin: 0; font-size: 12px; color: var(--sc-dim); }
+  @container (max-width: 560px) {
+    .pb-q > span:last-child { white-space: normal; }
+  }
+  .pb-card { height: 100%; display: flex; align-items: center; }
+  .pb-card > .sc-row { width: 100%; align-items: center; }
+  .pb-card-src { flex: 1 1 0; }
+  .pb-form.is-card { padding: 6px 8px; gap: 2px; }
+  .pb-form.is-card .pb-f { font-size: 11px; }
+  .pb-card-out { flex: 1.25 1 0; gap: 6px; }
+  .pb-card-fn { overflow: hidden; text-overflow: ellipsis; display: block; }
+</style>

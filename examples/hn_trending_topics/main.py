@@ -99,7 +99,13 @@ class HnTopic:
 # ============================================================================
 
 
-@coco.fn
+@coco.fn(
+    memo=True,
+    deps={
+        "model": LLM_MODEL,
+        "prompt": TopicsResponse.model_fields["topics"].description,
+    },
+)
 async def extract_topics(text: str | None) -> list[str]:
     """Extract topics from text using LLM."""
     if not text or not text.strip():

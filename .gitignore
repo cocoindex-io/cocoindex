@@ -45,3 +45,8 @@ examples/**/uv.lock
 # Claude Code local state
 .claude/*.lock
 .idea/
+
+# The built-in Google OAuth client: the release workflow writes it from
+# Actions secrets (.github/scripts/write_google_oauth_client.py). Never commit
+# it; pyproject.toml's [tool.maturin] include packs it into wheels and sdist.
+python/cocoindex/connectors/google_drive/_builtin_client.json

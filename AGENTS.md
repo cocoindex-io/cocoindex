@@ -32,16 +32,17 @@ different version than the hook pins, so run the hooks rather than `ruff` itself
 uv tool install prek                         # one-time; some hooks also need `protoc` (brew install protobuf)
 prek run ruff-check ruff-format --all-files  # Lint (applying safe fixes), then format Python code (same as CI)
 cargo fmt                                    # Format Rust code
-./dev/run_cargo_clippy.sh                    # Lint Rust code other than the Rust SDK (same as CI)
-./dev/run_cargo_clippy_sdk.sh                # Lint the Rust SDK (same as CI)
+./dev/run_cargo_clippy.sh                    # Lint Rust code other than the Rust SDK and its CLI (same as CI)
+./dev/run_cargo_clippy_sdk.sh                # Lint the Rust SDK and its CLI, `rust/cli` (same as the daily CI)
 ```
 
 ### Pre-submission Checks
 
-CI enforces the full pre-commit hook suite from `.pre-commit-config.yaml`, which
-covers more than the commands above — notably regenerating the CLI docs
-(`docs/src/content/docs/cli.mdx`) whenever `cli.py` changes. Before pushing, run
-the hooks whose inputs your branch changed, as PR CI does:
+CI enforces the pre-commit hook suite from `.pre-commit-config.yaml`, which covers
+more than the commands above — notably regenerating the CLI docs
+(`docs/src/content/docs/cli.mdx`) whenever `cli.py` changes. The Rust SDK hooks,
+described below, are the exception. Before pushing, run the hooks whose inputs
+your branch changed, as PR CI does:
 
 ```bash
 prek run --from-ref origin/main --to-ref HEAD
@@ -50,9 +51,12 @@ prek run --from-ref origin/main --to-ref HEAD
 `prek run --all-files` runs every hook on every file, the Rust SDK hooks
 (`cargo-test-sdk`, `cargo-clippy-sdk`, `cargo-test-rust-externs`) included. The
 Rust SDK isn't launched yet, so those hooks run only for a change under
-`rust/sdk/`, `examples/rust/` or `benchmarks/*/rust/`, not for a change to the
-code the SDK builds on. The `Rust SDK Daily` workflow runs them on `main` every
-day and files an issue when they fail.
+`rust/sdk/`, `rust/cli/`, `examples/rust/` or `benchmarks/*/rust/`, not for a change to the
+code the SDK builds on. CI runs them on no pull request and in no merge group,
+even for a change to the SDK, because they are slow, so the local run is the only
+check before such a change lands. The `Rust SDK Daily` workflow runs them on
+`main` every day and files an issue when they fail;
+`gh workflow run rust_sdk_daily.yml --ref <branch>` runs them on a branch.
 
 ### Pull Requests and CI
 
@@ -63,6 +67,12 @@ For a full run on a branch before then, use `gh workflow run CI.yml --ref <branc
 The CI tiers, the merge queue and stacked pull requests are described in
 [CI.md](https://github.com/cocoindex-io/.github/blob/main/CI.md).
 
+A pull request to a release branch (`release/X.Y`, see [Versioning](#versioning))
+has no merge queue: its own run is the full tier, and it is squash-merged once
+`ci-gate` passes (`gh pr merge --squash`). Such a pull request is a backport of
+a change that already landed on `main`; `dev/agent-skills/backport/SKILL.md`
+says what qualifies and how to land one.
+
 ### Workflow Summary
 
 | Change Type | Commands to Run |
@@ -70,11 +80,11 @@ The CI tiers, the merge queue and stacked pull requests are described in
 | Rust code only | `uv run maturin develop && cargo test` |
 | Python code only | `uv run mypy && uv run pytest python/` |
 | Both Rust and Python | Run all commands from both categories above |
-| Rust SDK, Rust examples or Rust benchmarks | `prek run cargo-test-sdk cargo-clippy-sdk update-rust-extern-locks cargo-test-rust-externs --all-files` |
+| Rust SDK, Rust CLI (`rust/cli`), Rust examples or Rust benchmarks | `prek run cargo-test-sdk cargo-clippy-sdk update-rust-extern-locks cargo-test-rust-externs --all-files` |
 | Python lint and format | `prek run ruff-check ruff-format --all-files` |
 | Before pushing | `prek run --from-ref origin/main --to-ref HEAD` |
 
-After changing a core engine API (`rust/core`), run `cargo check --workspace --all-targets` to catch call sites in every workspace crate — both `rust/py` and the Rust SDK under `rust/sdk/` call core directly, and the SDK is easy to miss when grepping. The `examples/rust/*` and `benchmarks/*/rust` crates are standalone workspaces that consume the SDK; the `prek` suite's `cargo check (rust examples + benchmarks)` hook covers those. That hook and the other Rust SDK hooks don't run for a change to `rust/core` alone, so this check is the one that catches a broken SDK before the daily run does.
+After changing a core engine API (`rust/core`), run `cargo check --workspace --all-targets` to catch call sites in every workspace crate — `rust/py`, the Rust SDK under `rust/sdk/` and the Rust CLI under `rust/cli/` call core directly, and the SDK and its CLI are easy to miss when grepping. The `examples/rust/*` and `benchmarks/*/rust` crates are standalone workspaces that consume the SDK; the `prek` suite's `cargo check (rust examples + benchmarks)` hook covers those. That hook and the other Rust SDK hooks don't run for a change to `rust/core` alone, so this check is the one that catches a broken SDK before the daily run does.
 
 ## Code Structure
 
@@ -92,9 +102,10 @@ cocoindex/
 │   ├── code_ast/               # Tree-sitter foundation: language registry (links all grammars), CodeSource, positions
 │   ├── ops_text/               # Text processing operations (splitter, language detection)
 │   ├── code_match/             # Structural code pattern matching over tree-sitter ASTs
-│   └── sdk/
-│       ├── cocoindex/          # Rust SDK (`cocoindex` crate); calls core engine APIs directly, like py/
-│       └── cocoindex_macros/   # Proc macros for the Rust SDK (`#[function]`)
+│   ├── sdk/
+│   │   ├── cocoindex/          # Rust SDK (`cocoindex` crate); calls core engine APIs directly, like py/
+│   │   └── cocoindex_macros/   # Proc macros for the Rust SDK (`#[function]`, `#[app]`, `#[lifespan]`, `#[main]`)
+│   └── cli/                    # `cocoindex` CLI for Rust projects: builds the user's crate, drives its binary (spec: dev/plans/rust-cli.md)
 │
 ├── python/
 │   ├── cocoindex/              # Python package
@@ -328,10 +339,11 @@ List every image a test's containers use in its `requires_docker(...)` marker. `
 
 ### LMDB write paths
 
-- All LMDB writes must go through `Storage::run_txn` (uses the single-writer batcher).
+- All LMDB writes must go through `AppStore::run_txn`, which runs persisting bodies on the single-writer batcher (`Storage::run_txn`, private to `state_store`) and a preview's bodies against a read snapshot.
 - Do not open a heed write txn directly or wrap the env in a separate mutex/semaphore — bypassing the batcher loses fsync coalescing and regresses concurrent-submit throughput by 10-100×.
 - LMDB has no savepoints. If a sub-operation needs to "abort" without failing its caller, handle it at the body level (e.g. return a sentinel result without writing). A body that returns `Err` fails only its own caller: the batcher drops its writes by aborting the txn and re-running the bodies ahead of it, so every body must be safe to re-run.
-- An LMDB write txn must begin and end (commit or abort) on the same OS thread: the writer lock is thread-owned and LMDB ignores a failed release, so a txn that migrates between runtime workers blocks every later writer for good. heed marks `RwTxn` as `Send` regardless, so the compiler won't catch it. `Storage::run_txn` runs each batch on one blocking thread for this reason; never hold a write txn across an `.await` on the multi-thread runtime.
+- A preview writes nothing to the state store, and write paths do not check for a preview to achieve that: a preview run's `ComponentProcessorContext::app_store()` (inherited by every context of the operation, live components included) is an `AppStore::discarding_writes()` handle. Its bodies run one at a time, as a batch's do, on a blocking thread against a read snapshot plus an in-memory overlay of the run's own writes to its app's database instead of the write batcher, and a preview runs its commit into that handle too, so the run reads its writes back and plans exactly as an update would, and nothing reaches LMDB. The overlay keeps no function-memo value a preview writes (a later run in the same preview reads the memo the store holds, if any, and recomputes otherwise); it does keep tracking records, owner and existence rows, component memos and user states. A preview reserves ids in a range of its own, from `FIRST_ID_OF_A_RUN_THAT_PERSISTS_NOTHING`, so they never meet a persisting run's. Reach the store through that context handle; `AppContext::persisting_app_store()` (crate-private) is for deriving a root run's handle and for inspection. The one deliberate exception is `AppContext::next_id`, whose sequencer owns the app's persisting store and reserves user ids in a preview too (ids are opaque, and a gap costs nothing).
+- An LMDB write txn must begin and end (commit or abort) on the same OS thread: the writer lock is thread-owned and LMDB ignores a failed release, so a txn that migrates between runtime workers blocks every later writer for good. heed marks `RwTxn` as `Send` regardless, so the compiler won't catch it. The batcher behind `AppStore::run_txn` runs each batch on one blocking thread for this reason; never hold a write txn across an `.await` on the multi-thread runtime.
 
 ### Sync vs Async
 
@@ -349,6 +361,14 @@ When adding new functionality that involves I/O or concurrency:
 ## Versioning
 
 The current codebase is for CocoIndex v1, which is a fundamental redesign from CocoIndex v0. CocoIndex v1 lives on the `main` branch; the legacy v0 code is preserved on the `v0` branch.
+
+Releases are tagged `v<version>` and follow semver:
+
+- A **minor** release (`1.2.0`) is cut from `main` and carries everything landed since the previous minor. Once it's published, its release branch, `release/1.2`, is created from its tag; a major release (`2.0.0`, `release/2.0`) does the same, and a prerelease (`1.2.0-rc.1`) creates none.
+- A **patch** release (`1.1.1`) is cut from the minor's release branch, `release/1.1`. The branch starts at the minor's tag (`v1.1.0`) and takes only backports from `main`: fixes, dependency bumps that fix an advisory in what the wheel ships, and docs changes that describe released behavior. A fix makes released behavior match its documentation or intent without adding a way to call CocoIndex; a new API, parameter, connector or option is never backported, experimental or not. Only the newest minor's branch takes backports. `dev/agent-skills/backport/SKILL.md` lands a backport; `dev/agent-skills/create-release/SKILL.md` cuts the release.
+- **Experimental** APIs, labelled so in their docs (such as `coco.DataDep`), are outside the compatibility promise: a later release, including a minor one, may change or remove them.
+
+The docs site shows the docs of the latest release: a release deploys the docs from its tagged commit when GitHub lists it as the repository's "Latest" release. Docs for an unreleased feature stay on `main` until the minor that ships it; a docs change that describes released behavior is backported like a fix. The on-demand docs deploy (`docs_release.yml`) runs from the latest release's branch, not from `main`.
 
 ## Docs diagrams
 
@@ -388,6 +408,7 @@ Reusable task-specific agent guidance lives under `dev/agent-skills/`. These pla
 - For new target connectors, read `dev/agent-skills/target-connector/SKILL.md`.
 - For upgrading example package versions, read `dev/agent-skills/upgrade-examples/SKILL.md`.
 - For cutting a release (next version, release notes, GitHub release, PyPI publish), read `dev/agent-skills/create-release/SKILL.md`.
+- For backporting a merged pull request to a release branch, for the next patch release, read `dev/agent-skills/backport/SKILL.md`.
 
 Agent Skills-compatible clients, including Codex, discover the checked-in symlinks under `.agents/skills/`. The public CocoIndex skill is exposed there as `cocoindex`, and contributor playbooks are exposed there from `dev/agent-skills/`.
 

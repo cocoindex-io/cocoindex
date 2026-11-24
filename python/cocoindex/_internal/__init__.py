@@ -6,6 +6,7 @@ import sys as _sys
 import sysconfig as _sysconfig
 
 from . import core as _core
+from . import data_dep as _data_dep
 from . import serde as _serde
 from . import target_state_codec as _target_state_codec
 from . import typing as _typing
@@ -27,6 +28,7 @@ _core.init_runtime(
     typed_target_handler_wrapper_fn=_TypedTargetHandlerWrapper,
     non_existence=_typing.NON_EXISTENCE,
     target_state_codec=_target_state_codec,
+    validate_data_deps_fn=_data_dep.validate_stored_data_deps,
 )
 
 # Make core stable-path objects usable in memo key fingerprints.

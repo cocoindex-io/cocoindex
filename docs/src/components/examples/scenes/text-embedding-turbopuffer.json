@@ -1,0 +1,21 @@
+{
+  "alt": "On your machine, the sample file rfc8259.md is chunked with RecursiveSplitter and embedded locally with all-MiniLM-L6-v2, and each chunk is upserted as a row with its vector and filename, offset and text attributes into the managed Turbopuffer namespace TextEmbedding in gcp-us-central1; editing one section upserts only that row, and an ANN query for \"how is a JSON object written?\" returns the chunk on JSON objects.",
+  "needs": [
+    "TURBOPUFFER_API_KEY",
+    "Python 3.11+"
+  ],
+  "run": [
+    {
+      "note": "Set TURBOPUFFER_API_KEY in .env, then install",
+      "cmd": "cp .env.example .env && pip install -e ."
+    },
+    {
+      "note": "Build the namespace from markdown_files/",
+      "cmd": "cocoindex update main"
+    },
+    {
+      "note": "Search it",
+      "cmd": "python main.py \"how is a JSON object written?\""
+    }
+  ]
+}

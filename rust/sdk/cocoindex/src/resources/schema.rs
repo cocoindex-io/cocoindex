@@ -9,7 +9,13 @@
 //!
 //! Python carries the element type as a NumPy `dtype`; Rust uses the
 //! [`VectorElementType`] enum, which covers the element types the connectors
-//! support today (`f32` and `f16`).
+//! tell apart: `f16` selects a half-precision column where the store has one,
+//! and `f32` and `f64` both select the store's standard float vector column
+//! (as the Python connectors do for every dtype other than `float16`).
+//!
+//! Python's `get_vector_schema` also accepts a `ContextKey` to a provider. In
+//! Rust the context is explicit, so resolve the key first and pass the value:
+//! `schema.with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?).await?`.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -23,6 +29,9 @@ pub enum VectorElementType {
     Float32,
     /// 16-bit IEEE-754 float (`f16` / half precision).
     Float16,
+    /// 64-bit IEEE-754 float (`f64`), NumPy's default dtype. No connector has a
+    /// 64-bit vector column: those that accept it store it as `f32`.
+    Float64,
 }
 
 /// Out-of-band information for a vector column: its element type and dimension.

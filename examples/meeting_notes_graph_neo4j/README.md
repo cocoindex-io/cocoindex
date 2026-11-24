@@ -50,7 +50,7 @@ async def process_file(file, meeting_table, task_table, decided_rel) -> list[Mee
         meeting_table.declare_record(row=Meeting(id=meeting_id, ...))
         for task in extracted.tasks:
             task_table.declare_record(row=Task(description=task.description))
-            decided_rel.declare_relation(from_id=meeting_id, to_id=task.description)
+            decided_rel.declare_relationship(from_id=meeting_id, to_id=task.description)
         ...
 
 @coco.fn(memo=True)  # Phase 2 — collapse "Alice" / "Alice Chen" / "alice c." into canonical names
@@ -99,6 +99,8 @@ pip install -e .
 ```sh
 cocoindex update main
 ```
+
+Built this graph with an older version of the example (`mount_table_target` / `mount_relation_target`)? Those APIs are deprecated since CocoIndex 1.1. To keep the graph, follow [Switching an existing table](https://cocoindex.io/docs/connectors/neo4j/#switching-an-existing-table) in the Neo4j connector docs before you update; otherwise run `cocoindex drop main` first and rebuild.
 
 **4. Explore the graph** — open [Neo4j Browser](http://localhost:7474) (`neo4j` / `cocoindex`) and ask:
 

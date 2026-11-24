@@ -1,0 +1,11 @@
+{
+  "alt": "The recording audio_files/greeting.wav is transcribed by LiteLLMTranscriber(\"whisper-1\") into one AudioTranscription row (filename, text) in the Postgres table coco_examples.audio_transcriptions, keyed by filename; replacing pipeline_note.wav re-transcribes only that file, and a SELECT returns each filename with a preview of its transcript.",
+  "needs": ["Docker (for Postgres)", "OPENAI_API_KEY (for whisper-1)", "Python 3.11+"],
+  "run": [
+    { "note": "Start Postgres", "cmd": "docker compose -f ../../dev/postgres.yaml up -d" },
+    { "note": "Configure (set OPENAI_API_KEY in .env) and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Add recordings (two samples ship with the Rust twin)", "cmd": "cp ../rust/audio_to_text/audio_files/*.wav audio_files/" },
+    { "note": "Transcribe into Postgres", "cmd": "cocoindex update main.py" },
+    { "note": "Read the transcripts", "cmd": "psql \"postgres://cocoindex:cocoindex@localhost/cocoindex\" -c 'SELECT filename, left(text, 200) AS preview FROM coco_examples.audio_transcriptions ORDER BY filename;'" }
+  ]
+}

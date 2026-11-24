@@ -16,6 +16,7 @@ heed = "0.22.0"
 # internally to validate `map_size` against the system page size.
 page_size = "0.6"
 nix = { workspace = true }
+unicode-width = { workspace = true }
 storekey = { workspace = true }
 serde = { workspace = true, features = ["rc", "derive"] }
 tokio = { workspace = true }

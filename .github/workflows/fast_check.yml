@@ -2,11 +2,11 @@ name: Fast Check
 
 on:
   pull_request:
-    branches: [main, v1]
+    branches: [main, 'release/**']
     types: [opened, synchronize, reopened, ready_for_review, stacked]
   merge_group:
   push:
-    branches: [main, v1]
+    branches: [main, 'release/**']
   workflow_dispatch:
 
 # A new push to a pull request cancels its running checks. Other runs get a

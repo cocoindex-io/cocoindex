@@ -6,6 +6,8 @@ description: >
   max_dbs via environment variables or programmatic settings for large-scale
   deployments.
 ---
+import LangTabs from '../../../components/LangTabs.astro';
+
 CocoIndex uses an [LMDB](http://www.lmdb.tech/doc/) database to persist its internal state. This database tracks target states and [memoization](../programming_guide/function) results from previous runs, enabling CocoIndex to detect what changed and apply only the necessary updates.
 
 ## Database path
@@ -18,6 +20,10 @@ export COCOINDEX_DB=./cocoindex.db
 
 You can also set it programmatically in a [lifespan function](../programming_guide/app#lifespan-optional):
 
+{/* Rust: rust/sdk/cocoindex/tests/registered.rs (lifespan), rust/sdk/cocoindex/src/app.rs (EnvironmentBuilder::db_path) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
@@ -25,13 +31,56 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     yield
 ```
 
-Or pass it directly when creating a [`Settings`](./multiple_environments) object:
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    Ok(builder.db_path("./cocoindex.db"))
+}
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">Or pass it directly when creating a [`Settings`](./multiple_environments) object:</Lang><Lang only="rust">Or set it on the builder when you create an [`Environment`](./multiple_environments) or an `App` directly:</Lang>
+
+{/* Rust: rust/sdk/cocoindex/src/app.rs (Environment::builder, App::builder) */}
+<LangTabs>
+<Fragment slot="python">
 
 ```python
 settings = coco.Settings(db_path=pathlib.Path("./cocoindex.db"))
 ```
 
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+let env = Environment::builder().db_path("./cocoindex.db").build().await?;
+// or, for a single app:
+let app = App::builder("MyApp").db_path("./cocoindex.db").build().await?;
+```
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
+
 Setting `db_path` in the lifespan or `Settings` takes precedence over the `COCOINDEX_DB` environment variable. If neither is provided, CocoIndex will raise an error.
+
+</Lang>
+
+<Lang only="rust">
+
+Setting `db_path` in a lifespan takes precedence over the `COCOINDEX_DB` environment variable. `Environment::from_registered()` runs every `#[cocoindex::lifespan]` and uses the variable when no lifespan set a `db_path`; if neither is provided, it returns an error. That is the path the `cocoindex` CLI takes.
+
+</Lang>
+
+<RustNote>
+Only `Environment::from_registered()` reads `COCOINDEX_DB`. A plain `Environment::builder().build()` or `App::builder(name).build()` reads no environment variables and defaults `db_path` to `./coco_state`.
+</RustNote>
 
 ## Opening and closing the database
 
@@ -39,22 +88,32 @@ Opening a `db_path` opens its LMDB environment, and LMDB allows one environment 
 
 ## LMDB tuning
 
+<Lang only="python">
+
 The LMDB database has two tunable settings, grouped under `coco.LmdbSettings` and attached to `Settings` as `db_settings`. The defaults work well for most use cases — you only need to adjust them for large-scale deployments.
+
+</Lang>
+
+<Lang only="rust">
+
+The LMDB database has two tunable settings, set with the builder's `lmdb_max_dbs(..)` and `lmdb_map_size(..)`. The defaults work well for most use cases — you only need to adjust them for large-scale deployments. `Environment::from_registered()` reads the two environment variables when a lifespan did not set them.
+
+</Lang>
 
 | Setting | Default | Env Variable | Description |
 |---------|---------|-------------|-------------|
-| `max_dbs` | `1024` | `COCOINDEX_LMDB_MAX_DBS` | Maximum number of apps (named LMDB sub-databases) sharing one `db_path`. Unlike `map_size`, this **is** a hard cap — creating one app beyond it fails. Applied at open time, so raising it takes effect on the next start. Must be &ge; 1. |
-| `map_size` | `4294967296` (4 GiB) | `COCOINDEX_LMDB_MAP_SIZE` | *Initial* size of the LMDB memory map in bytes. CocoIndex enlarges the map automatically as the state grows, so this is a starting point, not a cap. Must be &gt; 0; rounded up to the nearest multiple of the system page size. |
+| <Lang only="python">`max_dbs`</Lang><Lang only="rust">`lmdb_max_dbs`</Lang> | `1024` | `COCOINDEX_LMDB_MAX_DBS` | Maximum number of apps (named LMDB sub-databases) sharing one `db_path`. Unlike the map size, this **is** a hard cap — creating one app beyond it fails. Applied at open time, so raising it takes effect on the next start. Must be &ge; 1. |
+| <Lang only="python">`map_size`</Lang><Lang only="rust">`lmdb_map_size`</Lang> | `4294967296` (4 GiB) | `COCOINDEX_LMDB_MAP_SIZE` | *Initial* size of the LMDB memory map in bytes. CocoIndex enlarges the map automatically as the state grows, so this is a starting point, not a cap. Must be &gt; 0; rounded up to the nearest multiple of the system page size. |
 
 ### When to adjust
 
-- **`map_size`** — most deployments never need to touch it. The map grows on its own and each step is cheap, so it is worth setting only when that growth actually costs you something: a large state re-climbing from 4 GiB on every restart, or resize pauses you can measure. If you do size it up, every enlargement logs `LMDB map full, auto-resizing to N bytes and retrying` — the largest `N` you see is the number to use. On 64-bit systems, `map_size` is a virtual address space reservation, so setting it larger than needed is safe and consumes neither physical memory nor disk.
-- **`max_dbs`** — raise it if you have an unusually large number of apps sharing a single database directory.
+- **<Lang only="python">`map_size`</Lang><Lang only="rust">`lmdb_map_size`</Lang>** — most deployments never need to touch it. The map grows on its own and each step is cheap, so it is worth setting only when that growth actually costs you something: a large state re-climbing from 4 GiB on every restart, or resize pauses you can measure. If you do size it up, every enlargement logs `LMDB map full, auto-resizing to N bytes and retrying` — the largest `N` you see is the number to use. On 64-bit systems, the map size is a virtual address space reservation, so setting it larger than needed is safe and consumes neither physical memory nor disk.
+- **<Lang only="python">`max_dbs`</Lang><Lang only="rust">`lmdb_max_dbs`</Lang>** — raise it if you have an unusually large number of apps sharing a single database directory.
 
 :::note[How the map grows]
-When a write runs out of map space, CocoIndex doubles the map and retries, repeating until the write fits. The remap itself is cheap — no data copy, no file rewrite — but it needs exclusivity: it waits for every LMDB transaction open in the process to finish, and queues new ones behind it. That's imperceptible for ordinary reads and writes, but a long streaming read (`cocoindex show` over a large app) holds its transaction for the whole stream, and the resize waits that long.
+When a write runs out of map space, CocoIndex doubles the map and retries, repeating until the write fits. The remap itself is cheap (no data copy, no file rewrite) but it needs exclusivity: it waits for every LMDB transaction open in the process to finish, and queues new ones behind it. That's imperceptible for ordinary reads and writes, but a long streaming read (`cocoindex show` over a large app) holds its transaction for the whole stream, and the resize waits that long.
 
-The enlarged size doesn't carry over. The next process opens at the configured `map_size`, raised to at least the space the data file already occupies — the file's high-water mark, not the live data, since LMDB reuses freed pages but never shrinks the file. So a database that outgrew its `map_size` still opens and reads fine, just with no headroom: the next write needing new space enlarges it again. A map that grew to 16 GiB over a 10 GiB file reopens at 10 GiB, not 16, then doubles to 20 GiB on the next write that needs space.
+The enlarged size doesn't carry over. The next process opens at the configured map size, raised to at least the space the data file already occupies — the file's high-water mark, not the live data, since LMDB reuses freed pages but never shrinks the file. So a database that outgrew its configured map size still opens and reads fine, just with no headroom: the next write needing new space enlarges it again. A map that grew to 16 GiB over a 10 GiB file reopens at 10 GiB, not 16, then doubles to 20 GiB on the next write that needs space.
 :::
 
 :::note[What typically grows the store]
@@ -75,6 +134,10 @@ export COCOINDEX_LMDB_MAX_DBS=2048
 
 Or programmatically in a lifespan function:
 
+{/* Rust: rust/sdk/cocoindex/src/app.rs (EnvironmentBuilder::lmdb_map_size, lmdb_max_dbs), rust/sdk/cocoindex/tests/registered.rs (lifespan shape) */}
+<LangTabs>
+<Fragment slot="python">
+
 ```python
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
@@ -83,6 +146,26 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     builder.settings.db_settings.max_dbs = 2048
     yield
 ```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+#[cocoindex::lifespan]
+async fn lifespan(builder: EnvironmentBuilder) -> Result<EnvironmentBuilder> {
+    Ok(builder
+        .db_path("./cocoindex.db")
+        .lmdb_map_size(8 * 1024 * 1024 * 1024) // 8 GiB
+        .lmdb_max_dbs(2048))
+}
+```
+
+The same setters exist on `App::builder(name)` and `Environment::builder()`.
+
+</Fragment>
+</LangTabs>
+
+<Lang only="python">
 
 Or when creating a `Settings` object directly:
 
@@ -101,3 +184,103 @@ When using `Settings.from_env()`, the LMDB settings are automatically loaded fro
 :::note[Legacy keyword arguments]
 For backward compatibility, `Settings` still accepts `lmdb_max_dbs` and `lmdb_map_size` as keyword arguments, and exposes them as attributes (e.g., `settings.lmdb_map_size = ...`). These read and write the same underlying values as `settings.db_settings.max_dbs` / `settings.db_settings.map_size`. Passing both `db_settings=` and the legacy keywords in the same `Settings(...)` call raises `ValueError`.
 :::
+
+</Lang>
+
+## Inspecting the database
+
+The <Lang only="python">[`cocoindex ls` and `cocoindex show`](../cli#ls)</Lang><Lang only="rust">[`cocoindex ls` and `cocoindex show`](/docs/rust/cli/#ls)</Lang> commands read the database directly when you pass `--db` (and `--app-name` for `show`), without loading your app:
+
+<Lang only="python">
+
+```bash
+cocoindex ls --db ./cocoindex.db
+cocoindex show --db ./cocoindex.db --app-name MyApp --target-states
+```
+
+The database format does not depend on the SDK that wrote it. The Python CLI lists and shows a database written by an app built with the Rust SDK, and prints the same output as the Rust SDK's own `cocoindex` CLI.
+
+</Lang>
+
+<Lang only="rust">
+
+```bash
+cocoindex ls --db ./cocoindex.db
+cocoindex show --db ./cocoindex.db --app-name MyApp
+cocoindex show --db ./cocoindex.db --app-name MyApp --target-states
+cocoindex show --db ./cocoindex.db --app-name MyApp '/"a.md"'
+```
+
+Without `--db`, `ls` uses `COCOINDEX_DB`. With an app target instead of `--db` and `--app-name`, the CLI builds the crate and asks the app for its database.
+
+The database format does not depend on the SDK that wrote it. The [Python CLI](/docs/cli/) lists and shows a database written by a Rust app, and prints the same output.
+
+</Lang>
+
+### Inspecting from code
+
+<Lang only="python">
+
+`cocoindex.inspect` reads the same data from a program: an app's stable paths, the details of each one, and the target states it tracks. Every function takes an `App`; its `_by_name` form takes an `Environment` and an app name, for an app whose pipeline the program does not hold. The functions only read.
+
+</Lang>
+
+<Lang only="rust">
+
+`cocoindex::inspect` reads the same data from a program: an app's stable paths, the details of each one, and the target states it tracks. Every function takes an `App`; its `_by_name` form takes an `Environment` and an app name, for an app whose pipeline the binary does not hold. The functions only read.
+
+</Lang>
+
+{/* Python: python/cocoindex/_internal/inspect_api.py, python/cocoindex/_internal/core.pyi (TargetStateEntry). Rust: rust/sdk/cocoindex/src/inspect.rs (module docs), rust/sdk/cocoindex/tests/inspect.rs */}
+<LangTabs>
+<Fragment slot="python">
+
+```python
+import cocoindex as coco
+from cocoindex import inspect as coco_inspect
+
+for path in await coco_inspect.list_stable_paths(app):
+    print(path)
+
+# Target states with the component that owns each.
+async for entry in coco_inspect.iter_target_states(app):
+    print(entry.readable_path, "owner:", entry.owner_component_path)
+
+# One path, with the paths directly under it.
+details = await coco_inspect.query_stable_path_details(
+    app, coco.ROOT_PATH, include_children=True
+)
+
+# Without the `App`: an environment and the app's name.
+one = await coco_inspect.get_stable_path_detail_by_name(env, "MyApp", coco.ROOT_PATH)
+```
+
+</Fragment>
+<Fragment slot="rust">
+
+```rust
+use cocoindex::inspect::{self, StablePath, StablePathQuery};
+use futures::TryStreamExt;
+
+for path in inspect::list_stable_paths(&app).await? {
+    println!("{path}");
+}
+
+// Streams read in one transaction and buffer nothing.
+let mut target_states = std::pin::pin!(inspect::iter_target_states(&app).await);
+while let Some(entry) = target_states.try_next().await? {
+    println!("{} owner:{}", entry.readable_path, entry.owner_component_path);
+}
+
+// One path, with the paths directly under it.
+let query = StablePathQuery { include_children: true, ..Default::default() };
+let details = inspect::query_stable_path_details(&app, &StablePath::root(), query).await?;
+
+// Without the `App`: an environment and the app's name.
+let one = inspect::get_stable_path_detail_by_name(&env, "MyApp", &StablePath::root()).await?;
+```
+
+</Fragment>
+</LangTabs>
+
+A streaming read holds its LMDB transaction for the whole stream, so a map resize waits for it to finish (see [How the map grows](#lmdb-tuning)).

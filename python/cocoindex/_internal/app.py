@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import (
@@ -24,6 +25,7 @@ from .function import (
     create_core_component_processor,
     fn_ret_deserializer,
 )
+from .stable_path import StablePath
 from .update_stats import (
     UpdateSnapshot,
     UpdateStats,
@@ -31,6 +33,7 @@ from .update_stats import (
     _StatsView,
     _decode_update_stats,
     _resolve_report_to_stdout,
+    _std_streams_in_order,
     _TERMINATED_VERSION,
 )
 
@@ -170,8 +173,31 @@ async def show_progress(
     refresh_interval_secs = (
         refresh_interval.total_seconds() if refresh_interval is not None else None
     )
-    pyvalue: Any = await core.show_progress(core_handle, refresh_interval_secs)
+    with _std_streams_in_order():
+        pyvalue: Any = await core.show_progress(core_handle, refresh_interval_secs)
     return pyvalue.get(fn_ret_deserializer(handle._main_fn))  # type: ignore[no-any-return]
+
+
+def _core_component_selector(
+    component_selector: Iterable[StablePath] | None,
+) -> list[core.StablePath] | None:
+    if component_selector is None:
+        return None
+    if isinstance(component_selector, (StablePath, str, bytes)):
+        raise TypeError(
+            "component_selector takes an iterable of StablePath values, got "
+            f"{component_selector!r}. Pass a list, e.g. "
+            '[coco.ROOT_PATH / "process" / key].'
+        )
+    paths: list[core.StablePath] = []
+    for path in component_selector:
+        if not isinstance(path, StablePath):
+            raise TypeError(
+                f"component_selector takes StablePath values, got {path!r}. "
+                'Build one from coco.ROOT_PATH, e.g. coco.ROOT_PATH / "process" / key.'
+            )
+        paths.append(path._core)
+    return paths
 
 
 @dataclass(frozen=True)
@@ -281,6 +307,7 @@ class App(Generic[P, R]):
         full_reprocess: bool = False,
         live: bool = False,
         preview: bool = False,
+        component_selector: Iterable[StablePath] | None = None,
     ) -> UpdateHandle[R]:
         """
         Start an update and return a handle for tracking progress and awaiting the result.
@@ -294,11 +321,17 @@ class App(Generic[P, R]):
                 after mark_ready).
             preview: If True, compute target actions without applying them.
                 The handle's result will be a list of raw action objects.
+            component_selector: If given, run only these components and what is
+                needed to reach them, leaving every other component as it is: not
+                run, and its target states kept even if its source item is gone.
+                A path selects its whole subtree. See the "Updating part of an
+                app" section of the App docs.
 
         Returns:
             An UpdateHandle that provides access to stats(), watch(), and result().
         """
         deadline_context = _deadline_for_engine()
+        core_selector = _core_component_selector(component_selector)
 
         async def _init() -> core.UpdateHandle:
             env, core_app = await self._get_core_env_app()
@@ -318,6 +351,7 @@ class App(Generic[P, R]):
                 preview=preview,
                 host_ctx=env._context_provider,
                 deadline=deadline_context,
+                component_selector=core_selector,
             )
 
         return UpdateHandle(
@@ -333,6 +367,7 @@ class App(Generic[P, R]):
         full_reprocess: bool = False,
         live: bool = False,
         preview: bool = False,
+        component_selector: Iterable[StablePath] | None = None,
     ) -> R | list[Any]:
         """
         Update the app synchronously (run the app once to process all pending changes).
@@ -346,10 +381,16 @@ class App(Generic[P, R]):
                 after mark_ready).
             preview: If True, compute target actions without applying them.
                 Returns a list of raw action objects instead of the main function result.
+            component_selector: If given, run only these components and what is
+                needed to reach them, leaving every other component as it is: not
+                run, and its target states kept even if its source item is gone.
+                A path selects its whole subtree. See the "Updating part of an
+                app" section of the App docs.
 
         Returns:
             The result of the main function, or a list of actions in preview mode.
         """
+        core_selector = _core_component_selector(component_selector)
         env, core_app = self._get_core_env_app_sync()
         root_path = core.StablePath()
         deadline_context = _deadline_for_engine()
@@ -362,16 +403,18 @@ class App(Generic[P, R]):
             deadline_context=deadline_context,
         )
         report, refresh_interval_secs = _resolve_report_to_stdout(report_to_stdout)
-        pyvalue: Any = core_app.update(
-            processor,
-            full_reprocess=full_reprocess,
-            host_ctx=env._context_provider,
-            report_to_stdout=report,
-            refresh_interval_secs=refresh_interval_secs,
-            live=live,
-            preview=preview,
-            deadline=deadline_context,
-        )
+        with _std_streams_in_order() if report else contextlib.nullcontext():
+            pyvalue: Any = core_app.update(
+                processor,
+                full_reprocess=full_reprocess,
+                host_ctx=env._context_provider,
+                report_to_stdout=report,
+                refresh_interval_secs=refresh_interval_secs,
+                live=live,
+                preview=preview,
+                deadline=deadline_context,
+                component_selector=core_selector,
+            )
         if preview:
             return pyvalue  # type: ignore[no-any-return]
         return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]
@@ -407,8 +450,9 @@ class App(Generic[P, R]):
         """
         env, core_app = self._get_core_env_app_sync()
         report, refresh_interval_secs = _resolve_report_to_stdout(report_to_stdout)
-        core_app.drop(
-            env._context_provider,
-            report_to_stdout=report,
-            refresh_interval_secs=refresh_interval_secs,
-        )
+        with _std_streams_in_order() if report else contextlib.nullcontext():
+            core_app.drop(
+                env._context_provider,
+                report_to_stdout=report,
+                refresh_interval_secs=refresh_interval_secs,
+            )

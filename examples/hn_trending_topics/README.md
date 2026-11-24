@@ -73,7 +73,7 @@ You *declare* what rows should exist — no inserts or deletes. `app_main` mount
 
 - **Any source, not just files.** The source here is a live HTTP API — `fetch_thread_list` and `fetch_thread` are ordinary `async def` functions. Any API, queue, or SDK plugs in the same way: fetch in plain Python, hand it to the pipeline.
 - **A component per thread.** Each thread's work and its rows are grouped together, run in parallel, and committed to Postgres as soon as that thread is done — no waiting for the batch.
-- **Incremental by default.** Per-message extraction is tracked, so the expensive LLM calls only run for content CocoIndex hasn't seen; re-running catches up on new stories and reuses committed rows.
+- **Incremental by default.** `extract_topics` is memoized (`memo=True`, with the prompt and `LLM_MODEL` in `deps`), so the expensive LLM calls only run for content CocoIndex hasn't seen, and editing the prompt or model re-extracts; re-running catches up on new stories and reuses committed rows.
 - **The prompt is the product.** Topic normalization (splitting phrases, canonical proper nouns, aliases) is what makes the trending ranking meaningful — and it lives in one Pydantic `Field` description.
 - **Plain Python, your stack.** Extraction is litellm, so swapping `LLM_MODEL` switches providers (Gemini, OpenAI, Ollama, …). No DSL.
 

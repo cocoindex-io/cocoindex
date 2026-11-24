@@ -1,0 +1,10 @@
+{
+  "alt": "The first page of papers/1706.03762v7.pdf (Attention Is All You Need) goes to gpt-4o, which returns a typed PaperMetadataModel with the title, each author's name, email and affiliation, and the abstract; the record lands in three Postgres tables: paper_metadata (with num_pages 15), an author_papers index where Jeff Dean links to two papers, and metadata_embeddings for the title and abstract chunks; adding a PDF extracts only that paper.",
+  "needs": ["Docker (for Postgres with pgvector)", "Python 3.11+", "OPENAI_API_KEY"],
+  "run": [
+    { "note": "Start Postgres with pgvector", "cmd": "docker compose -f ../../dev/postgres.yaml up -d" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Extract and index the papers in papers/", "cmd": "cocoindex update main" },
+    { "note": "Search titles and abstracts by meaning", "cmd": "python main.py \"graph neural networks\"" }
+  ]
+}

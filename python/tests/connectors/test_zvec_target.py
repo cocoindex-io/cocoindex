@@ -369,6 +369,43 @@ def test_drop_collection(conn: Any) -> None:
     assert not conn.collection_path("test_drop").exists()
 
 
+def test_writes_more_documents_than_one_zvec_batch(conn: Any) -> None:
+    """A run writes and deletes more documents than one zvec write takes (1024)."""
+    _reset(SimpleDoc, "test_big_batch")
+    app = _make_app(conn, "test_writes_more_documents_than_one_zvec_batch")
+
+    _rows.extend(
+        SimpleDoc(id=str(i), title="t", year=i, embedding=_EMB) for i in range(2500)
+    )
+    app.update_blocking()
+    col = conn.open_existing("test_big_batch")
+    assert col.stats.doc_count == 2500
+
+    _rows[:] = _rows[:10]
+    app.update_blocking()
+    assert col.stats.doc_count == 10
+
+
+def test_undeclaring_a_document_removed_out_of_band(conn: Any) -> None:
+    """A document already gone from the collection is deleted without error."""
+    _reset(SimpleDoc, "test_gone")
+    app = _make_app(conn, "test_undeclaring_a_document_removed_out_of_band")
+
+    _rows.extend(
+        [
+            SimpleDoc(id="1", title="A", year=1, embedding=_EMB),
+            SimpleDoc(id="2", title="B", year=2, embedding=_EMB),
+        ]
+    )
+    app.update_blocking()
+    conn.open_existing("test_gone").delete(ids=["2"])
+
+    _rows[:] = _rows[:1]
+    app.update_blocking()
+    assert fetch_doc(conn, "test_gone", "1") is not None
+    assert fetch_doc(conn, "test_gone", "2") is None
+
+
 def test_no_op_when_unchanged(conn: Any) -> None:
     _reset(SimpleDoc, "test_noop")
     app = _make_app(conn, "test_no_op_when_unchanged")

@@ -1,0 +1,38 @@
+<figure class="pipeline-overview" aria-label="Example: convert Markdown files to HTML">
+  <figcaption>Example: convert Markdown files to HTML</figcaption>
+  <ol class="pipeline-steps">
+    <li>
+      <a href="/docs/programming_guide/app/">App</a>
+      <p>Starts the pipeline with the source and output directories.</p>
+      <span class="relationship">Runs processing components <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></span>
+    </li>
+    <li>
+      <a href="/docs/programming_guide/processing_component/">Processing component</a>
+      <p>Processes a source file. Calls <a href="/docs/programming_guide/function/">functions</a> to read Markdown and produce HTML.</p>
+      <span class="relationship">Declares target states <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16m-6-6 6 6-6 6" /></svg></span>
+    </li>
+    <li>
+      <a href="/docs/programming_guide/target_state/">Target state</a>
+      <p>Describes the output file: its name and HTML content.</p>
+      <span class="relationship">CocoIndex updates the output</span>
+    </li>
+  </ol>
+  <p class="pipeline-result">When the component finishes, CocoIndex creates, updates, or removes its output files as needed.</p>
+</figure>
+
+<style>
+  .pipeline-overview { margin: 20px 0 32px; padding: 20px; border: 1px solid var(--rule); border-radius: var(--r-md); background: var(--paper); }
+  .pipeline-overview figcaption { color: var(--maroon-ink); font-family: var(--sans); font-size: 0.9375rem; font-weight: 500; letter-spacing: 0; }
+  .pipeline-overview .pipeline-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; list-style: none; padding: 0; margin: 20px 0; }
+  .pipeline-steps li { display: flex; flex-direction: column; align-items: flex-start; margin: 0; padding-top: 12px; border-top: 1px solid var(--rule); }
+  .pipeline-steps li > a { font-weight: 500; color: var(--maroon-ink); }
+  .pipeline-steps p { flex: 1; margin: 8px 0 16px; font-size: 0.875rem; line-height: 1.6; }
+  .relationship { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.8125rem; line-height: 1.5; }
+  .relationship svg { width: 18px; height: 18px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.5; }
+  .pipeline-overview .pipeline-result { margin: 0; padding-top: 16px; border-top: 1px solid var(--rule); font-size: 0.875rem; }
+  @media (max-width: 600px) {
+    .pipeline-overview .pipeline-steps { grid-template-columns: 1fr; gap: 16px; }
+    .relationship svg { transform: rotate(90deg); }
+    .pipeline-steps p { margin-bottom: 8px; }
+  }
+</style>

@@ -20,9 +20,33 @@
 //! let schema = cocoindex::connectors::postgres::TableSchema::from_row::<Doc>(["id"])?;
 //! ```
 //!
+//! Python's `from_class(column_overrides=...)` takes the overrides per call; the
+//! Rust equivalents are builders on the derived schema of the SQL and LanceDB
+//! targets:
+//!
+//! * `with_vector_schema(field, &provider)` resolves a `#[coco(vector)]`
+//!   column's dimension and element type from a
+//!   [`VectorSchemaProvider`](crate::resources::schema::VectorSchemaProvider),
+//!   typically the embedder: `ctx.get_key(&EMBEDDER)?` for one held in the
+//!   context (Python passes the `ContextKey` itself).
+//! * `with_column_type(field, type)` replaces one column's type for this
+//!   schema only, where `#[coco(type = "…")]` would fix it for every connector
+//!   the row struct is used with.
+//!
+//! Python's override also carries a value encoder. A Rust row is encoded by its
+//! `Serialize` impl, so the encoder is `#[serde(serialize_with = "…")]` on the
+//! field.
+//!
+//! ```ignore
+//! let schema = postgres::TableSchema::from_row::<Doc>(["id"])?
+//!     .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+//!     .await?
+//!     .with_column_type("title", "varchar(200)")?;
+//! ```
+//!
 //! Field attributes:
 //! * `#[coco(vector)]` — a dense `f32` vector whose dimension is supplied with
-//!   the connector schema's `with_vector_dim` builder.
+//!   the connector schema's `with_vector_schema` or `with_vector_dim` builder.
 //! * `#[coco(vector = N)]` — a dense `f32` vector column of dimension `N`.
 //! * `#[coco(vector = N, half)]` — a 16-bit (half-precision) vector column.
 //! * `#[coco(type = "…")]` — a raw connector SQL type, used verbatim (the escape
@@ -62,9 +86,24 @@
     feature = "doris",
     feature = "lancedb",
     feature = "qdrant",
-    feature = "turbopuffer"
+    feature = "turbopuffer",
+    feature = "neo4j",
+    feature = "falkordb",
+    feature = "bigquery",
+    feature = "snowflake",
+    feature = "surrealdb"
 ))]
-use crate::error::{Error, Result};
+use crate::error::Error;
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
+    feature = "qdrant",
+    feature = "turbopuffer",
+    feature = "surrealdb"
+))]
+use crate::error::Result;
 
 #[cfg(any(
     feature = "postgres",
@@ -91,7 +130,8 @@ pub(crate) fn require_resolved_vector_dimension(connector: &str, field_name: &st
     feature = "doris",
     feature = "lancedb",
     feature = "qdrant",
-    feature = "turbopuffer"
+    feature = "turbopuffer",
+    feature = "surrealdb"
 ))]
 pub(crate) fn vector_dimension_error(
     connector: &str,
@@ -101,12 +141,35 @@ pub(crate) fn vector_dimension_error(
     Error::engine(format!("{connector} vector field {field_name:?} {detail}"))
 }
 
+/// The vector schema `provider` reports for the vector field `field_name`,
+/// rejecting a zero dimension (Python's `Invalid vector dimension`).
 #[cfg(any(
     feature = "postgres",
     feature = "sqlite",
     feature = "doris",
+    feature = "lancedb",
+    feature = "surrealdb"
+))]
+pub(crate) async fn provided_vector_schema(
+    connector: &str,
+    field_name: &str,
+    provider: &(impl crate::resources::schema::VectorSchemaProvider + ?Sized),
+) -> Result<crate::resources::schema::VectorSchema> {
+    let schema = provider.vector_schema().await?;
+    if schema.size == 0 {
+        return Err(zero_vector_dimension_error(connector, field_name));
+    }
+    Ok(schema)
+}
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
     feature = "qdrant",
-    feature = "turbopuffer"
+    feature = "turbopuffer",
+    feature = "surrealdb"
 ))]
 pub(crate) fn zero_vector_dimension_error(connector: &str, field_name: &str) -> Error {
     vector_dimension_error(
@@ -134,7 +197,8 @@ pub(crate) fn unknown_vector_field_error(connector: &str, field_name: &str) -> E
     feature = "postgres",
     feature = "sqlite",
     feature = "doris",
-    feature = "lancedb"
+    feature = "lancedb",
+    feature = "surrealdb"
 ))]
 pub(crate) fn not_vector_field_error(connector: &str, field_name: &str) -> Error {
     Error::engine(format!(
@@ -142,7 +206,30 @@ pub(crate) fn not_vector_field_error(connector: &str, field_name: &str) -> Error
     ))
 }
 
-#[cfg(any(feature = "postgres", feature = "sqlite", feature = "doris"))]
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "lancedb",
+    feature = "neo4j",
+    feature = "falkordb",
+    feature = "bigquery",
+    feature = "snowflake",
+    feature = "surrealdb"
+))]
+pub(crate) fn unknown_column_error(connector: &str, field_name: &str) -> Error {
+    Error::engine(format!(
+        "{connector} column type override names unknown field {field_name:?}"
+    ))
+}
+
+#[cfg(any(
+    feature = "postgres",
+    feature = "sqlite",
+    feature = "doris",
+    feature = "bigquery",
+    feature = "snowflake"
+))]
 pub(crate) fn serialized_duration_parts(value: &serde_json::Value) -> Option<(u64, u32)> {
     let object = value.as_object()?;
     if object.len() != 2 {

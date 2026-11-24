@@ -16,6 +16,14 @@ use crate::profile::{
     Action, BoxedHandler, BoxedSink, ChildHandlerFn, RustProfile, SinkChildren, SinkFuture, Value,
 };
 
+/// A value usable as a [`StableKey`]: a target-state key, a mount key
+/// (`ctx.mount`, `mount_each`, `with_subpath`, …) or a user-state key. The
+/// Rust analogue of Python's `StableKey` union: a string stores as
+/// [`StableKey::Str`], an integer as [`StableKey::Int`], a UUID as
+/// [`StableKey::Uuid`], bytes as [`StableKey::Bytes`], a `bool` as
+/// [`StableKey::Bool`] and `()` as [`StableKey::Null`]; pass a [`StableKey`]
+/// for a symbol or an array. A reference to any of these converts like the
+/// value.
 pub trait IntoStableKey {
     fn into_stable_key(self) -> StableKey;
 }
@@ -23,6 +31,12 @@ pub trait IntoStableKey {
 impl IntoStableKey for StableKey {
     fn into_stable_key(self) -> StableKey {
         self
+    }
+}
+
+impl<T: IntoStableKey + Clone> IntoStableKey for &T {
+    fn into_stable_key(self) -> StableKey {
+        self.clone().into_stable_key()
     }
 }
 
@@ -38,9 +52,53 @@ impl IntoStableKey for String {
     }
 }
 
-impl IntoStableKey for i64 {
+impl IntoStableKey for () {
     fn into_stable_key(self) -> StableKey {
-        StableKey::Int(self)
+        StableKey::Null
+    }
+}
+
+impl IntoStableKey for bool {
+    fn into_stable_key(self) -> StableKey {
+        StableKey::Bool(self)
+    }
+}
+
+macro_rules! impl_int_stable_key {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl IntoStableKey for $ty {
+                fn into_stable_key(self) -> StableKey {
+                    StableKey::Int(i64::from(self))
+                }
+            }
+        )+
+    };
+}
+
+impl_int_stable_key!(i8, i16, i32, i64, u8, u16, u32);
+
+impl IntoStableKey for uuid::Uuid {
+    fn into_stable_key(self) -> StableKey {
+        StableKey::Uuid(self)
+    }
+}
+
+impl IntoStableKey for Vec<u8> {
+    fn into_stable_key(self) -> StableKey {
+        StableKey::Bytes(Arc::from(self))
+    }
+}
+
+impl IntoStableKey for &[u8] {
+    fn into_stable_key(self) -> StableKey {
+        StableKey::Bytes(Arc::from(self))
+    }
+}
+
+impl IntoStableKey for bytes::Bytes {
+    fn into_stable_key(self) -> StableKey {
+        StableKey::Bytes(Arc::from(self.as_ref()))
     }
 }
 

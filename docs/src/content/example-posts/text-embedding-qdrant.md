@@ -8,7 +8,7 @@ tags: [vector-index, qdrant]
 
 ![Semantic Search with Qdrant on CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-qdrant/cover.png)
 
-This is the [Semantic Search 101](/docs/examples/text-embedding/) example with one thing swapped: instead of Postgres + pgvector, the vectors land in a [Qdrant](https://qdrant.tech/) collection. Everything else — walk Markdown, chunk, embed locally with `all-MiniLM-L6-v2` — is identical, so this post stays short and spends its words on the connector, the collection setup, and how to run it.
+Use a [Qdrant](https://qdrant.tech/) collection as the target for [Semantic Search 101](/docs/examples/text-embedding/). The pipeline still reads Markdown, chunks it, and embeds locally with `all-MiniLM-L6-v2`. Configure the Qdrant connector and collection to store the vectors.
 
 If you want the full chunk-and-embed walkthrough, read the [base example](/docs/examples/text-embedding/) first; the only difference here is the target.
 
@@ -16,7 +16,7 @@ If you want the full chunk-and-embed walkthrough, read the [base example](/docs/
 
 ## Flow overview
 
-![CocoIndex text embedding flow with Qdrant: read Markdown, split into chunks, embed each chunk, and upsert the vectors into a Qdrant collection](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-qdrant/flow-v1.svg)
+![CocoIndex text embedding flow with Qdrant: read Markdown, split into chunks, embed each chunk, and upsert the vectors into a Qdrant collection](https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-qdrant/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -144,5 +144,3 @@ CocoIndex keeps the Qdrant collection in sync and does the **minimum work** to g
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/text_embedding_qdrant](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_qdrant). It's the [Semantic Search 101](/docs/examples/text-embedding/) flow with Qdrant as the store — start there if you want the chunk-and-embed details, and see [the Postgres version](/docs/examples/text-embedding/) to compare targets.
-
-Already running Qdrant and want your docs searchable by meaning? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

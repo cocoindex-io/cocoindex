@@ -1,6 +1,7 @@
 //! Stable ID generation utilities.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::Serialize;
@@ -47,12 +48,14 @@ pub async fn generate_uuid_default(ctx: &Ctx) -> Result<Uuid> {
 /// order. IDs stay stable across runs because allocation is memoized by
 /// `(generator deps, dep, occurrence ordinal)`.
 ///
-/// Not `Clone`: a copy would replay the same ordinals and hand out the same
-/// IDs again. Create one generator per scope that needs distinct IDs.
+/// Takes `&self`, so one generator can be shared by the concurrent calls of a
+/// `ctx.map` (as Python's is). Not `Clone`: a copy would replay the same
+/// ordinals and hand out the same IDs again. Create one generator per scope
+/// that needs distinct IDs.
 #[derive(Debug)]
 pub struct IdGenerator {
     deps_fp: Fingerprint,
-    ordinals: HashMap<Fingerprint, u64>,
+    ordinals: Mutex<HashMap<Fingerprint, u64>>,
 }
 
 impl Default for IdGenerator {
@@ -66,7 +69,7 @@ impl IdGenerator {
     pub fn new() -> Self {
         Self {
             deps_fp: Fingerprint::from(&()).expect("unit fingerprint should be infallible"),
-            ordinals: HashMap::new(),
+            ordinals: Mutex::new(HashMap::new()),
         }
     }
 
@@ -77,7 +80,7 @@ impl IdGenerator {
     pub fn with_deps<D: Serialize + ?Sized>(deps: &D) -> Result<Self> {
         Ok(Self {
             deps_fp: memo_fingerprint(deps)?,
-            ordinals: HashMap::new(),
+            ordinals: Mutex::new(HashMap::new()),
         })
     }
 
@@ -86,11 +89,9 @@ impl IdGenerator {
     /// Multiple calls with the same `dep` produce distinct IDs by folding in an
     /// occurrence ordinal. The same call sequence in the same component returns
     /// the same IDs on later runs.
-    pub async fn next_id<D: Serialize + ?Sized>(&mut self, ctx: &Ctx, dep: &D) -> Result<u64> {
+    pub async fn next_id<D: Serialize + ?Sized>(&self, ctx: &Ctx, dep: &D) -> Result<u64> {
         let dep_fp = memo_fingerprint(dep)?;
-        let ordinal = self.ordinals.entry(dep_fp).or_insert(0);
-        let current_ordinal = *ordinal;
-        *ordinal += 1;
+        let current_ordinal = next_ordinal(&self.ordinals, dep_fp);
 
         let deps_fp = self.deps_fp;
         let key = ("cocoindex_id_generator", deps_fp, dep_fp, current_ordinal);
@@ -99,7 +100,7 @@ impl IdGenerator {
     }
 
     /// Generate the next stable ID with no per-call dependency.
-    pub async fn next_id_default(&mut self, ctx: &Ctx) -> Result<u64> {
+    pub async fn next_id_default(&self, ctx: &Ctx) -> Result<u64> {
         self.next_id(ctx, &()).await
     }
 }
@@ -109,11 +110,11 @@ impl IdGenerator {
 /// Repeated calls with the same dependency return distinct UUIDs in
 /// deterministic order.
 ///
-/// Not `Clone`, for the same reason as [`IdGenerator`].
+/// Takes `&self` and is not `Clone`, for the same reasons as [`IdGenerator`].
 #[derive(Debug)]
 pub struct UuidGenerator {
     deps_fp: Fingerprint,
-    ordinals: HashMap<Fingerprint, u64>,
+    ordinals: Mutex<HashMap<Fingerprint, u64>>,
 }
 
 impl Default for UuidGenerator {
@@ -127,7 +128,7 @@ impl UuidGenerator {
     pub fn new() -> Self {
         Self {
             deps_fp: Fingerprint::from(&()).expect("unit fingerprint should be infallible"),
-            ordinals: HashMap::new(),
+            ordinals: Mutex::new(HashMap::new()),
         }
     }
 
@@ -138,7 +139,7 @@ impl UuidGenerator {
     pub fn with_deps<D: Serialize + ?Sized>(deps: &D) -> Result<Self> {
         Ok(Self {
             deps_fp: memo_fingerprint(deps)?,
-            ordinals: HashMap::new(),
+            ordinals: Mutex::new(HashMap::new()),
         })
     }
 
@@ -147,11 +148,9 @@ impl UuidGenerator {
     /// Multiple calls with the same `dep` produce distinct UUIDs by folding in
     /// an occurrence ordinal. The same call sequence in the same component
     /// returns the same UUIDs on later runs.
-    pub async fn next_uuid<D: Serialize + ?Sized>(&mut self, ctx: &Ctx, dep: &D) -> Result<Uuid> {
+    pub async fn next_uuid<D: Serialize + ?Sized>(&self, ctx: &Ctx, dep: &D) -> Result<Uuid> {
         let dep_fp = memo_fingerprint(dep)?;
-        let ordinal = self.ordinals.entry(dep_fp).or_insert(0);
-        let current_ordinal = *ordinal;
-        *ordinal += 1;
+        let current_ordinal = next_ordinal(&self.ordinals, dep_fp);
 
         let deps_fp = self.deps_fp;
         let key = ("cocoindex_uuid_generator", deps_fp, dep_fp, current_ordinal);
@@ -160,9 +159,19 @@ impl UuidGenerator {
     }
 
     /// Generate the next stable UUID with no per-call dependency.
-    pub async fn next_uuid_default(&mut self, ctx: &Ctx) -> Result<Uuid> {
+    pub async fn next_uuid_default(&self, ctx: &Ctx) -> Result<Uuid> {
         self.next_uuid(ctx, &()).await
     }
+}
+
+/// The occurrence ordinal of `dep_fp` so far, then advance it. Synchronous,
+/// so concurrent callers get distinct ordinals in the order they reach it.
+fn next_ordinal(ordinals: &Mutex<HashMap<Fingerprint, u64>>, dep_fp: Fingerprint) -> u64 {
+    let mut ordinals = ordinals.lock().unwrap_or_else(|e| e.into_inner());
+    let ordinal = ordinals.entry(dep_fp).or_insert(0);
+    let current = *ordinal;
+    *ordinal += 1;
+    current
 }
 
 fn memo_fingerprint<T: Serialize + ?Sized>(value: &T) -> Result<Fingerprint> {

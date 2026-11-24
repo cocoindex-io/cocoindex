@@ -200,11 +200,10 @@ def generate_command_docs(cmd: click.Group) -> str:
     markdown_content = []
 
     ctx = click.core.Context(cmd, info_name=cmd.name)
-    subcommands = list(cmd.commands.values())
-    # Generate only the command details section (remove redundant headers)
-    for sub_cmd in sorted(subcommands, key=lambda x: x.name or ""):
-        sub_ctx = click.core.Context(sub_cmd, info_name=sub_cmd.name, parent=ctx)
-        command_name = sub_cmd.name
+    # Generate only the command details section (remove redundant headers).
+    # A nested group (`auth`, `auth sign-in`) is listed with its commands, and
+    # each of its commands gets its own entry (`auth sign-in google-drive`).
+    for command_name, sub_cmd, sub_ctx in _walk_commands(cmd, ctx):
         help_text = sub_cmd.get_help(sub_ctx)
         usage = clean_usage_line(sub_cmd.get_usage(sub_ctx))
         description = extract_description(help_text)
@@ -231,10 +230,30 @@ def generate_command_docs(cmd: click.Group) -> str:
             markdown_content.append("")
             markdown_content.append(options_section)
 
+        # Add the commands of a nested group
+        if isinstance(sub_cmd, click.Group):
+            commands_section = format_commands_section(help_text)
+            if commands_section:
+                markdown_content.append(commands_section)
+
         markdown_content.append("---")
         markdown_content.append("")
 
     return "\n".join(markdown_content)
+
+
+def _walk_commands(
+    group: click.Group, ctx: click.core.Context, prefix: str = ""
+) -> list[tuple[str, click.Command, click.core.Context]]:
+    """Every command under ``group`` in name order, nested groups followed by their commands."""
+    found: list[tuple[str, click.Command, click.core.Context]] = []
+    for sub_cmd in sorted(group.commands.values(), key=lambda x: x.name or ""):
+        sub_ctx = click.core.Context(sub_cmd, info_name=sub_cmd.name, parent=ctx)
+        name = f"{prefix}{sub_cmd.name}"
+        found.append((name, sub_cmd, sub_ctx))
+        if isinstance(sub_cmd, click.Group):
+            found.extend(_walk_commands(sub_cmd, sub_ctx, f"{name} "))
+    return found
 
 
 # Sentinel markers in cli.mdx delimit the auto-generated subcommand reference.

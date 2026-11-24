@@ -8,15 +8,15 @@ tags: [vector-index, pdf]
 
 ![Semantic Search over PDFs with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/cover.png)
 
-We'll take a folder of PDFs — papers, RFCs, manuals, contracts — and turn it into a [vector index](https://github.com/pgvector/pgvector) you can search in plain English. The trick PDFs add over plain text: they have to be *parsed* first. We use [docling](https://github.com/docling-project/docling) to convert each PDF to clean Markdown, then chunk, embed, and store the vectors in Postgres.
+We'll take a folder of PDFs (papers, RFCs, manuals, contracts) and turn it into a [vector index](https://github.com/pgvector/pgvector) you can search in plain English. The trick PDFs add over plain text: they have to be *parsed* first. We use [docling](https://github.com/docling-project/docling) to convert each PDF to clean Markdown, then chunk, embed, and store the vectors in Postgres.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only changed PDFs get re-parsed and re-embedded. The one genuinely expensive step (PDF parsing) runs on a [GPU runner](/docs/programming_guide/function/) so it doesn't block the event loop.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and target management. As a result, only changed PDFs get re-parsed and re-embedded. The one genuinely expensive step (PDF parsing) runs on a [GPU runner](/docs/programming_guide/function/) so it doesn't block the event loop.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding)
 
 ## Flow overview
 
-![CocoIndex PDF embedding flow: walk a folder of PDFs, convert each to Markdown with docling on a GPU runner, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/flow-v1.svg)
+![CocoIndex PDF embedding flow: walk a folder of PDFs, convert each to Markdown with docling on a GPU runner, split into chunks, embed each chunk, and store the vectors in Postgres with pgvector](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -45,7 +45,7 @@ You [declare the transformation logic](/docs/programming_guide/core_concepts/) w
 
 ## Define the data and shared resources
 
-`PdfEmbedding` defines one row of the output table — each chunk of text becomes one row, with its filename, character offsets, text, and embedding vector. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
+`PdfEmbedding` defines one row of the output table — each chunk of text becomes one row, with its filename, character offsets, text, and embedding vector. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs (the Postgres connection pool and the embedding model) once at startup.
 
 ```python title="main.py"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -103,7 +103,7 @@ Two things make this hold up at scale:
 
 ## Process a file
 
-![One processing component per PDF: convert to Markdown, chunk, embed each chunk, and declare PdfEmbedding rows into Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/stage-file-process.svg)
+![One processing component per PDF: convert to Markdown, chunk, embed each chunk, and declare PdfEmbedding rows into Postgres](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/stage-file-process-dark.svg)
 
 `process_file` runs once per PDF. It converts the PDF to Markdown, [splits the text](/docs/ops/text/) into overlapping chunks, and maps each chunk to `process_chunk`.
 
@@ -151,7 +151,7 @@ We use [`SentenceTransformerEmbedder`](/docs/ops/sentence_transformers/) with `a
 
 ## Define the main function
 
-![mount_each fans out one processing component per PDF, from the filesystem source to the Postgres target](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/stage-main-function.svg)
+![mount_each fans out one processing component per PDF, from the filesystem source to the Postgres target](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-embedding/stage-main-function-dark.svg)
 
 `app_main` wires the source to the target. It mounts the Postgres table, walks the source directory for PDFs, and mounts one [processing component](/docs/programming_guide/processing_component/) per file.
 
@@ -244,5 +244,3 @@ The same machinery covers **logic** changes too: tune the chunk size or swap the
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/pdf_embedding](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding). If your inputs are already plain text or Markdown, [Semantic Search 101](/docs/examples/text-embedding/) is the same flow without the docling step; if you want the Markdown itself as the output, see [PDF → Markdown](/docs/examples/pdf-to-markdown/).
-
-Got a folder of papers, reports, or scanned docs you want to search by meaning? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

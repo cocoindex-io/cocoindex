@@ -1,15 +1,17 @@
 ---
 // CSS-only tabs. Radios are direct children of .coco-tabs so they can
 // be general siblings of the bar + panels; labels reference them by
-// `for=`. No JS required. Each instance gets a unique radio-group name.
+// `for=`. Each instance gets a unique radio-group name. A small enhancement
+// reveals the selected label when keyboard focus moves along an overflowing bar.
 interface Props {
   labels: string[];
   initial?: number;
+  label?: string;
 }
-const { labels, initial = 0 } = Astro.props;
+const { labels, initial = 0, label = 'Choose an option' } = Astro.props;
 const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
 ---
-<div class="coco-tabs">
+<div class="coco-tabs" role="group" aria-label={label}>
   {labels.map((_, i) => (
     <input
       type="radio"
@@ -17,30 +19,32 @@ const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
       name={id}
       id={`${id}-${i}`}
       checked={i === initial}
+      aria-label={labels[i]}
+      aria-controls={`${id}-panel-${i}`}
     />
   ))}
-  <div class="coco-tabs-bar" role="tablist">
+  <div class="coco-tabs-bar">
     {labels.map((label, i) => (
-      <label for={`${id}-${i}`} class="coco-tabs-label" role="tab">
+      <label for={`${id}-${i}`} class="coco-tabs-label">
         <span>{label}</span>
       </label>
     ))}
   </div>
   <div class="coco-tabs-panels">
     {labels[0] && (
-      <section class="coco-tabs-panel" data-tab-index="0" role="tabpanel"><slot name="tab-0" /></section>
+      <section class="coco-tabs-panel" data-tab-index="0" id={`${id}-panel-0`} aria-label={labels[0]}><slot name="tab-0" /></section>
     )}
     {labels[1] && (
-      <section class="coco-tabs-panel" data-tab-index="1" role="tabpanel"><slot name="tab-1" /></section>
+      <section class="coco-tabs-panel" data-tab-index="1" id={`${id}-panel-1`} aria-label={labels[1]}><slot name="tab-1" /></section>
     )}
     {labels[2] && (
-      <section class="coco-tabs-panel" data-tab-index="2" role="tabpanel"><slot name="tab-2" /></section>
+      <section class="coco-tabs-panel" data-tab-index="2" id={`${id}-panel-2`} aria-label={labels[2]}><slot name="tab-2" /></section>
     )}
     {labels[3] && (
-      <section class="coco-tabs-panel" data-tab-index="3" role="tabpanel"><slot name="tab-3" /></section>
+      <section class="coco-tabs-panel" data-tab-index="3" id={`${id}-panel-3`} aria-label={labels[3]}><slot name="tab-3" /></section>
     )}
     {labels[4] && (
-      <section class="coco-tabs-panel" data-tab-index="4" role="tabpanel"><slot name="tab-4" /></section>
+      <section class="coco-tabs-panel" data-tab-index="4" id={`${id}-panel-4`} aria-label={labels[4]}><slot name="tab-4" /></section>
     )}
   </div>
 </div>
@@ -50,3 +54,27 @@ const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
      every surface renders tab groups identically. */
   @import '@cocoindex/brand/tabs.css';
 </style>
+
+<script>
+  // The focused radio is outside the scroll strip, so native radio-key navigation
+  // cannot reveal its label. Scroll only this bar, never the document or diagrams.
+  document.querySelectorAll<HTMLElement>('.coco-tabs').forEach((tabs) => {
+    const bar = tabs.querySelector<HTMLElement>('.coco-tabs-bar');
+    if (!bar) return;
+    const reveal = (event: Event) => {
+      const radio = event.target;
+      if (!(radio instanceof HTMLInputElement) || !radio.matches('.coco-tabs-radio')) return;
+      const label = Array.from(bar.querySelectorAll<HTMLLabelElement>('label'))
+        .find((item) => item.htmlFor === radio.id);
+      if (!label) return;
+      const viewport = bar.getBoundingClientRect();
+      const bounds = label.getBoundingClientRect();
+      const left = viewport.left + bar.clientLeft;
+      const right = left + bar.clientWidth;
+      if (bounds.left < left) bar.scrollLeft += bounds.left - left;
+      else if (bounds.right > right) bar.scrollLeft += bounds.right - right;
+    };
+    tabs.addEventListener('focusin', reveal);
+    tabs.addEventListener('change', reveal);
+  });
+</script>

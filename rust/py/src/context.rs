@@ -8,7 +8,8 @@ use crate::stable_path::PyStableKey;
 use crate::app::PyStatsGroupHandle;
 use crate::value::PyStoredValue;
 use crate::{environment::PyEnvironment, stable_path::PyStablePath};
-use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
+use cocoindex_core::engine::context::{ComponentProcessorContext, DataDepRecord, FnCallContext};
+use cocoindex_utils::fingerprint::Fingerprint;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -197,6 +198,33 @@ impl PyFnCallContext {
 
     pub fn add_context_change_dep(&self, fp: PyFingerprint) -> PyResult<()> {
         self.0.add_context_change_dep(fp.0);
+        Ok(())
+    }
+
+    /// Record a data dependency (`coco.use_data_dep`) into this frame.
+    ///
+    /// `key` and `state` are serialized here, once, and the record's identity
+    /// (`key_fp`) and equality (`state_fp`) are fingerprints of those bytes:
+    /// the snapshot is what gets stored and validated, and the memo-key
+    /// pipeline is deliberately not involved (a `__coco_memo_key__` that
+    /// ignores fields must not merge two unequal observations).
+    pub fn add_data_dep(
+        &self,
+        py: Python<'_>,
+        kind_fp: PyFingerprint,
+        key: &Bound<'_, PyAny>,
+        state: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let objects = crate::runtime::python_objects();
+        let key = objects.serialize(py, key).into_py_result()?;
+        let state = objects.serialize(py, state).into_py_result()?;
+        self.0.add_data_dep(DataDepRecord {
+            kind_fp: kind_fp.0,
+            key_fp: Fingerprint::from_bytes(&key),
+            state_fp: Fingerprint::from_bytes(&state),
+            key,
+            state,
+        });
         Ok(())
     }
 

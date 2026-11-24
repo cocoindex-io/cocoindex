@@ -8,15 +8,15 @@ tags: [llm-extraction, pdf]
 
 ![Index academic papers and extract metadata for AI agents with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/cover.png)
 
-We'll take a folder of academic PDFs and pull out the parts you actually want to query — **title, authors, abstract** — as structured, typed rows. The first page of a paper holds almost all of this, so we read just that page, hand the text to an LLM with a strict schema, and get back clean JSON. The same metadata is then embedded so you can search papers by meaning, not just by exact words.
+We'll take a folder of academic PDFs and pull out the parts you actually want to query (**title, authors, abstract**) as structured, typed rows. The first page of a paper holds almost all of this, so we read just that page, hand the text to an LLM with a strict schema, and get back clean JSON. The same metadata is then embedded so you can search papers by meaning, not just by exact words.
 
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — [incremental processing](/docs/programming_guide/core_concepts/), change tracking, managed targets — runs in a Rust engine underneath, so only changed PDFs get re-extracted and re-embedded. One file fans out into three Postgres tables — paper metadata, an author-to-paper index, and embeddings — and CocoIndex keeps all three in sync for you.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/), change tracking, and target management. As a result, only changed PDFs get re-extracted and re-embedded. One file fans out into three Postgres tables (paper metadata, an author-to-paper index, and embeddings) and CocoIndex keeps all three in sync for you.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata)
 
 ## Flow overview
 
-![CocoIndex paper metadata flow: walk a folder of PDFs, read the first page, LLM-extract title/authors/abstract into a typed model, embed the title and abstract chunks, and store metadata, authors, and embeddings in three Postgres tables](https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/flow-v1.svg)
+![CocoIndex paper metadata flow: walk a folder of PDFs, read the first page, LLM-extract title/authors/abstract into a typed model, embed the title and abstract chunks, and store metadata, authors, and embeddings in three Postgres tables](https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -68,7 +68,7 @@ class PaperMetadataModel(BaseModel):
 
 ## Define the data and shared resources
 
-Each output table maps to one dataclass: `PaperMetadataRow` is one row per paper, `AuthorPaperRow` is one row per (author, paper) pair — an index you can join against — and `MetadataEmbeddingRow` is one embedded chunk of text. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
+Each output table maps to one dataclass: `PaperMetadataRow` is one row per paper, `AuthorPaperRow` is one row per (author, paper) pair (an index you can join against) and `MetadataEmbeddingRow` is one embedded chunk of text. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs (the Postgres connection pool and the embedding model) once at startup.
 
 ```python title="main.py"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -157,7 +157,7 @@ Only the first page is read, and the prompt is capped at `markdown[:4000]` chara
 
 ## Process a file
 
-![One processing component per PDF: read the first page, LLM-extract metadata, embed the title and abstract chunks, and declare rows into three Postgres tables](https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/stage-file-process.svg)
+![One processing component per PDF: read the first page, LLM-extract metadata, embed the title and abstract chunks, and declare rows into three Postgres tables](https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/stage-file-process-dark.svg)
 
 `process_file` runs once per PDF and ties the steps together. It extracts the metadata, then declares the rows: one metadata row, one author-index row per author, and one embedding row for the title plus one for each abstract chunk.
 
@@ -325,5 +325,3 @@ The same machinery covers **logic** changes too: tweak the prompt, swap `gpt-4o`
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/paper_metadata](https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata). If you just want to search PDFs by meaning without the structured extraction, [Semantic Search over PDFs](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding) chunks and embeds the full text instead; if you want the Markdown itself as the output, see [PDF → Markdown](/docs/examples/pdf-to-markdown/).
-
-Got a folder of papers, reports, or filings you want to turn into structured, searchable rows? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

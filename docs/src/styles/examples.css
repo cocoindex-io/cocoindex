@@ -1,0 +1,311 @@
+/* CocoIndex docs — examples catalog and example walkthroughs.
+   Same world as site.css (Category Standard): near-black ground, hairline
+   surfaces with a 1px top light, Geist Sans for text, Geist Mono only for
+   code and data. Imported by src/pages/examples/index.astro and [slug].astro
+   after globals.css. The listing owns everything under body.ex-listing; the
+   walkthrough reuses the docs shell (.layout / aside.side / main.content /
+   .prose from @cocoindex/brand + site.css §5) and adds the "What you'll build"
+   figure and prose deltas under body.ex-detail. */
+
+/* ═══════════════════════════ 1. Pipeline figure ═══════════════════════════
+   Shared by cards (sm) and the detail figure (lg). Nodes are data: mono. */
+.pipe { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.pipe-step { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pipe-cell { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pipe-arrow { display: inline-flex; color: var(--text-3); flex: none; }
+.pipe-node {
+  font-family: var(--mono); font-size: 0.78125rem; line-height: 1; letter-spacing: 0.01em;
+  color: var(--muted); background: #141414; border: 1px solid var(--rule); border-radius: var(--r-sm);
+  padding: 6px 8px; white-space: nowrap;
+}
+.pipe-step.is-src .pipe-node, .pipe-step.is-tgt .pipe-node { color: var(--maroon-ink); border-color: var(--rule-strong); }
+.pipe-step.is-tgt .pipe-node { background: #1A1A1A; }
+
+.pipe-lg { gap: 10px 12px; }
+.pipe-lg .pipe-step { gap: 12px; }
+.pipe-lg .pipe-node { font-size: 0.8125rem; padding: 9px 12px; border-radius: var(--r-md); }
+.pipe-lg .pipe-cap { font-family: var(--sans); font-size: 0.75rem; line-height: 1; color: var(--text-3); padding-left: 1px; }
+.pipe-lg .pipe-arrow { align-self: flex-start; margin-top: 10px; }
+.pipe-lg .pipe-cap { white-space: nowrap; }
+
+/* ═══════════════════════════ 2. Catalog: frame + hero ═════════════════════ */
+body.ex-listing { font-size: 1rem; line-height: 1.6; }
+body.ex-listing .ex-wrap { max-width: 1440px; margin: 0 auto; padding: 0 40px; }
+body.ex-listing .ex-hero { padding: 56px 0 28px; }
+body.ex-listing h1.hero-h {
+  font-weight: 600; font-size: clamp(2.5rem, 4.2vw, 3.5rem); line-height: 1.02; letter-spacing: -0.04em;
+  margin: 0 0 16px; max-width: none;
+}
+body.ex-listing .hero-sub { margin: 0; max-width: 58ch; }
+body.ex-listing .hero-sub a { color: var(--maroon-ink); text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 3px; }
+body.ex-listing .hero-sub a:hover { color: #FFFFFF; text-decoration-color: var(--muted); }
+
+/* ═══════════════════════════ 3. Catalog: filter rail + toolbar ════════════ */
+body.ex-listing .ex-shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 0 56px; align-items: start; }
+body.ex-listing .ex-rail {
+  position: sticky; top: calc(var(--bar-h, 66px) + 16px);
+  max-height: calc(100vh - var(--bar-h, 66px) - 16px); overflow-y: auto;
+  padding: 4px 0 40px; scrollbar-width: thin;
+}
+body.ex-listing .ex-rail-group { padding: 18px 0 14px; border-top: 1px solid var(--rule); }
+body.ex-listing .ex-rail-group:first-child { padding-top: 10px; border-top: 0; }
+body.ex-listing .ex-rail-group h2 { font-size: 0.8125rem; font-weight: 500; letter-spacing: 0; line-height: 1.2; color: var(--maroon-ink); margin: 0 0 8px; max-width: none; }
+body.ex-listing .ex-f {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: calc(100% + 20px); margin: 0 -10px; padding: 7px 10px;
+  font-family: var(--sans); font-size: 0.875rem; line-height: 1.2; letter-spacing: -0.006em; text-align: left;
+  color: var(--muted); background: transparent; border: 0; border-radius: var(--r-sm); cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+body.ex-listing .ex-f:hover { color: var(--maroon-ink); background: rgba(255, 255, 255, 0.04); }
+body.ex-listing .ex-f[aria-pressed="true"] { color: #FFFFFF; background: rgba(255, 255, 255, 0.08); }
+body.ex-listing .ex-f:focus-visible { outline: var(--focus); outline-offset: -2px; }
+body.ex-listing .ex-f .n { font-family: var(--mono); font-size: 0.75rem; color: var(--text-3); font-variant-numeric: tabular-nums; }
+body.ex-listing .ex-f.is-zero { color: var(--text-3); }
+body.ex-listing .ex-f.is-zero .n { color: var(--text-3); }
+
+/* Toolbar: the rail's controls as chips + native selects, phone and tablet only. */
+body.ex-listing .ex-toolbar { display: none; }
+body.ex-listing .ex-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0 10px; }
+body.ex-listing .ex-chips .t-filter { flex: none; font-family: var(--sans); font-size: 0.875rem; padding: 7px 13px; color: var(--muted); background: #0F0F0F; border: 1px solid var(--rule); }
+body.ex-listing .ex-chips .t-filter:hover { color: var(--maroon-ink); border-color: var(--rule-strong); }
+body.ex-listing .ex-chips .t-filter[aria-pressed="true"] { background: #FFFFFF; color: #0A0A0A; border-color: #FFFFFF; }
+body.ex-listing .ex-chips .t-filter .cnt { opacity: 1; color: var(--text-3); font-family: var(--mono); font-size: 0.75rem; }
+body.ex-listing .ex-chips .t-filter[aria-pressed="true"] .cnt { color: #525252; }
+body.ex-listing .ex-chips .t-filter.is-zero { color: var(--text-3); border-color: rgba(255, 255, 255, 0.06); }
+@media (pointer: coarse) { body.ex-listing .ex-chips .t-filter { min-height: 40px; } }
+body.ex-listing .ex-selects { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+body.ex-listing .ex-select { position: relative; display: block; }
+body.ex-listing .ex-select > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+body.ex-listing .ex-select select {
+  width: 100%; height: 40px; padding: 0 34px 0 12px;
+  font-family: var(--sans); font-size: 1rem; font-weight: 500; letter-spacing: -0.01em; color: var(--maroon-ink);
+  background: #0A0A0A; border: 1px solid #2E2E2E; border-radius: var(--r-md);
+  appearance: none; -webkit-appearance: none; cursor: pointer;
+  text-overflow: ellipsis; white-space: nowrap; overflow: hidden;
+}
+body.ex-listing .ex-select select:hover { border-color: #454545; background: #141414; }
+body.ex-listing .ex-select.is-set select { border-color: var(--muted); }
+body.ex-listing .ex-select select:focus-visible { outline: var(--focus); outline-offset: var(--focus-offset); }
+body.ex-listing .ex-select::after {
+  content: ""; position: absolute; right: 14px; top: 50%; width: 7px; height: 7px; margin-top: -6px;
+  border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(45deg); pointer-events: none;
+}
+
+/* ═══════════════════════════ 4. Catalog: results + sections + cards ══════ */
+body.ex-listing .ex-main { min-width: 0; }
+body.ex-listing :is(.ex-card, .ex-sec, .ex-empty, .ex-clear)[hidden] { display: none; }
+body.ex-listing .ex-results {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+  padding: 14px 0 14px; border-bottom: 1px solid var(--rule);
+}
+body.ex-listing .ex-results p { margin: 0; font-size: 0.875rem; color: var(--muted); }
+body.ex-listing .ex-results p b { color: var(--maroon-ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+body.ex-listing .ex-clear {
+  font-family: var(--sans); font-size: 0.875rem; color: var(--muted); background: none; border: 0; padding: 0; cursor: pointer;
+  text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 3px;
+}
+body.ex-listing .ex-clear:hover { color: #FFFFFF; text-decoration-color: var(--muted); }
+body.ex-listing .ex-clear:focus-visible { outline: var(--focus); outline-offset: 2px; border-radius: 2px; }
+
+body.ex-listing section.ex-sec { padding: 40px 0 8px; scroll-margin-top: calc(var(--bar-h, 66px) + 16px); }
+body.ex-listing .ex-sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; margin: 0 0 18px; }
+body.ex-listing .ex-sec-head h2 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.03em; line-height: 1.15; margin: 0; max-width: none; }
+body.ex-listing .ex-sec-head h2 .n { font-family: var(--mono); font-size: 0.8125rem; font-weight: 400; letter-spacing: 0.01em; color: var(--text-3); margin-left: 10px; font-variant-numeric: tabular-nums; }
+body.ex-listing .ex-sec-head p { margin: 0; font-size: 0.9375rem; color: var(--muted); max-width: 46ch; text-wrap: pretty; }
+
+body.ex-listing .ex-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+
+body.ex-listing .ex-card {
+  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: subgrid; grid-row: span 2; row-gap: 0; margin-bottom: 16px;
+  background: var(--cream); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--edge-light);
+  color: inherit; text-decoration: none; overflow: hidden;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+body.ex-listing .ex-card:hover { border-color: var(--rule-strong); text-decoration: none; }
+body.ex-listing .ex-card:hover h3 { color: #FFFFFF; }
+body.ex-listing .ex-card:focus-visible { outline: var(--focus); outline-offset: 2px; }
+body.ex-listing .ex-card-pipe { background: var(--card-ink); border-bottom: 1px solid var(--rule); padding: 18px 20px; min-height: 66px; display: flex; align-items: center; }
+body.ex-listing .ex-card-art { display: flex; flex-direction: column; background: var(--card-ink); border-bottom: 1px solid var(--rule); }
+body.ex-listing .ex-card-art .ex-card-pipe.is-under { border-bottom: 0; min-height: 0; padding: 12px 20px; background: transparent; }
+body.ex-listing .ex-card-body { display: flex; flex-direction: column; gap: 8px; padding: 18px 20px 18px; }
+body.ex-listing .ex-card-body h3 { font-size: 1.0625rem; font-weight: 500; letter-spacing: -0.015em; line-height: 1.3; margin: 0; color: var(--maroon-ink); text-wrap: balance; transition: color var(--dur-fast) var(--ease); }
+body.ex-listing .ex-card-body p { margin: 0; font-size: 0.875rem; line-height: 1.55; color: var(--muted); text-wrap: pretty; }
+body.ex-listing .ex-card-body .ex-card-meta { margin-top: auto; padding-top: 10px; font-size: 0.8125rem; color: var(--text-3); display: flex; gap: 8px; align-items: baseline; }
+body.ex-listing .ex-card-meta .t { font-variant-numeric: tabular-nums; }
+
+body.ex-listing .ex-empty { padding: 56px 0 24px; }
+body.ex-listing .ex-empty p { margin: 0 0 16px; color: var(--muted); max-width: 46ch; }
+body.ex-listing .ex-empty .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+body.ex-listing .ex-empty p a { color: var(--maroon-ink); text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 3px; }
+body.ex-listing .ex-empty p a:hover { color: #FFFFFF; text-decoration-color: var(--muted); }
+
+/* ═══════════════════════════ 5. Catalog: closing panel ═══════════════════ */
+body.ex-listing .ex-end {
+  margin: 56px 0 96px; padding: 36px 40px;
+  background: var(--paper-2); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--edge-light);
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 24px 40px; align-items: center;
+}
+body.ex-listing .ex-end h2 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.03em; line-height: 1.15; margin: 0 0 8px; max-width: none; }
+body.ex-listing .ex-end p { margin: 0; color: var(--muted); max-width: 54ch; text-wrap: pretty; }
+body.ex-listing .ex-end .btns { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+body.ex-listing .ex-end .btn { border-radius: var(--r-md); }
+
+/* ═══════════════════════════ 6. Catalog: responsive ══════════════════════ */
+@media (min-width: 1760px) {
+  body.ex-listing .ex-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 1100px) {
+  body.ex-listing .ex-shell { grid-template-columns: minmax(0, 1fr); }
+  body.ex-listing .ex-rail { display: none; }
+  body.ex-listing .ex-toolbar { display: block; padding-bottom: 6px; }
+}
+@media (max-width: 820px) {
+  body.ex-listing .ex-wrap { padding: 0 20px; }
+  body.ex-listing .ex-hero { padding: 36px 0 20px; }
+  body.ex-listing .ex-chips {
+    flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -20px; padding-inline: 20px;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
+  body.ex-listing .ex-chips::-webkit-scrollbar { display: none; }
+  body.ex-listing .ex-selects { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  body.ex-listing .ex-sec-head { flex-direction: column; align-items: flex-start; gap: 6px; }
+  body.ex-listing .ex-grid { grid-template-columns: minmax(0, 1fr); }
+  body.ex-listing .ex-end { grid-template-columns: minmax(0, 1fr); padding: 28px 24px; margin: 40px 0 64px; }
+  body.ex-listing .ex-end .btns { justify-content: flex-start; }
+}
+
+/* ═══════════════════════════ 7. Walkthrough: rail + head ═════════════════ */
+body.ex-detail aside.side .side-back a { color: var(--maroon-ink); font-weight: 500; }
+body.ex-detail aside.side .side-back a .ct { margin-left: auto; font-family: var(--mono); font-size: 0.75rem; color: var(--text-3); }
+body.ex-detail .prose h1 { margin-bottom: 14px; }
+
+/* Head: title, lede, the actions, the example's picture, and how to run it.
+   It sits outside .prose so the scene and the run block keep their own type. */
+body.ex-detail .ex-head { margin: 0 0 48px; }
+body.ex-detail .ex-h1 { font-weight: 600; font-size: clamp(2.25rem, 3.6vw, 3rem); line-height: 1.08; letter-spacing: -0.04em; margin: 0 0 14px; color: var(--maroon-ink); text-wrap: balance; overflow-wrap: break-word; }
+body.ex-detail .ex-lede { margin: 0 0 24px; max-width: 37rem; font-size: clamp(1.0625rem, 1.3vw, 1.25rem); line-height: 1.55; color: var(--muted); text-wrap: pretty; }
+body.ex-detail .ex-cta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 10px; margin: 0 0 28px; }
+body.ex-detail .ex-cta .btn { border-radius: var(--r-md); }
+body.ex-detail .ex-facts { margin: 0 0 0 8px; display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: 0.875rem; color: var(--text-3); font-variant-numeric: tabular-nums; }
+body.ex-detail .ex-scene { margin: 0 0 28px; }
+
+/* Run it: one copyable block, clone to result. */
+body.ex-detail .ex-run { background: var(--code-bg); border: 1px solid var(--rule); border-radius: var(--r-lg); box-shadow: var(--edge-light); overflow: hidden; scroll-margin-top: calc(var(--bar-h, 66px) + 16px); }
+body.ex-detail .ex-run-h { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--rule); }
+body.ex-detail .ex-run-h h2 { flex: none; white-space: nowrap; margin: 0; font-size: 0.9375rem; font-weight: 500; letter-spacing: -0.01em; line-height: 1.3; color: var(--maroon-ink); max-width: none; }
+body.ex-detail .ex-run-needs { margin: 0; font-size: 0.8125rem; color: var(--text-3); min-width: 0; }
+body.ex-detail .ex-run-copy { margin-left: auto; flex: none; font-family: var(--sans); font-size: 0.8125rem; color: var(--muted); background: #141414; border: 1px solid var(--rule); border-radius: var(--r-sm); padding: 4px 10px; cursor: pointer; }
+body.ex-detail .ex-run-copy:hover { color: var(--maroon-ink); border-color: var(--rule-strong); }
+body.ex-detail .ex-run-copy:focus-visible { outline: var(--focus); outline-offset: 2px; }
+body.ex-detail .ex-run-code { margin: 0; padding: 14px 16px 16px; font-family: var(--mono); font-size: 0.8125rem; line-height: 1.75; color: var(--maroon-ink); background: transparent; border: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Long commands wrap with a hanging indent under the prompt, so nothing hides off the edge. */
+body.ex-detail .ex-run-code .ln { display: block; padding-left: 2ch; text-indent: -2ch; }
+body.ex-detail .ex-run-code .c { color: var(--text-3); }
+body.ex-detail .ex-run-code .p { color: var(--text-3); user-select: none; }
+@media (max-width: 640px) {
+  body.ex-detail .ex-facts { margin: 4px 0 0; width: 100%; }
+  body.ex-detail .ex-run-h { flex-wrap: wrap; }
+  body.ex-detail .ex-run-needs { order: 3; width: 100%; }
+}
+
+/* ═══════════════════════════ 8. Walkthrough: prose deltas ════════════════
+   The body keeps the docs prose. The hosted cream cover (first image) is
+   retired: the figure above already says what you'll build. */
+body.ex-detail .prose em { font-style: italic; font-weight: inherit; color: inherit; }
+body.ex-detail .prose img { max-width: 100%; height: auto; border-radius: var(--r-md); }
+body.ex-detail .prose > :last-child { margin-bottom: 0; }
+body.ex-detail .ex-missing { margin: 0; padding: 20px 22px; background: #0F0F0F; border: 1px solid var(--rule); border-radius: var(--r-md); max-width: 66ch; }
+body.ex-detail .ex-missing h2 { margin: 0 0 8px; font-size: 1.125rem; }
+body.ex-detail .ex-missing p { margin: 0; color: var(--muted); }
+
+/* Reading measure: the brand's 66ch runs ~90 characters in Geist; 59ch lands
+   at the 70–80 the eye tracks. Page foot in sentence case at the label size. */
+body.ex-detail .prose { --measure: 54ch; }
+body.ex-detail .breadcrumb { font-family: var(--sans); font-size: 0.8125rem; letter-spacing: 0; }
+body.ex-detail .breadcrumb .now { color: var(--maroon-ink); }
+body.ex-detail .breadcrumb a { display: inline-block; padding: 4px 0; }
+:root body.ex-detail .prose a:not(:where(.btn, .btn *, [class*="card"], [class*="card"] *, .anchor, .heading-anchor, .head-anchor)) { text-decoration-color: rgba(255, 255, 255, 0.36); }
+:root body.ex-detail .prose a:not(:where(.btn, .btn *, [class*="card"], [class*="card"] *, .anchor, .heading-anchor, .head-anchor)):hover { text-decoration-color: #FFFFFF; }
+/* The write-ups open with a "→ View on GitHub" line; the head's View source
+   button already says it. */
+body.ex-detail .prose > p:has(> a[href*="/tree/main/examples/"]:only-child) { display: none; }
+body.ex-detail .doc-foot { font-family: var(--sans); font-size: 0.8125rem; letter-spacing: 0; text-transform: none; color: var(--text-3); }
+body.ex-detail .doc-foot a { color: var(--muted); border-color: var(--rule); border-radius: var(--r-sm); }
+body.ex-detail .doc-foot a:hover { color: var(--maroon-ink); border-color: var(--rule-strong); }
+
+/* Shared footer tag reads 3.1:1 on the ground; lift it to the tertiary ink on
+   these pages (filed to the shared footer for every page). */
+:root :is(body.ex-listing, body.ex-detail) .foot-tag { color: var(--text-3); }
+@media (max-width: 420px) {
+  body.ex-detail .ex-h1 { font-size: 1.875rem; line-height: 1.1; }
+  body.ex-listing h1.hero-h { font-size: 2.25rem; }
+}
+body.ex-detail .prose :is(p, li) { overflow-wrap: anywhere; }
+@media (max-width: 300px) {
+  body.ex-listing .ex-selects { grid-template-columns: minmax(0, 1fr); }
+}
+/* Wide tables scroll inside their own box instead of the page. */
+body.ex-detail .prose table { display: block; max-width: 100%; overflow-x: auto; }
+
+/* Rail: long groups fold to their top values; a pressed row shows how to undo. */
+body.ex-listing .ex-rail-group:not(.is-open) .ex-f.is-more:not(.is-shown) { display: none; }
+body.ex-listing .ex-more {
+  margin: 4px 0 0; padding: 4px 0; font-family: var(--sans); font-size: 0.8125rem; color: var(--text-3);
+  background: none; border: 0; cursor: pointer; text-decoration: underline; text-decoration-color: var(--rule-strong); text-underline-offset: 3px;
+}
+body.ex-listing .ex-more:hover { color: var(--maroon-ink); }
+body.ex-listing .ex-more:focus-visible { outline: var(--focus); outline-offset: 2px; border-radius: 2px; }
+body.ex-listing .ex-f[aria-pressed="true"]:not([data-value=""]) .n { display: none; }
+body.ex-listing .ex-f[aria-pressed="true"]:not([data-value=""])::after {
+  content: ""; width: 12px; height: 12px; flex: none; background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 3l6 6M9 3l-6 6' stroke='black' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 3l6 6M9 3l-6 6' stroke='black' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+@media (max-width: 560px) {
+  body.ex-listing .hero-more { display: none; }
+}
+body.ex-listing .ex-results { scroll-margin-top: calc(var(--bar-h, 66px) + 8px); }
+
+/* The active category reads as the same white chip at every width. */
+body.ex-listing .ex-f[data-facet="cat"][aria-pressed="true"] { color: #0A0A0A; background: #FFFFFF; }
+body.ex-listing .ex-f[data-facet="cat"][aria-pressed="true"] .n { color: #525252; }
+body.ex-listing .ex-results:focus { outline: none; }
+body.ex-listing .ex-results:focus-visible { outline: var(--focus); outline-offset: 4px; }
+/* Phones: the build figure stacks top to bottom. */
+@media (max-width: 640px) {
+  .pipe-lg { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .pipe-lg .pipe-step { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .pipe-lg .pipe-arrow { align-self: flex-start; margin: 0 0 0 14px; transform: rotate(90deg); }
+}
+
+/* Walkthroughs give the picture more room: slimmer rails than regular docs. */
+body.ex-detail { --side: 248px; --toc: 216px; }
+@media (min-width: 821px) { body.ex-detail main.content { padding-left: 48px; padding-right: 48px; } }
+/* Walkthrough tables: headers at the label size, sentence case, sans. */
+body.ex-detail .prose th { font-family: var(--sans); font-size: 0.8125rem; letter-spacing: 0; text-transform: none; }
+
+/* Rail: the scroller clips negative margins, so give rows room inside it. */
+body.ex-listing .ex-rail { padding-left: 10px; padding-right: 10px; margin-left: -10px; margin-right: -10px; }
+/* Rail group headings at the label size (the brand default is 10.24px). */
+:root body.ex-detail aside.side .side-group > h5 { font-family: var(--sans); font-size: 0.8125rem; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--maroon-ink); }
+
+/* Native filter controls keep full labels and clear touch targets. */
+body.ex-listing .ex-select > span {
+  position: static; display: block; width: auto; height: auto; overflow: visible;
+  clip: auto; margin: 0 0 6px; font-size: 0.8125rem; color: var(--muted);
+}
+body.ex-listing .ex-select::after { top: auto; bottom: 16px; }
+@media (max-width: 820px) {
+  body.ex-listing .ex-chips .t-filter,
+  body.ex-listing .ex-select select { min-height: 44px; }
+}
+
+/* Remote article diagrams expose their authored detail without shrinking the
+   reading column or requiring pointer-only image gestures. */
+body.ex-detail .example-diagram { margin: 24px 0; }
+body.ex-detail .example-diagram > img { display: block; }
+body.ex-detail .example-diagram-open {
+  display: inline-flex; align-items: center; min-height: 44px;
+  margin-top: 4px; font-size: 0.875rem;
+}

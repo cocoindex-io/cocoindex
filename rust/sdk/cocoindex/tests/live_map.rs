@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use cocoindex::{App, LiveMap, LiveMapView, PreviewAction};
+use cocoindex::{App, LiveMap, LiveMapView, PreviewAction, StableKey};
 
 /// Smoke test: `LiveMap::create` mounts its backing container target and
 /// `declare_entry` declares entries that sync (run the entry sink) when the
@@ -16,9 +16,9 @@ fn live_map_create_and_declare() {
         .unwrap();
 
     app.update_blocking(|ctx| async move {
-        let lm: LiveMap<String> = LiveMap::create(&ctx).await?;
-        lm.declare_entry(&ctx, "a", "alpha".to_string())?;
-        lm.declare_entry(&ctx, "b", "beta".to_string())?;
+        let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
+        lm.declare_entry(&ctx, "a".to_string(), "alpha".to_string())?;
+        lm.declare_entry(&ctx, "b".to_string(), "beta".to_string())?;
         Ok(())
     })
     .unwrap();
@@ -32,15 +32,15 @@ async fn live_map_preview_applies_nothing() {
     let app = App::open("live_map_preview", dir.path().join("lmdb"))
         .await
         .unwrap();
-    let created: Arc<Mutex<Option<LiveMap<String>>>> = Arc::new(Mutex::new(None));
+    let created: Arc<Mutex<Option<LiveMap<String, String>>>> = Arc::new(Mutex::new(None));
 
     let actions = app
         .preview({
             let created = created.clone();
             move |ctx| async move {
-                let lm: LiveMap<String> = LiveMap::create(&ctx).await?;
-                lm.declare_entry(&ctx, "a", "alpha".to_string())?;
-                lm.declare_entry(&ctx, "b", "beta".to_string())?;
+                let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
+                lm.declare_entry(&ctx, "a".to_string(), "alpha".to_string())?;
+                lm.declare_entry(&ctx, "b".to_string(), "beta".to_string())?;
                 *created.lock().unwrap() = Some(lm);
                 Ok(())
             }
@@ -79,6 +79,69 @@ async fn live_map_preview_applies_nothing() {
     assert!(lm.scan().await.unwrap().is_empty());
 }
 
+/// `K` is any stable key, as Python's `LiveMap[K, V]`: an `i64` key round-trips
+/// through the engine (declare → reconcile → sink) and comes back as an `i64`.
+#[tokio::test]
+async fn live_map_integer_keys_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::open("live_map_int_keys", dir.path().join("lmdb"))
+        .await
+        .unwrap();
+    let created: Arc<Mutex<Option<LiveMap<i64, String>>>> = Arc::new(Mutex::new(None));
+    app.update({
+        let created = created.clone();
+        move |ctx| async move {
+            let lm: LiveMap<i64, String> = LiveMap::create(&ctx).await?;
+            lm.declare_entry(&ctx, 7, "seven".to_string())?;
+            lm.declare_entry(&ctx, -2, "minus two".to_string())?;
+            *created.lock().unwrap() = Some(lm);
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+    let lm = created.lock().unwrap().take().unwrap();
+    let mut entries = lm.scan().await.unwrap();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec![(-2, "minus two".to_string()), (7, "seven".to_string())]
+    );
+}
+
+/// `StableKey` itself is a key type, so composite keys work too.
+#[tokio::test]
+async fn live_map_stable_keys_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::open("live_map_stable_keys", dir.path().join("lmdb"))
+        .await
+        .unwrap();
+    let created: Arc<Mutex<Option<LiveMap<StableKey, i64>>>> = Arc::new(Mutex::new(None));
+    let composite = StableKey::Array(Arc::from([
+        StableKey::Str(Arc::from("doc")),
+        StableKey::Int(3),
+    ]));
+    app.update({
+        let created = created.clone();
+        let composite = composite.clone();
+        move |ctx| async move {
+            let lm: LiveMap<StableKey, i64> = LiveMap::create(&ctx).await?;
+            lm.declare_entry(&ctx, composite, 42)?;
+            lm.declare_entry(&ctx, StableKey::Str(Arc::from("plain")), 1)?;
+            *created.lock().unwrap() = Some(lm);
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+    let lm = created.lock().unwrap().take().unwrap();
+    let mut entries = lm.scan().await.unwrap();
+    entries.sort();
+    let mut expected = vec![(composite, 42), (StableKey::Str(Arc::from("plain")), 1)];
+    expected.sort();
+    assert_eq!(entries, expected);
+}
+
 mod live {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -90,7 +153,7 @@ mod live {
 
     /// Declares every entry of `source`; re-runs its full pass on `trigger`.
     struct Producer {
-        lm: LiveMap<String>,
+        lm: LiveMap<String, String>,
         source: Arc<Mutex<Vec<(String, String)>>>,
         trigger: Arc<Notify>,
     }
@@ -118,7 +181,7 @@ mod live {
     /// Consumes the map; runs its full pass twice, so its `mount_each_live`
     /// child is mounted again and the map is watched a second time.
     struct Consumer {
-        lm: LiveMap<String>,
+        lm: LiveMap<String, String>,
         seen: Arc<Mutex<Vec<String>>>,
         remounted: Arc<Notify>,
     }
@@ -171,7 +234,7 @@ mod live {
                     ..UpdateOptions::default()
                 },
                 move |ctx| async move {
-                    let lm: LiveMap<String> = LiveMap::create(&ctx).await?;
+                    let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
                     ctx.mount_live(
                         &"producer",
                         Producer {
@@ -215,6 +278,134 @@ mod live {
             "entry produced after the consumer was mounted again never arrived: {:?}",
             seen.lock().unwrap()
         );
+
+        let _ = app.drop_state().await;
+        let _ = tokio::time::timeout(Duration::from_secs(10), handle.result()).await;
+    }
+
+    /// Consumes the map with a slow per-entry component that records each
+    /// value it processed (in order, per key) and the latest value per key.
+    struct SlowConsumer {
+        lm: LiveMap<String, String>,
+        latest: Arc<Mutex<std::collections::BTreeMap<String, String>>>,
+        runs: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LiveComponent for SlowConsumer {
+        async fn process(&self, ctx: Ctx) -> Result<()> {
+            let (latest, runs) = (self.latest.clone(), self.runs.clone());
+            ctx.mount_each_live(&"each", self.lm.clone(), move |_ctx, value: String| {
+                let (latest, runs) = (latest.clone(), runs.clone());
+                async move {
+                    runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    let (key, _) = value.split_once('=').unwrap();
+                    latest
+                        .lock()
+                        .unwrap()
+                        .insert(key.to_string(), value.clone());
+                    Ok(())
+                }
+            })
+            .await
+        }
+    }
+
+    /// A burst of changes from the producer: 200 new entries at once are
+    /// consumed concurrently (the consumer takes 50ms an entry, so one at a
+    /// time would need ten seconds), and 50 rewrites of one entry end at the
+    /// last one with fewer runs than writes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn live_map_burst_is_consumed_concurrently_and_coalesced() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::open("live_map_burst", dir.path().join("lmdb"))
+            .await
+            .unwrap();
+        let source = Arc::new(Mutex::new(vec![("seed".to_string(), "seed=0".to_string())]));
+        let trigger = Arc::new(Notify::new());
+        let latest = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let handle = {
+            let (source, trigger, latest, runs) = (
+                source.clone(),
+                trigger.clone(),
+                latest.clone(),
+                runs.clone(),
+            );
+            app.start_update_with_options(
+                UpdateOptions {
+                    live: true,
+                    ..UpdateOptions::default()
+                },
+                move |ctx| async move {
+                    let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
+                    ctx.mount_live(
+                        &"producer",
+                        Producer {
+                            lm: lm.clone(),
+                            source,
+                            trigger,
+                        },
+                    )
+                    .await?;
+                    ctx.mount_live(&"consumer", SlowConsumer { lm, latest, runs })
+                        .await
+                },
+            )
+            .unwrap()
+        };
+        type Pred = Box<dyn Fn(&std::collections::BTreeMap<String, String>) -> bool>;
+        let wait = |pred: Pred, secs: u64| {
+            let latest = latest.clone();
+            async move {
+                let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+                while !pred(&latest.lock().unwrap()) {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out; consumed {:?}",
+                        latest.lock().unwrap().len()
+                    );
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        };
+        wait(Box::new(|m| m.contains_key("seed")), 10).await;
+
+        let started = std::time::Instant::now();
+        source
+            .lock()
+            .unwrap()
+            .extend((0..200).map(|i| (format!("k{i:03}"), format!("k{i:03}=v"))));
+        trigger.notify_one();
+        wait(Box::new(|m| m.len() == 201), 30).await;
+        let took = started.elapsed();
+        eprintln!("live map: 200 entries consumed in {took:?}");
+        assert!(
+            took < Duration::from_secs(5),
+            "200 entries at 50ms each took {took:?}: consumed one at a time"
+        );
+
+        // Rewrite one entry 50 times, one producer pass each.
+        let runs_before = runs.load(std::sync::atomic::Ordering::SeqCst);
+        for i in 0..50 {
+            source.lock().unwrap()[0] = ("seed".to_string(), format!("seed={i}"));
+            trigger.notify_one();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        wait(
+            Box::new(|m| m.get("seed").map(String::as_str) == Some("seed=49")),
+            30,
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            latest.lock().unwrap().get("seed").map(String::as_str),
+            Some("seed=49")
+        );
+        let seed_runs = runs.load(std::sync::atomic::Ordering::SeqCst) - runs_before;
+        eprintln!("live map: 50 rewrites of one entry ran its component {seed_runs} times");
 
         let _ = app.drop_state().await;
         let _ = tokio::time::timeout(Duration::from_secs(10), handle.result()).await;

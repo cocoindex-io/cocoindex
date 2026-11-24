@@ -6,17 +6,15 @@ image: https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/cover.png
 tags: [data-indexing, semantic-search]
 ---
 
-![Index Your Codebase for AI Agents with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/cover.png)
+Build a live semantic index over a codebase with [CocoIndex](https://github.com/cocoindex-io/cocoindex). Point it at a repo, and you get a vector index you can search in natural language ("where do we embed chunks?") that updates itself as you edit — the kind of fresh, low-latency context an agent needs.
 
-In this tutorial, we'll build a live semantic index over a codebase with [CocoIndex](https://github.com/cocoindex-io/cocoindex). Point it at a repo, and you get a vector index you can search in natural language ("where do we embed chunks?") that updates itself as you edit — the kind of fresh, low-latency context an agent needs.
-
-The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — incremental processing, change tracking, managed targets — runs in a Rust engine underneath, so only what changed gets re-embedded and re-upserted.
+Write the pipeline in `async` Python using your own types. CocoIndex's Rust engine handles incremental processing, change tracking, and target management. As a result, only what changed gets re-embedded and re-upserted.
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/code_embedding)
 
 ## Use cases
 
-![CocoIndex codebase indexing use cases](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/usecase-agents.png)
+![CocoIndex codebase indexing use cases](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/usecase-agents-dark.svg)
 
 - **Code context for agents** — semantic context for Claude, Codex, OpenCode, Factory instead of file-by-file reading.
 - **Code search** — natural-language and semantic search over your repo.
@@ -32,11 +30,11 @@ A codebase is hard to keep indexed well, and it exercises most of what CocoIndex
 - **Plain Python** keeps it customizable. Pick your embedding model, chunking strategy, and vector database.
 - **Consistent indexing and query.** The same embedder is shared between the indexing path and the query path, so what you index is what you search against.
 
-![Why CocoIndex for codebase indexing: syntax-aware chunking, incremental updates, live updates, a Rust core, plain Python, and a consistent embedder across indexing and query.](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/why-cocoindex.png)
+![Why CocoIndex for codebase indexing: syntax-aware chunking, incremental updates, live updates, a Rust core, plain Python, and a consistent embedder across indexing and query.](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/why-cocoindex-dark.svg)
 
 ## Flow overview
 
-![CocoIndex flow for code embedding](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/flow-v1.png)
+![CocoIndex flow for code embedding](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/flow-v1-dark.svg)
 
 From a high level, these are the steps:
 
@@ -62,7 +60,7 @@ You [declare the transformation logic](/docs/programming_guide/core_concepts/) w
 
 ## Define the data and shared resources
 
-[Apps](/docs/programming_guide/app/) are the top-level runnable unit in CocoIndex. Before the App, we set up two things the rest of the code builds on. `CodeEmbedding` defines one row of the output table — each chunk of code becomes one row, with its text, location, and embedding vector. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs — the Postgres connection pool and the embedding model — once at startup.
+[Apps](/docs/programming_guide/app/) are the top-level runnable unit in CocoIndex. Before the App, we set up two things the rest of the code builds on. `CodeEmbedding` defines one row of the output table — each chunk of code becomes one row, with its text, location, and embedding vector. `coco_lifespan` provides the [shared resources](/docs/programming_guide/context/) every step needs (the Postgres connection pool and the embedding model) once at startup.
 
 ```python
 import os
@@ -113,7 +111,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 ## Process a file
 
-![One processing component per file: each file is chunked with Tree-sitter and embedded, producing CodeEmbedding rows.](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/stage-file-process.png)
+![One processing component per file: each file is chunked with Tree-sitter and embedded, producing CodeEmbedding rows.](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/stage-file-process-dark.svg)
 
 `process_file` runs once per file. It reads the file, detects the language so Tree-sitter can parse it, [splits the code](/docs/ops/text/) along the syntax tree, and maps each chunk to `process_chunk`.
 
@@ -173,7 +171,7 @@ We use [`SentenceTransformerEmbedder`](/docs/ops/sentence_transformers/) with `a
 
 ## Define the main function
 
-![mount_each fans out one processing component per file, from the codebase source to the Postgres target.](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/stage-main-function.png)
+![mount_each fans out one processing component per file, from the codebase source to the Postgres target.](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/stage-main-function-dark.svg)
 
 `app_main` wires the source to the target. It mounts the Postgres table (with a [vector index](/docs/common_resources/vector_schema/)), walks the codebase, and mounts one [processing component](/docs/programming_guide/processing_component/) per file.
 
@@ -205,7 +203,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
 
 ## Create the App
 
-![A CocoIndex App binds source, transform, and target state into one runnable unit.](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/stage-create-app.png)
+![A CocoIndex App binds source, transform, and target state into one runnable unit.](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/stage-create-app-dark.svg)
 
 Bind `app_main` into a `coco.App` and point it at the codebase root.
 
@@ -277,7 +275,7 @@ The same machinery covers two kinds of change: changes to your **data** (the cod
 - **A file is deleted** — its rows are removed from the target.
 - **A file is edited** — the file is re-chunked, and the new chunks usually overlap the old ones. Chunks whose text is unchanged keep their `id` and embedding, so they are left as-is; genuinely new chunks are embedded and inserted; chunks that no longer exist are deleted. Edit one function and only that function's chunks are re-embedded, even though the whole file was re-read.
 
-![A file edited and re-chunked: unchanged chunks are reused with no re-embedding, a removed chunk's row is deleted, and a new chunk is embedded and inserted.](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/incremental-diff.png)
+![A file edited and re-chunked: unchanged chunks are reused with no re-embedding, a removed chunk's row is deleted, and a new chunk is embedded and inserted.](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/incremental-diff-dark.svg)
 
 **Logic changes.** A pipeline change is reconciled the same way — CocoIndex compares the new output against what is already in Postgres and applies only the difference.
 

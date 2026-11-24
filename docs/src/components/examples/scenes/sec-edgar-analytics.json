@@ -1,0 +1,11 @@
+{
+  "alt": "Two 10-K text filings and two XBRL company-facts files are scrubbed of emails and phone numbers, chunked, embedded with all-MiniLM-L6-v2 and tagged with labels such as RISK:CYBER and TOPIC:CLOUD, then loaded as rows into the Apache Doris table filing_chunks, which carries both a vector index on embedding and a full-text index on text; editing the Apple filing re-processes only its chunk, and the hybrid query \"cloud computing and AI risk\" fuses vector and keyword ranks so Microsoft's cloud-and-AI filing ranks first and Apple's second.",
+  "needs": ["Docker (for Apache Doris 4.0+, compose file included)", "Python 3.11+"],
+  "run": [
+    { "note": "Start Doris (frontend and backend)", "cmd": "docker compose up -d fe be" },
+    { "note": "Write the sample filings and company facts to data/", "cmd": "python download.py" },
+    { "note": "Configure and install", "cmd": "cp .env.example .env && pip install -e ." },
+    { "note": "Build the index in Doris", "cmd": "cocoindex update main" },
+    { "note": "Hybrid search: vector + keyword, fused with RRF", "cmd": "python search.py \"cloud computing and AI risk\"" }
+  ]
+}

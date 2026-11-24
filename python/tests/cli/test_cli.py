@@ -149,7 +149,7 @@ class TestSingleApp:
         run_cli("update", "./single_app.py")
 
         result = run_cli("drop", "./single_app.py", "-f")
-        assert "Dropped app" in result.stdout
+        assert "✓ Dropped SingleApp (target states reverted" in result.stdout
 
         # After drop, ls should show [+] again
         result = run_cli("ls", "./single_app.py")
@@ -427,7 +427,7 @@ class TestDropNoPersisted:
     def test_drop_app_not_run(self) -> None:
         """Drop on app that was never run should indicate nothing to drop."""
         result = run_cli("drop", "./single_app.py", "-f")
-        assert "no persisted state" in result.stdout.lower()
+        assert "Nothing to drop (SingleApp has no stored state)" in result.stdout
 
 
 # =============================================================================
@@ -638,6 +638,101 @@ class TestUpdateFlags:
         )
 
 
+class TestSelect:
+    """Tests for `cocoindex update --select`."""
+
+    def _setup(self, tmp_path: Path) -> tuple[Path, Path]:
+        (tmp_path / "select_app.py").write_text(
+            (TEST_DIR / "select_app.py").read_text()
+        )
+        src, out = tmp_path / "in_select", tmp_path / "out_select"
+        src.mkdir()
+        (src / "a.txt").write_text("a1")
+        (src / "b.txt").write_text("b1")
+        run_cli("update", "./select_app.py", cwd=tmp_path)
+        assert (out / "a.txt").read_text() == "A1"
+        (src / "a.txt").write_text("a2")
+        (src / "b.txt").write_text("b2")
+        return src, out
+
+    def test_select_runs_only_the_selected_component(self, tmp_path: Path) -> None:
+        src, out = self._setup(tmp_path)
+        # The path as `cocoindex show` prints it.
+        shown = run_cli("show", "./select_app.py", cwd=tmp_path).stdout
+        assert '/@process/"a.txt"' in shown
+        # `show PATH` reads the same form; the older unquoted form still works.
+        detail = run_cli(
+            "show", "./select_app.py", '/@process/"a.txt"', cwd=tmp_path
+        ).stdout
+        assert "processor:process" in detail
+        legacy = run_cli("show", "./select_app.py", "/setup", cwd=tmp_path).stdout
+        assert "processor:declare_dir_target" in legacy
+
+        run_cli(
+            "update", "./select_app.py", "--select", '/@process/"a.txt"', cwd=tmp_path
+        )
+        assert (out / "a.txt").read_text() == "A2"
+        assert (out / "b.txt").read_text() == "B1"
+
+        (src / "a.txt").unlink()
+        run_cli(
+            "update",
+            "./select_app.py",
+            "--select",
+            '/@process/"a.txt"',
+            "--select",
+            '/@process/"b.txt"',
+            cwd=tmp_path,
+        )
+        assert not (out / "a.txt").exists()
+        assert (out / "b.txt").read_text() == "B2"
+
+    def test_select_with_preview_plans_only_the_selected_component(
+        self, tmp_path: Path
+    ) -> None:
+        _, out = self._setup(tmp_path)
+        result = run_cli(
+            "update",
+            "./select_app.py",
+            "--preview",
+            "--select",
+            '/@process/"b.txt"',
+            cwd=tmp_path,
+        )
+        assert "b.txt" in result.stdout
+        assert "a.txt" not in result.stdout
+        assert (out / "b.txt").read_text() == "B1"
+
+    def test_select_rejects_a_path_it_cannot_parse(self, tmp_path: Path) -> None:
+        self._setup(tmp_path)
+        result = run_cli(
+            "update",
+            "./select_app.py",
+            "--select",
+            "/process/a.txt",
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "--select" in result.stderr
+        assert "`@process`" in result.stderr
+
+    def test_select_and_reset_cannot_be_combined(self, tmp_path: Path) -> None:
+        self._setup(tmp_path)
+        result = run_cli(
+            "update",
+            "./select_app.py",
+            "--reset",
+            "-f",
+            "--select",
+            "/",
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "--select and --reset cannot be used together" in result.stderr
+
+
 class TestFullReprocess:
     """Tests for --full-reprocess flag behavior."""
 
@@ -698,8 +793,8 @@ class TestDropQuiet:
         """drop --quiet should not print informational messages (only errors/prompts)."""
         run_cli("update", "./single_app.py")
         result = run_cli("drop", "./single_app.py", "-f", "--quiet")
-        assert "Preparing to drop" not in result.stdout
-        assert "Dropped app" not in result.stdout
+        assert "Dropping" not in result.stdout
+        assert "Dropped" not in result.stdout
 
 
 # =============================================================================
@@ -713,7 +808,8 @@ class TestPreview:
     def test_preview_prints_actions(self) -> None:
         """update --preview should print planned actions without writing."""
         result = run_cli("update", "./flat_target_app.py", "--preview")
-        assert "Preview: planned target actions" in result.stdout
+        assert "● 1 planned change (preview · " in result.stdout
+        assert "Previewing" in result.stdout
         assert "('x', 42)" in result.stdout
 
     def test_preview_reset_rejected(self) -> None:

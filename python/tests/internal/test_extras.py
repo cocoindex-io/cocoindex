@@ -24,6 +24,7 @@ _EXTRAS: dict[str, list[str]] = tomllib.loads(
 # (BigQuery and Snowflake import theirs only when they connect.)
 _CONNECTORS = [
     ("amazon_s3", "aiobotocore", "amazon_s3"),
+    ("discord", "httpx", "discord"),
     ("falkordb", "falkordb", "falkordb"),
     ("google_drive", "googleapiclient", "google_drive"),
     ("iggy", "apache_iggy", "iggy"),

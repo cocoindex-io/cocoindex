@@ -1,0 +1,33 @@
+---
+// "Different from Python" callout, shown on Rust pages only. Use it where the
+// Rust SDK behaves differently from the Python SDK on purpose, so a reader
+// coming from Python sees the difference at the point it matters. Styled as a
+// site callout (src/styles/site.css .callout) with the Rust accent.
+// Authoring contract: docs/CONTENT_LANGUAGES.md.
+import { currentLang } from '../lib/lang';
+
+interface Props {
+  /** Label shown in bold; defaults to "Different from Python". */
+  title?: string;
+}
+const { title = 'Different from Python' } = Astro.props;
+const show = currentLang(Astro) === 'rust';
+---
+{show && (
+  <div class="callout lang-diff">
+    <div class="ico" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5h9M8 2l3 3-3 3"/><path d="M14 11H5M8 8l-3 3 3 3"/></svg>
+    </div>
+    <div class="body"><b class="callout-label">{title}</b><slot /></div>
+  </div>
+)}
+
+<style>
+  /* The site callout, with a left rule in the Rust accent. */
+  .lang-diff {
+    border-left: 3px solid var(--lang-rust, #e8743d);
+    padding-left: 13px;
+  }
+  .lang-diff .ico { color: var(--lang-rust, #e8743d); }
+  .lang-diff .callout-label { color: var(--lang-rust, #e8743d); }
+</style>

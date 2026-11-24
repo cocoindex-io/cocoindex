@@ -5,8 +5,8 @@
 # workspaces (each has its own [workspace] in Cargo.toml) so they mimic
 # downstream user projects.
 #
-# Why `cargo check` and not `cargo test`: the goal on every PR is to catch SDK
-# API breakage in the examples, which type-checking already does. Full
+# Why `cargo check` and not `cargo test`: the goal is to catch SDK API
+# breakage in the examples, which type-checking already does. Full
 # build+test of the examples is far heavier (codegen, linking, running) and is
 # left to a scheduled/nightly job. With ~30 example crates each pulling a large,
 # distinct dependency tree (surrealdb, arrow/lancedb, candle, aws-sdk, …),

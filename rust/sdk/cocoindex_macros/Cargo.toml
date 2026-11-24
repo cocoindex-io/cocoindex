@@ -4,6 +4,13 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Proc macros for the cocoindex crate: #[function], #[app], #[lifespan], #[main], mount!, use_mount!, mount_each!"
+repository = "https://github.com/cocoindex-io/cocoindex"
+homepage = "https://cocoindex.io"
+documentation = "https://docs.rs/cocoindex_macros"
+keywords = ["cocoindex", "incremental", "pipeline", "macros"]
+categories = ["development-tools::procedural-macro-helpers"]
+include = ["/src", "/Cargo.toml"]
 
 [lib]
 proc-macro = true

@@ -1,0 +1,101 @@
+---
+// Semantic search 101: three Markdown files in, one row per chunk out, then a
+// plain-English query. Content is the example's own: markdown_files/, the
+// RecursiveSplitter settings, all-MiniLM-L6-v2 (384-d), the doc_embeddings
+// table, and the README's query. rfc8259.md is the edited file (Δ).
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+{size === 'hero' ? (
+  <div class="te">
+    <div class="sc-row">
+      <div class="sc-col">
+        <span class="sc-cap">Source</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span>markdown_files/</div>
+          <div class="sc-panel-b">
+            <div class="sc-li"><span class="sc-ico i-file"></span><span>1706.03762v7.md</span></div>
+            <div class="sc-li"><span class="sc-ico i-file"></span><span>1810.04805v2.md</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>rfc8259.md</span><span class="sc-dmark">Δ</span></div>
+          </div>
+        </div>
+        <p class="sc-quote te-note">Edit one file and only its chunks re-embed.</p>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col">
+        <span class="sc-cap">Chunk and embed</span>
+        <div class="sc-panel"><div class="sc-panel-b">
+          <span class="sc-li"><span class="sc-ico i-code"></span><span>RecursiveSplitter</span></span>
+          <p class="sc-quote sc-clip3 te-chunk">“<b>Self-attention</b>, sometimes called intra-attention, is an attention mechanism relating different positions of a single sequence…”</p>
+          <span class="sc-li"><span class="sc-ico i-model"></span><span>all-MiniLM-L6-v2</span></span>
+        </div></div>
+        <span class="sc-cap te-fine">2000-char chunks, 500 overlap</span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col te-wide">
+        <span class="sc-cap">Postgres + pgvector</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-table"></span>doc_embeddings</div>
+          <table class="sc-table">
+            <thead><tr><th>filename</th><th class="te-n">chunk_start</th></tr></thead>
+            <tbody>
+              <tr><td>1706.03762v7.md</td><td class="sc-dim te-n">0</td></tr>
+              <tr><td>1706.03762v7.md</td><td class="sc-dim te-n">1500</td></tr>
+              <tr><td>1810.04805v2.md</td><td class="sc-dim te-n">0</td></tr>
+              <tr class="sc-delta"><td>rfc8259.md</td><td class="te-n"><span class="sc-dtext">0</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <span class="sc-cap te-fine">embedding: vector(384) per row</span>
+      </div>
+    </div>
+
+    <div class="te-search">
+      <span class="sc-cap">Search by meaning</span>
+      <div class="sc-row sc-keep te-q">
+        <div class="sc-query sc-grow"><span class="sc-ico i-search"></span><span>python main.py "what is self-attention?"</span></div>
+      </div>
+      <div class="sc-panel"><div class="sc-panel-b te-hits">
+        <div class="sc-hit"><span class="r">1</span><span><span class="src">1706.03762v7.md</span><span class="sc-quote sc-clip2">Self-attention, sometimes called intra-attention is an attention mechanism relating different positions of a single sequence in order to compute a representation of the sequence.</span></span></div>
+        <div class="sc-hit"><span class="r">2</span><span><span class="src">1810.04805v2.md</span><span class="sc-quote sc-clip2">The BERT Transformer uses bidirectional self-attention, while the GPT Transformer uses constrained self-attention…</span></span></div>
+      </div></div>
+    </div>
+  </div>
+) : (
+  <div class="te-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-panel te-card-src">
+        <div class="sc-panel-h"><span class="sc-ico i-folder"></span>markdown_files/</div>
+        <div class="sc-panel-b">
+          <div class="sc-li"><span class="sc-ico i-file"></span><span>1706.03762v7.md</span></div>
+          <div class="sc-li"><span class="sc-ico i-file"></span><span>1810.04805v2.md</span></div>
+          <div class="sc-li sc-delta"><span class="sc-ico i-file"></span><span>rfc8259.md</span></div>
+        </div>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col">
+        <div class="sc-query"><span class="sc-ico i-search"></span><span>"what is self-attention?"</span></div>
+        <div class="sc-panel"><div class="sc-panel-b">
+          <span class="sc-li"><span>1706.03762v7.md</span></span>
+          <span class="sc-quote sc-clip2">Self-attention, sometimes called intra-attention…</span>
+        </div></div>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .te { display: flex; flex-direction: column; gap: 18px; }
+  .te-wide { flex: 1.15 1 0; }
+  .te-chunk { margin: 2px 0; }
+  .te-fine { font-weight: 400; }
+  .te-n { width: 92px; text-align: right; }
+  .te > .sc-row { gap: 10px; }
+  .te .sc-li { font-size: 12px; }
+  .te-note { margin: 0; font-size: 12px; color: var(--sc-dim); }
+  .te-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .te-hits { gap: 0; }
+  .te-card { height: 100%; display: flex; align-items: center; }
+  .te-card > .sc-row { width: 100%; }
+  .te-card-src { flex: 1 1 0; }
+</style>

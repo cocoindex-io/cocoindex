@@ -1,0 +1,26 @@
+{
+  "alt": "A Google Drive folder shared with a service account, where Google Docs are read as Markdown, Sheets as CSV, Slides as plain text, other files as-is and subfolders recursively, is chunked with RecursiveSplitter and embedded with all-MiniLM-L6-v2 into the Postgres table coco_examples_v1.doc_embeddings (id, filename, text, embedding); an edited Doc re-derives only its rows on the next run, and the query \"what is self-attention?\" searches the Drive by meaning.",
+  "needs": [
+    "Docker (Postgres + pgvector)",
+    "Google service account key",
+    "Python 3.11+"
+  ],
+  "run": [
+    {
+      "note": "Start Postgres with pgvector",
+      "cmd": "docker compose -f ../../dev/postgres.yaml up -d"
+    },
+    {
+      "note": "Set the key path and folder ids in .env, then install",
+      "cmd": "cp .env.example .env && pip install -e ."
+    },
+    {
+      "note": "Scan the folders and build the index; re-run for changes",
+      "cmd": "cocoindex update main"
+    },
+    {
+      "note": "Search it",
+      "cmd": "python main.py \"what is self-attention?\""
+    }
+  ]
+}

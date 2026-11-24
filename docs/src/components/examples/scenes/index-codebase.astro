@@ -1,0 +1,18 @@
+---
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+---
+<img
+  class="codebase-cover"
+  src="https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/cover.png"
+  alt=""
+  width="2058"
+  height="1100"
+  loading={size === 'hero' ? 'eager' : 'lazy'}
+  decoding="async"
+  fetchpriority={size === 'hero' ? 'high' : undefined}
+/>
+<style>
+  .codebase-cover { display: block; width: 100%; height: auto; }
+  :global(.sc-card) .codebase-cover { height: 100%; object-fit: contain; }
+</style>

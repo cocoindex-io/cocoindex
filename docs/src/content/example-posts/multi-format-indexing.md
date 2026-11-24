@@ -8,7 +8,7 @@ tags: [multimodal, colpali]
 
 ![Index PDFs and images together with ColPali and CocoIndex](https://cocoindex.io/blobs/docs-v1/img/examples/multi-format-indexing/cover.png)
 
-Real document sets are a mix — scanned reports, slide exports, screenshots, and PDFs all jumbled together. Parsing each format into clean text is brittle and loses the layout (tables, charts, figures) that often *is* the answer. In this tutorial we'll build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that sidesteps parsing entirely: render every PDF page to an image, embed pages and standalone images alike with the multi-vector [ColPali](https://huggingface.co/vidore/colpali-v1.2) model, and store them in one [Qdrant](https://qdrant.tech/) collection. A text query then retrieves the most relevant *page*, no matter what format it started as.
+Real document sets are a mix — scanned reports, slide exports, screenshots, and PDFs all jumbled together. Parsing each format into clean text is brittle and loses the layout (tables, charts, figures) that often *is* the answer. Build a [CocoIndex](https://github.com/cocoindex-io/cocoindex) pipeline that sidesteps parsing entirely: render every PDF page to an image, embed pages and standalone images alike with the multi-vector [ColPali](https://huggingface.co/vidore/colpali-v1.2) model, and store them in one [Qdrant](https://qdrant.tech/) collection. A text query then retrieves the most relevant *page*, no matter what format it started as.
 
 The whole pipeline is ordinary `async` Python. The slow per-page model inference runs on a [GPU runner](/docs/programming_guide/function/), and the Rust engine handles [incremental processing](/docs/programming_guide/core_concepts/) — add a document and only its pages get embedded.
 
@@ -20,7 +20,7 @@ A normal embedding squashes a whole page into one vector — fine for a paragrap
 
 ## Flow overview
 
-![CocoIndex flow: walk a folder of PDFs and images, render each PDF to per-page images, embed every page with ColPali, and store one multi-vector Qdrant point per page](https://cocoindex.io/blobs/docs-v1/img/examples/multi-format-indexing/flow-v1.svg)
+![CocoIndex flow: walk a folder of PDFs and images, render each PDF to per-page images, embed every page with ColPali, and store one multi-vector Qdrant point per page](https://cocoindex.io/blobs/docs-v1/img/examples/multi-format-indexing/flow-v1-dark.svg)
 
 A file fans out to **pages**, so the shape is *file → N pages → N points*:
 
@@ -121,5 +121,3 @@ On the sample set, *"revenue growth"* ranks the two financial-report images at t
 ## Run it
 
 The full, runnable example is in the CocoIndex repo: [examples/multi_format_indexing](https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing). For the image-only version with a web UI, see [Search Images by Text · ColPali](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search_colpali); for a text-extraction pipeline over PDFs instead, see [Semantic Search over PDFs](/docs/examples/pdf-embedding/).
-
-Got a pile of mixed-format documents to make searchable? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

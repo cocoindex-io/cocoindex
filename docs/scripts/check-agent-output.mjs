@@ -30,7 +30,7 @@ const contentFiles = (dir) => walk(dir, /\.mdx?$/);
 const read = (p) => readFileSync(p, 'utf8');
 
 // 1. Required artifacts exist; hosted references match the skill folder.
-for (const f of ['llms.txt', 'llms-full.txt', 'skill.md']) {
+for (const f of ['llms.txt', 'llms-full.txt', 'rust/llms.txt', 'rust/llms-full.txt', 'skill.md']) {
   if (!existsSync(join(DIST, f))) errors.push(`missing dist/${f}`);
 }
 const refNames = readdirSync(REFERENCES_DIR)
@@ -51,12 +51,30 @@ for (const name of refNames) {
 }
 
 // 2. Every content page has its .md twin: docs pages and example walkthroughs.
+//    A docs page has one twin per SDK language it lists (frontmatter
+//    `languages`, default both): /<route>.md for Python, /rust/<route>.md for
+//    Rust, where `route` defaults to the file's slug (src/lib/lang.ts).
 const docSlug = (src) =>
   relative(DOCS_SRC, src).replace(/\.mdx?$/, '').replace(/\/index$/, '');
 const postSlug = (src) => relative(POSTS_SRC, src).replace(/\.mdx?$/, '');
+const frontmatter = (src) => {
+  const m = /^---\n([\s\S]*?)\n---\n/.exec(read(src).replace(/\r\n/g, '\n'));
+  return m ? m[1] : '';
+};
+const docTwins = (src) => {
+  const fm = frontmatter(src);
+  const langs = /^languages:\s*\[([^\]]*)\]/m.exec(fm)?.[1]
+    .split(',')
+    .map((l) => l.trim())
+    .filter(Boolean) ?? ['python', 'rust'];
+  const route = /^route:\s*(\S+)/m.exec(fm)?.[1].replace(/^\/+|\/+$/g, '') ?? docSlug(src);
+  return langs.map((l) => (l === 'python' ? `${route}.md` : `${l}/${route}.md`));
+};
 for (const src of contentFiles(DOCS_SRC)) {
-  if (!existsSync(join(DIST, `${docSlug(src)}.md`)))
-    errors.push(`missing .md twin for docs page: ${docSlug(src)}`);
+  for (const twin of docTwins(src)) {
+    if (!existsSync(join(DIST, twin)))
+      errors.push(`missing .md twin for docs page ${docSlug(src)}: ${twin}`);
+  }
 }
 for (const src of contentFiles(POSTS_SRC)) {
   const slug = postSlug(src);
@@ -103,18 +121,21 @@ const survivingFences = (body) => {
   for (const m of s.matchAll(/\x00F(\d+)\x00/g)) out.push(fences[Number(m[1])]);
   return out;
 };
-const checkFences = (srcPath, outPath, label) => {
-  const out = agentFiles.get(outPath);
-  if (out === undefined) return;
+//    A docs page's fence belongs to one SDK language or both, so each fence
+//    must appear in at least one of the page's language twins.
+const checkFences = (srcPath, outPaths, label) => {
+  const outs = outPaths.map((p) => agentFiles.get(p)).filter((o) => o !== undefined);
+  if (!outs.length) return;
   for (const fence of survivingFences(read(srcPath).replace(/\r\n/g, '\n'))) {
-    if (!out.includes(fence)) errors.push(`fenced block corrupted in ${label}`);
+    if (!outs.some((out) => out.includes(fence))) errors.push(`fenced block corrupted in ${label}`);
   }
 };
 for (const src of contentFiles(DOCS_SRC)) {
-  checkFences(src, join(DIST, `${docSlug(src)}.md`), `${docSlug(src)}.md`);
+  const twins = docTwins(src);
+  checkFences(src, twins.map((t) => join(DIST, t)), twins.join(' / '));
 }
 for (const src of contentFiles(POSTS_SRC)) {
-  checkFences(src, join(DIST, 'examples', `${postSlug(src)}.md`), `examples/${postSlug(src)}.md`);
+  checkFences(src, [join(DIST, 'examples', `${postSlug(src)}.md`)], `examples/${postSlug(src)}.md`);
 }
 
 // 5. Each example's .env.example is a superset of its tracked .env — the
@@ -152,25 +173,40 @@ for (const dir of readdirSync(EXAMPLES_DIR)) {
 //    Catches the drift class where a page ships in the sidebar but the
 //    hand-curated overview (tables / card grids) silently omits it — a
 //    Snowflake-sized hole in a page that claims to be exhaustive.
+//    Per SDK language: each tree's overview must link that tree's pages
+//    (a sidebar slot exists in a tree when a page there takes its route).
 {
   const sidebarSrc = read(here('../src/data/docs-sidebar.ts'));
   const slugs = [...sidebarSrc.matchAll(/\{ type: 'doc', slug: '([^']+)'/g)].map((m) => m[1]);
-  const sections = slugs.filter((s) => !s.includes('/'));
-  for (const section of sections) {
-    const pages = slugs.filter((s) => s.startsWith(`${section}/`));
-    if (!pages.length) continue;
-    const overviewPath = join(DIST, section, 'index.html');
-    if (!existsSync(overviewPath)) {
-      errors.push(`missing dist/${section}/index.html (section overview)`);
-      continue;
+  const trees = { python: new Set(), rust: new Set() };
+  for (const src of contentFiles(DOCS_SRC)) {
+    for (const twin of docTwins(src)) {
+      const route = twin.replace(/\.md$/, '');
+      if (route.startsWith('rust/')) trees.rust.add(route.slice('rust/'.length));
+      else trees.python.add(route);
     }
-    const html = read(overviewPath);
-    // scope to the article body so the sidebar's own nav links don't satisfy
-    // the check; fall back to the full page if the marker is absent.
-    const main = html.slice(html.indexOf('<main'), html.lastIndexOf('</main>') + 1) || html;
-    for (const page of pages) {
-      if (!main.includes(`/docs/${page}/`) && !main.includes(`/docs/${page}"`))
-        errors.push(`section overview /docs/${section}/ does not link /docs/${page}/`);
+  }
+  const sections = slugs.filter((s) => !s.includes('/'));
+  for (const [lang, tree] of Object.entries(trees)) {
+    const prefix = lang === 'python' ? '' : `${lang}/`;
+    for (const section of sections) {
+      if (!tree.has(section)) continue;
+      const pages = slugs.filter((s) => s.startsWith(`${section}/`) && tree.has(s));
+      if (!pages.length) continue;
+      const overviewPath = join(DIST, prefix, section, 'index.html');
+      if (!existsSync(overviewPath)) {
+        errors.push(`missing dist/${prefix}${section}/index.html (section overview)`);
+        continue;
+      }
+      const html = read(overviewPath);
+      // scope to the article body so the sidebar's own nav links don't satisfy
+      // the check; fall back to the full page if the marker is absent.
+      const main = html.slice(html.indexOf('<main'), html.lastIndexOf('</main>') + 1) || html;
+      for (const page of pages) {
+        const url = `/docs/${prefix}${page}`;
+        if (!main.includes(`${url}/`) && !main.includes(`${url}"`))
+          errors.push(`section overview /docs/${prefix}${section}/ does not link ${url}/`);
+      }
     }
   }
 }
@@ -263,6 +299,19 @@ for (const dir of readdirSync(EXAMPLES_DIR)) {
     if (!problem) continue;
     const [first, ...more] = [...files].sort();
     errors.push(`${first}${more.length ? ` (and ${more.length} more)` : ''}: link ${url} ${problem}`);
+  }
+}
+
+// Edit links must resolve to files in this checkout, independently of whether
+// GitHub redirects an unsigned visitor to its sign-in page.
+for (const file of walk(DIST, /\.html$/)) {
+  for (const match of read(file).matchAll(/<a\b[^>]*\bhref="(https:\/\/github\.com\/cocoindex-io\/cocoindex\/edit\/[^\"]+)"/g)) {
+    const prefix = 'https://github.com/cocoindex-io/cocoindex/edit/main/docs/';
+    const href = match[1];
+    const source = decodeURIComponent(href.slice(prefix.length));
+    if (!href.startsWith(prefix) || !source.startsWith('src/') || !existsSync(here('../' + source))) {
+      errors.push(`${relative(REPO_ROOT, file)}: invalid edit source: ${href}`);
+    }
   }
 }
 

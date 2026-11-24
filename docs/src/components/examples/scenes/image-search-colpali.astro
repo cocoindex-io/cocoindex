@@ -1,0 +1,148 @@
+---
+// Image search with ColPali: the same four photos in img/, but each image
+// becomes a bag of 128-d patch vectors (vidore/colpali-v1.2), stored in the
+// Qdrant multivector collection ImageSearchColpali with max_sim, and the
+// query "long neck" is matched token against patch (late interaction).
+// The patch grid is a diagram of the idea, not the model's real patch count.
+// Runs live inside api.py; giraffe.jpg (a real file in img/, and the photo
+// pictured) is the one dropped in (Δ). The two highlighted patches are
+// placed by hand and captioned as illustrative.
+interface Props { size?: 'hero' | 'card' }
+const { size = 'hero' } = Astro.props;
+const B = 'https://cocoindex.io/blobs/docs-v1/img/examples/image-search-colpali/scene';
+const COLS = 8, ROWS = 5;
+const cells = Array.from({ length: COLS * ROWS }, (_, i) => i);
+// two cells over the giraffe's neck, to illustrate "best patch per query token"
+const best = new Set([3 + 0 * COLS, 3 + 1 * COLS]);
+const files = ['cat1.jpeg', 'dog1.jpeg', 'elephant1.jpg', 'giraffe.jpg'];
+---
+{size === 'hero' ? (
+  <div class="cp">
+    <div class="sc-row cp-top">
+      <div class="sc-col cp-src">
+        <span class="sc-cap">Photos in img/</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-folder"></span>img/</div>
+          <div class="sc-panel-b">
+            {files.map((f) => (
+              <div class={`sc-li${f === 'giraffe.jpg' ? ' sc-delta' : ''}`}>
+                <span class="sc-ico i-image"></span><span>{f}</span>{f === 'giraffe.jpg' && <span class="sc-dmark">Δ</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+        <span class="sc-live">live in api.py</span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col cp-mid">
+        <span class="sc-cap">vidore/colpali-v1.2</span>
+        <div class="cp-photo sc-delta sc-hide-narrow">
+          <img src={`${B}/giraffe.webp`} width="320" height="180" alt="" loading="lazy" decoding="async" />
+          <div class="cp-grid" style={`--cols:${COLS};--rows:${ROWS}`}>
+            {cells.map(() => <span></span>)}
+          </div>
+        </div>
+        <pre class="sc-code cp-shape"><span class="c"># one 128-d vector per patch</span>
+embedding: <span class="f">list</span>[<span class="f">list</span>[<span class="f">float</span>]]</pre>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col cp-tgt">
+        <span class="sc-cap">Qdrant multivector</span>
+        <div class="sc-panel">
+          <div class="sc-panel-h"><span class="sc-ico i-db"></span>ImageSearchColpali</div>
+          <pre class="sc-code cp-schema"><span class="f">MultiVectorSchema</span>(
+  <span class="f">VectorSchema</span>(size=dim))
+distance=<span class="s">"cosine"</span>
+multivector_comparator=
+  <span class="s">"max_sim"</span></pre>
+          <div class="sc-panel-b cp-points">
+            <div class="sc-li"><span class="sc-ico i-stream"></span><span>img/cat1.jpeg</span></div>
+            <div class="sc-li sc-delta"><span class="sc-ico i-stream"></span><span class="sc-dtext">img/giraffe.jpg</span><span class="sc-dmark">Δ</span></div>
+          </div>
+        </div>
+        <span class="sc-cap cp-fine">One point per photo, holding its bag of vectors</span>
+      </div>
+    </div>
+
+    <div class="cp-search">
+      <span class="sc-cap">Late interaction at query time</span>
+      <div class="sc-row cp-q">
+        <div class="sc-col cp-tokens">
+          <div class="sc-query"><span class="sc-ico i-search"></span><span>long neck</span></div>
+          <div class="sc-row sc-keep cp-chips">
+            <span class="sc-chip is-strong">long</span>
+            <span class="sc-chip is-strong">neck</span>
+          </div>
+          <p class="sc-quote">Each query vector finds its <b>best-matching patch</b>; MaxSim sums them across the query.</p>
+        </div>
+        <span class="sc-to"></span>
+        <div class="cp-hit">
+          <div class="cp-photo">
+            <img src={`${B}/giraffe.webp`} width="320" height="180" alt="" loading="lazy" decoding="async" />
+            <div class="cp-grid" style={`--cols:${COLS};--rows:${ROWS}`}>
+              {cells.map((i) => <span class={best.has(i) ? 'is-best' : ''}></span>)}
+            </div>
+          </div>
+          <div class="cp-cap"><span class="r">1</span><span>img/giraffe.jpg</span><span class="sc-cap cp-ill">Illustrative patches</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+) : (
+  <div class="cp-card">
+    <div class="sc-row sc-keep">
+      <div class="sc-col cp-cl">
+        <div class="cp-photo">
+          <img src={`${B}/giraffe.webp`} width="320" height="180" alt="" loading="lazy" decoding="async" />
+          <div class="cp-grid" style={`--cols:${COLS};--rows:${ROWS}`}>
+            {cells.map((i) => <span class={best.has(i) ? 'is-best' : ''}></span>)}
+          </div>
+        </div>
+        <span class="sc-cap">a vector per patch (illustrative)</span>
+      </div>
+      <span class="sc-to"></span>
+      <div class="sc-col cp-cr">
+        <div class="sc-query"><span class="sc-ico i-search"></span><span>long neck</span></div>
+        <span class="sc-chip">max_sim</span>
+        <span class="sc-li"><span class="sc-ico i-image"></span><span>img/giraffe.jpg</span></span>
+      </div>
+    </div>
+  </div>
+)}
+
+<style>
+  .cp { display: flex; flex-direction: column; gap: 18px; }
+  .cp-top { gap: 10px; }
+  .cp-src { flex: 0.9 1 0; }
+  .cp-mid { flex: 1.15 1 0; }
+  .cp-tgt { flex: 1.1 1 0; }
+  .cp .sc-li { font-size: 12px; }
+  .cp-photo { position: relative; border: 1px solid var(--sc-line-2); border-radius: 7px; overflow: hidden; background: var(--sc-panel); }
+  .cp-photo img { display: block; width: 100%; aspect-ratio: 16 / 9; height: auto; object-fit: cover; }
+  .cp-grid { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(var(--cols), 1fr); grid-template-rows: repeat(var(--rows), 1fr); }
+  .cp-grid span { border-right: 1px solid rgba(255, 255, 255, 0.28); border-bottom: 1px solid rgba(255, 255, 255, 0.28); }
+  .cp-grid span.is-best { border: 1.5px solid #FFFFFF; background: rgba(0, 0, 0, 0.12); }
+  .cp-shape { margin: 0; }
+  .cp-schema { margin: 0; border: 0; border-radius: 0; border-bottom: 1px solid var(--sc-line); background: transparent; }
+  .cp-fine { font-weight: 400; }
+  .cp-search { display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid var(--sc-line); }
+  .cp-q { gap: 14px; align-items: center; }
+  .cp-tokens { flex: 1 1 0; }
+  .cp-chips { gap: 6px; }
+  .cp-tokens .sc-quote { margin: 0; }
+  .cp-hit { flex: 0 0 280px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .cp-cap { display: flex; gap: 8px; font-family: var(--mono); font-size: 12px; }
+  .cp-ill { margin-left: auto; font-family: var(--sans); font-weight: 400; }
+  .cp-photo.sc-delta { border-color: var(--sc-delta) !important; }
+  .cp-cap .r { color: var(--sc-dim); }
+  @container (max-width: 560px) {
+    .cp-hit { flex: none; width: 100%; }
+  }
+
+  .cp-card { height: 100%; display: flex; align-items: center; }
+  .cp-card > .sc-row { width: 100%; align-items: center; }
+  .cp-cl { flex: 0 0 196px; gap: 5px; }
+  .cp-cr { gap: 6px; align-items: flex-start; }
+  .cp-cr .sc-query { align-self: stretch; }
+  .cp-card .cp-grid span { border-color: rgba(255, 255, 255, 0.24); }
+</style>

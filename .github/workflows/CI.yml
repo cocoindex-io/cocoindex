@@ -3,7 +3,9 @@ name: CI
 # The tiers and the rest of this workflow's shape follow
 # https://github.com/cocoindex-io/.github/blob/main/CI.md: pull requests run a
 # fast tier when `main` has a merge queue, the queue runs the full tier on the
-# commit that lands, and drafts run nothing.
+# commit that lands, and drafts run nothing. A release branch (`release/X.Y`,
+# see AGENTS.md, Versioning) has no queue, so a pull request to it runs the
+# full tier itself.
 #
 # Path filtering happens in the `changes` job, not in `on.<event>.paths`: a
 # workflow skipped by a path filter leaves its checks pending, so they can't
@@ -11,14 +13,14 @@ name: CI
 # require for build, tests and type checks.
 on:
   pull_request:
-    branches: [main, v1]
+    branches: [main, 'release/**']
     # `ready_for_review` starts CI when a draft is marked ready. `stacked`
     # starts it when a pull request joins a stack: its `opened` event can
     # arrive before the stack exists and miss the branch filter.
     types: [opened, synchronize, reopened, ready_for_review, stacked]
   merge_group:
   push:
-    branches: [main, v1]
+    branches: [main, 'release/**']
   # A push the merge queue already tested skips the full tier, so a nightly
   # run keeps main's caches current.
   schedule:
@@ -49,7 +51,6 @@ jobs:
       full: ${{ steps.mode.outputs.full }}
       build-test: ${{ steps.filter.outputs.build-test }}
       type-check: ${{ steps.filter.outputs.type-check }}
-      rust-sdk: ${{ steps.filter.outputs.rust-sdk }}
     steps:
       # Pushes and merge groups are diffed with git; a pull request through
       # the API.
@@ -71,10 +72,9 @@ jobs:
         id: filter
         with:
           # Each list covers every input of the hooks its job runs, so no
-          # change skips a check that applies to it. The exception is
-          # rust-sdk: the Rust SDK isn't launched yet, so a change to the
-          # code it builds on (rust/core, Cargo.lock, ...) skips its checks,
-          # and rust_sdk_daily.yml runs them on main every day.
+          # change skips a check that applies to it. The Rust SDK's own hooks
+          # aren't in any job here: rust_sdk_daily.yml runs them on main every
+          # day.
           filters: |
             build-test:
               - 'rust/**'
@@ -94,13 +94,6 @@ jobs:
               - 'uv.lock'
               - '.github/workflows/CI.yml'
               - '.github/workflows/e2e_type_check.yml'
-            rust-sdk:
-              - 'rust/sdk/**'
-              - 'examples/rust/**'
-              - 'benchmarks/*/rust/**'
-              - '.github/workflows/CI.yml'
-              - '.github/workflows/_rust_sdk.yml'
-              - '.github/actions/**'
 
   build-test:
     name: Build & Test
@@ -114,23 +107,13 @@ jobs:
     if: needs.changes.outputs.full == 'true' && needs.changes.outputs.type-check != 'false'
     uses: ./.github/workflows/e2e_type_check.yml
 
-  rust-sdk:
-    name: Rust SDK
-    needs: changes
-    # The nightly run leaves the Rust SDK to rust_sdk_daily.yml.
-    if: >-
-      needs.changes.outputs.full == 'true'
-      && needs.changes.outputs.rust-sdk != 'false'
-      && github.event_name != 'schedule'
-    uses: ./.github/workflows/_rust_sdk.yml
-
   # Passes when every job above passed, or was skipped by the tier or because
   # the change doesn't touch its inputs. Fails on a failed or cancelled job,
   # and when `changes` itself didn't succeed (its skipped dependents would
   # otherwise look like a pass).
   ci-gate:
     if: always() && github.event.pull_request.draft != true
-    needs: [changes, build-test, type-check, rust-sdk]
+    needs: [changes, build-test, type-check]
     runs-on: ubuntu-latest
     steps:
       - env:

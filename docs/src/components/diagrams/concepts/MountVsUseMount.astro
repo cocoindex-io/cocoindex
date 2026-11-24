@@ -36,6 +36,7 @@ const VB_H = CAP_Y + 14;                          // 242
 
 const box1L = P1_CX - BOX_W / 2;                  // 20
 ---
+<div class="mount-comparison-desktop">
 <DiagramFrame
   viewBox={`0 0 ${VB_W} ${VB_H}`}
   maxWidth={540}
@@ -65,3 +66,33 @@ const box1L = P1_CX - BOX_W / 2;                  // 20
   <text class="dg-label dg-label--caps dg-label--left" x={VALUE_LABEL_X} y={RET_MID_Y}>value</text>
   <text class="dg-label dg-label--small" x={P2_CX} y={CAP_Y}>coupled to parent</text>
 </DiagramFrame>
+
+</div>
+<div class="mount-comparison-mobile">
+  <section>
+    <h3><code>mount()</code></h3>
+    <div class="component">parent</div>
+    <p class="flow">↓ mounts child</p>
+    <div class="component">child</div>
+    <p>Child refreshes independently.</p>
+  </section>
+  <section>
+    <h3><code>use_mount()</code></h3>
+    <div class="component">parent</div>
+    <p class="flow">↓ mounts child · ↑ returns value</p>
+    <div class="component">child</div>
+    <p>Parent consumes the returned value. The two remain coupled.</p>
+  </section>
+</div>
+<style>
+  .mount-comparison-mobile { display: none; }
+  @media (max-width: 600px) {
+    .mount-comparison-desktop { display: none; }
+    .mount-comparison-mobile { display: grid; gap: 20px; }
+    .mount-comparison-mobile section { padding: 16px; border: 1px solid var(--rule); border-radius: 8px; }
+    .mount-comparison-mobile h3 { margin: 0 0 16px; }
+    .mount-comparison-mobile .component { padding: 12px; border: 1px solid var(--rule-strong); border-radius: 8px; font: 13px var(--mono); text-align: center; }
+    .mount-comparison-mobile p { margin: 12px 0 0; font-size: 13px; }
+    .mount-comparison-mobile .flow { text-align: center; margin: 10px 0; }
+  }
+</style>

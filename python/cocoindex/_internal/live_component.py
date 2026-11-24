@@ -307,6 +307,17 @@ class LiveComponentOperator:
         patterns (e.g. `coco.auto_refresh`) keep looping when a single
         cycle fails, while still surfacing the failure to operators.
         """
+        await self._update_full()
+
+    async def _update_full(self) -> bool:
+        """:meth:`update_full`, returning whether the pass completed.
+
+        ``False`` when ``process()`` or a component under it failed (the
+        failure went to the exception handler chain, which absorbed it, or to
+        the log) or the pass was cancelled. A connector records durable
+        bootstrap state (an OCI view's ``logic_version``) only after a pass
+        that completed.
+        """
         controller = self._require_controller()
         processor = create_core_component_processor(
             self._instance.process, self._env, self._path, (), {}
@@ -315,7 +326,7 @@ class LiveComponentOperator:
         prev = _in_process_live.get()
         _in_process_live.set(False)
         try:
-            await controller.update_full_async(processor, on_error)
+            return await controller.update_full_async(processor, on_error)
         finally:
             _in_process_live.set(prev)
 
@@ -333,6 +344,9 @@ class LiveComponentOperator:
             child_path = child_path.concat(part)
 
         controller = self._require_controller()
+        # Asked before anything is prepared, as in `coco.mount`.
+        if controller.skips_subpath(child_path):
+            return ComponentMountHandle([])
         # Slice F: branch on processor type. A LiveComponent class triggers
         # the nested-mount path — we install a fresh inner controller at the
         # child path under the parent's `update_full_lock`, then spawn the
@@ -340,10 +354,11 @@ class LiveComponentOperator:
         # queued/coalesced dispatch path on the existing controller.
         if is_live_component_class(processor_fn):
             instance: Any = processor_fn(*args, **kwargs)
-            (
-                inner_controller,
-                readiness_handle,
-            ) = await controller.mount_inner_live_async(child_path)
+            mounted = await controller.mount_inner_live_async(child_path)
+            if mounted is None:
+                # The update's component selector leaves this component out.
+                return ComponentMountHandle([])
+            inner_controller, readiness_handle = mounted
             inner_operator = LiveComponentOperator(
                 inner_controller, instance, self._env, child_path
             )
@@ -518,7 +533,12 @@ class LiveMapSubscriber(Generic[_K, _V]):
 
     async def update_all(self) -> None:
         """Trigger a full re-iteration of all items."""
-        await self._operator.update_full()
+        await self._update_all()
+
+    async def _update_all(self) -> bool:
+        """:meth:`update_all`, returning whether the pass completed (see
+        :meth:`LiveComponentOperator._update_full`)."""
+        return await self._operator._update_full()
 
     async def mark_ready(self) -> None:
         """Signal readiness. In catch-up mode, this terminates ``watch()``."""

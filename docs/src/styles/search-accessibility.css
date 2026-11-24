@@ -1,0 +1,13 @@
+/* Keep vendor result content and history actions in separate grid cells. */
+.docs-search-hit { display: flex; align-items: center; border-radius: var(--docsearch-hit-border-radius); }
+.docs-search-link { flex: 1; min-width: 0; }
+.docs-search-actions { display: flex; align-items: center; padding-inline-end: 12px; }
+.docs-search-hit[aria-selected="true"] { background: var(--docsearch-hit-highlight-color); }
+/* Selection now belongs to the row div, rather than its presentation-only li. */
+.DocSearch-Hit:has([aria-selected="true"]) .DocSearch-Hit-Select-Icon { display: block; }
+.DocSearch-Hit:has([aria-selected="true"]) .DocSearch-Hit-Tree,
+.DocSearch-Hit:has([aria-selected="true"]) .DocSearch-Hit-text,
+.DocSearch-Hit:has([aria-selected="true"]) .DocSearch-Hit-title,
+.DocSearch-Hit:has([aria-selected="true"]) mark { color: var(--docsearch-text-color); }
+.DocSearch-Hit:has([aria-selected="true"]) .DocSearch-Hit-action,
+.DocSearch-Hit:has([aria-selected="true"]) .DocSearch-Hit-icon { color: var(--docsearch-highlight-color); }

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::connectors::iggy::{self, IggyProducer};
-use cocoindex::{App, Result};
+use cocoindex::{App, Environment, Result};
 use iggy::prelude::{
     CompressionAlgorithm, Consumer, Identifier, IggyExpiry, MaxTopicSize, MessageClient,
     PollingStrategy, StreamClient, TopicClient,
@@ -55,6 +55,21 @@ async fn poll_all(producer: &IggyProducer, stream: &str, topic: &str) -> Vec<Str
 fn latest(payloads: &[String], key: &str) -> Option<String> {
     let prefix = format!("{key}=");
     payloads.iter().rfind(|p| p.starts_with(&prefix)).cloned()
+}
+
+cocoindex::context_key!(static PRODUCER: IggyProducer);
+
+/// An app over `db_path` with the producer provided under `PRODUCER`.
+async fn app_with_producer(name: &str, db_path: &std::path::Path, producer: &IggyProducer) -> App {
+    Environment::builder()
+        .db_path(db_path)
+        .provide_key(&PRODUCER, producer.clone())
+        .build()
+        .await
+        .unwrap()
+        .app(name)
+        .await
+        .unwrap()
 }
 
 /// Create the (user-managed) stream + single-partition topic the target writes to.
@@ -103,13 +118,8 @@ async fn iggy_target_sends_skips_and_updates_when_available() -> Result<()> {
         let topic = topic.clone();
         let db_path = db_path.clone();
         async move {
-            let app = App::builder("IggyTargetTest")
-                .db_path(&db_path)
-                .build()
-                .await
-                .unwrap();
+            let app = app_with_producer("IggyTargetTest", &db_path, &producer).await;
             app.run(move |ctx| {
-                let producer = producer.clone();
                 let stream = stream.clone();
                 let topic = topic.clone();
                 let messages = messages.clone();
@@ -119,7 +129,8 @@ async fn iggy_target_sends_skips_and_updates_when_available() -> Result<()> {
                         ..Default::default()
                     };
                     let target =
-                        iggy::mount_iggy_topic_target(&ctx, &producer, stream, topic, options)?;
+                        iggy::mount_iggy_topic_target(&ctx, &PRODUCER, stream, topic, options)
+                            .await?;
                     for (k, v) in &messages {
                         target.declare_message(&ctx, k, v)?;
                     }
@@ -181,25 +192,21 @@ async fn iggy_target_custom_delete_value_when_available() -> Result<()> {
         let topic = topic.clone();
         let db_path = db_path.clone();
         async move {
-            let app = App::builder("IggyCustomDeleteTest")
-                .db_path(&db_path)
-                .build()
-                .await
-                .unwrap();
+            let app = app_with_producer("IggyCustomDeleteTest", &db_path, &producer).await;
             app.run(move |ctx| {
-                let producer = producer.clone();
                 let stream = stream.clone();
                 let topic = topic.clone();
                 let messages = messages.clone();
                 async move {
                     let options = iggy::IggyTopicOptions {
                         partition: PARTITION,
-                        deletion_value_fn: Some(Arc::new(|key: &str| {
-                            format!("{key}=<deleted>").into_bytes()
+                        deletion_value_fn: Some(Arc::new(|key: &[u8]| {
+                            format!("{}=<deleted>", String::from_utf8_lossy(key)).into_bytes()
                         })),
                     };
                     let target =
-                        iggy::mount_iggy_topic_target(&ctx, &producer, stream, topic, options)?;
+                        iggy::mount_iggy_topic_target(&ctx, &PRODUCER, stream, topic, options)
+                            .await?;
                     for (k, v) in &messages {
                         target.declare_message(&ctx, k, v)?;
                     }

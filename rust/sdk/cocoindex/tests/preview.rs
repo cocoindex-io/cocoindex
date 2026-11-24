@@ -490,10 +490,33 @@ async fn preview_reaches_live_components() {
     assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"alpha");
 }
 
+/// The file target's action, as the SDK serializes it.
 #[derive(Deserialize)]
 struct FileAction {
+    #[allow(dead_code)]
+    base_key: Option<String>,
     path: std::path::PathBuf,
-    content: Option<Vec<u8>>,
+    op: FileOp,
+}
+
+#[derive(Deserialize)]
+enum FileOp {
+    WriteFile {
+        #[allow(dead_code)]
+        content: Vec<u8>,
+        #[allow(dead_code)]
+        create_parent_dirs: bool,
+        #[allow(dead_code)]
+        replaces_dir: bool,
+    },
+    CreateDir {
+        #[allow(dead_code)]
+        create_parent_dirs: bool,
+        #[allow(dead_code)]
+        replaces_file: bool,
+    },
+    RemoveFile,
+    RemoveDir,
 }
 
 /// File actions as sorted strings: `delete <name>` or `write <name>`.
@@ -504,10 +527,9 @@ fn describe_files(actions: &[PreviewAction]) -> Vec<String> {
             let (PreviewAction::Create(v) | PreviewAction::Update(v) | PreviewAction::Delete(v)) =
                 action;
             let file: FileAction = v.decode().unwrap();
-            let verb = if file.content.is_some() {
-                "write"
-            } else {
-                "delete"
+            let verb = match file.op {
+                FileOp::WriteFile { .. } | FileOp::CreateDir { .. } => "write",
+                FileOp::RemoveFile | FileOp::RemoveDir => "delete",
             };
             format!(
                 "{verb} {}",
