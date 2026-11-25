@@ -506,10 +506,14 @@ enum FileOp {
         content: Vec<u8>,
         #[allow(dead_code)]
         create_parent_dirs: bool,
+        #[allow(dead_code)]
+        replaces_dir: bool,
     },
     CreateDir {
         #[allow(dead_code)]
         create_parent_dirs: bool,
+        #[allow(dead_code)]
+        replaces_file: bool,
     },
     RemoveFile,
     RemoveDir,

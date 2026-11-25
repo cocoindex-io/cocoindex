@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import concurrent.futures
 import contextvars
 from inspect import isasyncgenfunction
 import threading
@@ -551,13 +552,38 @@ def default_env_loop() -> asyncio.AbstractEventLoop:
         return _bg_loop_runner.loop
 
 
+# How long the exit waits for the background loop's tasks to finish.
+_EXIT_TASKS_TIMEOUT_SECS = 5.0
+
+
+async def _finish_remaining_tasks() -> None:
+    """Cancel the running loop's other tasks and wait for them to finish, as
+    `asyncio.run()` does for its loop. A task whose cancellation is already
+    pending is not cancelled again: a second cancellation would interrupt the
+    cleanup that the first one started."""
+    current = asyncio.current_task()
+    tasks = [task for task in asyncio.all_tasks() if task is not current]
+    for task in tasks:
+        if not task.cancelling():
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def _shutdown_background_loop_at_exit() -> None:
     """
-    Atexit hook: stop and close the default env background loop if it was started.
+    Atexit hook: finish the default env background loop's tasks, then stop and
+    close the loop, if it was started.
 
     Prevents the background loop thread from outliving the interpreter, which can
     cause SIGSEGV or GIL errors during finalization (e.g. on Ubuntu CI). Safe to
     call even if the loop was never started (no-op).
+
+    The tasks have to finish first. The Tokio runtime shutdown before this cancels
+    the Python tasks its own tasks were awaiting, such as the `process_live` of a
+    live update nobody stopped, and their cancellation runs on this loop. A loop
+    stopped first closes with them pending; garbage collection then destroys them
+    ("Task was destroyed but it is pending!") and runs their cleanup outside their
+    own context.
     """
     global _bg_loop_runner  # pylint: disable=global-statement
 
@@ -575,6 +601,10 @@ def _shutdown_background_loop_at_exit() -> None:
     try:
         thread = runner.thread
         if thread is not None and thread.is_alive():
+            remaining = asyncio.run_coroutine_threadsafe(
+                _finish_remaining_tasks(), loop
+            )
+            concurrent.futures.wait((remaining,), timeout=_EXIT_TASKS_TIMEOUT_SECS)
             loop.call_soon_threadsafe(loop.stop)
             thread.join(timeout=1.0)
         if not loop.is_closed():
@@ -591,7 +621,9 @@ def _shutdown_at_exit() -> None:
     asyncio loop.
 
     Order matters: the Tokio runtime is shut down before the asyncio loop so
-    that no asyncio callbacks can race with runtime shutdown. With
+    that the cancellations its shutdown schedules on the loop (for the Python
+    tasks the engine was awaiting) land on a loop that still runs, and finish
+    there before it stops. With
     ManuallyDrop<Runtime>, Tokio threads stay alive indefinitely after the main
     work completes. On Python < 3.13, `_PyGILState_Fini` (called during
     `Py_Finalize()`) deletes `autoTSSkey`; if any idle Tokio thread then calls

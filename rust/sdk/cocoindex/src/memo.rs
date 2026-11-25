@@ -548,9 +548,11 @@ impl MemoKeyWriter<'_> {
     }
 }
 
+#[doc(hidden)]
 #[derive(Clone)]
 pub struct MemoStateValue(Value);
 
+#[doc(hidden)]
 pub struct MemoStateDecision {
     state: MemoStateValue,
     memo_valid: bool,

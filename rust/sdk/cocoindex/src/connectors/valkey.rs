@@ -44,6 +44,15 @@ pub struct Valkey {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for Valkey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Valkey")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Connection settings for [`Valkey::connect_with_config`] — the Rust analogue
 /// of Python's `create_client_config`. For anything these fields do not cover
 /// (client certificates, a username, a database number), build a
@@ -505,9 +514,17 @@ impl Document {
 }
 
 /// A declarative Valkey index target — a handle to declare documents on.
-#[derive(Clone)]
+///
+/// As a `mount_each!` / `use_mount!` or memoized function argument it
+/// fingerprints by its stable key, the database key and index name; the
+/// vector dimension and runtime provider are not part of the identity.
+#[derive(Clone, Serialize)]
 pub struct IndexTarget {
+    db_key: Arc<str>,
     index_name: Arc<str>,
+    #[serde(skip)]
+    dimension: usize,
+    #[serde(skip)]
     documents: TargetStateProvider<Document>,
 }
 
@@ -571,9 +588,12 @@ pub fn declare_index_target_with_options(
 ) -> Result<IndexTarget> {
     let ts = index_target_with_options(ctx, db, index_name, schema, options)?;
     let name = ts.value().index_name.clone();
+    let dimension = ts.value().schema.vectors.schema.size;
     let documents = declare_target_state_with_child::<IndexSpec, Document>(ctx, ts)?;
     Ok(IndexTarget {
+        db_key: Arc::from(db.name()),
         index_name: Arc::from(name),
+        dimension,
         documents,
     })
 }
@@ -604,9 +624,12 @@ pub async fn mount_index_target_with_options(
 ) -> Result<IndexTarget> {
     let ts = index_target_with_options(ctx, db, index_name, schema, options)?;
     let name = ts.value().index_name.clone();
+    let dimension = ts.value().schema.vectors.schema.size;
     let documents = mount_target::<IndexSpec, Document>(ctx, ts).await?;
     Ok(IndexTarget {
+        db_key: Arc::from(db.name()),
         index_name: Arc::from(name),
+        dimension,
         documents,
     })
 }
@@ -616,9 +639,27 @@ impl IndexTarget {
         &self.index_name
     }
 
-    /// Declare a document to upsert into the index.
+    /// Declare a document to upsert into the index. Its vector must have the
+    /// index's dimension and finite elements: the search module skips a hash
+    /// whose vector it cannot read, without an error, so such a document
+    /// would be stored but never found.
     pub fn declare_document(&self, ctx: &Ctx, document: Document) -> Result<()> {
         validate_name(&document.id, "doc_id")?;
+        if document.vector.len() != self.dimension {
+            return Err(Error::engine(format!(
+                "valkey document {:?}: vector has {} elements but index {:?} expects {}",
+                document.id,
+                document.vector.len(),
+                self.index_name,
+                self.dimension
+            )));
+        }
+        if document.vector.iter().any(|x| !x.is_finite()) {
+            return Err(Error::engine(format!(
+                "valkey document {:?}: vector contains a non-finite (NaN/Inf) element",
+                document.id
+            )));
+        }
         for key in document.payload.iter().flat_map(|p| p.keys()) {
             if key == VECTOR_FIELD_NAME {
                 return Err(Error::engine(format!(

@@ -638,6 +638,101 @@ class TestUpdateFlags:
         )
 
 
+class TestSelect:
+    """Tests for `cocoindex update --select`."""
+
+    def _setup(self, tmp_path: Path) -> tuple[Path, Path]:
+        (tmp_path / "select_app.py").write_text(
+            (TEST_DIR / "select_app.py").read_text()
+        )
+        src, out = tmp_path / "in_select", tmp_path / "out_select"
+        src.mkdir()
+        (src / "a.txt").write_text("a1")
+        (src / "b.txt").write_text("b1")
+        run_cli("update", "./select_app.py", cwd=tmp_path)
+        assert (out / "a.txt").read_text() == "A1"
+        (src / "a.txt").write_text("a2")
+        (src / "b.txt").write_text("b2")
+        return src, out
+
+    def test_select_runs_only_the_selected_component(self, tmp_path: Path) -> None:
+        src, out = self._setup(tmp_path)
+        # The path as `cocoindex show` prints it.
+        shown = run_cli("show", "./select_app.py", cwd=tmp_path).stdout
+        assert '/@process/"a.txt"' in shown
+        # `show PATH` reads the same form; the older unquoted form still works.
+        detail = run_cli(
+            "show", "./select_app.py", '/@process/"a.txt"', cwd=tmp_path
+        ).stdout
+        assert "processor:process" in detail
+        legacy = run_cli("show", "./select_app.py", "/setup", cwd=tmp_path).stdout
+        assert "processor:declare_dir_target" in legacy
+
+        run_cli(
+            "update", "./select_app.py", "--select", '/@process/"a.txt"', cwd=tmp_path
+        )
+        assert (out / "a.txt").read_text() == "A2"
+        assert (out / "b.txt").read_text() == "B1"
+
+        (src / "a.txt").unlink()
+        run_cli(
+            "update",
+            "./select_app.py",
+            "--select",
+            '/@process/"a.txt"',
+            "--select",
+            '/@process/"b.txt"',
+            cwd=tmp_path,
+        )
+        assert not (out / "a.txt").exists()
+        assert (out / "b.txt").read_text() == "B2"
+
+    def test_select_with_preview_plans_only_the_selected_component(
+        self, tmp_path: Path
+    ) -> None:
+        _, out = self._setup(tmp_path)
+        result = run_cli(
+            "update",
+            "./select_app.py",
+            "--preview",
+            "--select",
+            '/@process/"b.txt"',
+            cwd=tmp_path,
+        )
+        assert "b.txt" in result.stdout
+        assert "a.txt" not in result.stdout
+        assert (out / "b.txt").read_text() == "B1"
+
+    def test_select_rejects_a_path_it_cannot_parse(self, tmp_path: Path) -> None:
+        self._setup(tmp_path)
+        result = run_cli(
+            "update",
+            "./select_app.py",
+            "--select",
+            "/process/a.txt",
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "--select" in result.stderr
+        assert "`@process`" in result.stderr
+
+    def test_select_and_reset_cannot_be_combined(self, tmp_path: Path) -> None:
+        self._setup(tmp_path)
+        result = run_cli(
+            "update",
+            "./select_app.py",
+            "--reset",
+            "-f",
+            "--select",
+            "/",
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "--select and --reset cannot be used together" in result.stderr
+
+
 class TestFullReprocess:
     """Tests for --full-reprocess flag behavior."""
 
@@ -1063,3 +1158,62 @@ class TestShowTargetStatesTypedKeys:
         )
 
         self._assert_typed_keys_rendered(result.stdout)
+
+
+# =============================================================================
+# Update exit status: failures nobody handled
+# =============================================================================
+
+
+class TestUpdateExitStatus:
+    """The exit status of `update` counts only unhandled component failures:
+    no exception handler was registered, or every handler re-raised."""
+
+    def test_unhandled_failures_exit_1(self) -> None:
+        """Background components failing with no handler exit 1."""
+        result = run_cli("update", "./failing_app.py", check=False)
+
+        assert result.returncode == 1
+        assert "unhandled component failure(s)" in result.stderr
+
+    def test_failures_inside_stats_group_exit_1(self) -> None:
+        """A failure inside a stats group lands on the run's count too."""
+        result = run_cli("update", "./failing_group_app.py", check=False)
+
+        assert result.returncode == 1
+        assert "unhandled component failure(s)" in result.stderr
+
+    def test_swallowing_handler_exits_0(self) -> None:
+        """A handler that returns normally has taken ownership: exit 0."""
+        run_cli("update", "./handler_app.py:SwallowingHandlerApp")
+
+    def test_reraising_handler_exits_1(self) -> None:
+        """A handler that re-raises leaves the failure unhandled: exit 1."""
+        result = run_cli("update", "./handler_app.py:ReraisingHandlerApp", check=False)
+
+        assert result.returncode == 1
+        assert "unhandled component failure(s)" in result.stderr
+
+    def test_reraising_handler_quiet_stderr_line_only(self) -> None:
+        """#2429: with -q, the stderr line is the only output."""
+        result = run_cli(
+            "update", "-q", "./handler_app.py:ReraisingHandlerApp", check=False
+        )
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "Update finished with 3 unhandled component failure(s)." in result.stderr
+
+    def test_catching_parent_exits_0(self) -> None:
+        """A parent that catches a use_mount failure owns it: exit 0."""
+        run_cli("update", "./catching_parent_app.py")
+
+    def test_preview_with_failures_exit_1(self) -> None:
+        """A preview with failed components is missing their changes: exit 1,
+        and "Nothing to change" doesn't get the green mark."""
+        result = run_cli("update", "--preview", "./failing_app.py", check=False)
+
+        assert result.returncode == 1
+        assert "Nothing to change" in result.stdout
+        assert "✓ Nothing to change" not in result.stdout
+        assert "unhandled component failure(s)" in result.stderr

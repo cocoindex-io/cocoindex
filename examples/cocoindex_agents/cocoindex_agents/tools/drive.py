@@ -1,6 +1,6 @@
 """A Google Drive folder as a source (DESIGN.md §3, *Sources*; §7).
 
-The same contract as the local folder (``sources.FolderSource``): widened
+The same contract as the local folder (``source.Source``): widened
 ``stats``, a hash-stable ``sample``, ``read(key)``, the planner-only
 ``keys``, and every read recorded as a data dependency of the session that
 made it. What differs is where the records point and how they validate:
@@ -12,8 +12,8 @@ made it. What differs is where the records point and how they validate:
   ``read`` and a worker's ``read_input`` return. A PDF stored in Drive is a
   document the model reads natively, as a local one is (``documents.py``).
 - The **account** is whoever signed in on this machine
-  (``cocoindex google-drive sign-in``): the model names the folder and never
-  a credential. The account's address, not its tokens, is in the source's
+  (``cocoindex auth sign-in google-drive``): the model names the folder and
+  never a credential. The account's address, not its tokens, is in the source's
   memo key and in every record, so a refreshed token changes nothing and a
   different account re-runs what was read.
 - An observation validates by walking the folder again through the Drive
@@ -46,12 +46,12 @@ from cocoindex.resources.file import PatternFilePathMatcher
 from ..documents import Document
 from ..errors import ToolError
 from ..spec import Json
-from .folder import (
-    FolderSource,
+from .source import (
+    Source,
     content_of,
     digest_bytes,
     digest_of_json,
-    file_key_arg,
+    item_key_arg,
 )
 
 # A pasted Drive link: https://drive.google.com/drive/folders/<id>, with or
@@ -152,7 +152,7 @@ async def _validate_file_read(
     if src is None:
         return coco.MemoStateOutcome(state=prev)
     try:
-        file = (await src.files()).get(key.key)
+        file = (await src.resources()).get(key.key)
     except google_drive.SignInError:  # refused at refresh: expired or revoked
         return coco.MemoStateOutcome(state=prev)
     if prev is None or file is None:
@@ -191,7 +191,7 @@ async def _file_state(file: google_drive.DriveFile) -> tuple[str, str, str]:
     return (file.info.file_id, _modified_time(file), fingerprint)
 
 
-class GoogleDriveFolderSource(FolderSource[google_drive.DriveFile]):
+class GoogleDriveFolderSource(Source[google_drive.DriveFile]):
     """A ``src:`` handle over one Drive folder, read as the signed-in account."""
 
     kind = "google_drive"
@@ -225,7 +225,7 @@ class GoogleDriveFolderSource(FolderSource[google_drive.DriveFile]):
             else None
         )
 
-    async def files(self) -> dict[str, google_drive.DriveFile]:
+    async def resources(self) -> dict[str, google_drive.DriveFile]:
         """One walk through the Drive API, keyed by path; a path two files share keeps both.
 
         Drive allows two files of one name in a folder; the second (by id)
@@ -251,10 +251,10 @@ class GoogleDriveFolderSource(FolderSource[google_drive.DriveFile]):
     def observation_key(self, method: str, args: str) -> object:
         return DriveObservation(self.ref(), method, args)
 
-    async def entries(self, files: dict[str, google_drive.DriveFile]) -> Json:
+    async def entries(self, resources: dict[str, google_drive.DriveFile]) -> Json:
         return [
             (key, file.info.file_id, _modified_time(file), file.info.md5_checksum or "")
-            for key, file in files.items()
+            for key, file in resources.items()
         ]
 
     async def read(self, args: dict[str, Json]) -> str | Document:
@@ -262,8 +262,8 @@ class GoogleDriveFolderSource(FolderSource[google_drive.DriveFile]):
         as a read of that path alone: the walk itself is not recorded, so an edit
         elsewhere in the folder does not touch the session.
         """
-        file_key = file_key_arg(args)
-        file = (await self.files()).get(file_key)
+        file_key = item_key_arg(args)
+        file = (await self.resources()).get(file_key)
         state: DriveFileState = None
         data = b""
         if file is not None:

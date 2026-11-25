@@ -275,7 +275,7 @@ async fn postgres_table_target_reconciles_rows_when_available() -> Result<()> {
 
 /// Planned actions as sorted strings. The connector's actions encode as
 /// positional arrays: a table action is `[db_key, spec, drop, recreate,
-/// retype_cols]` with `spec` as `[pg_schema_name, table_name, ..]`, a row
+/// retype_cols, drop_cols]` with `spec` as `[pg_schema_name, table_name, ..]`, a row
 /// action `[pk, state]`.
 fn describe(actions: &[PreviewAction]) -> Vec<String> {
     let mut described: Vec<String> = actions
@@ -288,7 +288,7 @@ fn describe(actions: &[PreviewAction]) -> Vec<String> {
             };
             let value: serde_json::Value = value.decode().unwrap();
             match value.as_array().map(Vec::as_slice) {
-                Some([_db_key, spec, _drop, recreate, retype_cols]) => format!(
+                Some([_db_key, spec, _drop, recreate, retype_cols, _drop_cols]) => format!(
                     "{verb} table {} recreate={recreate} retype={retype_cols}",
                     spec[1]
                 ),

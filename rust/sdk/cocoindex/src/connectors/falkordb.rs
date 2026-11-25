@@ -19,6 +19,15 @@ pub struct Graph {
     graph: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for Graph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Graph")
+            .field("graph", &&*self.graph)
+            .finish_non_exhaustive()
+    }
+}
+
 fn normalize_uri(uri: &str) -> String {
     uri.strip_prefix("falkor://")
         .map(|rest| format!("redis://{rest}"))

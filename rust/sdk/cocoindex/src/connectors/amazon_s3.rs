@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 /// depending on `aws-sdk-s3` directly.
 pub use aws_sdk_s3;
 
+use crate::connectors::object_store::is_key_included;
 use crate::error::{Error, Result};
 use crate::resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
@@ -239,6 +240,15 @@ fn etag_fingerprint(etag: Option<&str>) -> Option<Fingerprint> {
 pub struct S3Client {
     inner: Arc<Client>,
     state_id: Arc<str>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for S3Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Client")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl S3Client {
@@ -460,10 +470,7 @@ impl S3Walker {
                     continue;
                 };
                 let size = obj.size().unwrap_or(0).max(0) as u64;
-                if !self
-                    .path_matcher
-                    .is_file_included(&PathBuf::from(&relative_key))
-                {
+                if !is_key_included(&*self.path_matcher, &relative_key) {
                     continue;
                 }
                 if self.max_file_size.is_some_and(|max| size > max) {
@@ -647,5 +654,26 @@ mod tests {
         assert!(matcher.is_file_included(&PathBuf::from("a/b.md")));
         assert!(!matcher.is_file_included(&PathBuf::from("a/b.txt")));
         assert!(!matcher.is_file_included(&PathBuf::from("skip/b.md")));
+    }
+
+    // An excluded directory excludes the objects under it, matched below the prefix.
+    #[test]
+    fn excluded_directory_excludes_the_objects_under_it() {
+        let matcher = PatternFilePathMatcher::new(
+            std::iter::empty::<&str>(),
+            ["ignored", "outer/ignored", "**/.*", "!**/.github/**"],
+        )
+        .unwrap();
+        let listed = |prefix: &str, key: &str| {
+            relative_key(prefix, key).is_some_and(|rel| is_key_included(&matcher, &rel))
+        };
+        assert!(!listed("data/", "data/ignored/deep/hidden.txt"));
+        assert!(!listed("data/", "data/outer/ignored/hidden.txt"));
+        assert!(!listed("data/", "data/.cache/x.txt"));
+        assert!(listed("data/", "data/.github/workflows/ci.yml"));
+        assert!(listed("data/", "data/outer/kept.txt"));
+        assert!(listed("data/", "data/visible.txt"));
+        // The prefix's own folders are not matched.
+        assert!(listed("ignored/", "ignored/visible.txt"));
     }
 }

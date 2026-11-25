@@ -200,7 +200,8 @@ fn update_preview_ls_show_drop() {
 
     let ls_db = sb.cli(&["ls", "--db", &sb.db()]);
     assert_ok(&ls_db);
-    assert_eq!(stdout(&ls_db), format!("{}:\n  FixtureApp\n", sb.db()));
+    // Inside the working directory, the path shows relative, as in Python.
+    assert_eq!(stdout(&ls_db), "./db:\n  FixtureApp\n");
 
     // show, straight from the db.
     let show = sb.cli(&["show", "--db", &sb.db(), "--app-name", "FixtureApp"]);
@@ -394,6 +395,13 @@ fn usage_errors() {
     assert_eq!(both.status.code(), Some(2));
     assert!(stderr(&both).contains("Error: --preview and --reset cannot be used together."));
 
+    let select_reset = sb.cli(&["update", "--select", "/1", "--reset", FIXTURE]);
+    assert_eq!(select_reset.status.code(), Some(2));
+    assert!(stderr(&select_reset).contains("Error: --select and --reset cannot be used together."));
+    let bad_select = sb.cli(&["update", "--select", "process", FIXTURE]);
+    assert_eq!(bad_select.status.code(), Some(2));
+    assert!(stderr(&bad_select).contains("cannot parse component path"));
+
     let missing = sb.cli(&["update", "/definitely/not/here"]);
     assert_eq!(missing.status.code(), Some(2));
     assert!(stderr(&missing).contains("does not exist"));
@@ -402,17 +410,19 @@ fn usage_errors() {
     assert_eq!(no_db.status.code(), Some(1));
     assert!(stderr(&no_db).contains("Database path does not exist"));
 
+    // Checks after parsing, and an app that is not found, are failures (exit
+    // 1), as the Python CLI's `click.ClickException`s are.
     let recursive = sb.cli(&["show", "-r", "--db", "x", "--app-name", "y"]);
-    assert_eq!(recursive.status.code(), Some(2));
+    assert_eq!(recursive.status.code(), Some(1));
     assert!(stderr(&recursive).contains("require a stable_path"));
 
     let half = sb.cli(&["show", "--db", "x"]);
-    assert_eq!(half.status.code(), Some(2));
+    assert_eq!(half.status.code(), Some(1));
     assert!(stderr(&half).contains("Both --db and --app-name are required"));
 
     // Two apps and no name.
     let ambiguous = sb.cli(&["update", FIXTURE]);
-    assert_eq!(ambiguous.status.code(), Some(2));
+    assert_eq!(ambiguous.status.code(), Some(1));
     assert!(
         stderr(&ambiguous).contains("FixtureApp, never_run"),
         "{}",
@@ -420,7 +430,7 @@ fn usage_errors() {
     );
 
     let unknown = sb.cli(&["update", &exe_target("Nope")]);
-    assert_eq!(unknown.status.code(), Some(2));
+    assert_eq!(unknown.status.code(), Some(1));
     assert!(stderr(&unknown).contains("Nope"));
 }
 
@@ -618,17 +628,30 @@ fn init_scaffold_builds_and_runs() {
     );
 }
 
-/// `google-drive sign-out` without a stored sign-in says so; `sign-in` with a
-/// missing client file is a usage error, and without one this build (which
-/// has no built-in OAuth client) says how to sign in. No browser opens: both
-/// fail before the consent.
+/// `auth sign-in --help` and `auth sign-out --help` list the providers.
+/// `auth sign-out google-drive` without a stored sign-in says so;
+/// `auth sign-in google-drive` with a missing client file is a usage error,
+/// and without one this build (which has no built-in OAuth client) says how
+/// to sign in. No browser opens: both fail before the consent.
 #[test]
 fn google_drive_sign_in_and_sign_out() {
     let sb = Sandbox::new(&[]);
     let token = sb.path("google_drive_token.json");
     let token_arg = token.display().to_string();
 
-    let out = sb.cli(&["google-drive", "sign-out", "--token-path", &token_arg]);
+    for action in ["sign-in", "sign-out"] {
+        let help = sb.cli(&["auth", action, "--help"]);
+        assert_ok(&help);
+        assert!(stdout(&help).contains("google-drive"), "{}", stdout(&help));
+    }
+
+    let out = sb.cli(&[
+        "auth",
+        "sign-out",
+        "google-drive",
+        "--token-path",
+        &token_arg,
+    ]);
     assert_ok(&out);
     assert!(
         stdout(&out).contains("No sign-in was stored."),
@@ -637,8 +660,9 @@ fn google_drive_sign_in_and_sign_out() {
     );
 
     let missing = sb.cli(&[
-        "google-drive",
+        "auth",
         "sign-in",
+        "google-drive",
         "/definitely/not/here.json",
         "--token-path",
         &token_arg,
@@ -650,7 +674,13 @@ fn google_drive_sign_in_and_sign_out() {
         stderr(&missing)
     );
 
-    let no_builtin = sb.cli(&["google-drive", "sign-in", "--token-path", &token_arg]);
+    let no_builtin = sb.cli(&[
+        "auth",
+        "sign-in",
+        "google-drive",
+        "--token-path",
+        &token_arg,
+    ]);
     assert_eq!(no_builtin.status.code(), Some(1));
     assert!(
         stderr(&no_builtin).contains("no built-in OAuth client"),
@@ -671,8 +701,73 @@ fn google_drive_sign_in_and_sign_out() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let out = sb.cli(&["google-drive", "sign-out", "--token-path", &token_arg]);
+    let out = sb.cli(&[
+        "auth",
+        "sign-out",
+        "google-drive",
+        "--token-path",
+        &token_arg,
+    ]);
     assert_ok(&out);
     assert!(stdout(&out).contains("Signed out."), "{}", stdout(&out));
     assert!(!token.exists());
+}
+
+/// `--full-reprocess` bypasses the memo, `--fingerprints` shows stored
+/// target-state paths raw, and `--preview` refuses `--live`.
+#[test]
+fn full_reprocess_fingerprints_and_preview_live() {
+    let sb = Sandbox::new(&[("a.txt", "alpha"), ("b.txt", "beta")]);
+    assert_ok(&sb.cli(&["update", &exe_target("FixtureApp")]));
+    let again = sb.cli(&["update", &exe_target("FixtureApp")]);
+    assert!(stdout(&again).contains("2 unchanged"), "{}", stdout(&again));
+
+    let full = sb.cli(&["update", "--full-reprocess", &exe_target("FixtureApp")]);
+    assert_ok(&full);
+    assert!(
+        !stdout(&full).contains("unchanged"),
+        "a full reprocess skips nothing: {}",
+        stdout(&full)
+    );
+    assert_eq!(sb.out_files(), ["a.txt", "b.txt"]);
+
+    let raw = sb.cli(&[
+        "show",
+        "--db",
+        &sb.db(),
+        "--app-name",
+        "FixtureApp",
+        "--target-states",
+        "--fingerprints",
+    ]);
+    assert_ok(&raw);
+    let text = stdout(&raw);
+    assert!(text.starts_with("Target states:\n"), "{text}");
+    assert!(
+        !text.contains("localfs/file/["),
+        "raw paths, not readable keys: {text}"
+    );
+    assert_eq!(text.matches("owner:/").count(), 2, "{text}");
+
+    let both = sb.cli(&["update", "--preview", "-L", &exe_target("FixtureApp")]);
+    assert_eq!(both.status.code(), Some(2));
+    assert!(stderr(&both).contains("--preview and --live cannot be used together."));
+}
+
+/// A crate that does not compile fails with exit 1 (as the Python CLI does
+/// for a module that does not import), with cargo's diagnostics on stderr.
+#[test]
+fn a_crate_that_does_not_build_fails() {
+    let sb = Sandbox::new(&[("main.rs", "fn main() { let x: u32 = \"not a number\"; }\n")]);
+    std::fs::write(
+        sb.path("Cargo.toml"),
+        "[package]\nname = \"broken_crate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    )
+    .unwrap();
+    let crate_dir = sb.path("").display().to_string();
+    let output = sb.cli(&["update", &crate_dir]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(err.contains("mismatched types"), "{err}");
+    assert!(err.contains("failed"), "{err}");
 }

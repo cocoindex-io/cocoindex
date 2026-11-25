@@ -264,6 +264,13 @@ where
     )
     .await?;
     let dimension = embeddings.first().map_or(0, Vec::len);
+    if dimension == 0 {
+        // Nothing to compare: the partition would see no rows and drop every
+        // entity from the result.
+        return Err(Error::engine(
+            "entity embeddings have 0 dimensions; the embedder returned empty vectors",
+        ));
+    }
     let mut infos = Vec::with_capacity(entity_list.len());
     let mut matrix = VectorMatrix {
         dimension,

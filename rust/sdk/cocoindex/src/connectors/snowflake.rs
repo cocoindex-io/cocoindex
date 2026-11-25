@@ -132,6 +132,15 @@ pub struct SnowflakeConnection {
     inner: Arc<ConnectionInner>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for SnowflakeConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SnowflakeConnection")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl SnowflakeConnection {
     /// Build a connection. No request is made until the first statement.
     pub fn new(config: SnowflakeConfig) -> Self {
@@ -338,7 +347,7 @@ async fn send_json(request: reqwest::RequestBuilder, token: Option<&str>) -> Res
     if !status.is_success() {
         return Err(Error::engine(format!(
             "snowflake: HTTP {status}: {}",
-            truncate(&text, 500)
+            super::truncate_for_error(&text, 500)
         )));
     }
     serde_json::from_str(&text)
@@ -420,14 +429,6 @@ fn decode_cell(ty: &str, raw: JsonValue) -> JsonValue {
             _ => raw,
         },
         _ => raw,
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
     }
 }
 

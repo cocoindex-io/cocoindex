@@ -251,8 +251,14 @@ impl<'a> storekey::Decode for DbEntryKey<'a> {
 
 impl<'a> DbEntryKey<'a> {
     pub fn encode(&self) -> Result<Vec<u8>> {
-        storekey::encode_vec(self)
-            .map_err(|e| internal_error!("Failed to encode DbEntryKey: {}", e))
+        // Room for a typical key up front: `storekey` writes byte by byte, so
+        // an empty buffer would grow (and reallocate) several times per key.
+        let mut buf = Vec::with_capacity(64);
+        storekey::encode(&mut buf, self).map_err(|e| match e {
+            storekey::EncodeError::Custom(e) => internal_error!("Failed to encode DbEntryKey: {e}"),
+            storekey::EncodeError::Io(e) => internal_error!("Failed to encode DbEntryKey: {e}"),
+        })?;
+        Ok(buf)
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {
@@ -365,17 +371,69 @@ pub struct FunctionMemoizationEntry<'a> {
     pub data_deps: Vec<DataDepEntry<'a>>,
 }
 
+/// Stored as the string `"D"` (`Deleted`) or as the state's bytes
+/// (`Existing`, a msgpack `bin`). Deserialized by hand: the derived form of
+/// this tagged-plus-untagged enum buffered every value and first tried it as
+/// the tagged variant, building (and discarding) a serde error for every
+/// `Existing` state of every tracking record it decoded.
 #[serde_as]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Debug)]
 pub enum TargetStateInfoItemState<'a> {
     #[serde(rename = "D")]
     Deleted,
     #[serde(untagged)]
-    Existing(
-        #[serde_as(as = "Bytes")]
-        #[serde(borrow)]
-        Cow<'a, [u8]>,
-    ),
+    Existing(#[serde_as(as = "Bytes")] Cow<'a, [u8]>),
+}
+
+impl<'de: 'a, 'a> Deserialize<'de> for TargetStateInfoItemState<'a> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct StateVisitor<'a>(std::marker::PhantomData<&'a ()>);
+
+        impl<'de: 'a, 'a> serde::de::Visitor<'de> for StateVisitor<'a> {
+            type Value = TargetStateInfoItemState<'a>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("the deleted marker \"D\" or a target state's bytes")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                if v == "D" {
+                    Ok(TargetStateInfoItemState::Deleted)
+                } else {
+                    Err(E::invalid_value(serde::de::Unexpected::Str(v), &self))
+                }
+            }
+
+            fn visit_borrowed_bytes<E: serde::de::Error>(
+                self,
+                v: &'de [u8],
+            ) -> Result<Self::Value, E> {
+                Ok(TargetStateInfoItemState::Existing(Cow::Borrowed(v)))
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+                Ok(TargetStateInfoItemState::Existing(Cow::Owned(v.to_vec())))
+            }
+
+            fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
+                Ok(TargetStateInfoItemState::Existing(Cow::Owned(v)))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                // `serde_with::Bytes` also reads a sequence of byte values.
+                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(byte) = seq.next_element::<u8>()? {
+                    bytes.push(byte);
+                }
+                Ok(TargetStateInfoItemState::Existing(Cow::Owned(bytes)))
+            }
+        }
+
+        deserializer.deserialize_any(StateVisitor(std::marker::PhantomData))
+    }
 }
 
 impl<'a> TargetStateInfoItemState<'a> {
@@ -534,6 +592,64 @@ pub struct IdSequencerInfo {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    /// The stored forms of both `TargetStateInfoItemState` variants, as the
+    /// derived (tagged-plus-untagged) implementation wrote them: `"D"` as a
+    /// msgpack fixstr, a state as a msgpack `bin`. Serialization still
+    /// produces exactly these bytes, and the hand-written deserializer reads
+    /// them back, borrowing the state bytes.
+    #[test]
+    fn target_state_info_item_state_stored_form() {
+        let deleted_bytes: &[u8] = &[0xa1, b'D'];
+        let existing_bytes: &[u8] = &[0xc4, 2, b'x', b'y'];
+
+        assert_eq!(
+            rmp_serde::to_vec_named(&TargetStateInfoItemState::Deleted).unwrap(),
+            deleted_bytes
+        );
+        assert_eq!(
+            rmp_serde::to_vec_named(&TargetStateInfoItemState::Existing(Cow::Borrowed(b"xy")))
+                .unwrap(),
+            existing_bytes
+        );
+
+        let deleted: TargetStateInfoItemState<'_> = rmp_serde::from_slice(deleted_bytes).unwrap();
+        assert!(deleted.is_deleted());
+        let existing: TargetStateInfoItemState<'_> = rmp_serde::from_slice(existing_bytes).unwrap();
+        assert!(matches!(
+            existing,
+            TargetStateInfoItemState::Existing(Cow::Borrowed(b"xy"))
+        ));
+
+        let other_str: &[u8] = &[0xa1, b'X'];
+        assert!(rmp_serde::from_slice::<TargetStateInfoItemState<'_>>(other_str).is_err());
+    }
+
+    /// A whole tracking item round-trips, versions and both states included.
+    #[test]
+    fn target_state_info_item_roundtrip() {
+        let item = TargetStateInfoItem {
+            key: Cow::Borrowed(b"k"),
+            states: vec![
+                (1, TargetStateInfoItemState::Deleted),
+                (
+                    2,
+                    TargetStateInfoItemState::Existing(Cow::Borrowed(b"\x00\x01state")),
+                ),
+            ],
+            provider_schema_version: 3,
+            provider_generation: None,
+        };
+        let bytes = rmp_serde::to_vec_named(&item).unwrap();
+        let decoded: TargetStateInfoItem<'_> = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.key.as_ref(), b"k");
+        assert_eq!(decoded.provider_schema_version, 3);
+        assert_eq!(decoded.states.len(), 2);
+        assert!(decoded.states[0].1.is_deleted() && decoded.states[0].0 == 1);
+        assert_eq!(decoded.states[1].0, 2);
+        assert_eq!(decoded.states[1].1.as_ref(), Some(&b"\x00\x01state"[..]));
+        assert_eq!(rmp_serde::to_vec_named(&decoded).unwrap(), bytes);
+    }
 
     fn roundtrip_entry_key(key: &StablePathEntryKey) -> StablePathEntryKey {
         let bytes = storekey::encode_vec(key).expect("encode");

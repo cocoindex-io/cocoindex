@@ -6,6 +6,7 @@ use cocoindex_core::engine::{
     runtime::get_runtime,
     stats::{ProcessingStats, VersionedProcessingStats},
 };
+use cocoindex_core::state::component_selector::ComponentSelector;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -13,7 +14,8 @@ use tokio::sync::watch;
 
 use crate::{
     component::PyComponentProcessor, deadline::PyDeadlineContext, environment::PyEnvironment,
-    target_state_codec::PyTargetAction, value::PyStoredValue,
+    runtime::block_on_interruptibly, stable_path::PyStablePath, target_state_codec::PyTargetAction,
+    value::PyStoredValue,
 };
 
 fn snapshot_to_py<'py>(
@@ -80,6 +82,14 @@ impl PyUpdateHandle {
         let snapshot = self.stats.snapshot();
         let dict = snapshot_to_py(py, &snapshot)?;
         Ok((snapshot.version, snapshot.ready, dict))
+    }
+
+    /// Number of component failures nobody took ownership of: no exception
+    /// handler was registered for them, or every handler re-raised. Unlike
+    /// the per-processor error counts, this covers stats groups (the counter
+    /// is shared by the whole chain) and excludes handled failures.
+    pub fn unhandled_failures(&self) -> u64 {
+        self.stats.snapshot().unhandled_failures
     }
 
     /// Awaits a version change notification. Returns the new version.
@@ -233,6 +243,10 @@ impl PyStatsGroupHandle {
     }
 }
 
+fn component_selector_from_py(paths: Vec<PyStablePath>) -> ComponentSelector {
+    ComponentSelector::new(paths.into_iter().map(|path| path.0))
+}
+
 #[pyclass(name = "App")]
 pub struct PyApp(pub Arc<App<PyEngineProfile>>);
 
@@ -259,7 +273,8 @@ impl PyApp {
         Ok(Self(Arc::new(app)))
     }
 
-    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, live=false, preview=false, *, deadline))]
+    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, live=false, preview=false, *, deadline, component_selector=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn update_async(
         &self,
         root_processor: PyComponentProcessor,
@@ -268,12 +283,14 @@ impl PyApp {
         live: bool,
         preview: bool,
         deadline: PyDeadlineContext,
+        component_selector: Option<Vec<PyStablePath>>,
     ) -> PyResult<PyUpdateHandle> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             full_reprocess,
             live,
             deadline: deadline.0,
+            component_selector: component_selector.map(component_selector_from_py),
         };
         let host_ctx = Arc::new(host_ctx);
         let preview_collector = if preview {
@@ -290,7 +307,7 @@ impl PyApp {
         Ok(uh)
     }
 
-    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, report_to_stdout=false, refresh_interval_secs=None, live=false, preview=false, *, deadline))]
+    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, report_to_stdout=false, refresh_interval_secs=None, live=false, preview=false, *, deadline, component_selector=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &self,
@@ -303,12 +320,14 @@ impl PyApp {
         live: bool,
         preview: bool,
         deadline: PyDeadlineContext,
+        component_selector: Option<Vec<PyStablePath>>,
     ) -> PyResult<Py<PyAny>> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             full_reprocess,
             live,
             deadline: deadline.0,
+            component_selector: component_selector.map(component_selector_from_py),
         };
         let host_ctx = Arc::new(host_ctx);
         let preview_collector = if preview {
@@ -316,8 +335,10 @@ impl PyApp {
         } else {
             None
         };
-        py.detach(|| {
-            get_runtime().block_on(async move {
+        let app_to_stop = app.clone();
+        block_on_interruptibly(
+            py,
+            async move {
                 let (handle, preview_collector) = app
                     .update(root_processor, options, host_ctx, preview_collector)
                     .context("failed to start app update")
@@ -342,8 +363,11 @@ impl PyApp {
                     let ret: PyStoredValue = handle.result().await.into_py_result()?;
                     Python::attach(|py| Ok(Py::new(py, ret)?.into_any()))
                 }
-            })
-        })
+            },
+            // Stop the app's operations: this update, and the live components
+            // it mounted, which would otherwise run on.
+            move || app_to_stop.app_ctx().cancellation_token().cancel(),
+        )
     }
 
     pub fn drop_async(&self, host_ctx: Py<PyAny>) -> PyResult<PyDropHandle> {
@@ -366,8 +390,9 @@ impl PyApp {
     ) -> PyResult<()> {
         let app = self.0.clone();
         let host_ctx = Arc::new(host_ctx);
-        py.detach(|| {
-            get_runtime().block_on(async move {
+        block_on_interruptibly(
+            py,
+            async move {
                 let handle = app
                     .drop_app(host_ctx)
                     .context("failed to start app drop")
@@ -382,8 +407,11 @@ impl PyApp {
                 } else {
                     handle.result().await.into_py_result()
                 }
-            })
-        })
+            },
+            // A drop has no cancellation to request: its deletes observe no
+            // cancellation token. A Ctrl+C lets it finish before raising.
+            || {},
+        )
     }
 }
 

@@ -13,6 +13,7 @@ pub mod protocol;
 use std::future::Future;
 use std::io::Write;
 use std::process::ExitCode;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -21,6 +22,7 @@ use cocoindex_core::engine::stats::TERMINATED_VERSION;
 use crate::app::{Environment, Progress, UpdateOptions};
 use crate::error::{Error, Result};
 use crate::registry::{self, AppEntry};
+use crate::{ComponentSelector, StablePath};
 use protocol::{
     AppInfo, ConfirmAction, Event, MARKER, Outcome, PROTOCOL_VERSION, PreviewKind, RunStatsWire,
     encode,
@@ -96,8 +98,7 @@ pub async fn dispatch_to(args: Vec<String>, out: &mut (dyn Write + Send)) -> Exi
     };
     match outcome {
         Ok(code) => ExitCode::from(code),
-        Err(Failure::Usage(message)) => emitter.fail(message, EXIT_USAGE),
-        Err(Failure::Error(err)) => emitter.fail(err.to_string(), EXIT_ERROR),
+        Err(err) => emitter.fail(err.to_string(), EXIT_ERROR),
     }
 }
 
@@ -121,6 +122,8 @@ struct ChildArgs {
     full_reprocess: bool,
     preview: bool,
     reset: bool,
+    /// The paths `--select` names: run only these components and those below.
+    select: Vec<StablePath>,
     db_only: bool,
     /// Ask the CLI (`confirm` record, answer on stdin) before destroying state.
     confirm: bool,
@@ -144,6 +147,7 @@ impl ChildArgs {
             full_reprocess: false,
             preview: false,
             reset: false,
+            select: Vec::new(),
             db_only: false,
             confirm: false,
         };
@@ -163,6 +167,13 @@ impl ChildArgs {
                         .ok_or_else(|| "--app needs a value".to_string())?;
                     parsed.app = Some(value.clone());
                 }
+                "--select" => {
+                    let value = iter
+                        .next()
+                        .ok_or_else(|| "--select needs a value".to_string())?;
+                    let path = StablePath::from_str(value).map_err(|err| err.to_string())?;
+                    parsed.select.push(path);
+                }
                 "--live" => parsed.live = true,
                 "--full-reprocess" => parsed.full_reprocess = true,
                 "--preview" => parsed.preview = true,
@@ -174,6 +185,9 @@ impl ChildArgs {
         }
         if parsed.preview && (parsed.reset || parsed.live) {
             return Err("--preview cannot be combined with --reset or --live".to_string());
+        }
+        if !parsed.select.is_empty() && parsed.reset {
+            return Err("--select and --reset cannot be used together.".to_string());
         }
         let flag_allowed = |flag: &str, ok: bool| {
             if ok {
@@ -187,6 +201,7 @@ impl ChildArgs {
         flag_allowed("--full-reprocess", !parsed.full_reprocess || is_update)?;
         flag_allowed("--preview", !parsed.preview || is_update)?;
         flag_allowed("--reset", !parsed.reset || is_update)?;
+        flag_allowed("--select", parsed.select.is_empty() || is_update)?;
         flag_allowed("--db-only", !parsed.db_only || verb == Verb::Drop)?;
         flag_allowed("--app", parsed.app.is_none() || verb != Verb::Ls)?;
         flag_allowed(
@@ -208,17 +223,6 @@ fn verb_name(verb: Verb) -> &'static str {
 // ---------------------------------------------------------------------------
 // Verbs
 // ---------------------------------------------------------------------------
-
-enum Failure {
-    Usage(String),
-    Error(Error),
-}
-
-impl From<Error> for Failure {
-    fn from(err: Error) -> Self {
-        Failure::Error(err)
-    }
-}
 
 struct Emitter<'a> {
     out: &'a mut (dyn Write + Send),
@@ -256,21 +260,18 @@ impl Emitter<'_> {
     }
 }
 
-async fn open_environment() -> std::result::Result<Environment, Failure> {
-    Ok(Environment::from_registered().await?)
+async fn open_environment() -> Result<Environment> {
+    Environment::from_registered().await
 }
 
-async fn run_ls(emitter: &mut Emitter<'_>) -> std::result::Result<u8, Failure> {
+async fn run_ls(emitter: &mut Emitter<'_>) -> Result<u8> {
     let env = open_environment().await?;
     let outcome = list_apps(emitter, &env).await;
     env.shutdown().await;
     outcome
 }
 
-async fn list_apps(
-    emitter: &mut Emitter<'_>,
-    env: &Environment,
-) -> std::result::Result<u8, Failure> {
+async fn list_apps(emitter: &mut Emitter<'_>, env: &Environment) -> Result<u8> {
     let persisted = env.persisted_app_names().await?;
     let mut apps: Vec<AppInfo> = registry::apps()
         .iter()
@@ -298,22 +299,21 @@ async fn list_apps(
 }
 
 /// The app an `update`/`drop` acts on: `--app NAME`, else the binary's only
-/// registered app.
-fn resolve_app(requested: Option<&str>) -> std::result::Result<&'static AppEntry, Failure> {
+/// registered app. A name that matches nothing, or several apps and no name,
+/// is a failure (exit 1), like the Python CLI's `ClickException`.
+fn resolve_app(requested: Option<&str>) -> Result<&'static AppEntry> {
     let apps = registry::apps();
     match requested {
         Some(name) => registry::find_app(name).ok_or_else(|| {
-            Failure::Usage(format!(
+            Error::engine(format!(
                 "no #[cocoindex::app] named `{name}` in this binary; available: {}",
                 app_names(apps)
             ))
         }),
         None => match apps {
             [only] => Ok(only),
-            [] => Err(Failure::Usage(
-                "this binary has no #[cocoindex::app]".to_string(),
-            )),
-            many => Err(Failure::Usage(format!(
+            [] => Err(Error::engine("this binary has no #[cocoindex::app]")),
+            many => Err(Error::engine(format!(
                 "this binary has several apps; pass the name: {}",
                 app_names(many)
             ))),
@@ -366,19 +366,16 @@ fn emit_done(emitter: &mut Emitter<'_>, outcome: Outcome, stats: Option<RunStats
     emitter.emit(&Event::Done { outcome, stats });
 }
 
-fn emit_cancelled(emitter: &mut Emitter<'_>) -> std::result::Result<u8, Failure> {
+fn emit_cancelled(emitter: &mut Emitter<'_>) -> Result<u8> {
     emit_done(emitter, Outcome::Cancelled, None);
     Ok(EXIT_OK)
 }
 
 /// A failed step after Ctrl-C is the cancellation surfacing (the engine
 /// reports a cancelled operation as an error), not a failure.
-fn cancel_or(
-    emitter: &mut Emitter<'_>,
-    outcome: std::result::Result<u8, Failure>,
-) -> std::result::Result<u8, Failure> {
+fn cancel_or(emitter: &mut Emitter<'_>, outcome: Result<u8>) -> Result<u8> {
     match outcome {
-        Err(Failure::Error(_)) if cancelled() => emit_cancelled(emitter),
+        Err(_) if cancelled() => emit_cancelled(emitter),
         other => other,
     }
 }
@@ -410,10 +407,7 @@ async fn confirm(emitter: &mut Emitter<'_>, action: ConfirmAction, app: &str) ->
     }
 }
 
-async fn run_update(
-    emitter: &mut Emitter<'_>,
-    args: &ChildArgs,
-) -> std::result::Result<u8, Failure> {
+async fn run_update(emitter: &mut Emitter<'_>, args: &ChildArgs) -> Result<u8> {
     let entry = resolve_app(args.app.as_deref())?;
     arm_cancellation();
     let Some(env) = until_cancelled(open_environment()).await else {
@@ -434,7 +428,7 @@ async fn update_app(
     args: &ChildArgs,
     entry: &'static AppEntry,
     env: &Environment,
-) -> std::result::Result<u8, Failure> {
+) -> Result<u8> {
     let app = env.app(entry.name).await?;
     if args.reset
         && env
@@ -460,6 +454,8 @@ async fn update_app(
         full_reprocess: args.full_reprocess,
         live: args.live,
         preview: args.preview,
+        component_selector: (!args.select.is_empty())
+            .then(|| ComponentSelector::new(args.select.iter().cloned())),
         ..UpdateOptions::default()
     };
     let mut handle = app.start_update_with_options(options, entry.run)?;
@@ -489,7 +485,7 @@ async fn update_app(
     Ok(EXIT_OK)
 }
 
-async fn run_drop(emitter: &mut Emitter<'_>, args: &ChildArgs) -> std::result::Result<u8, Failure> {
+async fn run_drop(emitter: &mut Emitter<'_>, args: &ChildArgs) -> Result<u8> {
     arm_cancellation();
     let Some(env) = until_cancelled(open_environment()).await else {
         return emit_cancelled(emitter);
@@ -500,11 +496,7 @@ async fn run_drop(emitter: &mut Emitter<'_>, args: &ChildArgs) -> std::result::R
     cancel_or(emitter, outcome)
 }
 
-async fn drop_app(
-    emitter: &mut Emitter<'_>,
-    args: &ChildArgs,
-    env: &Environment,
-) -> std::result::Result<u8, Failure> {
+async fn drop_app(emitter: &mut Emitter<'_>, args: &ChildArgs, env: &Environment) -> Result<u8> {
     let persisted = env.persisted_app_names().await?;
     // A persisted app whose code is gone can still be dropped by name.
     let name: String = match &args.app {
@@ -582,6 +574,38 @@ mod tests {
         assert_eq!(parsed.app.as_deref(), Some("A"));
         assert!(parsed.live && parsed.full_reprocess);
         assert!(!parsed.preview && !parsed.reset && !parsed.db_only);
+    }
+
+    #[test]
+    fn parses_repeated_select_paths() {
+        let parsed = ChildArgs::parse(&args(&[
+            "update",
+            "--select",
+            r#"/@process/"docs/a.md""#,
+            "--select",
+            r#"/"each"/3"#,
+            "--preview",
+        ]))
+        .unwrap();
+        let shown: Vec<String> = parsed.select.iter().map(ToString::to_string).collect();
+        assert_eq!(shown, [r#"/@process/"docs/a.md""#, r#"/"each"/3"#]);
+        assert!(parsed.preview);
+    }
+
+    #[test]
+    fn rejects_bad_or_misplaced_select() {
+        let err = ChildArgs::parse(&args(&["update", "--select", "process"])).unwrap_err();
+        assert!(err.contains("cannot parse component path"), "{err}");
+        let err = ChildArgs::parse(&args(&["update", "--select"])).unwrap_err();
+        assert!(err.contains("--select needs a value"), "{err}");
+        let err =
+            ChildArgs::parse(&args(&["update", "--select", r#"/"a""#, "--reset"])).unwrap_err();
+        assert!(
+            err.contains("--select and --reset cannot be used together"),
+            "{err}"
+        );
+        let err = ChildArgs::parse(&args(&["drop", "--select", r#"/"a""#])).unwrap_err();
+        assert!(err.contains("not valid for `drop`"));
     }
 
     #[test]

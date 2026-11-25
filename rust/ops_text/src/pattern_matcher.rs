@@ -230,14 +230,9 @@ impl PatternMatcher {
         // where the parent directories would otherwise be pruned by the exclusion but
         // need to be traversed to reach the negation-exempt file.
         let dir_prefix = format!("{}/", path);
-        if self
-            .negation_patterns_raw
+        self.negation_patterns_raw
             .iter()
             .any(|p| p.starts_with(&dir_prefix))
-        {
-            return true;
-        }
-        false
     }
 
     /// Check if a file should be included based on both include and exclude patterns.

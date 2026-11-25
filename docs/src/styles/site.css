@@ -808,3 +808,4 @@ a { color: var(--maroon-ink); }
 }
 .breadcrumb .sdk-badge.python { color: var(--lang-python); }
 .breadcrumb .sdk-badge.rust { color: var(--lang-rust); }
+.breadcrumb .sdk-badge.experimental { margin-left: 6px; color: var(--maroon-ink); }

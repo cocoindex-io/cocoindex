@@ -605,15 +605,27 @@ class _DocAction(NamedTuple):
     value: _DocValue | None  # None means delete
 
 
-def _check_status(result: Any) -> None:
-    """Raise if any zvec Status in the result is not OK."""
+# The most documents one zvec write takes: zvec refuses a larger upsert or delete
+# ("Too many docs: N exceeds max write batch size of 1024").
+_MAX_WRITE_BATCH = 1024
+
+
+def _check_status(result: Any, *, missing_ok: bool = False) -> None:
+    """Raise if any zvec Status in the result is not OK.
+
+    With ``missing_ok``, a NOT_FOUND status is OK: a delete of a document that is
+    not there (its write failed in an earlier run, or it was removed behind
+    CocoIndex's back) has nothing to do.
+    """
     statuses = result if isinstance(result, list) else [result]
     for status in statuses:
-        if not status.ok():
-            raise RuntimeError(
-                f"zvec operation failed: code={status.code()} "
-                f"message={status.message()}"
-            )
+        if status.ok():
+            continue
+        if missing_ok and status.code() == _zvec.StatusCode.NOT_FOUND:
+            continue
+        raise RuntimeError(
+            f"zvec operation failed: code={status.code()} message={status.message()}"
+        )
 
 
 def _build_doc(value: _DocValue) -> Any:
@@ -653,10 +665,13 @@ class _DocHandler(coco.TargetHandler[_DocValue, bytes]):
             else:
                 upserts.append(_build_doc(action.value))
 
-        if upserts:
-            _check_status(col.upsert(upserts))
-        if deletes:
-            _check_status(col.delete(ids=deletes))
+        for start in range(0, len(upserts), _MAX_WRITE_BATCH):
+            _check_status(col.upsert(upserts[start : start + _MAX_WRITE_BATCH]))
+        for start in range(0, len(deletes), _MAX_WRITE_BATCH):
+            _check_status(
+                col.delete(ids=deletes[start : start + _MAX_WRITE_BATCH]),
+                missing_ok=True,
+            )
         if upserts or deletes:
             col.optimize()
 

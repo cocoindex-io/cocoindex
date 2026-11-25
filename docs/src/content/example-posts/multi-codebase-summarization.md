@@ -256,7 +256,9 @@ The core extraction function uses memoization to cache LLM results:
 ````python title="main.py"
 _instructor_client = instructor.from_litellm(acompletion, mode=instructor.Mode.JSON)
 
-@coco.fn(memo=True)
+_LLM_DEPS = {"model": LLM_MODEL, "schema": CodebaseInfo.model_json_schema()}
+
+@coco.fn(memo=True, deps=_LLM_DEPS)
 async def extract_file_info(file: FileLike) -> CodebaseInfo:
     """Extract structured information from a single Python file using LLM."""
     content = await file.read_text()
@@ -288,6 +290,8 @@ Instructions:
 
 **Why `memo=True` matters:** LLM calls are expensive. With memoization, CocoIndex caches the result keyed by the file content. If you run the pipeline again without changing a file, the cached result is used—no LLM call needed.
 
+**Why `deps=` matters:** CocoIndex fingerprints the function's source code, not the module-level values it reads. `LLM_MODEL` comes from an environment variable, and the `CodebaseInfo` field descriptions reach the LLM through instructor, so neither appears in the function's source. [`deps`](/docs/programming_guide/function/#deps) adds both to the function's logic fingerprint. Switch `LLM_MODEL` or edit a field description, and every file is re-analyzed on the next run. Without `deps=`, files that did not change keep the old model's output.
+
 [→ Function](/docs/programming_guide/function/)
 
 
@@ -298,7 +302,7 @@ For projects with multiple files, we aggregate into a unified summary:
 ![Aggregate files](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/aggregate-dark.svg)
 
 ```python title="main.py"
-@coco.fn
+@coco.fn(deps=_LLM_DEPS)
 async def aggregate_project_info(
     project_name: str,
     file_infos: list[CodebaseInfo],
@@ -467,6 +471,14 @@ cocoindex update main.py
 ```
 
 Only the modified file is re-analyzed by the LLM. Unchanged files use cached results.
+
+**Switch the model:**
+
+```bash
+LLM_MODEL=gemini/gemini-2.5-pro cocoindex update main.py
+```
+
+Every file is re-analyzed with the new model, because `LLM_MODEL` is in `deps=`.
 
 **Add a new project:**
 

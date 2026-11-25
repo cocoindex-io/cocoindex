@@ -15,7 +15,7 @@ from .user_app_loader import load_user_app, Error as UserAppLoaderError
 
 import asyncio
 import cocoindex as coco
-from cocoindex._internal.app import App
+from cocoindex._internal.app import App, UpdateHandle
 from cocoindex._internal import banner as _banner
 from cocoindex._internal.update_stats import DisplayMode, display_mode
 from cocoindex._internal import core as _core
@@ -834,13 +834,25 @@ def show(
         )
 
 
+def _parse_selected_path(text: str) -> StablePath:
+    try:
+        return StablePath(_core.StablePath.parse(text))
+    except ValueError as e:
+        raise click.BadParameter(str(e), param_hint="'--select'") from e
+
+
 def _parse_stable_path(path_str: str) -> StablePath:
     """Parse a CLI stable path string into a StablePath.
 
-    Accepts formats like:
-      /"files"/"file1.txt"   (quoted parts, as displayed by StablePath.__str__)
-      /files/file1.txt       (unquoted parts)
+    Reads the path as `cocoindex show` prints it, as `--select` does:
+      /@process_file/"docs/a.md"   (a Symbol, then a string)
+    Text that is not in that form is read the older way, every part a string:
+      /files/file1.txt
     """
+    try:
+        return StablePath(_core.StablePath.parse(path_str))
+    except ValueError:
+        pass
     path = StablePath()
     # Strip leading slash
     stripped = path_str.strip("/")
@@ -1087,6 +1099,20 @@ async def _stop_all_environments() -> None:
             await env.stop()
 
 
+def _fail_on_unhandled_failures(handle: UpdateHandle[Any], verb: str) -> None:
+    """Exit 1 when a component failure nobody took ownership of happened.
+
+    A failure is unhandled when no exception handler was registered for it,
+    or every handler in the chain re-raised. `--quiet` keeps the message:
+    Click prints it to stderr.
+    """
+    failures = handle._unhandled_failures()
+    if failures:
+        raise click.ClickException(
+            f"{verb} finished with {failures} unhandled component failure(s)."
+        )
+
+
 @cli.command()
 @click.argument("app_target", type=str)
 @click.option(
@@ -1139,6 +1165,19 @@ async def _stop_all_environments() -> None:
     default=False,
     help="Compute target actions without applying them. Prints planned actions.",
 )
+@click.option(
+    "--select",
+    "select",
+    multiple=True,
+    metavar="PATH",
+    callback=lambda _ctx, _param, value: [_parse_selected_path(v) for v in value],
+    help=(
+        "Run only the component at PATH and the components below it; repeat "
+        "to run several. Write PATH as `cocoindex show` prints it, such as "
+        "'/@process_file/\"docs/a.md\"'. Other components are not run and "
+        "not treated as gone."
+    ),
+)
 def update(
     app_target: str,
     force: bool,
@@ -1147,9 +1186,13 @@ def update(
     full_reprocess: bool,
     live: bool,
     preview: bool,
+    select: list[StablePath],
 ) -> None:
     """
     Run an app in catch-up mode. With --live, run in live mode.
+
+    Exits with status 1 if a component failure goes unhandled: no exception
+    handler is registered for it, or every handler re-raised. Not with --live.
 
     `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
     """
@@ -1157,6 +1200,9 @@ def update(
         raise click.UsageError("--preview and --reset cannot be used together.")
     if preview and live:
         raise click.UsageError("--preview and --live cannot be used together.")
+    if select and reset:
+        raise click.UsageError("--select and --reset cannot be used together.")
+    component_selector = select or None
 
     app = _load_app(app_target)
 
@@ -1173,6 +1219,7 @@ def update(
                 handle = app.update(
                     full_reprocess=full_reprocess,
                     preview=True,
+                    component_selector=component_selector,
                 )
                 started = time.monotonic()
                 actions: list[Any] = await handle.result()
@@ -1185,7 +1232,14 @@ def update(
                     for action in actions:
                         click.echo(f"  {action!r}")
                 else:
-                    _say_done("ok", "Nothing to change", took)
+                    # A preview with failed components is missing their
+                    # changes, so "Nothing to change" would overstate it:
+                    # no green mark for an incomplete preview.
+                    mark: Literal["ok", "info"] = (
+                        "info" if handle._unhandled_failures() else "ok"
+                    )
+                    _say_done(mark, "Nothing to change", took)
+                _fail_on_unhandled_failures(handle, "Preview")
                 return
 
             # --reset: drop existing state first (equivalent to `cocoindex drop ...`)
@@ -1205,11 +1259,17 @@ def update(
             handle = app.update(
                 full_reprocess=full_reprocess,
                 live=live,
+                component_selector=component_selector,
             )
             if not quiet:
                 await show_progress(handle)
             else:
                 await handle.result()
+            # Surface unhandled component failures in the exit status so
+            # schedulers (cron, CI) can detect a failed run. Live mode is
+            # excluded: cumulative failures do not describe current health.
+            if not live:
+                _fail_on_unhandled_failures(handle, "Update")
         finally:
             await _stop_all_environments()
 
@@ -1347,16 +1407,28 @@ def init(project_name: str | None, dir: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# google-drive: the interactive sign-in of the Google Drive connector
+# auth: the interactive sign-ins of connectors that read a personal account.
+# `auth sign-in <provider>` and `auth sign-out <provider>`, one command per
+# provider under each, each with the arguments its provider needs.
 # ---------------------------------------------------------------------------
 
 
-@cli.group("google-drive")
-def google_drive_group() -> None:
-    """Sign a personal Google account in to the Google Drive connector (experimental)."""
+@cli.group("auth")
+def auth_group() -> None:
+    """Sign in to or out of the accounts connectors read (experimental)."""
 
 
-@google_drive_group.command("sign-in")
+@auth_group.group("sign-in")
+def auth_sign_in_group() -> None:
+    """Sign in to an account a connector reads."""
+
+
+@auth_group.group("sign-out")
+def auth_sign_out_group() -> None:
+    """Sign out of an account a connector reads."""
+
+
+@auth_sign_in_group.command("google-drive")
 @click.argument(
     "client_secrets",
     required=False,
@@ -1388,15 +1460,16 @@ def google_drive_sign_in(client_secrets: str | None, token_path: str | None) -> 
     click.echo(f"Signed in as {email}.")
 
 
-@google_drive_group.command("sign-out")
+@auth_sign_out_group.command("google-drive")
 @click.option(
     "--token-path",
     type=click.Path(dir_okay=False),
     default=None,
-    help="The sign-in to end; default: the one `sign-in` writes by default.",
+    help="The sign-in to end; default: the one `auth sign-in google-drive` "
+    "writes by default.",
 )
 def google_drive_sign_out(token_path: str | None) -> None:
-    """Revoke the stored sign-in at Google and delete its token file."""
+    """Revoke the sign-in at Google and delete its token file."""
     from cocoindex.connectors.google_drive import SignInError, UserAccount
 
     try:

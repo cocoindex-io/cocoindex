@@ -81,6 +81,15 @@ pub struct Database {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for Database {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Database")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Database {
     /// Open (creating if missing) a SQLite database at `path` with the default
     /// [`ConnectOptions`].

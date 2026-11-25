@@ -30,7 +30,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cocoindex_core::engine::component::OnError;
+use cocoindex_core::engine::component::{OnError, RunCompleteness};
 use cocoindex_core::engine::deadline::DeadlineContext;
 use cocoindex_core::engine::live_component::LiveComponentController;
 use cocoindex_core::state::stable_path::{StableKey, StablePath};
@@ -128,13 +128,18 @@ pub type ExceptionHandler =
 /// rewritten) error propagates to the next outer handler, with
 /// [`ExceptionContext::source`] set to [`ExceptionSource::Handler`], and
 /// finally out.
+///
+/// `make_ctx` runs only when `chain` has a handler: with none in scope (the
+/// common case) the context is never built, so a mount pays no path
+/// formatting for an error that may never happen.
 pub(crate) fn build_chained_on_error(
     chain: &[ExceptionHandler],
-    ctx: ExceptionContext,
+    make_ctx: impl FnOnce() -> ExceptionContext,
 ) -> Option<OnError> {
     if chain.is_empty() {
         return None;
     }
+    let ctx = make_ctx();
     let chain: Vec<ExceptionHandler> = chain.to_vec();
     Some(Arc::new(move |err: CoreError| {
         let chain = chain.clone();
@@ -248,6 +253,14 @@ impl LiveComponentOperator {
     /// logged at error level and this returns `Ok(())`, as in the Python SDK.
     /// Register a handler that returns `Err` to make failures propagate.
     pub async fn update_full(&self) -> Result<()> {
+        self.update_full_to_completeness().await?;
+        Ok(())
+    }
+
+    /// [`Self::update_full`], returning whether the pass reached every
+    /// component under it: a failure the handlers absorbed, or one only
+    /// logged, makes it [`RunCompleteness::Incomplete`].
+    pub(crate) async fn update_full_to_completeness(&self) -> Result<RunCompleteness> {
         let instance = self.instance.clone();
         let state = self.state.clone();
         let chain = self.handler_chain.clone();
@@ -269,7 +282,7 @@ impl LiveComponentOperator {
             format!("{}:process", self.name),
         );
         let on_error =
-            build_chained_on_error(&self.handler_chain, self.exc_ctx(MountKind::UpdateFull));
+            build_chained_on_error(&self.handler_chain, || self.exc_ctx(MountKind::UpdateFull));
         self.controller
             .update_full(processor, on_error)
             .await
@@ -306,10 +319,9 @@ impl LiveComponentOperator {
             None,
             format!("{}:update", self.name),
         );
-        let on_error = build_chained_on_error(
-            &self.handler_chain,
-            self.child_exc_ctx(MountKind::Update, &child_path),
-        );
+        let on_error = build_chained_on_error(&self.handler_chain, || {
+            self.child_exc_ctx(MountKind::Update, &child_path)
+        });
         let handle = self
             .controller
             .update(child_path, processor, on_error)
@@ -337,10 +349,9 @@ impl LiveComponentOperator {
     /// returned handle's [`ready`](ReadyHandle::ready) awaits its sync.
     pub async fn start_delete<K: Display>(&self, key: K) -> Result<ReadyHandle> {
         let child_path = self.child_path(&key);
-        let on_error = build_chained_on_error(
-            &self.handler_chain,
-            self.child_exc_ctx(MountKind::Delete, &child_path),
-        );
+        let on_error = build_chained_on_error(&self.handler_chain, || {
+            self.child_exc_ctx(MountKind::Delete, &child_path)
+        });
         let handle = self
             .controller
             .delete(child_path, on_error)
@@ -557,6 +568,11 @@ type ProcessItemFn<V> =
 pub struct LiveMapSubscriber<K, V> {
     operator: LiveComponentOperator,
     process_fn: ProcessItemFn<V>,
+    /// How the scan that ran before [`LiveMapFeed::watch`] ended; `None` when
+    /// the feed skipped it ([`LiveMapFeed::skip_initial_scan`]).
+    // Read only by feature-gated connectors (oci_object_storage today).
+    #[allow(dead_code)]
+    pub(crate) startup_scan: Option<RunCompleteness>,
     _key: PhantomData<fn() -> K>,
 }
 
@@ -780,13 +796,16 @@ where
         // A durable feed may skip the scan and replay from its committed cursor,
         // but only in live mode: in catch-up mode `watch` never runs, so a
         // skipped scan would leave every change since the last run unprocessed.
-        if !(operator.is_live() && self.feed.skip_initial_scan(&operator).await?) {
-            operator.update_full().await?;
-        }
+        let startup_scan = if operator.is_live() && self.feed.skip_initial_scan(&operator).await? {
+            None
+        } else {
+            Some(operator.update_full_to_completeness().await?)
+        };
         operator.mark_ready().await;
         let subscriber = LiveMapSubscriber {
             operator,
             process_fn: self.process_fn.clone(),
+            startup_scan,
             _key: PhantomData,
         };
         self.feed.watch(subscriber).await

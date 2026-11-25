@@ -319,6 +319,7 @@ fn run_example(
     output_dir: &Path,
     run_dir: &Path,
     base_url: &str,
+    model: &str,
 ) -> Output {
     Command::new(binary)
         .arg(projects_dir)
@@ -326,7 +327,7 @@ fn run_example(
         .current_dir(run_dir)
         .env("LLM_API_KEY", "test-key")
         .env("LLM_BASE_URL", base_url)
-        .env("LLM_MODEL", "mock-model")
+        .env("LLM_MODEL", model)
         .output()
         .unwrap()
 }
@@ -364,15 +365,17 @@ fn multi_codebase_example_runs_end_to_end_with_mock_llm() {
     let (base_url, request_count, stop, handle) = spawn_mock_llm();
     let binary = env!("CARGO_BIN_EXE_multi_codebase_summarization");
 
-    let run_once = || {
+    let run_with_model = |model: &str| {
         run_example(
             binary,
             projects.path(),
             output.path(),
             run_dir.path(),
             &base_url,
+            model,
         )
     };
+    let run_once = || run_with_model("mock-model");
 
     let first = run_once();
     assert_success(&first, "first run");
@@ -433,6 +436,16 @@ fn multi_codebase_example_runs_end_to_end_with_mock_llm() {
     assert_eq!(request_count.load(Ordering::Relaxed), 8);
     assert!(!output.path().join("beta.md").exists());
 
+    // Switching the model re-analyzes every file, unchanged ones included:
+    // alpha's three files plus its aggregation.
+    let sixth = run_with_model("mock-model-v2");
+    assert_success(&sixth, "sixth run");
+    assert_eq!(request_count.load(Ordering::Relaxed), 12);
+
+    let seventh = run_with_model("mock-model-v2");
+    assert_success(&seventh, "seventh run");
+    assert_eq!(request_count.load(Ordering::Relaxed), 12);
+
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
 }
@@ -457,6 +470,7 @@ fn multi_codebase_example_fails_on_missing_llm_content() {
         output.path(),
         run_dir.path(),
         &base_url,
+        "mock-model",
     );
     assert_failure_contains(&output, "missing-content run", "no content in LLM response");
 
@@ -485,6 +499,7 @@ fn multi_codebase_example_fails_on_malformed_llm_json() {
         output.path(),
         run_dir.path(),
         &base_url,
+        "mock-model",
     );
     assert_failure_contains(&output, "malformed-json run", "LLM response parse");
 

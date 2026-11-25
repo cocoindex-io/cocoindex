@@ -201,14 +201,20 @@ where
 }
 
 /// Await one item's result from a batcher: a whole-batch error, then the
-/// item's own error from a split sub-batch.
+/// item's own error from a split sub-batch. The batch runs without its
+/// callers' deadlines, so the caller checks its own once the result is back
+/// (like Python's batched runner): an expired caller gets
+/// [`Error::DeadlineExceeded`], not the result.
 async fn run_item<In, Out>(batcher: &FunctionBatcher<In, Out>, call: BatchCall<In>) -> Result<Out>
 where
     In: Clone + Send + 'static,
     Out: Send + 'static,
 {
+    let caller_deadline = call.ctx.deadline;
     let item_result = batcher.run(call).await.map_err(Error::from)?;
-    item_result.map_err(Error::from)
+    let output = item_result.map_err(Error::from)?;
+    caller_deadline.check().map_err(Error::from)?;
+    Ok(output)
 }
 
 /// A single-item interface over a batch-shaped async function.

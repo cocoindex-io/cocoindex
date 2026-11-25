@@ -11,7 +11,8 @@ The pipeline runs in three phases:
   1. Per thread: an LLM reads it and extracts the question it asks, the answer
      that settled it, whether it's resolved, and a topic.
   2. Questions asked in other words are merged with embedding-based entity
-     resolution, an LLM confirming each close pair.
+     resolution: for each question with close candidates, an LLM picks the one
+     it matches, if any.
   3. FAQ.md lists every answered question by topic, with how often it was asked
      and links to the threads that asked it. A question answered in several
      threads gets one answer, written by an LLM from those threads, which says
@@ -221,8 +222,8 @@ async def _resolve_questions(questions: set[str]) -> ResolvedEntities:
             ),
         ),
         # A question reworded sits further from the original than a name
-        # written another way does. The LLM confirms every pair within reach,
-        # so reaching further costs calls, not wrong merges.
+        # written another way does. A wider reach gives the LLM more candidates
+        # to check, which costs calls; every merge is still one the LLM chose.
         max_distance=0.55,
     )
 

@@ -2245,7 +2245,8 @@ class _FunctionDecorator:
                 string or model identifier. The value is canonicalized via the
                 memoization-key pipeline (see
                 :doc:`/advanced_topics/memoization_keys` for the full contract,
-                including ``__coco_memo_key__()`` and registered key functions)
+                including ``__coco_memo_key__()``, registered memo key functions,
+                stable type IDs, and built-in handling)
                 and folded into the function's logic fingerprint; when the
                 canonical form changes, memoized results are invalidated and
                 the change propagates to callers according to ``logic_tracking``

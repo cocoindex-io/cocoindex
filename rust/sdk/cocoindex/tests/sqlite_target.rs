@@ -651,8 +651,7 @@ async fn sqlite_connect_with_vec_fails_when_the_extension_is_missing() {
     let result =
         sqlite::Database::connect_with_vec(path.to_str().unwrap(), missing.to_str().unwrap()).await;
     let message = result
-        .err()
-        .expect("a missing sqlite-vec library must fail the connection")
+        .expect_err("a missing sqlite-vec library must fail the connection")
         .to_string();
     assert!(message.contains("sqlite"), "{message}");
 }

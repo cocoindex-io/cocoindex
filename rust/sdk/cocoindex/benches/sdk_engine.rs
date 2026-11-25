@@ -14,8 +14,10 @@
 //!    with a small (`i64`) and a large (~100 KB string) argument. Reported
 //!    per call: the loop runs inside one `App::update`.
 //! 2. `component_overhead` — a warm run over N trivial components, through
-//!    `Ctx::mount_each` and through sequential `Ctx::scope` (`use_mount!`).
-//!    Reported per component.
+//!    `Ctx::mount_each` (no component memo: every child runs and commits),
+//!    through `mount_each!` of a logic-tracked function keyed by file-name
+//!    strings (every child is a component-memo hit), and through sequential
+//!    `Ctx::scope` (`use_mount!`). Reported per component.
 //! 3. `fingerprint` — `Fingerprint::from(&Vec<u8>)` (serde path) against
 //!    `Fingerprint::from_bytes` at 1 KB, 100 KB and 10 MB.
 //! 4. `target_reconcile` — 10,000 rows declared into a counting no-op
@@ -226,6 +228,27 @@ async fn mount_each_run(app: &App, n: usize) -> Duration {
     .unwrap()
 }
 
+/// A logic-tracked child component: a warm run reuses its component memo.
+#[cocoindex::function]
+async fn memo_hit_child(_ctx: &Ctx, idx: i64) -> Result<()> {
+    black_box(idx);
+    Ok(())
+}
+
+async fn mount_each_memo_run(app: &App, n: usize) -> Duration {
+    app.update(move |ctx| async move {
+        let start = Instant::now();
+        let items = (0..n).map(|i| (format!("file_{i:05}.md"), i as i64));
+        cocoindex::mount_each!("files", items, |idx| memo_hit_child(ctx, idx))
+            .await?
+            .ready()
+            .await?;
+        Ok(start.elapsed())
+    })
+    .await
+    .unwrap()
+}
+
 async fn scope_run(app: &App, n: usize) -> Duration {
     app.update(move |ctx| async move {
         let start = Instant::now();
@@ -254,6 +277,20 @@ fn bench_component_overhead(c: &mut Criterion) {
                     let mut total = Duration::ZERO;
                     for _ in 0..iters {
                         total += mount_each_run(&fixture.app, n).await;
+                    }
+                    total
+                })
+            });
+        });
+
+        let fixture = rt.block_on(temp_app("mount_each_memo_warm"));
+        rt.block_on(mount_each_memo_run(&fixture.app, n));
+        group.bench_function(BenchmarkId::new("mount_each_memo/warm", n), |b| {
+            b.iter_custom(|iters| {
+                rt.block_on(async {
+                    let mut total = Duration::ZERO;
+                    for _ in 0..iters {
+                        total += mount_each_memo_run(&fixture.app, n).await;
                     }
                     total
                 })

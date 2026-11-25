@@ -201,8 +201,8 @@ def generate_command_docs(cmd: click.Group) -> str:
 
     ctx = click.core.Context(cmd, info_name=cmd.name)
     # Generate only the command details section (remove redundant headers).
-    # A nested group (`google-drive`) is listed with its commands, and each of
-    # its commands gets its own entry (`google-drive sign-in`).
+    # A nested group (`auth`, `auth sign-in`) is listed with its commands, and
+    # each of its commands gets its own entry (`auth sign-in google-drive`).
     for command_name, sub_cmd, sub_ctx in _walk_commands(cmd, ctx):
         help_text = sub_cmd.get_help(sub_ctx)
         usage = clean_usage_line(sub_cmd.get_usage(sub_ctx))

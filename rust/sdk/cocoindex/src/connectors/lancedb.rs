@@ -55,6 +55,15 @@ pub struct LanceDatabase {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for LanceDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LanceDatabase")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Options for [`LanceDatabase::connect_with_options`], the connection options
 /// Python passes through `connect_async(uri, **options)` for a local or
 /// object-store database. (LanceDB Cloud, `db://`, is not built into the SDK's
@@ -488,9 +497,12 @@ pub fn declare_table_target_with_options(
     let schema_fp = Fingerprint::from(&table_tracking_record(&spec)).map_err(Error::from)?;
     declare_target_state(ctx, target_state)?;
     // The row provider stays run-scoped (its handler holds the spec). Once a
-    // run stops declaring the table, or on `App::drop_state`, the table itself
-    // is dropped (taking its rows and indexes with it), so the engine only
-    // needs to prune this provider's unreachable row tracking, which it does.
+    // run stops declaring the table, the table itself is dropped (taking its
+    // rows and indexes with it), so the engine only needs to prune this
+    // provider's unreachable row tracking, which it does. `App::drop_state`
+    // also reverts the provider's rows, in no fixed order with the table drop
+    // (both are root providers); the row sink skips deletes on a table that is
+    // already gone (see [`open_table_for_rows`]).
     let rows = register_root_target_states_provider(
         ctx,
         format!(
@@ -1233,7 +1245,11 @@ impl RowHandler {
                     if upserts.is_empty() && deletes.is_empty() {
                         return Ok(());
                     }
-                    let table = open_table_for_rows(&table, &db, &spec).await?;
+                    let Some(table) =
+                        open_table_for_rows(&table, &db, &spec, upserts.is_empty()).await?
+                    else {
+                        return Ok(());
+                    };
                     apply_rows(table, &spec, upserts, deletes, &optimize_counter).await
                 }
             },
@@ -1253,17 +1269,28 @@ impl RowHandler {
 /// against the version its handle has checked out, and a handle does not
 /// reload by itself under the default read consistency. Another handle may have
 /// written since (an index sink, or the table sink recreating the table).
+///
+/// Returns `None` (nothing to do) for a batch of only deletes (`only_deletes`)
+/// on a missing table: the rows went with the table. On `App::drop_state` the
+/// table sink can drop the table before the row sink deletes its rows, and a
+/// delete must not create the table again. The table's existence is checked
+/// only when a delete-only batch has no handle yet or its handle fails to
+/// reload, so a batch on a live, cached handle still lists no tables.
 async fn open_table_for_rows<'a>(
     cache: &'a OnceCell<Table>,
     db: &LanceDatabase,
     spec: &TableSpec,
-) -> Result<&'a Table> {
+    only_deletes: bool,
+) -> Result<Option<&'a Table>> {
     if let Some(table) = cache.get() {
-        table
-            .checkout_latest()
-            .await
-            .map_err(|e| Error::engine(format!("lancedb reload table: {e}")))?;
-        return Ok(table);
+        return match table.checkout_latest().await {
+            Ok(()) => Ok(Some(table)),
+            Err(_) if only_deletes && !table_exists(db, &spec.table_name).await? => Ok(None),
+            Err(e) => Err(Error::engine(format!("lancedb reload table: {e}"))),
+        };
+    }
+    if only_deletes && !table_exists(db, &spec.table_name).await? {
+        return Ok(None);
     }
     cache
         .get_or_try_init(|| async {
@@ -1277,6 +1304,7 @@ async fn open_table_for_rows<'a>(
                 .map_err(|e| Error::engine(format!("lancedb open table: {e}")))
         })
         .await
+        .map(Some)
 }
 
 async fn apply_rows(
@@ -1307,8 +1335,10 @@ async fn apply_rows(
             .map_err(|e| Error::engine(format!("lancedb merge_insert: {e}")))?;
     }
 
-    for pk in &deletes {
-        let predicate = delete_predicate(&spec.table_schema.primary_key, pk)?;
+    // One delete (one table version) per chunk of keys rather than per key: a
+    // Lance delete is a commit, so a key-at-a-time loop costs a commit each.
+    for chunk in deletes.chunks(DELETE_KEYS_PER_FILTER) {
+        let predicate = delete_predicate(&spec.table_schema.primary_key, chunk)?;
         table
             .delete(&predicate)
             .await
@@ -1331,22 +1361,63 @@ async fn apply_rows(
     Ok(())
 }
 
-fn delete_predicate(primary_key: &[String], pk: &[JsonValue]) -> Result<String> {
-    let mut parts = Vec::with_capacity(primary_key.len());
-    for (name, value) in primary_key.iter().zip(pk) {
-        let rhs = match value {
-            JsonValue::String(s) => format!("'{}'", s.replace('\'', "''")),
-            JsonValue::Number(n) => n.to_string(),
-            other => {
-                return Err(Error::engine(format!(
-                    "unsupported LanceDB key value: {other}"
-                )));
-            }
-        };
+/// Keys per delete filter: bounds the filter's size while keeping the number
+/// of commits a large delete makes small.
+const DELETE_KEYS_PER_FILTER: usize = 1000;
+
+/// The filter matching the rows with any of `keys`: `pk IN (..)` for a
+/// single-column key, an `OR` of per-key `AND`s for a composite one.
+fn delete_predicate(primary_key: &[String], keys: &[Vec<JsonValue>]) -> Result<String> {
+    for name in primary_key {
         validate_identifier(name)?;
-        parts.push(format!("{name} = {rhs}"));
     }
-    Ok(parts.join(" AND "))
+    let key_mismatch = |pk: &[JsonValue]| {
+        Error::engine(format!(
+            "LanceDB key {pk:?} does not match the primary key {primary_key:?}"
+        ))
+    };
+    if let [name] = primary_key {
+        let values = keys
+            .iter()
+            .map(|pk| match pk.as_slice() {
+                [value] => sql_literal(value),
+                _ => Err(key_mismatch(pk)),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return Ok(format!("{name} IN ({})", values.join(", ")));
+    }
+    let conditions = keys
+        .iter()
+        .map(|pk| {
+            if pk.len() != primary_key.len() {
+                return Err(key_mismatch(pk));
+            }
+            let parts = primary_key
+                .iter()
+                .zip(pk)
+                .map(|(name, value)| Ok(format!("{name} = {}", sql_literal(value)?)))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(format!("({})", parts.join(" AND ")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(conditions.join(" OR "))
+}
+
+/// A key value as a Lance SQL literal.
+fn sql_literal(value: &JsonValue) -> Result<String> {
+    match value {
+        JsonValue::String(s) => Ok(format!("'{}'", s.replace('\'', "''"))),
+        // Lance parses the i64 minimum as a negated positive number, which
+        // overflows to a float that no longer matches the key; a cast from a
+        // string is exact (as in the Python connector).
+        JsonValue::Number(n) if n.as_i64() == Some(i64::MIN) => {
+            Ok(format!("CAST('{n}' AS BIGINT)"))
+        }
+        JsonValue::Number(n) => Ok(n.to_string()),
+        other => Err(Error::engine(format!(
+            "unsupported LanceDB key value: {other}"
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1513,7 +1584,7 @@ fn build_record_batch(
                 def.nullable,
                 DataType::Float32,
                 values,
-                |value| value,
+                |value| value.is_finite().then_some(value),
             )?,
             ColumnType::HalfVector(dim) => build_vector_array::<Float16Type>(
                 name,
@@ -1521,7 +1592,7 @@ fn build_record_batch(
                 def.nullable,
                 DataType::Float16,
                 values,
-                f16::from_f32,
+                |value| Some(f16::from_f32(value)).filter(|h| h.is_finite()),
             )?,
         };
         arrays.push(array);
@@ -1536,7 +1607,7 @@ fn build_vector_array<'a, T: ArrowPrimitiveType>(
     nullable: bool,
     item_type: DataType,
     values: impl Iterator<Item = &'a JsonValue>,
-    convert: impl Fn(f32) -> T::Native,
+    convert: impl Fn(f32) -> Option<T::Native>,
 ) -> Result<ArrayRef> {
     let mut builder = FixedSizeListBuilder::new(PrimitiveBuilder::<T>::new(), dim as i32)
         .with_field(Arc::new(Field::new("item", item_type, true)));
@@ -1568,7 +1639,15 @@ fn build_vector_array<'a, T: ArrowPrimitiveType>(
             let f = v.as_f64().ok_or_else(|| {
                 Error::engine(format!("column {column:?} has non-numeric vector element"))
             })?;
-            builder.values().append_value(convert(f as f32));
+            // `convert` refuses a finite value that overflows the element type
+            // (an `f64` beyond the `f32` range, a value beyond the `f16` one),
+            // which would otherwise be stored as an infinity.
+            let element = convert(f as f32).ok_or_else(|| {
+                Error::engine(format!(
+                    "column {column:?} vector element {f} does not fit its element type"
+                ))
+            })?;
+            builder.values().append_value(element);
         }
         builder.append(true);
         count += 1;
@@ -2592,13 +2671,33 @@ mod tests {
         assert_eq!(key, StableKey::Int(42));
         let pk = stable_key_to_pk(&key).unwrap();
         assert_eq!(
-            delete_predicate(&["id".to_string()], &pk).unwrap(),
-            "id = 42"
+            delete_predicate(&["id".to_string()], std::slice::from_ref(&pk)).unwrap(),
+            "id IN (42)"
+        );
+        assert_eq!(
+            delete_predicate(&["id".to_string()], &[vec![JsonValue::from(i64::MIN)]]).unwrap(),
+            "id IN (CAST('-9223372036854775808' AS BIGINT))"
         );
 
-        let pred = delete_predicate(&["name".to_string()], &[JsonValue::from("a'b")]).unwrap();
-        assert_eq!(pred, "name = 'a''b'");
-        assert!(delete_predicate(&["bad-name".to_string()], &pk).is_err());
+        let pred = delete_predicate(
+            &["name".to_string()],
+            &[vec![JsonValue::from("a'b")], vec![JsonValue::from("c")]],
+        )
+        .unwrap();
+        assert_eq!(pred, "name IN ('a''b', 'c')");
+        let pred = delete_predicate(
+            &["file".to_string(), "chunk".to_string()],
+            &[
+                vec![JsonValue::from("a"), JsonValue::from(1)],
+                vec![JsonValue::from("b"), JsonValue::from(2)],
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            pred,
+            "(file = 'a' AND chunk = 1) OR (file = 'b' AND chunk = 2)"
+        );
+        assert!(delete_predicate(&["bad-name".to_string()], &[pk]).is_err());
     }
 
     #[test]
@@ -2703,8 +2802,9 @@ mod tests {
         let handler = RowHandler::new("db".to_string(), spec.clone(), BTreeSet::new());
         assert!(!table_exists(&db, "docs").await.unwrap());
 
-        let first = open_table_for_rows(&handler.table, &db, &spec)
+        let first = open_table_for_rows(&handler.table, &db, &spec, false)
             .await
+            .unwrap()
             .unwrap();
         assert!(
             table_exists(&db, "docs").await.unwrap(),
@@ -2713,8 +2813,9 @@ mod tests {
         let first = Arc::clone(first.base_table());
         let counter = std::sync::atomic::AtomicU64::new(0);
         for id in 1..=3 {
-            let table = open_table_for_rows(&handler.table, &db, &spec)
+            let table = open_table_for_rows(&handler.table, &db, &spec, false)
                 .await
+                .unwrap()
                 .unwrap();
             assert!(
                 Arc::ptr_eq(&first, table.base_table()),
@@ -2738,8 +2839,9 @@ mod tests {
             row
         };
         let batch = async |rows: Vec<Map<String, JsonValue>>| {
-            let table = open_table_for_rows(&handler.table, &db, &spec)
+            let table = open_table_for_rows(&handler.table, &db, &spec, false)
                 .await
+                .unwrap()
                 .unwrap();
             apply_rows(table, &spec, rows, vec![], &counter)
                 .await
@@ -2758,5 +2860,62 @@ mod tests {
         drop_table(&db, "docs").await.unwrap();
         create_empty_table(&db, &spec).await.unwrap();
         assert_eq!(batch(vec![row(9, "new")]).await, 1);
+    }
+
+    /// A batch of only row deletes on a table that is already gone does
+    /// nothing, with a cached handle or without one, and does not create the
+    /// table again: on `App::drop_state` the table sink can drop the table
+    /// before the row sink deletes the table's rows. A batch that upserts
+    /// still ensures the table.
+    #[tokio::test]
+    async fn row_deletes_on_a_dropped_table_are_skipped() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let db = LanceDatabase::connect(tempdir.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let spec = TableSpec {
+            table_name: "docs".to_string(),
+            table_schema: schema(),
+            managed_by: ManagedBy::System,
+        };
+
+        // A handle cached by an earlier batch of the run.
+        let cached = RowHandler::new("db".to_string(), spec.clone(), BTreeSet::new());
+        open_table_for_rows(&cached.table, &db, &spec, false)
+            .await
+            .unwrap()
+            .unwrap();
+        drop_table(&db, "docs").await.unwrap();
+        assert!(
+            open_table_for_rows(&cached.table, &db, &spec, true)
+                .await
+                .unwrap()
+                .is_none(),
+            "cached handle: deletes skipped"
+        );
+        assert!(!table_exists(&db, "docs").await.unwrap());
+
+        // No handle yet.
+        let fresh = RowHandler::new("db".to_string(), spec.clone(), BTreeSet::new());
+        assert!(
+            open_table_for_rows(&fresh.table, &db, &spec, true)
+                .await
+                .unwrap()
+                .is_none(),
+            "no handle: deletes skipped"
+        );
+        assert!(
+            !table_exists(&db, "docs").await.unwrap(),
+            "deletes do not create the table"
+        );
+
+        open_table_for_rows(&fresh.table, &db, &spec, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            table_exists(&db, "docs").await.unwrap(),
+            "upserts ensure the table"
+        );
     }
 }

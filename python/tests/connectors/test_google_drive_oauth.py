@@ -248,7 +248,8 @@ def _mode(path: pathlib.Path) -> int:
 def test_sign_in_round_trip_stores_a_private_token_file(flow: Flow) -> None:
     assert flow.sign_in() == EMAIL
     assert len(flow.opened) == 1
-    assert flow.said and flow.opened[0] in flow.said[0]
+    _notice, instructions = flow.said
+    assert flow.opened[0] in instructions
 
     stored = flow.stored()
     assert stored["email"] == EMAIL
@@ -326,6 +327,54 @@ def test_a_web_client_or_a_missing_client_file_is_refused(
         )
 
 
+# --- the notice on Google user data ------------------------------------------
+
+
+def _assert_notice(text: str, token_path: pathlib.Path) -> None:
+    assert "CocoIndex asks Google for read-only access to your Google Drive." in text
+    assert f"The sign-in is stored at {token_path}, on this computer only" in text
+    assert "nothing is sent to CocoIndex" in text
+    assert "https://cocoindex.io/privacy-policy/#google-user-data" in text
+
+
+def test_the_sign_in_discloses_its_use_of_google_data_before_the_consent(
+    flow: Flow, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Google's verification of a restricted scope wants the app itself to say this."""
+    from cocoindex.cli import cli
+
+    said_when_the_browser_opened: list[str] = []
+
+    def browser(url: str) -> None:
+        said_when_the_browser_opened.extend(flow.said)
+        flow.browser(url)
+
+    flow.sign_in(open_browser=browser)
+    (notice,) = said_when_the_browser_opened
+    _assert_notice(notice, flow.token_path)
+
+    # Printed to the terminal, from Python and from the CLI.
+    _script_sign_in(flow, monkeypatch)
+    flow.token_path.unlink()
+    assert flow.account().sign_in(flow.client_secrets) == EMAIL
+    _assert_notice(capsys.readouterr().out, flow.token_path)
+
+    flow.token_path.unlink()
+    result = CliRunner().invoke(
+        cli,
+        [
+            "auth",
+            "sign-in",
+            "google-drive",
+            str(flow.client_secrets),
+            "--token-path",
+            str(flow.token_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    _assert_notice(result.output, flow.token_path)
+
+
 # --- the no-browser path -----------------------------------------------------
 
 
@@ -335,18 +384,19 @@ def test_without_a_browser_the_link_is_printed_and_the_redirect_pasted_back(
     lines: list[str | None] = []
 
     def read_line() -> str | None:
-        # Only after the link was printed can a person paste anything.
-        while not flow.said:
+        # Only after the link was printed (after the notice) can a person paste anything.
+        while len(flow.said) < 2:
             pass
         if not lines:
-            url = flow.said[0].split("\n\n  ")[1].split("\n")[0].strip()
+            url = flow.said[1].split("\n\n  ")[1].split("\n")[0].strip()
             lines.extend(["not an address\n", flow.google.consent(url) + "\n", None])
         return lines.pop(0)
 
     assert flow.sign_in(browser_available=False, read_line=read_line) == EMAIL
     assert flow.opened == []  # no browser was opened
-    assert "another machine" in flow.said[0]
-    assert any("Paste the whole address" in s for s in flow.said[1:])
+    _assert_notice(flow.said[0], flow.token_path)  # before the link
+    assert "another machine" in flow.said[1]
+    assert any("Paste the whole address" in s for s in flow.said[2:])
     assert flow.stored()["email"] == EMAIL
 
 
@@ -501,7 +551,7 @@ def test_a_run_without_a_sign_in_says_how_to_sign_in(flow: Flow) -> None:
         asyncio.run(first())
     message = str(excinfo.value)
     assert str(flow.token_path) in message
-    assert "cocoindex google-drive sign-in" in message
+    assert "cocoindex auth sign-in google-drive" in message
 
 
 def test_exactly_one_credential_kind(flow: Flow) -> None:
@@ -588,7 +638,10 @@ def test_the_service_builds_on_user_credentials(
 
 
 def _script_sign_in(flow: Flow, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make every interactive sign-in, the CLI's included, run against the fake."""
+    """Make every interactive sign-in, the CLI's included, run against the fake.
+
+    What the sign-in says still goes to stdout, as a real one's does.
+    """
     interactive = _oauth.run_sign_in
 
     def scripted(client: pathlib.Path | None, token: pathlib.Path, **kw: object) -> str:
@@ -598,7 +651,6 @@ def _script_sign_in(flow: Flow, monkeypatch: pytest.MonkeyPatch) -> None:
             http_client=flow.http,
             open_browser=flow.browser,
             read_line=lambda: None,
-            say=flow.said.append,
             browser_available=True,
             timeout=10,
         )
@@ -611,11 +663,17 @@ def test_cli_sign_in_and_sign_out(flow: Flow, monkeypatch: pytest.MonkeyPatch) -
 
     _script_sign_in(flow, monkeypatch)
     runner = CliRunner()
+    # `auth sign-in` and `auth sign-out` list one command per provider.
+    for action in ("sign-in", "sign-out"):
+        result = runner.invoke(cli, ["auth", action, "--help"])
+        assert result.exit_code == 0, result.output
+        assert "google-drive" in result.output
     result = runner.invoke(
         cli,
         [
-            "google-drive",
+            "auth",
             "sign-in",
+            "google-drive",
             str(flow.client_secrets),
             "--token-path",
             str(flow.token_path),
@@ -624,13 +682,13 @@ def test_cli_sign_in_and_sign_out(flow: Flow, monkeypatch: pytest.MonkeyPatch) -
     assert result.exit_code == 0, result.output
     assert f"Signed in as {EMAIL}." in result.output
     result = runner.invoke(
-        cli, ["google-drive", "sign-out", "--token-path", str(flow.token_path)]
+        cli, ["auth", "sign-out", "google-drive", "--token-path", str(flow.token_path)]
     )
     assert result.exit_code == 0, result.output
     assert "Signed out." in result.output
     assert not flow.token_path.exists()
     result = runner.invoke(
-        cli, ["google-drive", "sign-out", "--token-path", str(flow.token_path)]
+        cli, ["auth", "sign-out", "google-drive", "--token-path", str(flow.token_path)]
     )
     assert "No sign-in was stored." in result.output
 
@@ -662,7 +720,7 @@ def test_without_a_client_file_the_built_in_client_signs_in(
     _script_sign_in(flow, monkeypatch)
     flow.token_path.unlink()
     result = CliRunner().invoke(
-        cli, ["google-drive", "sign-in", "--token-path", str(flow.token_path)]
+        cli, ["auth", "sign-in", "google-drive", "--token-path", str(flow.token_path)]
     )
     assert result.exit_code == 0, result.output
     assert f"Signed in as {EMAIL}." in result.output
@@ -693,7 +751,7 @@ def test_a_build_without_the_built_in_client_asks_for_a_client_file(
     assert not flow.opened and not flow.token_path.exists()
 
     result = CliRunner().invoke(
-        cli, ["google-drive", "sign-in", "--token-path", str(flow.token_path)]
+        cli, ["auth", "sign-in", "google-drive", "--token-path", str(flow.token_path)]
     )
     assert result.exit_code == 1
     assert "no built-in OAuth client" in result.output

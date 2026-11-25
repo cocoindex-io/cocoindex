@@ -1796,7 +1796,10 @@ mod batched_test {
             DEADLINE_BLOCKER_RELEASE.notify_one();
             let blocked = blocker.await.unwrap();
 
-            assert_eq!(expired?, 1);
+            // The body ran without the expired caller's deadline, but that
+            // caller checks its own once the result is back, like Python's
+            // batched runner.
+            assert!(expired.unwrap_err().is_deadline_exceeded());
             assert_eq!(ordinary?, 2);
             assert_eq!(blocked?, 0);
             Ok(())
@@ -2638,6 +2641,76 @@ async fn ctx_mount_each() {
     })
     .await
     .unwrap();
+}
+
+/// The Rust SDK takes the same selector as Python: an unselected background
+/// mount (`ctx.mount`, for the first key here, or `ctx.mount_each`) does not run
+/// and is not treated as gone.
+#[tokio::test]
+async fn component_selector_runs_only_the_selected_background_mounts() {
+    use cocoindex::{ComponentSelector, StableKey, StablePath, UpdateOptions};
+    use std::sync::{Arc, Mutex};
+
+    async fn run(
+        app: &App,
+        mounted: &'static [&'static str],
+        selector: Option<ComponentSelector>,
+    ) -> Vec<String> {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let recorded = ran.clone();
+        app.update_with_options(
+            UpdateOptions {
+                component_selector: selector,
+                ..UpdateOptions::default()
+            },
+            move |ctx| async move {
+                let (singles, each) = mounted.split_at(1);
+                for key in singles {
+                    let ran = recorded.clone();
+                    ctx.mount(key, move |_ctx| async move {
+                        ran.lock().unwrap().push(key.to_string());
+                        Ok(())
+                    })
+                    .await?;
+                }
+                let each: Vec<String> = each.iter().map(|key| key.to_string()).collect();
+                ctx.mount_each(
+                    each,
+                    |key: &String| key.clone(),
+                    move |_ctx, key: String| {
+                        let ran = recorded.clone();
+                        async move {
+                            ran.lock().unwrap().push(key);
+                            Ok(())
+                        }
+                    },
+                )
+                .await?;
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        let mut names = ran.lock().unwrap().clone();
+        names.sort();
+        names
+    }
+
+    let (app, _dir) = temp_app("component_selector").await;
+    assert_eq!(run(&app, &["a", "b"], None).await, ["a", "b"]);
+
+    let select_a =
+        || ComponentSelector::new([StablePath::root().concat_part(StableKey::Str(Arc::from("a")))]);
+    assert_eq!(run(&app, &["a", "b"], Some(select_a())).await, ["a"]);
+    let select_b =
+        || ComponentSelector::new([StablePath::root().concat_part(StableKey::Str(Arc::from("b")))]);
+    assert_eq!(run(&app, &["a", "b"], Some(select_b())).await, ["b"]);
+    // "b" is no longer mounted, and the selector leaves it alone.
+    assert_eq!(run(&app, &["a"], Some(select_a())).await, ["a"]);
+    assert_eq!(
+        run(&app, &["a", "b"], Some(ComponentSelector::new([]))).await,
+        Vec::<String>::new()
+    );
 }
 
 #[tokio::test]
@@ -3899,4 +3972,60 @@ mod mount_macros_file_state {
         assert_eq!(CALLS.load(Ordering::SeqCst), 2);
         assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"two");
     }
+}
+
+/// Ids from `generate_id` and a shared `IdGenerator` stay unique when many
+/// components allocate them concurrently, and each `(component, dep)` keeps
+/// its id on the next run.
+#[tokio::test]
+async fn ids_are_unique_under_concurrency_and_stable_across_runs() {
+    let (app, _dir) = temp_app("ids_concurrent").await;
+
+    async fn allocate(app: &App) -> Vec<(u32, u32, u64, u64, uuid::Uuid)> {
+        app.update(|ctx| async move {
+            let per_component = (0..40u32).map(|component| {
+                let ctx = ctx.clone();
+                async move {
+                    ctx.scope(&format!("c{component}"), move |ctx| async move {
+                        let id_gen = IdGenerator::new();
+                        let id_gen = &id_gen;
+                        ctx.map(0..25u32, |dep| {
+                            let ctx = &ctx;
+                            async move {
+                                let id = generate_id(ctx, &dep).await?;
+                                // A per-dep dependency keeps the ordinal of
+                                // each call independent of arrival order.
+                                let from_gen = id_gen.next_id(ctx, &dep).await?;
+                                let uuid = generate_uuid(ctx, &dep).await?;
+                                Ok((component, dep, id, from_gen, uuid))
+                            }
+                        })
+                        .await
+                    })
+                    .await
+                }
+            });
+            let nested = futures::future::try_join_all(per_component).await?;
+            Ok(nested.into_iter().flatten().collect::<Vec<_>>())
+        })
+        .await
+        .unwrap()
+    }
+
+    let first = allocate(&app).await;
+    assert_eq!(first.len(), 40 * 25);
+    let ids: std::collections::HashSet<u64> = first
+        .iter()
+        .flat_map(|(_, _, id, from_gen, _)| [*id, *from_gen])
+        .collect();
+    assert_eq!(ids.len(), 2 * 40 * 25, "every id is distinct");
+    let uuids: std::collections::HashSet<uuid::Uuid> =
+        first.iter().map(|(_, _, _, _, uuid)| *uuid).collect();
+    assert_eq!(uuids.len(), 40 * 25, "every uuid is distinct");
+
+    let mut second = allocate(&app).await;
+    let mut first = first;
+    first.sort();
+    second.sort();
+    assert_eq!(first, second, "ids are stable across runs");
 }

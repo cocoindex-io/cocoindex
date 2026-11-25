@@ -97,6 +97,7 @@
 //! | `sqlite` | [`connectors::sqlite`] target | |
 //! | `doris` | [`connectors::doris`] target (MySQL protocol + Stream Load) | |
 //! | `surrealdb` | [`connectors::surrealdb`] target | |
+//! | `surrealdb_mem` | SurrealDB's embedded in-memory engine for [`connectors::surrealdb`] (`mem://`) | |
 //! | `lancedb` | [`connectors::lancedb`] target (embedded) | |
 //! | `qdrant` | [`connectors::qdrant`] target | `protoc` |
 //! | `turbopuffer` | [`connectors::turbopuffer`] target | |
@@ -185,6 +186,8 @@ pub use app::{
     Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle, UpdateOptions,
 };
 pub use batched::Batched;
+pub use cocoindex_core::state::component_selector::ComponentSelector;
+pub use cocoindex_core::state::stable_path::StablePath;
 pub use ctx::{ComponentMountHandle, ContextKey, Ctx};
 pub use deps::{DataDep, LogicDep, PropagatedCallback};
 pub use entity_resolution::{

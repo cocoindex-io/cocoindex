@@ -77,6 +77,15 @@ pub struct IggyProducer {
     state_id: Arc<str>,
 }
 
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for IggyProducer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IggyProducer")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
+}
+
 impl IggyProducer {
     /// Connect to an Iggy server from a connection string, e.g.
     /// `iggy://iggy:iggy@localhost:8090`. Credentials embedded in the string are
@@ -633,6 +642,15 @@ fn decide_message(
 pub struct IggyConsumer {
     client: Arc<IggyClient>,
     state_id: Arc<str>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for IggyConsumer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IggyConsumer")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl IggyConsumer {

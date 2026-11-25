@@ -16,6 +16,7 @@ use cocoindex_core::engine::stats::{ProcessingStats, ProcessingStatsGroup, TERMI
 use cocoindex_core::engine::target_state::{
     TargetStateProvider as CoreTargetStateProvider, TargetStateProviderRegistry,
 };
+use cocoindex_core::state::component_selector::ComponentSelector;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -172,7 +173,8 @@ impl Environment {
 
     /// Run the `on_shutdown` hooks (most recently registered first), then
     /// close the state db. Hooks run once; a second call only closes.
-    /// Await every running update or drop before calling this.
+    /// Await every running update or drop before calling this. A live update
+    /// never ends on its own, and the SDK cannot stop one yet.
     pub async fn shutdown(&self) {
         // A poisoned lock still holds the hooks; run them anyway.
         let hooks: Vec<ShutdownHook> = std::mem::take(
@@ -629,6 +631,15 @@ impl App {
     ///
     /// Returns an error if the provided closure returns an error, or if internal engine
     /// orchestration fails.
+    ///
+    /// # Cancellation
+    ///
+    /// The update runs as a task on the engine's runtime. Dropping the
+    /// returned future (or the [`UpdateHandle`] of [`App::start_update`])
+    /// does not stop it: it runs to completion, and a live update runs until
+    /// the process exits. The same holds for [`App::run`],
+    /// [`App::update_with_options`], [`App::preview`] and
+    /// [`App::drop_state`].
     pub async fn update<F, Fut, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(Ctx) -> Fut + Send + 'static,
@@ -660,13 +671,15 @@ impl App {
         Fut: Future<Output = Result<T>> + Send + 'static,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     {
+        let report_to_stdout = options.report_to_stdout;
+        let progress_refresh_interval = options.progress_refresh_interval;
         let handle = self.start_update_with_options(options, f)?;
         let processing_stats = handle.core.stats().clone();
-        let result = if options.report_to_stdout {
+        let result = if report_to_stdout {
             let value = show_progress(
                 handle.into_core(),
                 ProgressDisplayOptions::from_refresh_secs(
-                    options.progress_refresh_interval.map(|d| d.as_secs_f64()),
+                    progress_refresh_interval.map(|d| d.as_secs_f64()),
                 ),
             )
             .await
@@ -752,6 +765,7 @@ impl App {
             full_reprocess: options.full_reprocess,
             live: options.live,
             deadline,
+            component_selector: options.component_selector,
         };
 
         // In preview mode the engine collects target actions into this shared
@@ -879,7 +893,7 @@ impl App {
 }
 
 /// Options for a Rust SDK app update.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct UpdateOptions {
     pub full_reprocess: bool,
     pub live: bool,
@@ -897,6 +911,13 @@ pub struct UpdateOptions {
     /// When `report_to_stdout` is set, refresh the stdout display at this
     /// interval. `None` uses the engine's default cadence.
     pub progress_refresh_interval: Option<Duration>,
+    /// Run only the selected components and what reaches them, leaving every
+    /// other component as it is (cf. Python's
+    /// `App.update(component_selector=...)`). This filters background mounts
+    /// (`Ctx::mount`, `Ctx::mount_each`, live components). Foreground children
+    /// (`Ctx::scope`, `use_mount!`, `use_mount_each!`) return values, so they
+    /// always run.
+    pub component_selector: Option<ComponentSelector>,
 }
 
 /// Options for [`Ctx::stats_group_with_options`](crate::Ctx::stats_group_with_options).
@@ -978,7 +999,8 @@ impl std::fmt::Debug for PreviewAction {
     }
 }
 
-/// Handle returned by [`App::start_update`].
+/// Handle returned by [`App::start_update`]. Dropping it does not stop the
+/// update (see the cancellation notes on [`App::update`]).
 pub struct UpdateHandle<T> {
     core: AppOpHandle<Value>,
     preview_collector: Option<Arc<std::sync::Mutex<Vec<Action>>>>,
@@ -1037,7 +1059,8 @@ where
     }
 }
 
-/// Handle returned by [`App::start_drop_state`].
+/// Handle returned by [`App::start_drop_state`]. Dropping it does not stop
+/// the drop (see the cancellation notes on [`App::update`]).
 pub struct DropHandle {
     core: AppOpHandle<()>,
 }

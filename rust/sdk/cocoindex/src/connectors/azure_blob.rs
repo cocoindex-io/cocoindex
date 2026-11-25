@@ -62,6 +62,7 @@ use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
+use crate::connectors::object_store::is_key_included;
 use crate::error::{Error, Result};
 use crate::resources::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
@@ -319,7 +320,7 @@ pub enum Credential {
 /// of the Azure SDK's `DefaultAzureCredential` that need no interactive sign-in.
 /// The token is for `https://storage.azure.com/`, and the identity needs
 /// `Storage Blob Data Reader` on the container.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum TokenCredential {
     /// The first of these that is configured where the process runs:
     /// [`ClientSecret`](Self::ClientSecret) from `AZURE_TENANT_ID`,
@@ -345,6 +346,43 @@ pub enum TokenCredential {
     AzureCli,
 }
 
+impl std::fmt::Debug for TokenCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenCredential::Default => f.write_str("Default"),
+            TokenCredential::ClientSecret {
+                tenant_id,
+                client_id,
+                ..
+            } => f
+                .debug_struct("ClientSecret")
+                .field("tenant_id", tenant_id)
+                .field("client_id", client_id)
+                .field("client_secret", &"<redacted>")
+                .finish(),
+            TokenCredential::ManagedIdentity { client_id } => f
+                .debug_struct("ManagedIdentity")
+                .field("client_id", client_id)
+                .finish(),
+            TokenCredential::AzureCli => f.write_str("AzureCli"),
+        }
+    }
+}
+
+/// Secrets are redacted.
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Credential::AccountKey(_) => f.write_str("AccountKey(<redacted>)"),
+            Credential::SasToken(_) => f.write_str("SasToken(<redacted>)"),
+            Credential::BearerToken(_) => f.write_str("BearerToken(<redacted>)"),
+            Credential::TokenCredential(source) => {
+                f.debug_tuple("TokenCredential").field(source).finish()
+            }
+        }
+    }
+}
+
 enum Auth {
     SharedKey { key: Vec<u8> },
     Sas { query: String },
@@ -367,6 +405,16 @@ struct ContainerClientInner {
 #[derive(Clone)]
 pub struct ContainerClient {
     inner: Arc<ContainerClientInner>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for ContainerClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContainerClient")
+            .field("account_name", &self.inner.account_name)
+            .field("container_name", &self.inner.container_name)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ContainerClient {
@@ -745,11 +793,17 @@ fn parse_token_response(body: &str, what: &str) -> Result<FreshToken> {
             ))
         })?
         .to_string();
+    // A day at most: a huge value from the server would overflow `SystemTime`
+    // (here or where the renewal time is computed); renewing early is harmless.
+    let max = Duration::from_secs(86_400);
     let expires_in = match (number("expires_in"), number("expires_on")) {
-        (Some(secs), _) => Duration::from_secs(secs),
-        (None, Some(at)) => (UNIX_EPOCH + Duration::from_secs(at))
-            .duration_since(SystemTime::now())
-            .unwrap_or_default(),
+        (Some(secs), _) => Duration::from_secs(secs).min(max),
+        (None, Some(at)) => UNIX_EPOCH
+            .checked_add(Duration::from_secs(at))
+            .map_or(max, |at| {
+                at.duration_since(SystemTime::now()).unwrap_or_default()
+            })
+            .min(max),
         (None, None) => {
             return Err(Error::engine(format!(
                 "azure blob {what}: token response has no expires_in or expires_on"
@@ -1166,7 +1220,7 @@ impl AzureBlobWalker {
                 let Some(relative) = relative_key(&blob_name, &self.folder) else {
                     continue;
                 };
-                if !self.path_matcher.is_file_included(&PathBuf::from(relative)) {
+                if !is_key_included(&*self.path_matcher, relative) {
                     continue;
                 }
                 let size = blob.properties.content_length;
@@ -1275,6 +1329,7 @@ struct ListedBlobProperties {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resources::file::PatternFilePathMatcher;
 
     #[test]
     fn folder_prefix_names_a_folder() {
@@ -1292,6 +1347,27 @@ mod tests {
         // A folder marker, and a blob outside the folder.
         assert_eq!(relative_key("docs/", "docs/"), None);
         assert_eq!(relative_key("docsa.md", "docs/"), None);
+    }
+
+    // An excluded directory excludes the blobs under it, matched below the folder.
+    #[test]
+    fn excluded_directory_excludes_the_blobs_under_it() {
+        let matcher = PatternFilePathMatcher::new(
+            std::iter::empty::<&str>(),
+            ["ignored", "outer/ignored", "**/.*", "!**/.github/**"],
+        )
+        .unwrap();
+        let listed = |blob_name: &str, folder: &str| {
+            relative_key(blob_name, folder).is_some_and(|rel| is_key_included(&matcher, rel))
+        };
+        assert!(!listed("docs/ignored/deep/hidden.txt", "docs/"));
+        assert!(!listed("docs/outer/ignored/hidden.txt", "docs/"));
+        assert!(!listed("docs/.cache/x.txt", "docs/"));
+        assert!(listed("docs/.github/workflows/ci.yml", "docs/"));
+        assert!(listed("docs/outer/kept.txt", "docs/"));
+        assert!(listed("docs/visible.txt", "docs/"));
+        // The folder's own path is not matched.
+        assert!(listed("ignored/visible.txt", "ignored/"));
     }
 
     #[test]

@@ -189,8 +189,9 @@ impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
         if has_child_components {
             *self.guard = FnCallMemoEntry::Ready(None);
             client_bail!(
-                "A function with memo=True mounted child components. \
-                 Either mount the function as a component, or set memo=False."
+                "A memoized function (`memo=True` in Python, `#[function(memo)]` in Rust) \
+                 mounted child components. Either mount the function as a component, \
+                 or turn off its memoization."
             );
         }
         let memo_ret = build_fn_call_memo(fn_ctx, ret(), memo_states);

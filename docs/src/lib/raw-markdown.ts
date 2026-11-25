@@ -199,8 +199,9 @@ export function buildDocMarkdown(
     lang === 'rust'
       ? buildGuard(
           slug,
-          `**CocoIndex v1, Rust SDK.** This page documents the CocoIndex **v1** Rust SDK ` +
-            `(the \`cocoindex\` crate). The Python SDK pages are at ${new URL(`${DOCS_BASE}/`, SITE_URL)}.`,
+          `**CocoIndex v1, Rust SDK (experimental).** This page documents the CocoIndex **v1** Rust SDK ` +
+            `(the \`cocoindex\` crate). The Rust SDK is experimental: any release may change or remove its API, ` +
+            `and it is not yet published on crates.io. The Python SDK pages are at ${new URL(`${DOCS_BASE}/`, SITE_URL)}.`,
           '',
           lang,
         )

@@ -41,6 +41,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use cocoindex_core::engine::component::RunCompleteness;
 use cocoindex_utils::fingerprint::Fingerprint;
 use rsa::RsaPrivateKey;
 use rsa::pkcs1::DecodeRsaPrivateKey;
@@ -51,6 +52,7 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
+use crate::connectors::object_store::is_key_included;
 use crate::error::{Error, Result};
 use crate::live_component::{
     LiveComponentOperator, LiveMapFeed, LiveMapSubscriber, LiveMapView, LiveStream,
@@ -70,7 +72,8 @@ const LIST_FIELDS: &str = "name,size,md5,timeModified,etag";
 
 /// Credentials and endpoint for an OCI API-key principal, as found in an
 /// `~/.oci/config` profile (the same file the OCI CLI and Python SDK read).
-#[derive(Clone, Debug)]
+/// Its `Debug` output redacts the pass-phrase.
+#[derive(Clone)]
 pub struct OciConfig {
     /// Tenancy OCID.
     pub tenancy: String,
@@ -85,6 +88,22 @@ pub struct OciConfig {
     /// The key's pass-phrase, for a PKCS#8 encrypted key (`BEGIN ENCRYPTED
     /// PRIVATE KEY`, as `oci setup config` writes one).
     pub pass_phrase: Option<String>,
+}
+
+impl std::fmt::Debug for OciConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OciConfig")
+            .field("tenancy", &self.tenancy)
+            .field("user", &self.user)
+            .field("fingerprint", &self.fingerprint)
+            .field("key_file", &self.key_file)
+            .field("region", &self.region)
+            .field(
+                "pass_phrase",
+                &self.pass_phrase.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 impl OciConfig {
@@ -646,7 +665,10 @@ impl InstancePrincipal {
         let mut session = self.session.lock().await;
         let now = chrono::Utc::now().timestamp();
         if let Some(current) = session.as_ref()
-            && now <= current.expires_at - SESSION_TOKEN_EXPIRY_MARGIN_SECS
+            && now
+                <= current
+                    .expires_at
+                    .saturating_sub(SESSION_TOKEN_EXPIRY_MARGIN_SECS)
         {
             return Ok(current.signer.clone());
         }
@@ -662,6 +684,15 @@ impl InstancePrincipal {
 #[derive(Clone)]
 pub struct OciClient {
     inner: Arc<OciClientInner>,
+}
+
+/// Shows the handle's identity only, never credentials.
+impl std::fmt::Debug for OciClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OciClient")
+            .field("state_id", &self.state_id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl OciClient {
@@ -1277,10 +1308,7 @@ impl OciWalker {
                     continue;
                 };
                 let size = obj.size.unwrap_or(0);
-                if !self
-                    .path_matcher
-                    .is_file_included(&PathBuf::from(&relative_key))
-                {
+                if !is_key_included(&*self.path_matcher, &relative_key) {
                     continue;
                 }
                 if self.max_file_size.is_some_and(|max| size > max) {
@@ -1413,9 +1441,6 @@ pub struct OciLiveWalker {
     /// Opt-in version for skipping the startup scan on reruns (see
     /// [`OciLiveWalker::logic_version`]). `None` always scans.
     logic_version: Option<String>,
-    /// Decision recorded by `skip_initial_scan`, read by `watch` to know whether
-    /// the scan ran (so the event cutoff and version write can branch on it).
-    skip_scan: tokio::sync::Mutex<bool>,
 }
 
 /// Build a live view over an OCI bucket, driven by `events`: a [`LiveStream`]
@@ -1443,20 +1468,21 @@ pub fn list_objects_live(
         cutoff: tokio::sync::Mutex::new(0),
         watch_guard: SingleWatcherGuard::new("OciLiveWalker"),
         logic_version: None,
-        skip_scan: tokio::sync::Mutex::new(false),
     }
 }
 
 /// Committed-state key under which the live view records `logic_version` after a
-/// successful full scan, read back on a later run to decide whether the startup
-/// scan can be skipped.
+/// full scan that completed, read back on a later run to decide whether the
+/// startup scan can be skipped.
 const OCI_SCAN_VERSION_KEY: &str = "__coco_oci_scan_version__";
 
 impl OciLiveWalker {
     /// Opt into skipping the startup full scan on reruns. When set, the live view
-    /// records this version after a successful scan and, on a later run, skips the
-    /// scan if the recorded version matches — relying on the durable event stream
-    /// to replay the downtime backlog from its committed cursor.
+    /// records this version after a scan in which nothing failed (neither the
+    /// listing nor any object's processing, even when a handler absorbed the
+    /// failure) and, on a later run, skips the scan if the recorded version
+    /// matches — relying on the durable event stream to replay the downtime
+    /// backlog from its committed cursor.
     ///
     /// You MUST bump this whenever your processing logic changes (otherwise stale
     /// state is silently kept), and the stream MUST be durable (e.g. a Kafka
@@ -1511,10 +1537,7 @@ impl OciLiveWalker {
         let Some(relative_key) = relative_key(&self.prefix, &object_name) else {
             return Ok(ReadyHandle::immediate());
         };
-        if !self
-            .path_matcher
-            .is_file_included(&PathBuf::from(&relative_key))
-        {
+        if !is_key_included(&*self.path_matcher, &relative_key) {
             return Ok(ReadyHandle::immediate());
         }
         // Re-read: the live object state wins over the event type.
@@ -1578,18 +1601,18 @@ impl LiveMapFeed<String, OciFile> for OciLiveWalker {
             return Ok(false);
         };
         let stored: Option<String> = operator.read_committed_state(OCI_SCAN_VERSION_KEY).await?;
-        let skip = stored.as_deref() == Some(version.as_str());
-        *self.skip_scan.lock().await = skip;
-        Ok(skip)
+        Ok(stored.as_deref() == Some(version.as_str()))
     }
 
     async fn watch(&self, subscriber: LiveMapSubscriber<String, OciFile>) -> Result<()> {
         let _watch_token = self.watch_guard.enter()?;
-        let skip_scan = *self.skip_scan.lock().await;
-        // Record the version only after a real scan (which has already committed
-        // — `mark_ready` ran before `watch`), so a later run skips only when the
-        // bootstrap durably landed.
-        if !skip_scan && let Some(version) = &self.logic_version {
+        // Record the version only after a scan that completed (it has already
+        // committed — `mark_ready` ran before `watch`): a failure a handler
+        // absorbed leaves an object unprocessed, or unlisted, so a later run
+        // must scan again.
+        if subscriber.startup_scan == Some(RunCompleteness::Complete)
+            && let Some(version) = &self.logic_version
+        {
             subscriber
                 .write_committed_state(OCI_SCAN_VERSION_KEY, version)
                 .await?;
@@ -1597,7 +1620,7 @@ impl LiveMapFeed<String, OciFile> for OciLiveWalker {
         // In skip-scan mode there is no scan to dedupe against, so the wall-clock
         // cutoff must not fire — the durable stream replays the downtime backlog
         // and every replayed event must be processed. `i64::MIN` drops nothing.
-        let cutoff = if skip_scan {
+        let cutoff = if subscriber.startup_scan.is_none() {
             i64::MIN
         } else {
             *self.cutoff.lock().await
@@ -1904,5 +1927,26 @@ mod tests {
         assert!(matcher.is_file_included(&PathBuf::from("a/b.md")));
         assert!(!matcher.is_file_included(&PathBuf::from("a/b.txt")));
         assert!(!matcher.is_file_included(&PathBuf::from("skip/b.md")));
+    }
+
+    // An excluded directory excludes the objects under it, matched below the prefix.
+    #[test]
+    fn excluded_directory_excludes_the_objects_under_it() {
+        let matcher = PatternFilePathMatcher::new(
+            std::iter::empty::<&str>(),
+            ["ignored", "outer/ignored", "**/.*", "!**/.github/**"],
+        )
+        .unwrap();
+        let listed = |prefix: &str, name: &str| {
+            relative_key(prefix, name).is_some_and(|rel| is_key_included(&matcher, &rel))
+        };
+        assert!(!listed("data/", "data/ignored/deep/hidden.txt"));
+        assert!(!listed("data/", "data/outer/ignored/hidden.txt"));
+        assert!(!listed("data/", "data/.cache/x.txt"));
+        assert!(listed("data/", "data/.github/workflows/ci.yml"));
+        assert!(listed("data/", "data/outer/kept.txt"));
+        assert!(listed("data/", "data/visible.txt"));
+        // The prefix's own folders are not matched.
+        assert!(listed("ignored/", "ignored/visible.txt"));
     }
 }

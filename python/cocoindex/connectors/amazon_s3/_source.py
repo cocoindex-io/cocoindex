@@ -34,6 +34,7 @@ except ImportError as e:
 from cocoindex.connectorkits._object_store import (
     ObjectStoreFilePath,
     folder_prefix,
+    is_key_included,
     relative_key,
 )
 from cocoindex.resources import file
@@ -249,6 +250,9 @@ async def read(client: AioBaseClient, uri: str, size: int = -1) -> bytes:
         The object content as bytes.
     """
     bucket_name, key = _parse_s3_uri(uri)
+    if size == 0:
+        return b""
+
     if size >= 0:
         response = await client.get_object(
             Bucket=bucket_name, Key=key, Range=f"bytes=0-{size - 1}"
@@ -314,7 +318,7 @@ class S3Walker:
                     continue
 
                 # Apply path matcher
-                if not self._path_matcher.is_file_included(PurePath(rel_key)):
+                if not is_key_included(self._path_matcher, rel_key):
                     continue
 
                 obj_size: int = obj["Size"]

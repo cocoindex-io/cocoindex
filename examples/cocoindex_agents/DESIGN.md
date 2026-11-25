@@ -19,7 +19,11 @@ become its own repository, so it is more elaborate than the other examples.
 It was called coco-harness until 2026-11-05. Amended 2026-11-05 for
 documents the model reads natively (§3, *Documents*), with the `orders` flow,
 and the same day for a Google Drive folder as a source (§3, *Sources: a
-Google Drive folder*; §7), with the `drive` flow.
+Google Drive folder*; §7), with the `drive` flow. Amended 2026-11-21 for the
+web as a source (§0, *Vocabulary*; §3, *Sources: the web*; §5, *Search*; §7;
+§8), with the `research` flow, after an owner's review of the abstraction
+and four rounds of an independent design review (the proposal's history is
+in git under `flows/research/`).
 
 ---
 
@@ -55,6 +59,23 @@ prompt should be written.
   `child/<key>`).
 - **Handle**: a stable name for a live object (`src:docs`), with a **card**
   listing its methods.
+- **Resource**: one thing a worker can read whole — a local file, a Drive
+  file, a web page — with an **identity** that is global within its kind's
+  space (root plus path; account plus folder plus path; the canonical final
+  URL), a **content state** its memo state carries (mtime and digest;
+  `modifiedTime` and MD5; a content digest), and one way to be read. The
+  engine's `FileLike` (`cocoindex.resources.file`) is the contract.
+- **Listing**: how a session *finds* resources — walking a folder, running
+  searches, taking a list of URLs. Session-local, recorded as an
+  observation; two listings may yield the same resource.
+- **Source**: a `src:` handle, a listing with four methods (`stats`,
+  `sample`, `read`, `keys`). A **kind** is a listing kind and names the
+  resources it yields: `localfs` and `google_drive` list files; `web_search`
+  and `web_pages` list pages. A folder fuses container and listing; a search
+  is a listing over a space it does not own.
+- **Item**: one listed resource under a source-local key, `Item(key,
+  resource)`, the unit of a `for_each`. Cards and tool descriptions say
+  *item*, never *file*, since 2026-11-21.
 - **Transcript**: the canonical sequence of (model output, tool results) of
   one session; **`prev`** is the one stored by the last successful run.
 - **Scratch**: a run-local channel from a turn back to the session loop (§4).
@@ -100,12 +121,29 @@ Two engine facts shape the design:
 | **B. Map → reduce → answer** | "What do 2,000 interview notes say about pricing? Write report.md with quotes." | `for_each(collect)`, `reduce`, `declare(value=res:…)` |
 | **C. Observe → plan → map** | "Turn this folder of invoices into a table; figure out the columns." | `observe(inputs=[src])`, `for_each` |
 | **D. Group-by reduce** | "Per person, list open action items across all meeting notes." | `for_each`, `reduce` with a grouping step (target, §8) |
+| **E. Search → read → follow → report** | "What is incremental computation and where is it used? Search the web, read what you find, follow the leads worth following, and write `./out/report.md` with citations." | `open_source(kind="web_search", queries=…)`, `for_each(collect)`, `reduce(key="leads")`, `open_source(kind="web_pages", urls=["res:leads"])`, `for_each(collect)`, `reduce(key="report", collection=[…])`, `declare(value="res:report")` |
 
 What reruns after a change is defined once, in §7 (reuse model) and §6
 (reduce locality); the shapes above only pick tools. A shape does not depend
 on what the files are or where they are: the `orders` flow is shape A over
 PDFs, which the model reads natively (§3, *Documents*), and the `drive` flow
 is shape A over a Google Drive folder (§3, *Sources: a Google Drive folder*).
+Shape E (added 2026-11-21, the `research` flow) is shape B twice over with a
+search in place of a folder: the first fan-out reads the pages the searches
+found, its reduce lists the leads worth following, a second source lists the
+leads' pages, the second fan-out reads them, and one reduce over both
+collections writes the report (§3, *Sources: the web*). The page is the unit
+of delegation as the file is in A–C: a closed worker per page, memoized on
+the page's content, and an orchestrator that never reads a page or a search
+result. The recipe also says what to do with nothing to read: a search card
+showing `items: 0` means no page could be found or fetched and the report
+says so; a leads reduce that names no URL gives a `web_pages` source with no
+items, an empty second collection, and a report reduced from the first. A
+task that names pages to start from gets a `web_pages` source over them in
+the first turn, beside the search (same turn, so neither excludes the
+other), read by its own fan-out and reduced with the rest; the
+`research_seeded` flow uses this to measure a changed source against a page
+the user controls.
 
 Directions kept in view, not in v1:
 
@@ -160,7 +198,7 @@ package's API: JSON calls are canonical, comparable and pickable (§4).
 
 | Tool | What it does | CocoIndex primitive | In the transcript | Closed? |
 |---|---|---|---|---|
-| `open_source(kind, name, path, patterns?)` | `localfs` (a directory), `google_drive` (a folder, by link or id) | connector → `FileLike`… | card | no |
+| `open_source(kind, name, …)` | `localfs` (`path`, `patterns?`: a directory), `google_drive` (`path`: a folder by link or id, `patterns?`), `web_search` (`queries`), `web_pages` (`urls`: `res:` handles or URLs); each kind holds to its own arguments | connector → `FileLike`… | card | no |
 | `open_target(kind, name, path)` | a directory of files in v1 | `mount_target` | card | no |
 | `call_agent(key, task, role?, inputs?)` | run an open subagent and wait | `use_mount` at `child/<key>` | `{result: res:key, chars}` | no |
 | `start_agent(key, task, role?, inputs?)` | run in the background; effects only through targets in `inputs` | `mount` at `child/<key>` | `{job: job:key}` | no |
@@ -234,6 +272,13 @@ dependency. A handle-shaped `value` that does not resolve, or resolves to
 another kind of handle, is an error; it is never written as literal text.
 
 **Volatile methods are role-gated.** `keys()` is available only to planners.
+
+**`reduce` takes one collection or several.** `collection` is a `coll:`
+handle or a non-empty list of distinct ones; their item keys must not
+collide (a key is a reducer slot's identity, §6, and a collision is the
+model's error); an empty member is allowed when the union is not, which is
+how shape E reduces a report from a first collection and an empty second
+one; `omitted` sums the members' failed counts.
 
 **Method arguments are checked by name.** A card lists each method's
 argument names, and `call` rejects any other name as the model's error
@@ -360,19 +405,20 @@ else), `test_an_open_session_samples_documents_by_size_and_reads_them_attached`
 ### Sources: a Google Drive folder
 
 (Added 2026-11-05, with the `drive` flow.) A source is a folder of files
-wherever the folder is; `FolderSource` (`tools/folder.py`) is the contract
-both kinds keep — the four methods and their cards, every read recorded —
-and a kind supplies the walk, the record keys, the fan-out's listing entries
-and the read. The second kind is a Google Drive folder
+wherever the folder is; `Source` (`tools/source.py`, called `FolderSource`
+in `tools/folder.py` until the web kinds arrived) is the contract both kinds
+keep — the four methods and their cards, every read recorded — and a kind
+supplies the walk, the record keys, the fan-out's listing entries and the
+read. The second kind is a Google Drive folder
 (`tools/drive.py`, over the `google_drive` connector), opened with
 `open_source(kind="google_drive", path=<link or id>)`.
 
 - **The model names the folder and never a credential.** The folder is read
   as the account signed in on this machine through the connector's OAuth
-  sign-in (`cocoindex google-drive sign-in`), an explicit step outside any
-  run. The card names the folder and the patterns; the account's address is
-  in the source's memo key and in every record it makes, so that a
-  different account re-runs what was read, but it is not in any card or
+  sign-in (`cocoindex auth sign-in google-drive`), an explicit step outside
+  any run. The card names the folder and the patterns; the account's
+  address is in the source's memo key and in every record it makes, so that
+  a different account re-runs what was read, but it is not in any card or
   transcript, and no token is anywhere the engine stores or the model sees.
   A run with no sign-in fails in `open_source`, which an open session
   contains and reports as the error's class name; the session re-runs until
@@ -415,6 +461,238 @@ re-running one worker's two turns; an added and a removed file),
 do), `::test_another_account_or_no_sign_in_reruns_what_was_read`,
 `::test_a_revoked_sign_in_reruns_the_session_instead_of_failing_the_run`,
 `::test_folder_ids_come_from_links_or_ids`.
+
+
+### Sources: the web
+
+(Added 2026-11-21, with the `research` flow; the owner's review replaced a
+first draft that called the web "a folder of pages" with the vocabulary of
+§0, and four rounds of an independent design review settled the contracts
+below.) Two listing kinds, one resource kind, in `tools/web.py`:
+
+```
+open_source(kind="web_search", name="web",   queries=["incremental computing", …])
+open_source(kind="web_pages",  name="leads", urls=["res:leads"])
+```
+
+`open_source`'s arguments are per kind; the handler reports a missing or
+foreign one as the model's error (`web_search does not take ['path']; it
+takes ['queries']`), as `call` does for method arguments. The card names the
+kind, the engine for a search, the arguments as given, and `items` widened.
+
+**A page is a resource.** `WebPage` is a `FileLike`: its identity and key is
+the canonical final URL (scheme and host lower-cased, default port and
+fragment dropped, tracking parameters dropped, query parameters sorted,
+taken after redirects; two results that redirect to one page are one item);
+its content is the page *normalized* — for HTML the title (`<title>` or
+`og:title`) and the main content as Markdown with links and tables,
+boilerplate, navigation and comments stripped (trafilatura, precision first,
+its default extractor when precision yields under 500 characters); for text
+and Markdown the text; for a PDF the bytes, read as a document (*Documents*,
+above) — capped at 40,000 characters with a `[truncated]` line; and its
+content state is the digest of that normalized content (sha256 of title and
+text; the engine's fingerprint of a PDF), so a worker over an unchanged
+digest is skipped whole and a timestamp, a nonce or a comment count that
+the normalization removes changes nothing. The text a worker reads begins
+with a header the system writes, `# <title>` and `URL: <url>`, so it can
+cite; **no time is in it** (*No polling, no time*; fetch times are in the
+`--plan` tree, below, and never in a tool result).
+
+**Two listings.** `web_search` lists the pages a set of queries finds
+through the configured engine, by one pure function
+`frontier(prev, results, k, budget)` applied identically by the body and the
+validator: each query asks for `2k` ranked results (`k` = 4; the budget is
+12 pages for a search source and 6 for a page set, constants in `web.py`,
+chosen inside the `8–16` and `4–8` count buckets so a page or two
+unavailable does not move the card); `rank(u)` is a URL's best rank over all
+queries; **incumbents** (URLs of `prev`, the set this source chose last run,
+that some query still returns within its top `2k`) come first by `(rank,
+URL)`, then **newcomers** (URLs some query returns within its top `k`), cut
+at the budget; no per-query quota. A full frontier is unchanged by any rank
+movement inside the top `2k`; an underfilled one may grow when jitter brings
+a URL into a top `k`. Incumbency is judged on requested URLs, which is what
+engines return, and the requested-to-final mapping is recorded, so an
+incumbent reached through a redirect stays one. `prev` comes from
+`use_state("web")` in the body and from the record in the validator; both
+were written by the same body run.
+
+`web_pages` lists the URLs named — every `http(s)` URL in each `res:`
+handle's text, then the literal URLs, canonical, deduplicated, in the order
+given — **minus the exclusion set**, in two stages: before fetching, a
+requested URL already among the requested or final URLs of another web
+source in the handle-table snapshot the turn runs against (*Calls in one
+turn are independent*: a source opened in an earlier turn is excluded from,
+a sibling of the same turn is not); after fetching, an item whose final URL
+is among those final URLs (a lead that is an alias of a page already read),
+kept in the recorded mapping so that the alias later redirecting to a new
+page is a changed listing. The source's **identity** — its memo key as an
+input of an open child and its record key, one immutable value — is the
+kind, the sorted admitted requested URLs and both frozen exclusion sets, so
+a leads reducer that rewords or reorders its answer around the same URLs
+changes nothing downstream, and a child that saw an empty page set because
+its lead was an alias of a search result re-runs when the search no longer
+lists that page.
+
+**Fetching: conditional, polite, once per run, never by a worker.** Every
+fetch happens in the listing, in the body of the session that opened the
+source, through one `httpx.AsyncClient` with the project's `User-Agent`.
+Two stores in the session's `use_state("web")`, tied by the payload
+version: the **response cache**, per canonical requested URL — the final
+URL, the validators the origin sent (`ETag`, `Last-Modified`) and the digest
+of the payload those validators were obtained with — and the **payload
+store**, per (final URL, digest), immutable once written — the title, the
+Markdown or PDF bytes (under 8 MiB) and the time this version was first
+fetched, for the trace. A fetch of a known URL sends `If-None-Match` /
+`If-Modified-Since`; a 304 reuses exactly the version its validators name,
+or, if that version is gone, fetches again unconditionally; a 200 is
+normalized and its digest compared. Redirects are followed hop by hop (five
+at most) and a chain that lands on a final URL already fetched in this body
+run takes that fetch's response snapshot, so two aliases of one page cannot
+observe two versions in one run and no validator is ever paired with another
+response's payload. When the body finishes, response entries no listing of
+this run named are dropped, then payload versions no entry references; a
+skipped body leaves both untouched; a validator that found new validators
+with the same digest refreshes the record, not the cache (one 200 instead of
+a 304 next time); a failed fetch keeps its entry and its version but is not
+an item. Politeness: `robots.txt` per host, cached for the run, consulted
+before every fetch (a disallowed URL is never fetched); `Crawl-delay` up to
+10 s; one request at a time per host and at most four in flight; a 20 s
+timeout; 2 MiB for HTML (cut and marked `[truncated]`) and 8 MiB for a PDF
+(never truncated: over the cap it is unavailable); no cookies; `GET` only;
+no sign-in — a 401 or 403, a redirect to a `login`/`signin`/`auth` path, or
+a page whose normalized text is under 200 characters and asks to sign in is
+unavailable. Workers never fetch: their item holds the page, so the
+fan-out's roles stay closed, exactly as over a folder.
+
+**Unavailable pages.** A *permanent* outcome — 404 or 410, 401 or 403, a
+robots refusal, a sign-in page, an unsupported media type, a PDF over the
+cap — is data: the page is left out of the items and recorded in the
+listing's state with its reason; the next run's validation re-tries it, and
+a page that comes back is a changed listing. An *exhausted transient*
+outcome — 429, 503, a timeout or a reset, after `errors.retrying` — is an
+environment failure **contained per page** (the owner's decision of
+2026-11-21, an amendment to §7): the page is left out, marked `transient`,
+and recorded as a contained failure of the session (`page:<url>`), so the
+session's memo is not reused and the fetch is tried again next run, while
+the `open_source` result stays `ok=True` for the pages that were fetched.
+Fetch trouble never reaches a fan-out's `failed` count, because workers do
+not fetch; a worker can still fail as any worker can. Only the engine's own
+failures — the search API down after retries, no search engine registered —
+fail the tool itself, contained by the open session as `ok=False` (§7); a
+run that absorbed one mounts no worker, so the engine drops the workers'
+memos with their paths and the pages are read again when the engine is back.
+The `--plan` tree lists each web source's pages (URL, digest, first fetched)
+and its unavailable pages with their reasons under the `open_source` action
+(`ActionTrace.details`); `--stats` names the transient ones under *re-runs
+next run*.
+
+**Records and validation.** A web source records **one observation per
+run** whatever was observed through it (`stats`, `sample`, `keys`, the
+fan-out's listing are pure functions of the listing): key = the engine
+identity, `k` and the queries (`web.SEARCH_OBSERVATION`) or the source's
+identity (`web.PAGES_OBSERVATION`); state = the frontier (sorted requested
+URLs), the requested-to-final mapping (suppressed aliases included), each
+page's validators and the digest they were obtained with, and the
+unavailable URLs with their reasons (transient ones included, so a recovery
+is a change). **The validator reproduces the listing from the record
+alone** — searches again and applies `frontier` with the recorded frontier
+as `prev`, applies the recorded exclusions, fetches every chosen URL
+conditionally with the recorded validators (a 304 confirms the recorded
+digest; a 200 is normalized and compared) — and is valid iff the record is
+unchanged. So an unchanged rerun is skipped whole after one search per query
+and one conditional request per page, with no body run and no model call;
+a changed result or page re-runs the body with zero inference and probes the
+workers, of which only the changed or new pages run. **Validators never
+raise for the environment**: an engine outage or an exhausted transient
+fetch makes the record invalid (the previous state is kept), the body
+re-runs and contains the trouble where it meets it; cancellation and
+deadline expiry propagate. A planner's `read(key)` is `web.PAGE_READ`: key
+= the canonical URL, state = (final URL, validators, digest) or `None` for a
+page that did not exist; one conditional request validates it.
+
+Observed with the scripted web (`test_research.py`) on 2026-11-21: on a run
+whose body re-ran, the engine validated the root session's records **twice**
+before the body ran, so a listing was searched and fetched twice by
+validators and once by the body. A directory walk twice costs nothing; here
+it is a request per page. The cause was the engine's memo re-check under the
+build permit, which a long-lived root component repeated on every rerun
+(fixed the same day, engine PR #2836: the re-check now runs only for a memo
+stored since the fast path looked); the validators run once per record per
+run. No verdict is cached here for a time window: it would hand a stale one
+to a user who edits and reruns at once.
+
+**The engine is a tracked input.** A record names the engine it was made
+with and its validator searches with that engine, which alone would let a
+run that switched engines validate the old records and skip. So the selected
+engine's **identity** — its name and the configuration that affects results
+(`wikipedia:en`, `tavily:basic`), never a credential — is
+`AgentsConfig.search_engine`, part of the config's memo key and so an input
+of every session (§7); switching engines re-runs every body, their turns
+hit where transcripts are unchanged, and the `open_source` card, which names
+the engine, differs. The engine *object* is registered by identity
+(`web.register_engine`), so validators find it without a component context;
+`default_engine(os.environ)` picks Tavily with `TAVILY_API_KEY` and
+Wikipedia otherwise. A `SearchEngine` is a protocol (`search(query, k) ->
+[SearchHit(url, title)]`); `wikipedia` is the MediaWiki search API (no key,
+free, a descriptive `User-Agent`; its results are articles, and the
+`web_pages` round reaches the open web through their references), `tavily`
+is Tavily Search at basic depth (a free tier of 1,000 credits a month; only
+its URLs and titles are used, so a page's provenance is the same under both
+engines). The recipe asks for short, title-like queries: a long string of
+keywords matched the wrong articles on the first drive. Rejected for v1,
+with reasons in `flows/research/SURVEY.md`: Brave (free tier withdrawn,
+terms forbid storing results), Exa, Serper, SerpAPI, Jina (now needs a key),
+DuckDuckGo's HTML endpoint (unofficial), SearXNG public instances, a model's
+native web search (per-call price, prose results, provider lock-in), hosted
+extraction (no origin validators, a key or a rate limit), Playwright
+(hundreds of megabytes), and a version stamp in the model's text (a clock
+reading in a tool result; the owner chose no time).
+
+**Extraction's guarantees are stated per page type** and tested with
+fixtures: for an article, a documentation page, an encyclopedia article and
+plain text or Markdown, a material edit to the main content changes the
+digest and an edit to boilerplate (a timestamp, a comment count, a
+navigation link, an ad slot) does not. Repository pages (a GitHub repository
+page extracts to its sidebar), forums, listings and JavaScript-rendered
+pages are accepted limitations outside that guarantee: the text is thin or
+beside the point, the worker says so, and the flow does not special-case
+hosts.
+
+**The report and its citations.** A page worker's answer has the shape the
+recipe gives verbatim: findings as bullets, each a fact with a short quote
+and the citation `(URL)` copied from the page header; then `Leads:` with up
+to three URLs from the page worth reading, or `Leads: none`. The leads
+reducer lists the distinct lead URLs not among the pages read, at most six;
+the report reducer keeps every claim's citation and ends with a `Sources`
+section, one line per cited URL. Citations survive the reduce because they
+are text in the members and the task says to keep them. When one source
+changed, the user sees that source's findings change in the report and, in
+the `--plan` tree, that page's new fetch time while every other page keeps
+its own; the prose of the reducer group containing the changed member is
+rewritten (§6 locality), untouched groups are byte-identical.
+
+*Acceptance:* `test_research.py` —
+`test_a_research_run_reuses_unchanged_pages_and_reruns_only_a_changed_one`
+(a report with citations; no call and only conditional requests on an
+unchanged rerun; a boilerplate change re-runs nothing; a content change
+re-runs one worker's answer turn and the two reducers; validators once and
+the body once on a re-running rerun),
+`test_the_frontier_keeps_a_set_under_rank_jitter_and_moves_only_at_its_edges`
+(jitter, an incumbent sliding while a newcomer enters, a departure, a
+redirect alias as one item),
+`test_web_pages_excludes_what_the_search_read_and_is_keyed_on_the_url_set`
+(the alias suppressed after fetching and admitted when it redirects to a new
+page; a reworded leads answer changes nothing downstream),
+`test_unavailable_pages_are_data_and_exhausted_transient_fetches_are_contained`
+(robots, 403, a sign-in redirect, a PDF over the cap, a 404; a 503 omitted,
+recorded, retried and recovered; `failed` untouched),
+`test_an_engine_outage_is_contained_in_the_body_and_invalidates_in_a_validator`,
+`test_switching_the_search_engine_reruns_the_search`,
+`test_empty_outcomes_are_reported_honestly_and_recover`,
+`test_a_pdf_on_the_web_is_a_document`,
+`test_open_source_holds_each_kind_to_its_arguments_and_reduce_checks_its_collections`,
+`test_the_normalizer_keeps_content_edits_and_drops_boilerplate_edits_per_page_type`,
+`test_frontier_rule_examples`, `test_canonical_urls_and_urls_in_text`.
 
 ## 4. Replay policy: "dump once"
 
@@ -607,6 +885,23 @@ stores `prev` yet (§8).
 (bottom-k) and the head of each. A new item changes the sample with
 probability about k/N.
 
+### Search
+
+(Added 2026-11-21.) Search results change between runs, and no session
+reads them: a search is part of a listing observation and only widened item
+counts reach a card; the orchestrator decides the queries from the prompt
+alone; the leads come out of a reduce as a URL set, and the `web_pages`
+source is keyed on that sorted set, not on the reducer's prose. The frontier
+rule (§3, *Sources: the web*) keeps a full frontier unchanged under any rank
+movement inside the top `2k`; a URL leaving every top `2k` frees a place and
+one entering a top `k` with a free place takes it — the correct dependency —
+and an underfilled frontier may grow. Duplicate URLs, URLs that redirect to
+a page already listed, tracking parameters and fragments are absorbed before
+the listing is recorded. The budgets (12 and 6) sit inside their count
+buckets so the common full-budget case with a page or two unavailable keeps
+its card; a sparse search can still cross a bucket when a page is added or
+lost, and recorded count hysteresis stays a target (above).
+
 ### Stable hash
 
 Every hash used for grouping or sampling — bisection (§6), bottom-k — is a
@@ -747,9 +1042,16 @@ A session's inputs — and so what invalidates it — are:
   the turns after the read miss;
 - for an open session: the memo keys of its `inputs` handles (a source's
   identity, a collection's content hash) and its **recorded reads** (below);
+  a web source's identity includes, for a page set, its frozen exclusions
+  (§3, *Sources: the web*);
+- for a closed **page worker**: its item — the canonical final URL, then
+  the page's content digest; validators, raw bytes and fetch times are not
+  in the key;
 - the **agents config** it reads through `AGENTS_CONFIG`: roles, tool specs,
-  model and version, fingerprinted when the config is provided (the key
-  detects changes), because a session builds its children's specs from it;
+  model, version and the **search engine identity**, fingerprinted when the
+  config is provided (the key detects changes), because a session builds its
+  children's specs from it and a web record's validator searches with the
+  engine the record names (§3, *Sources: the web*);
 - tool **logic**: a handler's own source is tracked because handlers are
   `coco.fn`-wrapped; editing one invalidates the closed sessions that ran it
   (their turns still hit where the transcript is unchanged, so this costs tool
@@ -877,6 +1179,18 @@ failing the run.)
 Deadline expiry (`DeadlineExceededError`), cancellation, and a second
 unresolvable replay pick in one turn (§4) are never contained: they fail the
 session and the run, and completed turns keep their memos.
+
+**A sub-operation of a tool may be contained on its own** (amended
+2026-11-21, the owner's decision for the web source). A listing that fetches
+twelve pages and meets an exhausted transient failure on one leaves that page
+out, records the failure as a contained one (`page:<url>`, never valid, so
+the session re-runs and tries again) and returns `ok=True` for the rest; the
+trace names the page. Under the letter above the whole `open_source` call
+would fail for one flaky host, the model would have no source that run, and
+every worker's memo would be dropped with its path. Validators of such a
+source return an invalid outcome for environment trouble instead of raising
+(the engine propagates a validator's exception), as the Drive validators do
+for a refused sign-in.
 
 *Acceptance:* `test_errors.py`;
 `test_replay.py::test_environment_errors_are_results_in_open_sessions_and_heal_next_run`,
@@ -1014,7 +1328,7 @@ workers skipped) pins that the trace changed nothing memoized.
 |---|---|---|---|
 | Progress survives failure | solved by `use_mount` per turn | ✅ | partial fn-memo flush on failure (S–M; pure entries only) |
 | Skip unchanged **open** sessions | shipped: `coco.DataDep` + `use_data_dep` + `cannot_skip`; adopted 2026-11-04 (*Open vs closed*) | ✅ | — |
-| Skip the **parent** of an open session | shipped: transitive validation by path (engine PR #2671, 2026-11-04); no change on this side | ✅ | per-run validation cache (one validation per record per operation; S) |
+| Skip the **parent** of an open session | shipped: transitive validation by path (engine PR #2671, 2026-11-04); one validation per record per run (engine PR #2836, 2026-11-21: the root's records were validated twice when its body re-ran, a search and a request per page each time, §3 *Sources: the web*); no change on this side | ✅ | — |
 | Memo probe ("would this hit?") | deferred | — | S |
 | A component hit keeps its `use_state` values | engine behaviour | ✅ | — |
 
@@ -1069,6 +1383,7 @@ input of a worker whose key must cover everything (*Open vs closed*).
 | Trace and report: stats line per shape and run, skipped subtrees credited from their stored trace, reasons, plan rendering | `test_observability.py` (§7 *Observability*) |
 | Documents: a PDF by reference in the transcript and attached in the rendered request, text files unchanged, no call on an unchanged rerun, one replaced PDF re-running that worker's content turns only; a source's `sample` showing a document by media type and size and its `read` attaching it | `test_documents.py`, `test_rendering.py` (§3 *Documents*) |
 | A Google Drive folder as a source with the local folder's contract: the folder named, the account never; exports of Google-native files, a PDF as a document; no call, no tool and no download on an unchanged rerun; one edited Doc re-running one worker's content turns; a reader skipped on `modifiedTime` alone and re-run on an edit or a rename; another account or no sign-in re-running what was read | `test_google_drive.py` (§3 *Sources: a Google Drive folder*) |
+| The web as a source: a search and a page set over a fake engine and `httpx.MockTransport` pages; a report with citations; no call and only conditional requests on an unchanged rerun; a boilerplate change re-running nothing and a content change one worker's answer turn and the reducers; the frontier under jitter, departures and aliases; exclusion of pages already read, after redirects; unavailable classes, per-page containment of exhausted transient fetches, an engine outage contained in the body and invalid in a validator; the engine as a tracked input; empty outcomes; a PDF on the web as a document; per-kind `open_source` arguments; `reduce` over several collections; the normalizer's guarantees per page type | `test_research.py` (§3 *Sources: the web*) |
 
 **Implemented, not covered by a test:**
 
@@ -1085,7 +1400,11 @@ input of a worker whose key must cover everything (*Open vs closed*).
 |---|---|---|
 | `group_by` reduce (shape D) | §2, §6 | no API yet |
 | Stats hysteresis via `use_state` | §5 | helper exists, state not stored |
-| Table targets (sqlite/postgres), other sources | §3 | sources: `localfs`, `google_drive`; targets: `localfs_dir` only |
+| Table targets (sqlite/postgres), other sources | §3 | sources: `localfs`, `google_drive`, `web_search`, `web_pages`; targets: `localfs_dir` only |
+| A web resource in CocoIndex proper | §3 | a `FileLike` over HTTP with conditional requests is useful beyond this example; proposed, not built here |
+| Shape A over pages (one output per page) | §2, §3 | needs an output-naming rule for keys that are not file names |
+| A model-native search engine; a planner over search results | §3, §5 | engines today: `wikipedia`, `tavily` |
+| Delta prompting in the report reducer | §6 | so an unchanged group's prose stays byte-identical |
 | A Drive folder named by name, or a shared drive, in `open_source` | §3 | a link or an id only; a name would need a lookup recorded as a read |
 | Drive change notifications in place of a walk per validation | §3, §7 | every validation walks the folder through the API; fine at the sizes tried |
 | Always-on / live mode | §2 | no watcher, no refresh design |
@@ -1119,20 +1438,24 @@ cocoindex_agents/
   documents.py     Document (bytes + reference), Documents (the run-local store), the media-type rule
   tools/           Tool (closed_ok; key_arg = the argument that names the child slot),
                    ToolRegistry (validate_args), AgentsConfig (spec, version; change-detected);
-                   folder (FolderSource: the contract a source keeps, whatever holds the
-                   folder), sources (the local kind, its OBSERVATION and FILE_READ records,
-                   and the open_source / call / read_input tools), drive (the Google Drive
-                   kind and its records, over the google_drive connector's signed-in
-                   account), targets, agents, reduce, stats
+                   source (Source: the contract every source keeps, a listing of
+                   resources), sources (the local kind, its OBSERVATION and FILE_READ
+                   records, and the open_source / call / read_input tools), drive (the
+                   Google Drive kind and its records, over the google_drive connector's
+                   signed-in account), web (the web_search and web_pages kinds: the
+                   frontier, the fetcher, the normalizer, WebPage, the stores, the
+                   records and their validators, the search engines), targets, agents,
+                   reduce, stats
   roles.py         default roles, the protocol text, and the orchestrator's recipes
   litellm_client.py  renders a transcript to messages and calls LiteLLM (API call untested);
                    sums the usage the provider reports
   testing.py       ScriptedModel (test-only tools live in tests/helpers.py)
   app.py           default config; build a coco.App from a flow prompt; CLI
 tests/             see the Acceptance lines in §3–§7 and the table in §8
-flows/             five sample flows (shapes A–C of §2, shape A over PDFs, shape A over a
-                   Google Drive folder) with user-level prompts, data, a runner, and the
-                   stability and model calls measured with a real model
+flows/             six sample flows (shapes A–C of §2, shape A over PDFs, shape A over a
+                   Google Drive folder, shape E over the web) with user-level prompts,
+                   data, a runner, and the stability and model calls measured with a
+                   real model; flows/research/SURVEY.md is the survey behind the web source
 ```
 
 Tests use a scripted model that counts its calls, so assertions are about
@@ -1180,3 +1503,13 @@ Pointers only; the substance is in the owning section.
   read as the signed-in account, the model naming the folder and never a
   credential, records keyed by path and account and validated through the
   Drive API, Google-native files as their export — §3, §7
+- Resource, listing, source, item as the vocabulary; a source is a listing
+  of resources, a folder and a search are two listings, a file and a page
+  two resources; cards say items — §0, §3
+- The web as a source: pages as resources memoized on normalized content;
+  the frontier rule; two-stage exclusion with the frozen sets in the
+  identity; conditional fetching from a response cache tied to a versioned
+  payload store; one record per source per run; validators that never
+  raise; permanent outcomes as data and exhausted transient fetches
+  contained per page; the engine identity as a tracked input; no time in the
+  model's text — §3, §5, §7

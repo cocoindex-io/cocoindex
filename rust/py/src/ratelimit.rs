@@ -23,9 +23,15 @@ impl PyRateLimiter {
     #[new]
     #[pyo3(signature = (max_rows_per_second, burst_window_secs=1.0))]
     fn new(max_rows_per_second: f64, burst_window_secs: f64) -> PyResult<Self> {
+        let burst_window =
+            Duration::try_from_secs_f64(burst_window_secs.max(0.0)).map_err(|_| {
+                PyValueError::new_err(format!(
+                    "`burst_window_secs` must be a finite number, got {burst_window_secs}"
+                ))
+            })?;
         let rate_limit = RateLimit {
             max_rows_per_second,
-            burst_window: Duration::from_secs_f64(burst_window_secs.max(0.0)),
+            burst_window,
         };
         let limiter =
             RateLimiter::new(&rate_limit).map_err(|e| PyValueError::new_err(format!("{e}")))?;

@@ -21,7 +21,7 @@ pub use storage::{Storage, StorageSettings};
 pub use submit_session::{
     CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitClaimTargetsPlan,
     PrecommitClaimTargetsResult, PrecommitReadPlan, PrecommitReadResult, PrecommitSession,
-    PrecommitWritePlan, reconcile_child_existence,
+    PrecommitWritePlan, TrackingInfoWrite, reconcile_child_existence,
 };
 #[cfg(test)]
 pub(crate) use txn::Db;

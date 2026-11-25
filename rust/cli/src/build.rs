@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use serde::Deserialize;
+use tokio::io::AsyncReadExt as _;
 
 use crate::error::{CliError, CliResult, fail};
 
@@ -94,10 +95,21 @@ pub async fn build(manifest: &Path, opts: &BuildOpts) -> CliResult<PathBuf> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
-    let output = cmd.output().await.map_err(fail("could not run cargo"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Not `cmd.output()`: tokio's `output` pipes stderr too, overriding the
+    // `inherit` above, which would swallow cargo's compile errors.
+    let mut child = cmd.spawn().map_err(fail("could not run cargo"))?;
+    let mut stdout = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("cargo's stdout is piped")
+        .read_to_end(&mut stdout)
+        .await
+        .map_err(fail("reading cargo's output"))?;
+    let status = child.wait().await.map_err(fail("waiting for cargo"))?;
+    let stdout = String::from_utf8_lossy(&stdout);
     let (artifacts, finished_ok) = parse_messages(&stdout);
-    if !output.status.success() || finished_ok == Some(false) {
+    if !status.success() || finished_ok == Some(false) {
         return Err(CliError::failure(format!(
             "building {} failed",
             manifest.display()
