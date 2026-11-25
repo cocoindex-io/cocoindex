@@ -793,11 +793,11 @@ class MockRunner(Runner):
         super().__init__()
         self.call_count = 0
 
-    async def run(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    async def run(self, fn: Any, /, *args: Any, **kwargs: Any) -> Any:
         self.call_count += 1
         return await fn(*args, **kwargs)
 
-    async def run_sync_fn(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    async def run_sync_fn(self, fn: Any, /, *args: Any, **kwargs: Any) -> Any:
         self.call_count += 1
         return await asyncio.to_thread(fn, *args, **kwargs)
 

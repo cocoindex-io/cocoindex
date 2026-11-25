@@ -202,6 +202,11 @@ def _probe_via_fn(log: str) -> tuple[int | None, int]:
     return coco.current_gpu(), os.getpid()
 
 
+@coco.fn.as_async(runner=_FN_RUNNER)
+def _takes_fn(fn: str) -> str:
+    return fn
+
+
 @pytest.mark.asyncio
 async def test_subprocess_receives_gpu_assignment() -> None:
     """current_gpu() in the subprocess is the id the GPU pool handed out."""
@@ -251,13 +256,20 @@ async def test_kwargs_named_like_runner_parameters_reach_the_function(
     configure_gpu_pool(1)
     runner = GPURunner(fraction=1.0)
     call = (
-        runner.run_sync_fn(_echo_kwargs, gpu_ids=1, fraction=2, release=3)
+        runner.run_sync_fn(_echo_kwargs, gpu_ids=1, fraction=2, release=3, fn=4)
         if method == "run_sync_fn"
-        else runner.run(_aecho_kwargs, gpu_ids=1, fraction=2, release=3)
+        else runner.run(_aecho_kwargs, gpu_ids=1, fraction=2, release=3, fn=4)
     )
-    assert await call == {"gpu_ids": 1, "fraction": 2, "release": 3}
+    assert await call == {"gpu_ids": 1, "fraction": 2, "release": 3, "fn": 4}
     # The GPU came back, so a second full-GPU call is admitted.
     assert await asyncio.wait_for(runner.run_sync_fn(_echo_kwargs), _WAIT_TIMEOUT) == {}
+
+
+@pytest.mark.asyncio
+async def test_fn_parameter_passed_by_keyword_through_coco_fn() -> None:
+    """A `@coco.fn` function with a parameter named `fn` can be called by keyword."""
+    configure_gpu_pool(1)
+    assert await _takes_fn(fn="value") == "value"
 
 
 @pytest.mark.asyncio

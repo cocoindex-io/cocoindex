@@ -65,7 +65,11 @@ class Runner(ABC):
 
     @abstractmethod
     async def run(
-        self, fn: Callable[P, Coroutine[Any, Any, R]], *args: P.args, **kwargs: P.kwargs
+        self,
+        fn: Callable[P, Coroutine[Any, Any, R]],
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
     ) -> R:
         """Execute an async function with args/kwargs.
 
@@ -76,7 +80,7 @@ class Runner(ABC):
 
     @abstractmethod
     async def run_sync_fn(
-        self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs
+        self, fn: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs
     ) -> R:
         """Execute a sync function with args/kwargs.
 
@@ -140,10 +144,12 @@ def _take_worker(gpu_id: int) -> _Worker:
 def _finish_call(gpu_id: int, worker: _Worker) -> None:
     """Take a finished call off `worker`, and drop the worker if its process died.
 
-    Runs on the worker's own management thread when a call completes. A dead worker's
-    executor has already terminated its process and failed the calls on it, so all
-    that is left is to drop it. Shutting it down here would wait on this very thread:
-    3.14 holds the executor's shutdown lock while it fails the calls.
+    Usually runs on the worker's own management thread, as a done callback; it runs
+    on the event loop when `submit` fails or a call is cancelled before it starts. A
+    broken worker's executor fails the calls on it and then terminates its process,
+    so all that is left is to drop it. Shutting it down from a done callback would
+    wait on this very thread: CPython 3.13+, and 3.12 since a patch release, hold the
+    executor's shutdown lock while they fail the calls.
     """
     with _workers_lock:
         worker.calls -= 1
@@ -462,7 +468,11 @@ class GPURunner(Runner):
         )
 
     async def run(
-        self, fn: Callable[P, Coroutine[Any, Any, R]], *args: P.args, **kwargs: P.kwargs
+        self,
+        fn: Callable[P, Coroutine[Any, Any, R]],
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
     ) -> R:
         """Execute an async function.
 
@@ -492,7 +502,7 @@ class GPURunner(Runner):
             assignment.release()
 
     async def run_sync_fn(
-        self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs
+        self, fn: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs
     ) -> R:
         """Execute a sync function.
 

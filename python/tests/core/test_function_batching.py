@@ -407,13 +407,13 @@ class MockRunner(Runner):
         self.call_count = 0
         self.last_args: tuple[Any, ...] = ()
 
-    async def run(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    async def run(self, fn: Any, /, *args: Any, **kwargs: Any) -> Any:
         """Execute an async function."""
         self.call_count += 1
         self.last_args = args
         return await fn(*args, **kwargs)
 
-    async def run_sync_fn(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    async def run_sync_fn(self, fn: Any, /, *args: Any, **kwargs: Any) -> Any:
         """Execute a sync function (async wrapper)."""
         self.call_count += 1
         self.last_args = args

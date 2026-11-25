@@ -114,7 +114,7 @@ class _PropagatedCallback:
 class _SyncPropagatedCallback(_PropagatedCallback):
     __slots__ = ()
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+    def __call__(self, /, *args: Any, **kwargs: Any) -> Any:
         with self._collecting():
             result = self._fn(*args, **kwargs)
         if inspect.isawaitable(result):
@@ -135,7 +135,7 @@ class _SyncPropagatedCallback(_PropagatedCallback):
 class _AsyncPropagatedCallback(_PropagatedCallback):
     __slots__ = ()
 
-    async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+    async def __call__(self, /, *args: Any, **kwargs: Any) -> Any:
         with self._collecting():
             return await self._fn(*args, **kwargs)
 
