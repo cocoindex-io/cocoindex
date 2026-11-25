@@ -81,6 +81,7 @@ def _check_reopen_after_close() -> None:
     with pytest.raises(RuntimeError, match="already open") as exc_info:
         coco.Environment(env.settings)
     assert os.fspath(db_path) in str(exc_info.value)
+    assert "close the environment that holds it" in str(exc_info.value)
 
     env.close()
     env.close()

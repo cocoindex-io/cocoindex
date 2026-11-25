@@ -201,9 +201,13 @@ let uuid = uuid_gen.next_uuid(&ctx, &"same").await?;
 
 <Lang only="rust">
 
-`next_id` and `next_uuid` take `&self`: the generator counts how often it has seen each `dep` behind a mutex, and that ordinal is part of the memo key. One generator can therefore be shared by the concurrent closures of `ctx.map`, as in `examples/rust/text_embedding`. Concurrent calls take their ordinals in the order they reach the generator, so give each call a `dep` that identifies its item, as the chunk text does above. A generator is not `Clone`: a copy would replay the same ordinals and hand out the same IDs again.
+`next_id` and `next_uuid` take `&self`: the generator counts how often it has seen each `dep` behind a mutex, and that ordinal is part of the memo key. One generator can therefore be shared by the concurrent closures of `ctx.map`, as in `examples/rust/text_embedding`. A generator is not `Clone`: a copy would replay the same ordinals and hand out the same IDs again.
 
 </Lang>
+
+:::caution[Concurrent calls with the same `dep`]
+The generator numbers the calls for each `dep` in the order they reach it. Sequential calls reach it in program order, so each call gets the same ID on every run. Calls that run concurrently with the **same** `dep` (from <Lang only="python">`coco.map`, `asyncio.gather` or threads</Lang><Lang only="rust">`ctx.map` or `join_all`</Lang>) reach it in whatever order they are scheduled: the set of IDs they get stays the same across runs, but which call gets which ID can change. Give each concurrent call a `dep` that identifies its item (such as the chunk text above, or the chunk's position), or call the generator before the concurrent work starts, when the ID must stay attached to the same item.
+:::
 
 **Constructor:**
 
