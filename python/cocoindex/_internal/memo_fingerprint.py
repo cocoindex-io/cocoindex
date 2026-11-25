@@ -166,19 +166,17 @@ _CLASS_OBJECT_OWNER_IDENTITY: tuple[Fingerprintable, Fingerprintable] = (
 )
 
 
-# Resolved identity parts per (type, key function owner, class object?). Every
-# registry write clears it; until then a type's declared ID, module and
-# qualified name are not read again.
+# Resolved identity parts per (type, key function owner). Every registry write
+# clears it; until then a type's declared ID, module and qualified name are not
+# read again.
 _type_identity_cache: dict[
-    tuple[type, type | None, bool], tuple[Fingerprintable, Fingerprintable]
+    tuple[type, type | None], tuple[Fingerprintable, Fingerprintable]
 ] = {}
 
 
 def _type_identity_parts(
     typ: type,
     fallback_owner: type | None = None,
-    *,
-    is_class_object: bool = False,
 ) -> tuple[Fingerprintable, Fingerprintable]:
     """Return stable type ID or module+qualname type identity parts.
 
@@ -192,17 +190,17 @@ def _type_identity_parts(
     type's own declared or registered stable ID still wins, but when no stable
     ID applies the identity stays with the key function's owner type.
     """
-    key = (typ, fallback_owner, is_class_object)
+    key = (typ, fallback_owner)
     parts = _type_identity_cache.get(key)
     if parts is None:
         parts = _type_identity_cache[key] = _resolve_type_identity_parts(
-            typ, fallback_owner, is_class_object
+            typ, fallback_owner
         )
     return parts
 
 
 def _resolve_type_identity_parts(
-    typ: type, fallback_owner: type | None, is_class_object: bool
+    typ: type, fallback_owner: type | None
 ) -> tuple[Fingerprintable, Fingerprintable]:
     stable_type_id = next(
         (
@@ -214,8 +212,6 @@ def _resolve_type_identity_parts(
     )
     if not isinstance(stable_type_id, str):
         for owner in typ.__mro__:
-            if is_class_object and owner is object and typ is not object:
-                break
             registry = _memo_type_registry.get(owner)
             if registry is not None and registry.stable_type_id is not None:
                 stable_type_id = registry.stable_type_id
@@ -246,15 +242,10 @@ def _canonicalize_registered_memo_key(
         tag = "shook"
         bound = functools.partial(registry.state_fn, obj)
         state_methods.append(_make_state_fn_entry(bound, registry.state_fn))
-    if isinstance(obj, type):
-        # Class objects keep the identity of the metaclass owner whose
-        # registration supplied the key function.
-        identity = _type_identity_parts(owner, is_class_object=True)
-    else:
-        # Instances resolve identity on the runtime type, so a subclass can
-        # override an inherited registered stable ID by declaring or
-        # registering its own; the automatic identity falls back to the owner.
-        identity = _type_identity_parts(type(obj), fallback_owner=owner)
+    # Identity resolves on the runtime type (the metaclass, for a class object),
+    # so a subtype can override an inherited stable ID by declaring or
+    # registering its own; the automatic identity falls back to the owner.
+    identity = _type_identity_parts(type(obj), fallback_owner=owner)
     return (
         tag,
         *identity,
@@ -284,7 +275,7 @@ def _canonicalize_class_object(
         *_CLASS_OBJECT_OWNER_IDENTITY,
         # This synthesized identity is already canonical; do not re-enter memo-key
         # dispatch, where a registration on ``object`` could intercept it.
-        ("seq", _type_identity_parts(cls, is_class_object=True)),
+        ("seq", _type_identity_parts(cls)),
     )
 
 
@@ -394,7 +385,8 @@ def register_memo_type(
     registered base type wins. Each call replaces the full registration for
     ``typ``: omitting ``stable_type_id`` clears any previous registered stable
     type ID, and omitting ``key_fn`` or passing ``None`` clears any previous
-    key/state functions.
+    key/state functions. ``object`` cannot take a stable type ID: through the
+    MRO it would apply to every type.
     """
 
     if not isinstance(typ, type):
@@ -421,6 +413,11 @@ def register_memo_type(
         raise TypeError(
             "register_memo_type() stable_type_id must be a str, "
             f"got {type(stable_type_id).__name__}"
+        )
+    if stable_type_id is not None and typ is object:
+        raise TypeError(
+            "register_memo_type() cannot give object a stable_type_id: "
+            "it would apply to every type"
         )
 
     _register_memo_type_registry(
