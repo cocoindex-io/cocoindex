@@ -14,7 +14,8 @@ use tokio::sync::watch;
 
 use crate::{
     component::PyComponentProcessor, deadline::PyDeadlineContext, environment::PyEnvironment,
-    stable_path::PyStablePath, target_state_codec::PyTargetAction, value::PyStoredValue,
+    runtime::block_on_interruptibly, stable_path::PyStablePath, target_state_codec::PyTargetAction,
+    value::PyStoredValue,
 };
 
 fn snapshot_to_py<'py>(
@@ -334,8 +335,10 @@ impl PyApp {
         } else {
             None
         };
-        py.detach(|| {
-            get_runtime().block_on(async move {
+        let app_to_stop = app.clone();
+        block_on_interruptibly(
+            py,
+            async move {
                 let (handle, preview_collector) = app
                     .update(root_processor, options, host_ctx, preview_collector)
                     .context("failed to start app update")
@@ -360,8 +363,11 @@ impl PyApp {
                     let ret: PyStoredValue = handle.result().await.into_py_result()?;
                     Python::attach(|py| Ok(Py::new(py, ret)?.into_any()))
                 }
-            })
-        })
+            },
+            // Stop the app's operations: this update, and the live components
+            // it mounted, which would otherwise run on.
+            move || app_to_stop.app_ctx().cancellation_token().cancel(),
+        )
     }
 
     pub fn drop_async(&self, host_ctx: Py<PyAny>) -> PyResult<PyDropHandle> {
@@ -384,8 +390,9 @@ impl PyApp {
     ) -> PyResult<()> {
         let app = self.0.clone();
         let host_ctx = Arc::new(host_ctx);
-        py.detach(|| {
-            get_runtime().block_on(async move {
+        block_on_interruptibly(
+            py,
+            async move {
                 let handle = app
                     .drop_app(host_ctx)
                     .context("failed to start app drop")
@@ -400,8 +407,11 @@ impl PyApp {
                 } else {
                     handle.result().await.into_py_result()
                 }
-            })
-        })
+            },
+            // A drop has no cancellation to request: its deletes observe no
+            // cancellation token. A Ctrl+C lets it finish before raising.
+            || {},
+        )
     }
 }
 
