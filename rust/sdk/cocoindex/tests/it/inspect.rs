@@ -192,14 +192,11 @@ async fn details_of_stable_paths() {
             .unwrap();
     assert_eq!(debug_all(&streamed_by_name), debug_all(&details));
 
-    // A path the app never stored reads as an empty directory node.
+    // A path the app never stored is not found.
     let unknown = inspect::get_stable_path_detail(&app, &child("unknown"))
         .await
-        .unwrap()
         .unwrap();
-    assert_eq!(unknown.node_type, StablePathNodeType::Directory);
-    assert_eq!(unknown.version, 0);
-    assert!(unknown.processor_name.is_empty());
+    assert!(unknown.is_none(), "{unknown:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
