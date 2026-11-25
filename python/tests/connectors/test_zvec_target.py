@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import decimal
+import shutil
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -803,3 +804,69 @@ def test_existing_collection_keeps_ambiguous_key_type(conn: Any) -> None:
     app.update_blocking()
     assert fetch_doc(conn, "test_key_existing", "a") is not None
     assert fetch_doc(conn, "test_key_existing", "2") is not None
+
+
+_doc_component_runs = 0
+
+if HAS_ZVEC:
+
+    @coco.fn(memo=True)
+    async def _declare_doc_in_component(
+        doc: SimpleDoc, target: zc.CollectionTarget[SimpleDoc]
+    ) -> None:
+        global _doc_component_runs
+        _doc_component_runs += 1
+        target.declare_row(row=doc)
+
+
+async def _declare_collection_and_docs_in_components() -> None:
+    target = await zc.mount_collection_target(
+        ZVEC_DB,
+        "deleted_outside",
+        await zc.CollectionSchema.from_class(SimpleDoc, primary_key=["id"]),
+    )
+    docs = [
+        SimpleDoc(id="1", title="A", year=1, embedding=_EMB),
+        SimpleDoc(id="2", title="B", year=2, embedding=_EMB),
+    ]
+    await coco.mount_each(
+        _declare_doc_in_component, [(doc.id, doc) for doc in docs], target
+    )
+
+
+def test_collection_deleted_outside_cocoindex_comes_back_with_its_documents(
+    conn: Any,
+) -> None:
+    """A collection deleted outside CocoIndex (its directory removed while the
+    connection still holds its handle) is created again on the next run, with
+    all its documents: those of child components that would otherwise be
+    skipped as unchanged too."""
+    app = coco.App(
+        coco.AppConfig(
+            name="test_zvec_deleted_outside",
+            environment=make_test_env(conn, "test_deleted_outside"),
+        ),
+        _declare_collection_and_docs_in_components,
+    )
+
+    def titles() -> list[str | None]:
+        return [
+            (doc.fields["title"] if doc is not None else None)
+            for doc in (fetch_doc(conn, "deleted_outside", id) for id in ("1", "2"))
+        ]
+
+    app.update_blocking()
+    assert titles() == ["A", "B"]
+    assert _doc_component_runs == 2
+    app.update_blocking()
+    assert _doc_component_runs == 2, "unchanged children are skipped"
+
+    shutil.rmtree(conn.collection_path("deleted_outside"))
+    app.update_blocking()
+    assert conn.collection_path("deleted_outside").exists()
+    assert titles() == ["A", "B"]
+    assert _doc_component_runs == 4, "the children run again to write their documents"
+
+    app.update_blocking()
+    assert titles() == ["A", "B"]
+    assert _doc_component_runs == 4, "unchanged children are skipped again"

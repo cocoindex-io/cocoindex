@@ -49,7 +49,7 @@ except ImportError as e:
     ) from e
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
@@ -228,6 +228,9 @@ class _IndexAction(NamedTuple):
 class _IndexSpec:
     schema: IndexSchema
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # See `_container.ContainerSpec`. A dropped index is rebuilt: the documents
+    # left under its prefix, if any, are purged.
+    missing: bool = False
 
 
 class _IndexTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
@@ -593,6 +596,12 @@ class _IndexHandler(
         )
         resolved = statediff.resolve_system_transition(transition)
         main_action = statediff.diff(resolved)
+        # An index CocoIndex created before that is gone now was dropped
+        # outside CocoIndex: rebuild it, as for a schema change. Whether its
+        # documents went with it or not, a rebuild leaves just the declared
+        # ones.
+        if _container.was_dropped(desired_state, prev_possible_records):
+            main_action = "replace"
 
         # Index replacement destroys all documents.
         child_invalidation: Literal["destructive"] | None = (
@@ -685,9 +694,23 @@ def index_target(
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    return _index_target_state(
+        db, index_name, schema, managed_by=managed_by, missing=False
+    )
+
+
+def _index_target_state(
+    db: ContextKey[GlideClient],
+    index_name: str,
+    schema: IndexSchema,
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> "coco.TargetState[_DocumentHandler]":
+    """`index_target`, with `missing` as in `_IndexSpec.missing`."""
     _validate_name(index_name, "index_name")
     key = _IndexKey(db_key=db.key, index_name=index_name)
-    spec = _IndexSpec(schema=schema, managed_by=managed_by)
+    spec = _IndexSpec(schema=schema, managed_by=managed_by, missing=missing)
     return _index_provider.target_state(key, spec)
 
 
@@ -735,8 +758,15 @@ async def mount_index_target(
     Returns:
         An IndexTarget for declaring documents.
     """
+    # A system-managed index that is not on the server: if CocoIndex created it
+    # on an earlier run, it was dropped outside CocoIndex.
+    missing = managed_by == target.ManagedBy.SYSTEM and not await _index_exists(
+        coco.use_context(db), index_name
+    )
     provider = await coco.mount_target(
-        index_target(db, index_name, schema, managed_by=managed_by)
+        _index_target_state(
+            db, index_name, schema, managed_by=managed_by, missing=missing
+        )
     )
     return IndexTarget(provider)
 

@@ -57,7 +57,7 @@ import numpy as np
 from surrealdb.cbor import CBORTag as _CBORTag  # type: ignore[import-untyped]
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     MappingType,
@@ -996,6 +996,8 @@ class _TableSpec:
     from_tables: tuple[str, ...] | None  # sorted table names for FROM clause
     to_tables: tuple[str, ...] | None  # sorted table names for TO clause
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # See `_container.ContainerSpec`.
+    missing: bool = False
 
 
 class _TableMainRecord(msgspec.Struct, frozen=True):
@@ -1125,9 +1127,18 @@ class _TableHandler(
             )
             is_relation = desired_state.is_relation
 
+        # A table CocoIndex defined before that is gone now was removed outside
+        # CocoIndex: define it as if new (with all its fields), and invalidate
+        # its records, which went with it, and its indexes.
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_possible_records, prev_may_be_missing
+        )
+
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
-                tracking_record, prev_possible_records, prev_may_be_missing
+                tracking_record,
+                recreated.prev_possible_records,
+                recreated.prev_may_be_missing,
             )
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
@@ -1152,9 +1163,9 @@ class _TableHandler(
             return None
 
         child_invalidation: Literal["destructive", "lossy"] | None = None
-        if main_action == "replace":
+        if recreated.dropped or main_action == "replace":
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
+        elif any(_container.may_lose_data(a) for a in column_actions.values()):
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -1550,6 +1561,20 @@ def table_target(
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> coco.TargetState[_RecordHandler]:
     """Create a TargetState for a SurrealDB table."""
+    return _table_target_state(
+        db, table_name, table_schema, managed_by=managed_by, missing=False
+    )
+
+
+def _table_target_state(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    table_schema: TableSchema[RowT] | None,
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> coco.TargetState[_RecordHandler]:
+    """`table_target`, with `missing` as in `_TableSpec.missing`."""
     _validate_identifier(table_name, "table name")
     key = _TableKey(db_key=db.key, table_name=table_name)
     spec = _TableSpec(
@@ -1558,8 +1583,30 @@ def table_target(
         from_tables=None,
         to_tables=None,
         managed_by=managed_by,
+        missing=missing,
     )
     return _table_provider.target_state(key, spec)
+
+
+async def _system_table_missing(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    managed_by: target.ManagedBy,
+) -> bool:
+    """Whether a system-managed table is absent from the database: if CocoIndex
+    defined it on an earlier run, it was removed outside CocoIndex.
+
+    ``INFO FOR DB`` lists every table, defined or created by a write;
+    ``INFO FOR TABLE`` answers the same for a table that is not there as for
+    one with no definitions. A user-managed table, which CocoIndex never
+    defines, is not checked.
+    """
+    if managed_by != target.ManagedBy.SYSTEM:
+        return False
+    conn = await coco.use_context(db).acquire()
+    info = await conn.query("INFO FOR DB")
+    tables = info.get("tables") if isinstance(info, dict) else None
+    return not (isinstance(tables, dict) and table_name in tables)
 
 
 def declare_table_target(
@@ -1583,9 +1630,17 @@ async def mount_table_target(
     *,
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> TableTarget[RowT]:
-    """Mount a table target and return a ready-to-use TableTarget."""
+    """Mount a table target and return a ready-to-use TableTarget.
+
+    A system-managed table removed outside CocoIndex is defined again, with its
+    fields and indexes, and all its records written again (one ``INFO FOR DB``
+    per mount checks).
+    """
+    missing = await _system_table_missing(db, table_name, managed_by)
     provider = await coco.mount_target(
-        table_target(db, table_name, table_schema, managed_by=managed_by)
+        _table_target_state(
+            db, table_name, table_schema, managed_by=managed_by, missing=missing
+        )
     )
     return TableTarget(provider, table_schema, table_name)
 
@@ -1600,6 +1655,28 @@ def relation_target(
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> coco.TargetState[_RecordHandler]:
     """Create a TargetState for a SurrealDB relation table."""
+    return _relation_target_state(
+        db,
+        table_name,
+        from_table,
+        to_table,
+        table_schema,
+        managed_by=managed_by,
+        missing=False,
+    )
+
+
+def _relation_target_state(
+    db: ContextKey[ConnectionFactory],
+    table_name: str,
+    from_table: TableTarget[Any] | Collection[TableTarget[Any]],
+    to_table: TableTarget[Any] | Collection[TableTarget[Any]],
+    table_schema: TableSchema[RowT] | None,
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> coco.TargetState[_RecordHandler]:
+    """`relation_target`, with `missing` as in `_TableSpec.missing`."""
     _validate_identifier(table_name, "relation table name")
     from_names = _normalize_table_names(from_table)
     to_names = _normalize_table_names(to_table)
@@ -1614,6 +1691,7 @@ def relation_target(
         from_tables=tuple(sorted(from_names)),
         to_tables=tuple(sorted(to_names)),
         managed_by=managed_by,
+        missing=missing,
     )
     return _table_provider.target_state(key, spec)
 
@@ -1652,17 +1730,23 @@ async def mount_relation_target(
     *,
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> RelationTarget[RowT]:
-    """Mount a relation target and return a ready-to-use RelationTarget."""
+    """Mount a relation target and return a ready-to-use RelationTarget.
+
+    A system-managed relation table removed outside CocoIndex is defined again
+    and all its relations written again, as for ``mount_table_target``.
+    """
     from_names = _normalize_table_names(from_table)
     to_names = _normalize_table_names(to_table)
+    missing = await _system_table_missing(db, table_name, managed_by)
     provider = await coco.mount_target(
-        relation_target(
+        _relation_target_state(
             db,
             table_name,
             from_table,
             to_table,
             table_schema,
             managed_by=managed_by,
+            missing=missing,
         )
     )
     return RelationTarget(provider, table_name, table_schema, from_names, to_names)

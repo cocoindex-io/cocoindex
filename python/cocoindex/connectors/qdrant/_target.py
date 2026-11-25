@@ -35,7 +35,7 @@ except ImportError as e:
     ) from e
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import TypeChecker
 from cocoindex.resources import schema as res_schema
@@ -335,6 +335,8 @@ _COLLECTION_KEY_CHECKER = TypeChecker(tuple[str, str])
 class _CollectionSpec:
     schema: CollectionSchema
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # See `_container.ContainerSpec`.
+    missing: bool = False
 
 
 class _CollectionTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
@@ -489,17 +491,24 @@ class _CollectionHandler(
                 managed_by=desired_state.managed_by,
             )
 
+        # A collection CocoIndex created before that is gone now was deleted
+        # outside CocoIndex: create it as if new, and invalidate its points,
+        # which went with it.
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_possible_records, prev_may_be_missing
+        )
+
         transition = statediff.TrackingRecordTransition(
             tracking_record,
-            prev_possible_records,
-            prev_may_be_missing,
+            recreated.prev_possible_records,
+            recreated.prev_may_be_missing,
         )
         resolved = statediff.resolve_system_transition(transition)
         main_action = statediff.diff(resolved)
 
         # Collection replacement destroys all points.
         child_invalidation: Literal["destructive"] | None = (
-            "destructive" if main_action == "replace" else None
+            "destructive" if recreated.dropped or main_action == "replace" else None
         )
 
         return coco.TargetReconcileOutput(
@@ -602,8 +611,22 @@ def collection_target(
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    return _collection_target_state(
+        db, collection_name, schema, managed_by=managed_by, missing=False
+    )
+
+
+def _collection_target_state(
+    db: ContextKey[QdrantClient],
+    collection_name: str,
+    schema: CollectionSchema,
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> "coco.TargetState[_PointHandler]":
+    """`collection_target`, with `missing` as in `_CollectionSpec.missing`."""
     key = _CollectionKey(db_key=db.key, collection_name=collection_name)
-    spec = _CollectionSpec(schema=schema, managed_by=managed_by)
+    spec = _CollectionSpec(schema=schema, managed_by=managed_by, missing=missing)
     return _collection_provider.target_state(key, spec)
 
 
@@ -652,8 +675,15 @@ async def mount_collection_target(
     Returns:
         A CollectionTarget for declaring points.
     """
+    # A system-managed collection that is not on the server: if CocoIndex
+    # created it on an earlier run, it was deleted outside CocoIndex.
+    missing = managed_by == target.ManagedBy.SYSTEM and not await asyncio.to_thread(
+        _collection_exists, coco.use_context(db), collection_name
+    )
     provider = await coco.mount_target(
-        collection_target(db, collection_name, schema, managed_by=managed_by)
+        _collection_target_state(
+            db, collection_name, schema, managed_by=managed_by, missing=missing
+        )
     )
     return CollectionTarget(provider)
 

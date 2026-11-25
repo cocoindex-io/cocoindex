@@ -46,7 +46,7 @@ except ImportError as e:
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
@@ -1107,6 +1107,8 @@ class _TableSpec:
 
     table_schema: TableSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # See `_container.ContainerSpec`.
+    missing: bool = False
 
 
 class _PkColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
@@ -1418,11 +1420,18 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 managed_by=desired_state.managed_by,
             )
 
+        # A table CocoIndex created before that is gone now was dropped outside
+        # CocoIndex: create it as if new, and invalidate its rows, which went
+        # with it.
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_possible_records, prev_may_be_missing
+        )
+
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
                 tracking_record,
-                prev_possible_records,
-                prev_may_be_missing,
+                recreated.prev_possible_records,
+                recreated.prev_may_be_missing,
             )
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
@@ -1440,11 +1449,11 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
         # Determine child invalidation for row-level targets.
         child_invalidation: Literal["destructive", "lossy"] | None = None
-        if main_action == "replace":
+        if recreated.dropped or main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
-            # Column schema changes (other than adding new columns) may lose data.
+        elif any(_container.may_lose_data(a) for a in column_actions.values()):
+            # A column retyped or dropped may lose data.
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -1699,22 +1708,39 @@ def table_target(
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    key = _table_key(db, table_name, table_schema, pg_schema_name=pg_schema_name)
+    spec = _TableSpec(table_schema=table_schema, managed_by=managed_by)
+    return _table_provider.target_state(key, spec)
+
+
+def _table_key(
+    db: ContextKey[asyncpg.Pool],
+    table_name: str,
+    table_schema: TableSchema[Any],
+    *,
+    pg_schema_name: str | None,
+) -> _TableKey:
+    """The table's key, with its names validated."""
     _validate_identifier(table_name, "table name")
     if pg_schema_name is not None:
         _validate_identifier(pg_schema_name, "schema name")
     for col_name in table_schema.columns:
         _validate_identifier(col_name, "column name")
-
-    key = _TableKey(
+    return _TableKey(
         db_key=db.key,
         pg_schema_name=pg_schema_name,
         table_name=table_name,
     )
-    spec = _TableSpec(
-        table_schema=table_schema,
-        managed_by=managed_by,
+
+
+async def _table_exists(pool: asyncpg.Pool, key: _TableKey) -> bool:
+    # `to_regclass` resolves an unqualified name through `search_path`, as the
+    # table's own statements do.
+    found = await pool.fetchval(
+        "SELECT to_regclass($1) IS NOT NULL",
+        _qualified_table_name(key.table_name, key.pg_schema_name),
     )
-    return _table_provider.target_state(key, spec)
+    return bool(found)
 
 
 def declare_table_target(
@@ -1776,13 +1802,18 @@ async def mount_table_target(
     Returns:
         A TableTarget that can be used to declare rows.
     """
+    key = _table_key(db, table_name, table_schema, pg_schema_name=pg_schema_name)
+    # A system-managed table that is not in the database: if CocoIndex created
+    # it on an earlier run, it was dropped outside CocoIndex.
+    missing = managed_by == target.ManagedBy.SYSTEM and not await _table_exists(
+        coco.use_context(db), key
+    )
     provider = await coco.mount_target(
-        table_target(
-            db,
-            table_name,
-            table_schema,
-            pg_schema_name=pg_schema_name,
-            managed_by=managed_by,
+        _table_provider.target_state(
+            key,
+            _TableSpec(
+                table_schema=table_schema, managed_by=managed_by, missing=missing
+            ),
         )
     )
     return TableTarget(provider, table_name, table_schema)
