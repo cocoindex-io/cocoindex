@@ -486,8 +486,18 @@ def _class_object_ignores_own_id_under_key_owner(declared: bool) -> _Build:
     return build
 
 
+def _class_object_takes_its_metaclass_id(case: _Case) -> tuple[object, object]:
+    # A class keyed through a base metaclass's key function takes the ID declared
+    # on its own metaclass, as an instance takes the one declared on its class.
+    base_meta = _derive(type, "BaseMeta")
+    case.register(base_meta, lambda cls: ("entry", 1))
+    sub_meta = _derive(base_meta, "SubMeta", __coco_memo_type_id__="test.SubMeta/v1")
+    ref = _derive(_Keyed, "Ref", __coco_memo_type_id__="test.SubMeta/v1")
+    return sub_meta("Entry", (), {}), ref(1)
+
+
 def _class_objects_ignore_object_key_fn(case: _Case) -> tuple[object, object]:
-    case.register(object, lambda obj: "same", stable_type_id="test.Object/v1")
+    case.register(object, lambda obj: "same")
     return _derive(_Unkeyed, "Entry"), _derive(_Unkeyed, "Other")
 
 
@@ -677,6 +687,9 @@ def _memo_key_leads_back_to_parent(registered: bool) -> _Build:
             id="class-own-registered-id-differs",
         ),
         pytest.param(
+            _class_object_takes_its_metaclass_id, True, id="class-metaclass-own-id"
+        ),
+        pytest.param(
             _class_object_distinct_from_its_instance,
             False,
             id="class-object-vs-instance",
@@ -734,6 +747,7 @@ def test_type_identity(
             "state_fn requires a memo key function",
         ),
         (_Unkeyed, (), {"stable_type_id": 123}, "stable_type_id must be a str"),
+        (object, (), {"stable_type_id": "test.All/v1"}, "cannot give object"),
     ],
 )
 def test_register_memo_type_rejects_invalid_calls(
@@ -797,8 +811,8 @@ def test_shared_values_match_independent_values(shared: object) -> None:
 
 
 def test_freed_memo_keys_are_not_back_references() -> None:
-    # A key returned by `__coco_memo_key__` (or by the built-in key function
-    # for classes) is freed once encoded, so the next one can reuse its `id()`.
+    # A key returned by `__coco_memo_key__` is freed once encoded, so the next
+    # one can reuse its `id()`.
     class Row:
         def __init__(self, uid: int, ts: str) -> None:
             self.uid, self.ts = uid, ts
@@ -806,20 +820,8 @@ def test_freed_memo_keys_are_not_back_references() -> None:
         def __coco_memo_key__(self) -> object:
             return (self.uid, self.ts)
 
-    class A:
-        pass
-
-    class B:
-        pass
-
-    class C:
-        pass
-
     assert memo_fingerprint([Row(1, "t1"), Row(2, "t2")]) != memo_fingerprint(
         [Row(1, "t1"), Row(3, "t3")]
-    )
-    assert fingerprint_call(_dummy_fn, ([A, B],), {}, []) != fingerprint_call(
-        _dummy_fn, ([A, C],), {}, []
     )
 
 
