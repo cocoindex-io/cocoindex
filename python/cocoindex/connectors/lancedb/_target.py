@@ -39,6 +39,7 @@ except ImportError as e:
     ) from e
 
 from lancedb.db import AsyncConnection as LanceAsyncConnection  # type: ignore
+from lancedb.util import validate_table_name  # type: ignore
 
 import numpy as np
 
@@ -1525,7 +1526,13 @@ def table_target(
 
     Returns:
         A TargetState that can be passed to ``mount_target()``.
+
+    Raises:
+        ValueError: If ``table_name`` breaks LanceDB's rule for table names
+            (ASCII letters, digits, ``_``, ``-`` and ``.``, not empty): it is
+            checked here, not when the table is first written.
     """
+    validate_table_name(table_name)
     return _table_target_state(
         db, table_name, table_schema, managed_by=managed_by, missing=False
     )
@@ -1602,7 +1609,12 @@ async def mount_table_target(
 
     Returns:
         A TableTarget that can be used to declare rows.
+
+    Raises:
+        ValueError: If ``table_name`` breaks LanceDB's rule for table names
+            (see ``table_target``).
     """
+    validate_table_name(table_name)
     # A system-managed table that is not in the database: if CocoIndex created
     # it on an earlier run, it was dropped outside CocoIndex.
     missing = managed_by == target.ManagedBy.SYSTEM and not await _table_exists(

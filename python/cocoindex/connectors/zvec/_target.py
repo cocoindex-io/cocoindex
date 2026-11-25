@@ -21,6 +21,7 @@ import decimal
 import json
 import re
 import threading
+import unicodedata
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -85,10 +86,37 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # zvec additionally rejects collection names shorter than 3 characters.
 _MIN_COLLECTION_NAME_LEN = 3
 
+# zvec rejects a document id longer than this many bytes.
+_MAX_DOC_ID_BYTES = 1024
+
 
 def _validate_identifier(name: str, kind: str = "identifier") -> None:
     if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
         raise ValueError(f"Invalid {kind}: {name!r}")
+
+
+def _validate_doc_id(doc_id: str) -> None:
+    """Raise ValueError for a document id zvec refuses to write.
+
+    These are the ids every zvec version refuses (zvec 0.8 refuses no others):
+    an empty one, one longer than ``_MAX_DOC_ID_BYTES``, or one holding a
+    control character such as a newline or a tab. Checked when the row is
+    declared, so it fails there instead of failing the write of its batch.
+    """
+    if not doc_id:
+        raise ValueError("zvec document id must not be empty.")
+    size = len(doc_id.encode("utf-8"))
+    if size > _MAX_DOC_ID_BYTES:
+        raise ValueError(
+            f"zvec document id {doc_id[:32]!r}... is {size} bytes long; "
+            f"zvec takes at most {_MAX_DOC_ID_BYTES}."
+        )
+    for ch in doc_id:
+        if unicodedata.category(ch) == "Cc":
+            raise ValueError(
+                f"zvec document id {doc_id!r} holds the control character "
+                f"{ch!r}, which zvec refuses."
+            )
 
 
 def _validate_collection_name(name: str) -> None:
@@ -972,6 +1000,7 @@ class CollectionTarget(
                 f"Primary key {schema.primary_key!r} value cannot be None."
             )
         doc_id = str(pk_value)
+        _validate_doc_id(doc_id)
 
         vectors: dict[str, Any] = {}
         fields: dict[str, Any] = {}

@@ -250,6 +250,112 @@ class TestBuildWriteSchema:
         }
 
 
+class _RecordingNamespace:
+    def __init__(self, writes: list[dict[str, Any]]) -> None:
+        self._writes = writes
+
+    async def write(self, **kwargs: Any) -> None:
+        self._writes.append(kwargs)
+
+
+class _RecordingClient:
+    """Stands in for ``AsyncTurbopuffer``: records every write."""
+
+    def __init__(self) -> None:
+        self.writes: list[dict[str, Any]] = []
+
+    def namespace(self, name: str) -> _RecordingNamespace:
+        return _RecordingNamespace(self.writes)
+
+
+@requires_turbopuffer
+class TestWriteRequestSize:
+    """A batch of about 40 MiB goes out in several writes, each under the
+    32 MiB the connector allows a request (Turbopuffer refuses one over
+    512 MB), every row and id once."""
+
+    @pytest.mark.asyncio
+    async def test_large_batch_is_split(self) -> None:
+        import json
+
+        from cocoindex.connectors.turbopuffer._target import _RowAction, _RowHandler
+
+        limit = 32 * 1024 * 1024
+        schema = turbopuffer.NamespaceSchema(
+            vectors=turbopuffer._target._ResolvedVectorDef(
+                schema=VectorSchema(dtype=np.dtype(np.float32), size=3),
+            ),
+            distance="cosine_distance",
+        )
+        client = _RecordingClient()
+        handler = _RowHandler(client, "ns", schema)  # type: ignore[arg-type]
+        text = "x" * (1024 * 1024)
+        actions = [
+            _RowAction(row_id=i, upsert={"id": i, "vector": [1.0, 0.0, 0.0], "t": text})
+            for i in range(40)
+        ] + [_RowAction(row_id=f"gone-{i}", upsert=None) for i in range(1000)]
+        await handler._apply_actions(None, actions)  # type: ignore[arg-type]
+
+        assert len(client.writes) > 1
+        for write in client.writes:
+            assert len(json.dumps(write)) <= limit
+            assert write["distance_metric"] == "cosine_distance"
+            assert write["schema"] == {"vector": {"type": "[3]f32", "ann": True}}
+        upserted = [r["id"] for w in client.writes for r in w.get("upsert_rows", [])]
+        deleted = [i for w in client.writes for i in w.get("deletes", [])]
+        assert upserted == list(range(40))
+        assert deleted == [f"gone-{i}" for i in range(1000)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("named", [False, True])
+    async def test_rows_are_sized_without_encoding_their_vectors(
+        self, named: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A row's vectors are sized from their length, never encoded to size
+        it, and the estimate is above the real size: writes stay under the
+        limit."""
+        import json
+
+        from cocoindex.connectors.turbopuffer import _target
+
+        limit = 32 * 1024 * 1024
+        dim = 200_000
+        vector_def = _target._ResolvedVectorDef(
+            schema=VectorSchema(dtype=np.dtype(np.float32), size=dim)
+        )
+        schema = turbopuffer.NamespaceSchema(
+            vectors=_target._ResolvedNamedVectorsDef(vectors={"a": vector_def})
+            if named
+            else vector_def,
+            distance="cosine_distance",
+        )
+        field = "a" if named else "vector"
+        encoded: list[Any] = []
+
+        def json_size(value: Any) -> int:
+            encoded.append(value)
+            return len(json.dumps(value))
+
+        monkeypatch.setattr(_target, "json_size", json_size)
+        client = _RecordingClient()
+        handler = _target._RowHandler(client, "ns", schema)  # type: ignore[arg-type]
+        actions = [
+            _target._RowAction(
+                row_id=i,
+                upsert={"id": i, field: [-0.12345678901234567] * dim, "t": "x"},
+            )
+            for i in range(12)
+        ]
+        await handler._apply_actions(None, actions)  # type: ignore[arg-type]
+
+        assert encoded and not any(field in value for value in encoded)
+        assert len(client.writes) > 1
+        for write in client.writes:
+            assert len(json.dumps(write)) <= limit
+        upserted = [r["id"] for w in client.writes for r in w["upsert_rows"]]
+        assert upserted == list(range(12))
+
+
 # =============================================================================
 # Live test fixtures
 # =============================================================================

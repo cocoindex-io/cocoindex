@@ -269,7 +269,7 @@ Each has a `_with_options` variant (`mount_table_target_with_options`, `declare_
 <Lang only="python">
 
 - `db` — A `ContextKey[LanceAsyncConnection]` identifying the connection to use.
-- `table_name` — Name of the table.
+- `table_name` — Name of the table. LanceDB takes ASCII letters, digits, `_`, `-` and `.`; another name fails when the table is declared, not when its first row is written.
 - `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-python-class)).
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
   `ManagedBy` is exported from `cocoindex.connectorkits.target`.

@@ -328,7 +328,7 @@ impl CollectionTarget {
 }
 ```
 
-The id, the vector and the payload are separate arguments, and the shape of the vector picks the method. The payload is a `serde_json::Map<String, Value>`. Each method checks the point against the collection schema and the id rules (see [Point IDs](#point-ids)) when it is called, and returns an error for a mismatch: a vector of the wrong length, an empty multivector, a NaN or infinite element, or a payload integer beyond the `i64` range Qdrant stores. Writes wait until Qdrant has applied them.
+The id, the vector and the payload are separate arguments, and the shape of the vector picks the method. The payload is a `serde_json::Map<String, Value>`. Each method also checks the id rules (see [Point IDs](#point-ids)) and the payload when it is called: a payload integer beyond the `i64` range Qdrant stores is an error. Writes wait until Qdrant has applied them.
 
 </Fragment>
 </LangTabs>
@@ -343,6 +343,8 @@ The id, the vector and the payload are separate arguments, and the shape of the 
   - `payload` — Optional metadata as a JSON-serializable dict
 
 </Lang>
+
+A declaration checks the vectors against the collection schema when it is called and <Lang only="python">raises a `ValueError`</Lang><Lang only="rust">returns an error</Lang> for a mismatch, which Qdrant would otherwise reject for the whole batch: a dense vector of the wrong length, an empty multivector, a NaN or infinite element, a sparse vector with repeated indices or a different number of values, or a vector name the schema does not declare. <Lang only="python">A point may leave out a named vector.</Lang><Lang only="rust">A point must carry every named vector the schema declares.</Lang>
 
 ### Collection schema
 
@@ -752,7 +754,7 @@ for (id, dense, indices, values, text) in points {
 
 <Lang only="python">
 
-The `schema` field of `QdrantVectorDef` accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema` to specify the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
+The `schema` field of `QdrantVectorDef` accepts a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema` to specify the vector dimension and dtype. A `float16` schema is stored as Qdrant's `Float16` datatype and a `uint8` schema as `Uint8`; `float32` and `float64` are both stored as `Float32`, as Qdrant has no 64-bit vectors. A change between `float32` and `float64` alone keeps the collection; a change of the stored datatype recreates it. Another dtype raises a `ValueError` when the `CollectionSchema` is built. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for details.
 
 </Lang>
 
