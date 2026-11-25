@@ -91,7 +91,7 @@ async fn read_file(ctx: &Ctx, file: &FileEntry) -> Result<String> {
 
 **Memoization:**
 
-`FileLike` objects provide a memoization key based on `file_path` (file identity). When used as arguments to a [memoized function](../programming_guide/function#memoization), CocoIndex uses a two-level validation: it checks the modification time first (cheap), then computes a content fingerprint only if the modification time has changed. This means touching a file or moving it won't cause unnecessary recomputation if the content is unchanged. When the backend reports a fingerprint at no cost (for example an S3 ETag), CocoIndex compares it even when the modification time is unchanged. This catches an overwrite within the resolution of the modification time (S3 reports whole seconds).
+`FileLike` objects provide a memoization key based on `file_path` (file identity). When used as arguments to a [memoized function](../programming_guide/function#memoization), CocoIndex uses a two-level validation: it checks the modification time first (cheap), then computes a content fingerprint only if the modification time has changed. This means touching a file or moving it won't cause unnecessary recomputation if the content is unchanged. When the backend reports a fingerprint at no cost (for example an S3 ETag), CocoIndex compares it even when the modification time is unchanged. This catches an overwrite within the resolution of the modification time (S3 reports whole seconds). Filesystems have a resolution too (FAT keeps two seconds, HFS+ and ext3 one), so a file whose modification time was less than three seconds old, or in the future, when its content was read is compared by content fingerprint on the next run as well.
 
 <Lang only="rust">
 

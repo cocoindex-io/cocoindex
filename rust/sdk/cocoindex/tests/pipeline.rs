@@ -2202,7 +2202,7 @@ mod memo_test_file_state {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, OnceLock};
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     use cocoindex::resources::file::FileLike;
     use cocoindex::resources::fs::{FileEntry, FilePath, walk_dir};
@@ -2337,6 +2337,65 @@ mod memo_test_file_state {
             2,
             "changed content must invalidate the memoized result"
         );
+    }
+
+    fn set_modified(path: &Path, modified: SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn file_memo_state_detects_a_rewrite_in_the_same_mtime_tick() {
+        let source = tempfile::tempdir().unwrap();
+        let source_path = source.path().to_path_buf();
+        let file_path = source_path.join("note.txt");
+        std::fs::write(&file_path, "version-1").unwrap();
+        // Dated ahead of the clock, so the first read sees an unsettled mtime however
+        // slow the runner is.
+        set_modified(&file_path, SystemTime::now() + Duration::from_secs(60));
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let dir = tempfile::tempdir().unwrap();
+        let app = Environment::builder()
+            .db_path(dir.path().join("lmdb"))
+            .provide_key(calls_key(), calls.clone())
+            .build()
+            .await
+            .unwrap()
+            .app("file_memo_state_same_mtime_tick")
+            .await
+            .unwrap();
+
+        app.update({
+            let source_path = source_path.clone();
+            |ctx| async move {
+                let file = read_source_file(&source_path);
+                assert_eq!(read_file(&ctx, &file).await?, "version-1");
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+        // A rewrite in the same timestamp tick keeps the mtime: put it back by hand.
+        let modified = std::fs::metadata(&file_path).unwrap().modified().unwrap();
+        std::fs::write(&file_path, "version-2").unwrap();
+        set_modified(&file_path, modified);
+        app.update({
+            let source_path = source_path.clone();
+            |ctx| async move {
+                let file = read_source_file(&source_path);
+                assert_eq!(read_file(&ctx, &file).await?, "version-2");
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
