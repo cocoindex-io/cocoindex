@@ -1223,6 +1223,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                         }
                     } else {
                         error!("component build failed at {}:\n{err:?}", self.stable_path());
+                        context.processing_stats().record_unhandled_failure();
                         Ok(())
                     };
                     (ComponentRunOutcome::exception(), task_result)
@@ -1296,6 +1297,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                                 "component delete failed at {}:\n{err:?}",
                                 self.stable_path()
                             );
+                            context.processing_stats().record_unhandled_failure();
                             Ok(())
                         };
                         (ComponentRunOutcome::exception(), task_result)

@@ -82,6 +82,14 @@ impl PyUpdateHandle {
         Ok((snapshot.version, snapshot.ready, dict))
     }
 
+    /// Number of component failures nobody took ownership of: no exception
+    /// handler was registered for them, or every handler re-raised. Unlike
+    /// the per-processor error counts, this covers stats groups (the counter
+    /// is shared by the whole chain) and excludes handled failures.
+    pub fn unhandled_failures(&self) -> u64 {
+        self.stats.snapshot().unhandled_failures
+    }
+
     /// Awaits a version change notification. Returns the new version.
     /// Returns u64::MAX when the task terminates.
     ///

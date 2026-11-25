@@ -29,6 +29,7 @@ For a quick overview of failure isolation and the two-phase model, see [What hap
 | `await LiveComponentOperator.update_full()` | reaches *ready state* of the full cycle | **No by default** — same shape as `handle.ready()` |
 | `await coco.use_mount(...)` | the inner component's *value* is produced | **Yes** — component success is on the critical path |
 | `await app.drop()` (and `cocoindex drop`) | GC succeeds at *every* level | **Yes**, at any depth — leaking target state would otherwise go silent |
+| `cocoindex update` | every component of the run has finished, failed or not | **Exit status, not an exception**: exits 1 only when a failure nobody handled happened — a handler that returns normally keeps the exit status at 0 |
 
 </Lang>
 

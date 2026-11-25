@@ -15,7 +15,7 @@ from .user_app_loader import load_user_app, Error as UserAppLoaderError
 
 import asyncio
 import cocoindex as coco
-from cocoindex._internal.app import App
+from cocoindex._internal.app import App, UpdateHandle
 from cocoindex._internal import banner as _banner
 from cocoindex._internal.update_stats import DisplayMode, display_mode
 from cocoindex._internal import core as _core
@@ -1087,6 +1087,20 @@ async def _stop_all_environments() -> None:
             await env.stop()
 
 
+def _fail_on_unhandled_failures(handle: UpdateHandle[Any], verb: str) -> None:
+    """Exit 1 when a component failure nobody took ownership of happened.
+
+    A failure is unhandled when no exception handler was registered for it,
+    or every handler in the chain re-raised. `--quiet` keeps the message:
+    Click prints it to stderr.
+    """
+    failures = handle._unhandled_failures()
+    if failures:
+        raise click.ClickException(
+            f"{verb} finished with {failures} unhandled component failure(s)."
+        )
+
+
 @cli.command()
 @click.argument("app_target", type=str)
 @click.option(
@@ -1151,6 +1165,9 @@ def update(
     """
     Run an app in catch-up mode. With --live, run in live mode.
 
+    Exits with status 1 if a component failure goes unhandled: no exception
+    handler is registered for it, or every handler re-raised. Not with --live.
+
     `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
     """
     if preview and reset:
@@ -1185,7 +1202,14 @@ def update(
                     for action in actions:
                         click.echo(f"  {action!r}")
                 else:
-                    _say_done("ok", "Nothing to change", took)
+                    # A preview with failed components is missing their
+                    # changes, so "Nothing to change" would overstate it:
+                    # no green mark for an incomplete preview.
+                    mark: Literal["ok", "info"] = (
+                        "info" if handle._unhandled_failures() else "ok"
+                    )
+                    _say_done(mark, "Nothing to change", took)
+                _fail_on_unhandled_failures(handle, "Preview")
                 return
 
             # --reset: drop existing state first (equivalent to `cocoindex drop ...`)
@@ -1210,6 +1234,11 @@ def update(
                 await show_progress(handle)
             else:
                 await handle.result()
+            # Surface unhandled component failures in the exit status so
+            # schedulers (cron, CI) can detect a failed run. Live mode is
+            # excluded: cumulative failures do not describe current health.
+            if not live:
+                _fail_on_unhandled_failures(handle, "Update")
         finally:
             await _stop_all_environments()
 
