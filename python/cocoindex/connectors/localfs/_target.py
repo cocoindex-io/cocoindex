@@ -6,6 +6,7 @@ import logging
 import os
 import pathlib
 import shutil
+import stat
 import threading
 from dataclasses import dataclass
 from typing import Collection, Generic, Literal, NamedTuple, Sequence, cast
@@ -53,6 +54,12 @@ class _EntryAction(NamedTuple):
     content: _FileContent | None  # For files; None means delete
     create_parents: bool  # Whether to create parent directories
     root_key: _RootKey | None = None  # Key of a root-level entry; None under a dir
+    # A previous run declared the other kind of entry here (a directory where a
+    # file is now declared, or the other way round): replace it.
+    replaces_other_kind: bool = False
+    # A root directory target that existed before CocoIndex declared it is no
+    # longer declared: nothing to do on disk (`content` is None).
+    forget: bool = False
 
 
 def _normalize_entry_name(name: str | pathlib.PurePath) -> _EntryName:
@@ -84,7 +91,9 @@ def _normalize_entry_name(name: str | pathlib.PurePath) -> _EntryName:
 class _DirSpec:
     """Marker for a directory entry (no content)."""
 
-    pass
+    # For a root directory target: a directory was already at its path when it
+    # was declared. Always False under a directory target.
+    existed_before: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,8 +104,69 @@ class _EntrySpec:
     create_parent_dirs: bool
 
 
+_ATOMIC_WRITE_TMP_SUFFIX = ".cocoindex-tmp"
+# Flags of the exclusive create of a temporary file: `O_EXCL` refuses any
+# entry already at the name, a symlink included; `O_NOFOLLOW` and `O_BINARY`
+# exist only on some platforms.
+_TMP_OPEN_FLAGS = (
+    os.O_WRONLY
+    | os.O_CREAT
+    | os.O_EXCL
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_BINARY", 0)
+)
+
+
+def _atomic_write_tmp_path(path: pathlib.Path) -> pathlib.Path:
+    """The temporary file `_write_file_atomically` writes `path` through."""
+    return path.with_name(f".{path.name}{_ATOMIC_WRITE_TMP_SUFFIX}")
+
+
+def _write_file_atomically(path: pathlib.Path, content: bytes) -> None:
+    """Write `content` to `path` through a temporary file in the same directory,
+    renamed over `path`: a reader sees the old content or the new, never a
+    partial file, and a write that fails (a full disk, a crash) leaves the old
+    file. A symlink at `path` is written through, to the file it names, as an
+    in-place write would; the new file takes the permissions of the file it
+    replaces.
+
+    The temporary file has one name per target file, `.<name>.cocoindex-tmp`: a
+    process killed between writing it and renaming it leaves it behind, and the
+    next write of the file removes it before writing its own. It is removed and
+    created exclusively, never opened over, so a symlink someone placed there is
+    never written through.
+    """
+    target = path
+    if path.is_symlink():
+        try:
+            target = path.resolve(strict=True)
+        except OSError:
+            pass  # A dangling symlink: replace the link itself.
+    tmp = _atomic_write_tmp_path(target)
+    try:
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, _TMP_OPEN_FLAGS, 0o666)
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+        try:
+            mode = os.stat(target).st_mode
+        except FileNotFoundError:
+            pass
+        else:
+            os.chmod(tmp, stat.S_IMODE(mode))
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def _execute_entry_action(path: pathlib.Path, action: _EntryAction) -> None:
     """Execute a single entry action."""
+    if action.forget:
+        return
     if action.content is None:
         # Delete
         if action.entry_type == "file":
@@ -107,13 +177,22 @@ def _execute_entry_action(path: pathlib.Path, action: _EntryAction) -> None:
         return
 
     if action.entry_type == "file":
-        # Write file
+        # Write file, replacing a directory a previous run declared here (a
+        # symlink there is removed, not followed).
+        if action.replaces_other_kind:
+            if path.is_symlink():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
         if action.create_parents:
             path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(action.content)
+        _write_file_atomically(path, action.content)
         return
 
-    # Create directory
+    # Create directory, replacing a file a previous run declared here (a
+    # symlink there is removed, not followed).
+    if action.replaces_other_kind and (path.is_symlink() or path.is_file()):
+        path.unlink()
     if action.create_parents:
         path.mkdir(parents=True, exist_ok=True)
     else:
@@ -165,6 +244,8 @@ def _apply_entry_actions(
     written: set[tuple[int, int]] = set()
     for action in actions:
         path = _entry_path(context_provider, action)
+        if action.forget:
+            continue
         if action.content is None:
             try:
                 identity = _entry_identity(path, follow_symlinks=False)
@@ -251,17 +332,28 @@ def _reconcile_entry(
 ):
     """Common reconcile logic for both root and non-root entries."""
     base_dir_key = root_key.base_dir_key if root_key is not None else None
+    prev_dirs = [prev for prev in prev_possible_records if prev.fingerprint is None]
     if coco.is_non_existence(desired_state):
         # Determine entry type from previous state (None fingerprint = dir)
-        entry_type: Literal["file", "dir"] = "file"
-        for prev in prev_possible_records:
-            if prev.fingerprint is None:
-                entry_type = "dir"
-                break
-
+        entry_type: Literal["file", "dir"] = "dir" if prev_dirs else "file"
+        # A root directory target is removed with everything under it only if
+        # CocoIndex created it. One that existed before is left as it is: the
+        # engine does not visit the entries under a removed directory, so the
+        # ones CocoIndex wrote there stay too.
+        forget = (
+            root_key is not None
+            and entry_type == "dir"
+            and not all(prev.created_dir for prev in prev_dirs)
+        )
         return coco.TargetReconcileOutput(
             action=_EntryAction(
-                base_dir_key, path_str, entry_type, None, False, root_key
+                base_dir_key,
+                path_str,
+                entry_type,
+                None,
+                False,
+                root_key,
+                forget=forget,
             ),
             sink=_entry_action_sink,
             tracking_record=coco.NON_EXISTENCE,
@@ -269,15 +361,37 @@ def _reconcile_entry(
 
     entry_spec = desired_state.entry_spec
     create_parents = desired_state.create_parent_dirs
+    # What a previous run declared here. Only an entry CocoIndex declared is
+    # replaced by one of the other kind; something else there fails the write.
+    was_dir = any(prev.fingerprint is None for prev in prev_possible_records)
+    was_file = any(prev.fingerprint is not None for prev in prev_possible_records)
 
     if isinstance(entry_spec, _DirSpec):
-        # Directory entry (fingerprint=None means directory)
+        # Directory entry (fingerprint=None means directory). A root directory
+        # target records whether CocoIndex created it: one it created stays one
+        # it created (it exists on later runs because of the first), one that
+        # existed before (or one recorded before this was tracked) stays one it
+        # didn't, and a new one is CocoIndex's unless it existed when declared.
+        if root_key is None:
+            created_dir = False
+        elif prev_dirs:
+            created_dir = all(prev.created_dir for prev in prev_dirs)
+        else:
+            created_dir = not entry_spec.existed_before
         return coco.TargetReconcileOutput(
             action=_EntryAction(
-                base_dir_key, path_str, "dir", b"", create_parents, root_key
+                base_dir_key,
+                path_str,
+                "dir",
+                b"",
+                create_parents,
+                root_key,
+                replaces_other_kind=was_file,
             ),
             sink=_entry_action_sink,
-            tracking_record=_EntryTrackingRecord(fingerprint=None),
+            tracking_record=_EntryTrackingRecord(
+                fingerprint=None, created_dir=created_dir
+            ),
         )
 
     # File entry
@@ -291,7 +405,13 @@ def _reconcile_entry(
 
     return coco.TargetReconcileOutput(
         action=_EntryAction(
-            base_dir_key, path_str, "file", entry_spec, create_parents, root_key
+            base_dir_key,
+            path_str,
+            "file",
+            entry_spec,
+            create_parents,
+            root_key,
+            replaces_other_kind=was_dir,
         ),
         sink=_entry_action_sink,
         tracking_record=_EntryTrackingRecord(fingerprint=target_fp),
@@ -303,10 +423,16 @@ def _reconcile_entry(
 # =============================================================================
 
 
-class _EntryTrackingRecord(msgspec.Struct, frozen=True):
+class _EntryTrackingRecord(msgspec.Struct, frozen=True, omit_defaults=True):
     """Tracking record for an entry. If fingerprint is None, it's a directory."""
 
     fingerprint: _FileFingerprint | None
+    # For a root directory target: CocoIndex created the directory, so removing
+    # the target removes it with everything under it. False for every other
+    # entry, and for a root directory recorded by a version that did not track
+    # this: such a directory is kept when its target is removed, as it may have
+    # existed before CocoIndex declared it.
+    created_dir: bool = False
 
 
 class _EntryHandler(
@@ -406,7 +532,13 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
     A target for writing files and subdirectories to a local directory.
 
     The directory is managed as a target state, with automatic cleanup of
-    files and directories that are no longer declared.
+    files and directories that are no longer declared. A changed file is
+    written to a temporary file next to it and renamed over it, so a reader
+    never sees part of a file.
+
+    A root directory target that is no longer declared is removed with
+    everything under it if CocoIndex created it. One that already existed when
+    it was first declared is left in place, with everything in it.
     """
 
     _provider: coco.TargetStateProvider[_EntrySpec, _EntryHandler, coco.MaybePendingS]
@@ -547,7 +679,7 @@ def dir_target(
         path=file_path.path.as_posix(),
     )
     spec = _EntrySpec(
-        entry_spec=_DirSpec(),
+        entry_spec=_DirSpec(existed_before=file_path.resolve().is_dir()),
         create_parent_dirs=create_parent_dirs,
     )
     return _root_provider.target_state(key, spec)

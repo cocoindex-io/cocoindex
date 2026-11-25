@@ -68,6 +68,9 @@ class File(_file.FileLike[pathlib.Path]):
 
 _DEFAULT_RESCAN_INTERVAL: datetime.timedelta = datetime.timedelta(hours=1)
 
+# How often a live watch looks for its root while the root does not exist.
+_ROOT_POLL_INTERVAL: datetime.timedelta = datetime.timedelta(seconds=1)
+
 
 class DirWalker:
     """An async directory walker.
@@ -304,11 +307,17 @@ class _LiveDirItems:
         self._walker = walker
         self._resolved_root = walker._root_path.resolve()
         self._watch_guard = SingleWatcherGuard("localfs live directory")
+        # Set once a watch's initial scan has walked the root: a root removed
+        # after that scans as empty (its files' outputs go), where a root
+        # missing at the start of the watch is still an error.
+        self._past_initial_scan = False
 
     def __aiter__(self) -> AsyncIterator[tuple[str, File]]:
         return self._aiter_impl()
 
     async def _aiter_impl(self) -> AsyncIterator[tuple[str, File]]:
+        if self._past_initial_scan and not self._resolved_root.is_dir():
+            return
         async for pair in self._walker._items_iter():
             yield pair
 
@@ -323,7 +332,10 @@ class _LiveDirItems:
     async def watch(self, subscriber: LiveMapSubscriber[str, File]) -> None:
         """Deliver an initial scan then live filesystem changes to the subscriber."""
         with self._watch_guard:
-            await self._watch(subscriber)
+            try:
+                await self._watch(subscriber)
+            finally:
+                self._past_initial_scan = False
 
     async def _watch(self, subscriber: LiveMapSubscriber[str, File]) -> None:
         from watchdog.events import (
@@ -342,6 +354,7 @@ class _LiveDirItems:
         loop = asyncio.get_running_loop()
         td = self._walker._rescan_interval
         rescan_seconds: float | None = td.total_seconds() if td is not None else None
+        root_poll_seconds = _ROOT_POLL_INTERVAL.total_seconds()
         # Watchdog dispatches events from a background thread; we forward
         # them into this asyncio.Queue via call_soon_threadsafe.
         events_queue: asyncio.Queue[FileSystemEvent] = asyncio.Queue()
@@ -352,18 +365,47 @@ class _LiveDirItems:
 
         handler = _Handler()
 
-        def _start_observer() -> BaseObserver:
+        def _start_observer() -> BaseObserver | None:
+            """Watch the root; ``None`` while the root does not exist."""
+            if not root_resolved.is_dir():
+                return None
             obs = Observer()
-            obs.schedule(handler, str(root_resolved), recursive=self._walker._recursive)
-            # Observer.start() is synchronous and arms the OS-level watch
-            # (e.g. inotify / FSEvents) before returning, so a scan that
-            # follows cannot miss events that occur after this point.
-            obs.start()
+            try:
+                obs.schedule(
+                    handler, str(root_resolved), recursive=self._walker._recursive
+                )
+                # Observer.start() is synchronous and arms the OS-level watch
+                # (e.g. inotify / FSEvents) before returning, so a scan that
+                # follows cannot miss events that occur after this point.
+                obs.start()
+            except OSError:
+                # The root went away between the check and the watch.
+                return None
             return obs
 
+        async def _rearm(old: BaseObserver | None) -> BaseObserver | None:
+            """Tear down the old OS-level watcher, drain stale events, create
+            a fresh watcher (new FSEvents/inotify stream), then do a full
+            rescan to catch anything the old watcher may have missed."""
+            if old is not None:
+                await asyncio.to_thread(_stop_observer, old)
+            while not events_queue.empty():
+                try:
+                    events_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            new = _start_observer()
+            await subscriber.update_all()
+            return new
+
+        # A root missing at the start fails the watch, as it fails a walk;
+        # only a root removed after the initial scan is looked for.
+        if not root_resolved.is_dir():
+            raise ValueError(f"Path is not a directory: {root_resolved}")
         observer = _start_observer()
         try:
             await subscriber.update_all()
+            self._past_initial_scan = True
             await subscriber.mark_ready()
 
             last_rescan = loop.time()
@@ -373,31 +415,41 @@ class _LiveDirItems:
                 if rescan_seconds is not None:
                     remaining = rescan_seconds - (loop.time() - last_rescan)
                     if remaining <= 0:
-                        # Periodic rescan cycle: tear down the old
-                        # OS-level watcher, drain stale events, create a
-                        # fresh watcher (new FSEvents/inotify stream),
-                        # then do a full rescan to catch anything the old
-                        # watcher may have silently dropped.
-                        await asyncio.to_thread(_stop_observer, observer)
-
-                        while not events_queue.empty():
-                            try:
-                                events_queue.get_nowait()
-                            except asyncio.QueueEmpty:
-                                break
-
-                        observer = _start_observer()
-                        await subscriber.update_all()
+                        # Periodic rescan cycle: the old watcher may have
+                        # silently dropped events.
+                        observer = await _rearm(observer)
                         last_rescan = loop.time()
                         continue
                     timeout: float | None = remaining
                 else:
                     timeout = None
+                if observer is None:
+                    # The root is gone, and no watcher reports its return:
+                    # look for it.
+                    timeout = (
+                        root_poll_seconds
+                        if timeout is None
+                        else min(root_poll_seconds, timeout)
+                    )
 
                 try:
                     event = await asyncio.wait_for(events_queue.get(), timeout=timeout)
                 except asyncio.TimeoutError:
-                    # Rescan interval elapsed; loop back to trigger rescan.
+                    if observer is None and root_resolved.is_dir():
+                        # The root is back: watch it and walk it.
+                        observer = await _rearm(observer)
+                    # Otherwise the rescan interval elapsed; loop back to
+                    # trigger the rescan.
+                    continue
+
+                # An event on the root itself (removed or moved away) ends its
+                # OS-level watch: watch the root afresh (or look for it while
+                # it is gone) and walk it.
+                if (
+                    Path(os.fsdecode(event.src_path)) == root_resolved
+                    or not root_resolved.is_dir()
+                ):
+                    observer = await _rearm(observer)
                     continue
 
                 # On a move event with a dest_path, treat as
@@ -461,10 +513,11 @@ class _LiveDirItems:
             # interpreter shutdown the default executor may already be
             # closed, so fall back to a synchronous call (TypeError /
             # RuntimeError are suppressed inside _stop_observer).
-            try:
-                await asyncio.to_thread(_stop_observer, observer)
-            except RuntimeError:
-                _stop_observer(observer)
+            if observer is not None:
+                try:
+                    await asyncio.to_thread(_stop_observer, observer)
+                except RuntimeError:
+                    _stop_observer(observer)
 
 
 def walk_dir(
