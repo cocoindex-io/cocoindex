@@ -242,7 +242,15 @@ class _FakeDriveFiles:
     def __init__(self, children: dict[str, list[dict[str, str]]]) -> None:
         self.children = children
 
-    def list(self, *, q: str, fields: str, pageToken: str | None) -> _FakeRequest:
+    def list(
+        self,
+        *,
+        q: str,
+        fields: str,
+        pageToken: str | None,
+        includeItemsFromAllDrives: bool,
+        supportsAllDrives: bool,
+    ) -> _FakeRequest:
         folder_id = q.split("'")[1]
         return _FakeRequest({"files": self.children[folder_id]})
 
@@ -437,3 +445,40 @@ def test_a_rate_limited_listing_is_retried(monkeypatch: pytest.MonkeyPatch) -> N
     files = list(list_files(GoogleDriveSourceSpec("unused.json", ["root"])))
     assert [f.file_path.resolve() for f in files] == ["f1"]
     assert len(sleeps) == 2  # one backoff per refused attempt
+
+
+@requires_google_drive
+@pytest.mark.asyncio
+async def test_requests_cover_shared_drives(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A folder in a shared drive lists nothing, and its files give a 404, unless asked for."""
+    import json
+    from urllib.parse import parse_qs, urlsplit
+
+    from googleapiclient.discovery import build
+    from googleapiclient.http import HttpMockSequence
+
+    from cocoindex.connectors.google_drive import _source
+
+    listing = {"files": [_drive_entry("f1", "a.bin", size="3", md5Checksum="abc")]}
+    http = HttpMockSequence(
+        [
+            ({"status": "200"}, json.dumps(listing)),
+            ({"status": "200"}, b"abc"),
+            ({"status": "200"}, json.dumps({"size": "3"})),
+        ]
+    )
+    service = build("drive", "v3", http=http, static_discovery=True)
+    monkeypatch.setattr(_source, "_build_service", lambda _: service)
+
+    [drive_file] = list_files(GoogleDriveSourceSpec("unused.json", ["root"]))
+    assert await drive_file.read() == b"abc"
+    assert (await drive_file._fetch_metadata()).size == 3
+
+    list_query, media_query, get_query = (
+        parse_qs(urlsplit(request[0]).query) for request in http.request_sequence
+    )
+    assert list_query["includeItemsFromAllDrives"] == ["true"]
+    assert list_query["supportsAllDrives"] == ["true"]
+    assert media_query["alt"] == ["media"]
+    assert media_query["supportsAllDrives"] == ["true"]
+    assert get_query["supportsAllDrives"] == ["true"]
