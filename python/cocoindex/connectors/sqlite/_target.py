@@ -1194,6 +1194,16 @@ def _validate_vec0_config(
     invalid_aux = set(virtual_table_def.auxiliary_columns) - all_cols
     if invalid_aux:
         raise ValueError(f"Auxiliary columns not in schema: {invalid_aux}")
+    # vec0 parses its column list itself: it takes no quoted name (a reserved
+    # word is fine unquoted), no name starting with "_", and has hidden columns
+    # "k" and "distance" of its own.
+    for col_name in table_schema.columns:
+        if col_name.startswith("_") or col_name.lower() in ("k", "distance"):
+            raise ValueError(
+                f"vec0 virtual tables cannot have a column named {col_name!r}: vec0 "
+                "takes no column name that starts with '_', and reserves 'k' and "
+                "'distance'"
+            )
     if len(table_schema.primary_key) != 1:
         raise ValueError(
             f"vec0 virtual tables require exactly one primary key column, "

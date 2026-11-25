@@ -28,6 +28,7 @@ import logging
 import math
 import re
 import time
+import urllib.parse
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -569,29 +570,84 @@ def _generate_stream_load_label() -> str:
     return f"cocoindex_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
 
 
+def _new_http_session(config: DorisConnectionConfig) -> "aiohttp.ClientSession":
+    """An HTTP session bound to the current event loop.
+
+    _apply_actions may run on a fresh per-thread loop, so a session cached on
+    the connection (and its original loop) cannot be reused here without
+    "attached to a different loop". Session-level auth, not an Authorization
+    header: aiohttp strips the header on the cross-origin 307 the FE answers
+    with but re-applies session auth, so the credentials reach the BE.
+    """
+    aiohttp_mod = _get_aiohttp()
+    session: aiohttp.ClientSession = aiohttp_mod.ClientSession(
+        auth=aiohttp_mod.BasicAuth(config.username, config.password)
+    )
+    return session
+
+
+async def _put_to_be(
+    session: "aiohttp.ClientSession",
+    config: DorisConnectionConfig,
+    url: str,
+    *,
+    headers: dict[str, str],
+    data: str | None = None,
+) -> tuple[int, str]:
+    """PUT to an FE endpoint that redirects (307) to a BE, and return the
+    BE's status code and body. With `be_load_host` set, the redirect is
+    followed by hand, to that host."""
+    aiohttp_mod = _get_aiohttp()
+    timeout = aiohttp_mod.ClientTimeout(total=config.stream_load_timeout)
+    if not config.be_load_host:
+        async with session.put(
+            url, data=data, headers=headers, timeout=timeout
+        ) as response:
+            return response.status, await response.text()
+
+    async def send(target_url: str) -> tuple[int, str, str]:
+        async with session.put(
+            target_url,
+            data=data,
+            headers=headers,
+            timeout=timeout,
+            allow_redirects=False,
+        ) as resp:
+            return (resp.status, resp.headers.get("Location", ""), await resp.text())
+
+    status_code, location, text = await send(url)
+    if status_code == 307 and location:
+        parsed = urllib.parse.urlparse(location)
+        rewritten = urllib.parse.urlunparse(
+            parsed._replace(
+                netloc=f"{config.be_load_host}:{parsed.port or config.fe_http_port}"
+            )
+        )
+        status_code, _, text = await send(rewritten)
+    return status_code, text
+
+
+def _fe_url(config: DorisConnectionConfig, path: str) -> str:
+    protocol = "https" if config.enable_https else "http"
+    return f"{protocol}://{config.fe_host}:{config.fe_http_port}/api/{config.database}/{path}"
+
+
+class _PrecommittedLoad(NamedTuple):
+    """A Stream Load loaded with two-phase commit, not yet committed."""
+
+    txn_id: int
+    label: str
+
+
 async def _stream_load(
     managed_conn: ManagedConnection,
     table_name: str,
     rows: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Execute Stream Load for bulk data ingestion."""
-    aiohttp_mod = _get_aiohttp()
+) -> _PrecommittedLoad:
+    """Stream Load `rows` (not empty) with two-phase commit: they are loaded
+    but invisible until `_finish_two_phase` commits the returned load."""
     config = managed_conn.config
-
-    if not rows:
-        return {"Status": "Success", "NumberLoadedRows": 0}
-
-    # Create a session bound to the current event loop. _apply_actions may run
-    # on a fresh per-thread loop, so a session cached on the connection (and its
-    # original loop) cannot be reused here without "attached to a different loop".
-    # Session-level auth, not an Authorization header: aiohttp strips the header
-    # on the cross-origin 307 below but re-applies session auth, so the
-    # credentials reach the BE.
-    session = aiohttp_mod.ClientSession(
-        auth=aiohttp_mod.BasicAuth(config.username, config.password)
-    )
-    protocol = "https" if config.enable_https else "http"
-    url = f"{protocol}://{config.fe_host}:{config.fe_http_port}/api/{config.database}/{table_name}/_stream_load"
+    url = _fe_url(config, f"{table_name}/_stream_load")
 
     label = _generate_stream_load_label()
     all_columns: set[str] = set()
@@ -602,6 +658,7 @@ async def _stream_load(
         "format": "json",
         "strip_outer_array": "true",
         "label": label,
+        "two_phase_commit": "true",
         # The FE answers a Stream Load PUT with a 307 to a BE without reading
         # the body, and a client still writing the body when the 307 arrives
         # gets a reset on Doris >= 3.1.3 (Jetty 12). aiohttp honors this header:
@@ -616,43 +673,10 @@ async def _stream_load(
 
     data = json.dumps(rows, ensure_ascii=False, cls=_NumpyEncoder)
 
-    async def do_stream_load() -> dict[str, Any]:
-        load_timeout = aiohttp_mod.ClientTimeout(total=config.stream_load_timeout)
-
-        if config.be_load_host:
-
-            async def _send(target_url: str) -> tuple[int, str, str]:
-                async with session.put(
-                    target_url,
-                    data=data,
-                    headers=headers,
-                    timeout=load_timeout,
-                    allow_redirects=False,
-                ) as resp:
-                    return (
-                        resp.status,
-                        resp.headers.get("Location", ""),
-                        await resp.text(),
-                    )
-
-            status_code, location, text = await _send(url)
-            if status_code == 307 and location:
-                from urllib.parse import urlparse, urlunparse
-
-                parsed = urlparse(location)
-                rewritten = urlunparse(
-                    parsed._replace(
-                        netloc=f"{config.be_load_host}:{parsed.port or config.fe_http_port}"
-                    )
-                )
-                status_code, _, text = await _send(rewritten)
-        else:
-            async with session.put(
-                url, data=data, headers=headers, timeout=load_timeout
-            ) as response:
-                status_code = response.status
-                text = await response.text()
-
+    async def do_stream_load() -> _PrecommittedLoad:
+        status_code, text = await _put_to_be(
+            session, config, url, headers=headers, data=data
+        )
         if status_code in (401, 403):
             raise DorisAuthError(
                 f"Authentication failed: HTTP {status_code}",
@@ -667,8 +691,10 @@ async def _stream_load(
                 f"Invalid response: {text[:200]}", status="ParseError"
             )
 
+        # A two-phase load is not published when it answers, so it never
+        # reports `Publish Timeout`.
         load_status = result.get("Status", "Unknown")
-        if load_status not in ("Success", "Publish Timeout"):
+        if load_status != "Success":
             raise DorisStreamLoadError(
                 result.get("Message", "Unknown error"),
                 status=load_status,
@@ -676,19 +702,147 @@ async def _stream_load(
                 loaded_rows=result.get("NumberLoadedRows", 0),
                 filtered_rows=result.get("NumberFilteredRows", 0),
             )
-        return result
+        txn_id = result.get("TxnId")
+        if not isinstance(txn_id, int):
+            raise DorisStreamLoadError(
+                f"two-phase load response has no TxnId: {text[:200]}",
+                status=load_status,
+            )
+        return _PrecommittedLoad(txn_id=txn_id, label=label)
 
     retry_config = RetryConfig(
         max_retries=config.max_retries,
         base_delay=config.retry_base_delay,
         max_delay=config.retry_max_delay,
     )
+    session = _new_http_session(config)
     try:
         return await _with_retry(
             do_stream_load, retry_config, f"Stream Load to {table_name}"
         )
     finally:
         await session.close()
+
+
+async def _finish_two_phase(
+    config: DorisConnectionConfig, txn_id: int, operation: str
+) -> None:
+    """Commit or abort (`operation`) a Stream Load transaction loaded with
+    two-phase commit, through the FE's `_stream_load_2pc` endpoint."""
+    session = _new_http_session(config)
+    try:
+        status_code, text = await _put_to_be(
+            session,
+            config,
+            _fe_url(config, "_stream_load_2pc"),
+            headers={"txn_id": str(txn_id), "txn_operation": operation},
+        )
+    finally:
+        await session.close()
+    try:
+        result: dict[str, Any] = json.loads(text)
+    except json.JSONDecodeError:
+        result = {}
+    status = str(result.get("status", result.get("Status", "")))
+    if status.lower() != "success":
+        message = result.get("msg", result.get("Msg")) or text[:200]
+        raise DorisStreamLoadError(
+            f"{operation} of transaction {txn_id} failed (HTTP {status_code}): {message}",
+            status=status or "Unknown",
+        )
+
+
+async def _load_state(config: DorisConnectionConfig, label: str) -> str:
+    """The state of the load `label` (`PRECOMMITTED`, `COMMITTED`, `VISIBLE`,
+    `ABORTED`, ...), from the FE's `get_load_state`, which needs only the
+    database's privileges (`SHOW TRANSACTION` needs `Admin_priv`)."""
+    aiohttp_mod = _get_aiohttp()
+    session = _new_http_session(config)
+    try:
+        async with session.get(
+            _fe_url(config, "get_load_state"),
+            params={"label": label},
+            timeout=aiohttp_mod.ClientTimeout(total=config.stream_load_timeout),
+        ) as response:
+            status_code, text = response.status, await response.text()
+    finally:
+        await session.close()
+    try:
+        result: dict[str, Any] = json.loads(text)
+    except json.JSONDecodeError:
+        result = {}
+    state = result.get("data")
+    if result.get("code") != 0 or not isinstance(state, str):
+        raise DorisStreamLoadError(
+            f"state of load {label} unknown (HTTP {status_code}): {text[:200]}",
+            status="Unknown",
+        )
+    return state
+
+
+async def _wait_until_visible(
+    config: DorisConnectionConfig, load: _PrecommittedLoad
+) -> None:
+    """Wait until a committed two-phase load is published (its rows visible),
+    as a one-phase Stream Load does before it answers: a commit returns once
+    the transaction is committed, before it is published. Like a one-phase
+    load's `Publish Timeout`, a load still unpublished after
+    `stream_load_timeout` is left to publish later, with a warning."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + config.stream_load_timeout
+    delay = 0.01
+    while True:
+        state = await _load_state(config, load.label)
+        if state == "VISIBLE":
+            return
+        if state == "ABORTED":
+            raise DorisStreamLoadError(
+                f"transaction {load.txn_id} was aborted after its commit",
+                status=state,
+            )
+        if loop.time() >= deadline:
+            _logger.warning(
+                "Doris Stream Load transaction %d is committed but not yet "
+                "published after %ds; its rows become visible when it is",
+                load.txn_id,
+                config.stream_load_timeout,
+            )
+            return
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 0.5)
+
+
+async def _upsert_chunk(
+    managed_conn: ManagedConnection,
+    table_name: str,
+    key_columns: list[str],
+    key_rows: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+) -> None:
+    """Replace the rows of `key_rows` with `rows` in a `DUPLICATE KEY` table.
+
+    The new rows are Stream Loaded with two-phase commit first (loaded, not
+    visible), then the old rows of their keys are deleted, then the load is
+    committed: a load that fails deletes nothing, a delete that fails aborts
+    the load, and readers miss the rows only between the delete and the
+    commit.
+    """
+    config = managed_conn.config
+    load = await _stream_load(managed_conn, table_name, rows)
+    try:
+        await _execute_delete(config, table_name, key_columns, key_rows)
+    except Exception:
+        try:
+            await _finish_two_phase(config, load.txn_id, "abort")
+        except Exception as abort_error:
+            _logger.warning(
+                "Could not abort Doris Stream Load transaction %d: %s",
+                load.txn_id,
+                abort_error,
+            )
+        raise
+    await _finish_two_phase(config, load.txn_id, "commit")
+    await _wait_until_visible(config, load)
 
 
 async def _execute_delete(
@@ -923,19 +1077,18 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                 rows_to_load.append(action.value)
                 upsert_keys.append({col: action.value[col] for col in pk_cols})
 
-            # Delete existing rows first (DUPLICATE KEY needs delete-before-insert)
+            # DUPLICATE KEY appends: each chunk replaces the old rows of its
+            # keys (see `_upsert_chunk` for the order).
             batch_size = config.batch_size
-            for i in range(0, len(upsert_keys), batch_size):
-                batch = upsert_keys[i : i + batch_size]
-                loop.run_until_complete(
-                    _execute_delete(config, self._table_name, pk_cols, batch)
-                )
-
-            # Stream Load the new rows
             for i in range(0, len(rows_to_load), batch_size):
-                batch = rows_to_load[i : i + batch_size]
                 loop.run_until_complete(
-                    _stream_load(self._managed_conn, self._table_name, batch)
+                    _upsert_chunk(
+                        self._managed_conn,
+                        self._table_name,
+                        pk_cols,
+                        upsert_keys[i : i + batch_size],
+                        rows_to_load[i : i + batch_size],
+                    )
                 )
 
         if deletes:
