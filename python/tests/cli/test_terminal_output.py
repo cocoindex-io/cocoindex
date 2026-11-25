@@ -21,7 +21,9 @@ pytestmark = pytest.mark.skipif(
 _APP = Path(__file__).resolve().parent / "terminal_output_app.py"
 
 
-def _run(args: list[str], tmp_path: Path, **extra_env: str) -> bytes:
+def _run(
+    args: list[str], tmp_path: Path, *, expected_exit: int = 0, **extra_env: str
+) -> bytes:
     """Run `args` with a pseudo-terminal as stdout and stderr, and return what
     the terminal received."""
     env = {
@@ -57,7 +59,7 @@ def _run(args: list[str], tmp_path: Path, **extra_env: str) -> bytes:
                 break
             output += chunk
         os.close(master)
-        assert process.wait() == 0, output.decode(errors="replace")
+        assert process.wait() == expected_exit, output.decode(errors="replace")
     return bytes(output)
 
 
@@ -84,6 +86,7 @@ def test_debug_logs_keep_their_time_and_logger_name(tmp_path: Path) -> None:
     output = _run(
         ["cocoindex", "update", f"{_APP}:Failures"],
         tmp_path,
+        expected_exit=1,
         COCOINDEX_LOG_LEVEL="DEBUG",
     )
     assert b" ERROR cocoindex: " in output
