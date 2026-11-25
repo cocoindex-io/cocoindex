@@ -380,6 +380,8 @@ class App(Generic[P, R]):
         """
         Update the app synchronously (run the app once to process all pending changes).
 
+        Ctrl+C stops the update and raises ``KeyboardInterrupt``.
+
         Args:
             report_to_stdout: If truthy, periodically report processing stats to
                 stdout. Pass a ``timedelta`` to set the refresh interval; ``True``
@@ -450,6 +452,10 @@ class App(Generic[P, R]):
         - Abandon user-managed containers (e.g., message topics): CocoIndex stops
           writing to them and leaves their contents as-is. See the connector's docs.
         - Clear the app's internal state database
+
+        A drop is not stopped partway: Ctrl+C raises ``KeyboardInterrupt`` once it
+        finishes. A second Ctrl+C raises at once, and the drop goes on in the
+        background.
 
         Args:
             report_to_stdout: If truthy, periodically report processing stats to

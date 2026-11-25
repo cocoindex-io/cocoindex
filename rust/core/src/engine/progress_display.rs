@@ -20,8 +20,29 @@ const DEFAULT_TTY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 /// e.g. a CI log): each block adds lines that stay, so print them rarely.
 const DEFAULT_PLAIN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Global flag ensuring only one show_progress runs at a time.
+/// Global flag ensuring only one show_progress runs at a time; held through
+/// a [`ProgressActiveClaim`].
 static PROGRESS_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// A running `show_progress`'s hold on [`PROGRESS_ACTIVE`], released on drop:
+/// a display dropped before it ends (its awaiter cancelled, or a blocking wait
+/// given up on a second Ctrl+C) lets the next one run.
+struct ProgressActiveClaim;
+
+impl ProgressActiveClaim {
+    fn acquire() -> Option<Self> {
+        PROGRESS_ACTIVE
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for ProgressActiveClaim {
+    fn drop(&mut self) {
+        PROGRESS_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
 
 /// A stats group drawn as a section of the in-place region, while a root
 /// display runs on a terminal.
@@ -929,8 +950,8 @@ fn write_to_fd(fd: i32, buf: &[u8]) {
 }
 
 /// Internal RAII guard for PTY fd cleanup.
-/// Restores original fds, ends the stats groups' sections and clears the global
-/// flag on drop, so a cancelled display leaves no region behind for later groups.
+/// Restores original fds and ends the stats groups' sections on drop, so a
+/// cancelled display leaves no region behind for later groups.
 #[cfg(unix)]
 struct PtyGuard {
     saved_stdout: i32,
@@ -949,7 +970,6 @@ impl Drop for PtyGuard {
         if let Ok(mut groups) = GROUP_SECTIONS.lock() {
             *groups = None;
         }
-        PROGRESS_ACTIVE.store(false, Ordering::SeqCst);
     }
 }
 
@@ -962,13 +982,8 @@ pub async fn show_progress<T: Send + 'static>(
     handle: AppOpHandle<T>,
     options: ProgressDisplayOptions,
 ) -> Result<T> {
-    // Check exclusive access
-    if PROGRESS_ACTIVE
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err(internal_error!("Another show_progress is already running"));
-    }
+    let _claim = ProgressActiveClaim::acquire()
+        .ok_or_else(|| internal_error!("Another show_progress is already running"))?;
 
     let live = handle.live;
     let start_time = Instant::now();
@@ -1188,7 +1203,6 @@ async fn show_progress_plain<T: Send + 'static>(
     start_time: Instant,
 ) -> Result<T> {
     render_plain(handle.stats(), None, live, &options, start_time).await;
-    PROGRESS_ACTIVE.store(false, Ordering::SeqCst);
     handle.result().await
 }
 

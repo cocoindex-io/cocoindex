@@ -82,6 +82,8 @@ cocoindex update -L
 
 <Lang only="python">
 
+Ctrl+C stops a live update run by `cocoindex update -L` or `app.update_blocking(live=True)`; the latter then raises `KeyboardInterrupt`.
+
 The `live` flag propagates top-down through the component tree — both `coco.mount()` and `coco.use_mount()` inherit `live` from the parent, so children are live when the app is live.
 
 Without `live=True` on the app, the app runs in catch-up mode — everything completes after the initial scan, even if a source supports live watching.
