@@ -108,7 +108,15 @@ class _Request:
 class _Files:
     drive: FakeDrive
 
-    def list(self, *, q: str, fields: str, pageToken: str | None) -> _Request:
+    def list(
+        self,
+        *,
+        q: str,
+        fields: str,
+        pageToken: str | None,
+        includeItemsFromAllDrives: bool,
+        supportsAllDrives: bool,
+    ) -> _Request:
         self.drive.lists += 1
         folder_id = q.split("'")[1]
         return _Request(
@@ -121,10 +129,10 @@ class _Files:
             }
         )
 
-    def get(self, *, fileId: str, fields: str) -> _Request:
+    def get(self, *, fileId: str, fields: str, supportsAllDrives: bool) -> _Request:
         return _Request(self.drive._metadata(fileId, self.drive.entries[fileId]))
 
-    def get_media(self, *, fileId: str) -> _Request:
+    def get_media(self, *, fileId: str, supportsAllDrives: bool) -> _Request:
         self.drive.downloads += 1
         return _Request(self.drive.entries[fileId].content)
 
