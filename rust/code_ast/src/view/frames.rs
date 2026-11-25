@@ -164,8 +164,7 @@ fn find_cut_on_path<'t>(
     ctx: &LangCtx,
     src: &str,
 ) -> Option<RawCut<'t>> {
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else { continue };
+    for child in node.children(&mut node.walk()) {
         if child.end_byte() <= interior.start || child.start_byte() >= interior.end {
             continue;
         }

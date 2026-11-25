@@ -115,29 +115,20 @@ fn python_is_public(name: &str, _node: &tree_sitter::Node, _source: &[u8]) -> bo
 }
 
 fn rust_is_public(_name: &str, node: &tree_sitter::Node, _source: &[u8]) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i)
-            && child.kind() == "visibility_modifier"
-        {
-            return true;
-        }
-    }
-    false
+    node.children(&mut node.walk())
+        .any(|child| child.kind() == "visibility_modifier")
 }
 
 fn ts_is_public(name: &str, node: &tree_sitter::Node, source: &[u8]) -> bool {
     if name.starts_with('#') {
         return false;
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i)
-            && child.kind() == "accessibility_modifier"
-        {
+    node.children(&mut node.walk())
+        .find(|child| child.kind() == "accessibility_modifier")
+        .is_none_or(|child| {
             let text = child.utf8_text(source).unwrap_or("");
-            return text != "private" && text != "protected";
-        }
-    }
-    true
+            text != "private" && text != "protected"
+        })
 }
 
 fn go_is_public(name: &str, _node: &tree_sitter::Node, _source: &[u8]) -> bool {
@@ -145,51 +136,33 @@ fn go_is_public(name: &str, _node: &tree_sitter::Node, _source: &[u8]) -> bool {
 }
 
 fn java_is_public(_name: &str, node: &tree_sitter::Node, source: &[u8]) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i)
-            && child.kind() == "modifiers"
-        {
-            return child.utf8_text(source).unwrap_or("").contains("public");
-        }
-    }
-    false
+    node.children(&mut node.walk())
+        .find(|child| child.kind() == "modifiers")
+        .is_some_and(|child| child.utf8_text(source).unwrap_or("").contains("public"))
 }
 
 /// Swift defaults to `internal` visibility: list unless explicitly `private` /
 /// `fileprivate`.
 fn swift_is_public(_name: &str, node: &tree_sitter::Node, source: &[u8]) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i)
-            && child.kind() == "modifiers"
-        {
-            return !child.utf8_text(source).unwrap_or("").contains("private");
-        }
-    }
-    true
+    node.children(&mut node.walk())
+        .find(|child| child.kind() == "modifiers")
+        .is_none_or(|child| !child.utf8_text(source).unwrap_or("").contains("private"))
 }
 
 /// Kotlin defaults to `public`: list unless explicitly `private` / `protected`.
 fn kotlin_is_public(_name: &str, node: &tree_sitter::Node, source: &[u8]) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i)
-            && child.kind() == "modifiers"
-        {
+    node.children(&mut node.walk())
+        .find(|child| child.kind() == "modifiers")
+        .is_none_or(|child| {
             let text = child.utf8_text(source).unwrap_or("");
-            return !text.contains("private") && !text.contains("protected");
-        }
-    }
-    true
+            !text.contains("private") && !text.contains("protected")
+        })
 }
 
 fn csharp_is_public(_name: &str, node: &tree_sitter::Node, source: &[u8]) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i)
-            && child.kind().starts_with("modifier")
-        {
-            return child.utf8_text(source).unwrap_or("").contains("public");
-        }
-    }
-    false
+    node.children(&mut node.walk())
+        .find(|child| child.kind().starts_with("modifier"))
+        .is_some_and(|child| child.utf8_text(source).unwrap_or("").contains("public"))
 }
 
 static PYTHON_EXT: StructuralLanguageExt = StructuralLanguageExt {
@@ -542,7 +515,7 @@ pub fn is_region(node: &tree_sitter::Node, ctx: &LangCtx, src: &str) -> bool {
     if n < 2 {
         return false;
     }
-    let (Some(first), Some(last)) = (node.child(0), node.child(n - 1)) else {
+    let (Some(first), Some(last)) = (node.child(0), node.child((n - 1) as u32)) else {
         return false;
     };
     let first_text = &src[first.byte_range()];
@@ -566,7 +539,7 @@ pub fn region_traits(node: &tree_sitter::Node, ctx: &LangCtx, src: &str) -> Opti
     if n < 2 {
         return None;
     }
-    let (Some(first), Some(last)) = (node.child(0), node.child(n - 1)) else {
+    let (Some(first), Some(last)) = (node.child(0), node.child((n - 1) as u32)) else {
         return None;
     };
     let first_text = &src[first.byte_range()];
@@ -586,8 +559,7 @@ pub fn direct_region_child<'t>(
     src: &str,
 ) -> Option<tree_sitter::Node<'t>> {
     let mut first_soft: Option<tree_sitter::Node<'t>> = None;
-    for i in 0..node.child_count() {
-        let child = node.child(i)?;
+    for child in node.children(&mut node.walk()) {
         match region_traits(&child, ctx, src) {
             Some((_, false)) => return Some(child),
             Some((_, true)) if first_soft.is_none() => first_soft = Some(child),
@@ -608,7 +580,7 @@ pub fn region_interior(region: &tree_sitter::Node, ctx: &LangCtx, src: &str) -> 
     }
     let n = region.child_count();
     debug_assert!(n >= 2);
-    let (Some(first), Some(last)) = (region.child(0), region.child(n - 1)) else {
+    let (Some(first), Some(last)) = (region.child(0), region.child((n - 1) as u32)) else {
         return TextRange::new(region.start_byte(), region.end_byte());
     };
     let mut interior_start = first.end_byte();
@@ -698,16 +670,14 @@ pub fn implicit_body_container<'t>(
 }
 
 fn count_headings(node: &tree_sitter::Node, heading_kinds: &[&str]) -> usize {
-    (0..node.child_count())
-        .filter_map(|i| node.child(i))
+    node.children(&mut node.walk())
         .filter(|c| heading_kinds.contains(&c.kind()))
         .count()
 }
 
 /// Heading level: 1-6 from the underline / ATX marker child kind.
 fn heading_level(node: &tree_sitter::Node) -> usize {
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else { continue };
+    for child in node.children(&mut node.walk()) {
         match child.kind() {
             "setext_h1_underline" => return 1,
             "setext_h2_underline" => return 2,
@@ -743,8 +713,7 @@ pub fn classify<'t>(
             if count_headings(node, heading_kinds) > 1 {
                 return None;
             }
-            for i in 0..node.child_count() {
-                let child = node.child(i)?;
+            for child in node.children(&mut node.walk()) {
                 if heading_kinds.contains(&child.kind()) {
                     let body = TextRange::new(child.end_byte(), node.end_byte());
                     return Some(Classified {
@@ -924,8 +893,7 @@ pub fn cut_candidate<'t>(
         });
     }
     let mut substantive: Option<tree_sitter::Node<'t>> = None;
-    for i in 0..node.child_count() {
-        let child = node.child(i)?;
+    for child in node.children(&mut node.walk()) {
         if !child.is_named() || ctx.is_attached_prefix_kind(child.kind()) {
             continue;
         }
@@ -944,12 +912,6 @@ pub fn cut_candidate<'t>(
 /// True for comment nodes that document their *enclosing* scope (Rust `//!`) and must
 /// never attach to the following item.
 pub fn is_inner_doc(node: &tree_sitter::Node) -> bool {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i)
-            && child.kind() == "inner_doc_comment_marker"
-        {
-            return true;
-        }
-    }
-    false
+    node.children(&mut node.walk())
+        .any(|child| child.kind() == "inner_doc_comment_marker")
 }

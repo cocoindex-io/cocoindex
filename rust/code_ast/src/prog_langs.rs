@@ -44,7 +44,7 @@ impl TreeSitterLanguageInfo {
 pub struct ProgrammingLanguageInfo {
     /// The main name of the language.
     /// It's expected to be consistent with the language names listed at:
-    ///   https://github.com/Goldziher/tree-sitter-language-pack?tab=readme-ov-file#available-languages
+    /// <https://github.com/Goldziher/tree-sitter-language-pack?tab=readme-ov-file#available-languages>
     pub name: Arc<str>,
 
     /// Optional tree-sitter language info for syntax-aware parsing.
