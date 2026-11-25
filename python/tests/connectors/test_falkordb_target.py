@@ -59,6 +59,7 @@ if HAS_FALKORDB:
         build_node_delete_all,
         build_node_index_create,
         build_node_index_drop,
+        build_node_reduce_to_key,
         build_node_upsert,
         build_relationship_delete,
         build_relationship_delete_all,
@@ -163,12 +164,20 @@ class TestNodeUpsertCypher:
 
 @requires_falkordb
 class TestNodeDeleteCypher:
-    def test_uses_detach_delete(self) -> None:
-        # DETACH DELETE is critical: protects against the shared-Entity case
-        # where a node still has incident edges that another flow owns.
-        assert (
-            build_node_delete("Document", ["filename"])
-            == "MATCH (n:`Document` {`filename`: $key_0}) DETACH DELETE n"
+    def test_keeps_a_node_a_relationship_still_touches(self) -> None:
+        # No DETACH DELETE: it would take along relationships still declared.
+        # A node a relationship touches is reduced to its key instead, the
+        # bare endpoint a relationship upsert MERGEs.
+        assert build_node_reduce_to_key("Document", ["filename"]) == (
+            "MATCH (n:`Document` {`filename`: $key_0}) WHERE (n)--() "
+            "SET n = {`filename`: $key_0}"
+        )
+        assert build_node_delete("Document", ["filename"]) == (
+            "MATCH (n:`Document` {`filename`: $key_0}) WHERE NOT (n)--() DELETE n"
+        )
+        assert build_node_reduce_to_key("X", ["a", "b"]) == (
+            "MATCH (n:`X` {`a`: $key_0, `b`: $key_1}) WHERE (n)--() "
+            "SET n = {`a`: $key_0, `b`: $key_1}"
         )
 
     def test_delete_all_detaches_whole_label(self) -> None:
@@ -1008,6 +1017,142 @@ async def test_relationship_upsert_with_endpoint_merge(
         assert rel["predicate"] == "connects"
 
 
+_pair_docs: list[str] = []
+_pair_linked: bool = True
+
+
+async def _declare_pair() -> None:
+    """The ``Document`` nodes ``_pair_docs`` and, with ``_pair_linked``, the
+    ``LINKS`` relationship a -> b."""
+    docs: Any = await coco.use_mount(  # type: ignore[call-overload]
+        coco.component_subpath("setup", "doc_table"),
+        falkor.mount_node_target,  # type: ignore[arg-type]
+        KG_DB,
+        "Document",
+        await falkor.TableSchema.from_class(Document, primary_key="filename"),
+        primary_key="filename",
+    )
+    links: Any = await coco.use_mount(  # type: ignore[call-overload]
+        coco.component_subpath("setup", "links_table"),
+        falkor.mount_relationship_target,
+        KG_DB,
+        "LINKS",
+        docs,
+        docs,
+        await falkor.TableSchema.from_class(RelRow, primary_key="id"),
+        primary_key="id",
+    )
+    for name in _pair_docs:
+        docs.declare_record(row=Document(filename=name, title=name, summary=""))
+    if _pair_linked:
+        links.declare_relationship(
+            from_id="a", to_id="b", record=RelRow(id="a->b", predicate="links")
+        )
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_an_edge_outlives_its_undeclared_endpoint(
+    falkor_graph_name: str,
+) -> None:
+    """A relationship still declared after its endpoint node no longer is
+    stays, the endpoint reduced to its key (what a build from scratch has, as
+    a relationship upsert MERGEs its endpoints); declared again, the endpoint
+    gets its properties back. A node undeclared with its relationship goes."""
+    global _pair_docs, _pair_linked
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_edge_outlives_endpoint", environment=coco_env),
+        _declare_pair,
+    )
+
+    async def state() -> tuple[dict[str, dict[str, Any]], int]:
+        nodes = await _read_nodes(falkor_graph_name, "Document")
+        edges = await _read_relationships(falkor_graph_name, "LINKS")
+        return {n["filename"]: n for n in nodes}, len(edges)
+
+    full = {"filename": "b", "title": "b", "summary": ""}
+    _pair_docs, _pair_linked = ["a", "b"], True
+    await app.update()
+    nodes, num_edges = await state()
+    assert (nodes["b"], num_edges) == (full, 1)
+
+    _pair_docs = ["a"]
+    for _ in range(2):
+        await app.update()
+        nodes, num_edges = await state()
+        assert (set(nodes), nodes["b"], num_edges) == (
+            {"a", "b"},
+            {"filename": "b"},
+            1,
+        )
+
+    _pair_docs = ["a", "b"]
+    await app.update()
+    nodes, num_edges = await state()
+    assert (nodes["b"], num_edges) == (full, 1)
+
+    _pair_docs, _pair_linked = ["a"], False
+    await app.update()
+    nodes, num_edges = await state()
+    assert (set(nodes), num_edges) == ({"a"}, 0)
+
+
+@requires_falkordb_server
+@pytest.mark.asyncio
+async def test_an_endpoint_undeclared_a_run_before_its_edge_stays_bare(
+    falkor_graph_name: str,
+) -> None:
+    """A node undeclared while its relationship is still declared is reduced to
+    its key; the relationship undeclared a run later goes, and the endpoint
+    stays, bare and touched by nothing (endpoints are never deleted by a
+    relationship delete), until its node is declared again."""
+    global _pair_docs, _pair_linked
+    coco_env.context_provider.provide(
+        KG_DB, falkor.ConnectionFactory(uri=_FALKORDB_URI, graph=falkor_graph_name)
+    )
+    app = coco.App(
+        coco.AppConfig(name="test_endpoint_stays_bare", environment=coco_env),
+        _declare_pair,
+    )
+
+    async def state() -> tuple[dict[str, dict[str, Any]], int]:
+        nodes = await _read_nodes(falkor_graph_name, "Document")
+        edges = await _read_relationships(falkor_graph_name, "LINKS")
+        return {n["filename"]: n for n in nodes}, len(edges)
+
+    _pair_docs, _pair_linked = ["a", "b"], True
+    await app.update()
+
+    # Run N+1: the node goes, its relationship stays.
+    _pair_docs = ["a"]
+    await app.update()
+    nodes, num_edges = await state()
+    assert (set(nodes), nodes["b"], num_edges) == ({"a", "b"}, {"filename": "b"}, 1)
+
+    # Run N+2 and later: the relationship goes; the bare endpoint stays.
+    _pair_linked = False
+    for _ in range(2):
+        await app.update()
+        nodes, num_edges = await state()
+        assert (set(nodes), nodes["b"], num_edges) == (
+            {"a", "b"},
+            {"filename": "b"},
+            0,
+        )
+
+    # Declared again, the node gets its properties back.
+    _pair_docs = ["a", "b"]
+    await app.update()
+    nodes, num_edges = await state()
+    assert (nodes["b"], num_edges) == (
+        {"filename": "b", "title": "b", "summary": ""},
+        0,
+    )
+
+
 async def _graph_exists(graph_name: str) -> bool:
     client = AsyncFalkorDB.from_url(_FALKORDB_URI)
     try:
@@ -1075,6 +1220,7 @@ def _record_writes(graph: Any) -> list[tuple[str, Any]]:
             for legacy in (False, True)
         },
         build_relationship_delete("REL", ["id"]): "relation_delete",
+        build_node_reduce_to_key("Entity", ["value"]): "node_reduce_to_key",
         build_node_delete("Entity", ["value"]): "node_delete",
     }
     return [
@@ -1089,7 +1235,9 @@ def _record_writes(graph: Any) -> list[tuple[str, Any]]:
 async def test_record_sink_orders_writes_across_tables() -> None:
     """The node and relation records of one graph land in one batch of the
     shared record sink, applied as node upserts → relation upserts → relation
-    deletes → node deletes."""
+    deletes → node deletes, so a node undeclared with its relationships has
+    none left when its delete runs. A node delete reduces a node some
+    relationship still touches to its key, and deletes one none touches."""
     global _rel_pairs, _tables_declared, _entity_with_schema
     _tables_declared = True
     _entity_with_schema = True
@@ -1124,7 +1272,9 @@ async def test_record_sink_orders_writes_across_tables() -> None:
         "node_upsert",
         "relation_upsert",
         "relation_delete",
+        "node_reduce_to_key",
         "node_delete",
+        "node_reduce_to_key",
         "node_delete",
     ]
     assert set(writes) == {
@@ -1132,6 +1282,8 @@ async def test_record_sink_orders_writes_across_tables() -> None:
         ("node_upsert", "d"),
         ("relation_upsert", "c->d"),
         ("relation_delete", "a->b"),
+        ("node_reduce_to_key", "a"),
+        ("node_reduce_to_key", "b"),
         ("node_delete", "a"),
         ("node_delete", "b"),
     }

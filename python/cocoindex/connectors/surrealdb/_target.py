@@ -19,7 +19,9 @@ import datetime
 import decimal
 import random
 import re
+import threading
 import uuid
+import weakref
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -173,7 +175,7 @@ class ConnectionFactory:
         self._namespace = namespace
         self._database = database
         self._credentials = credentials
-        self._connections: PerLoopConnections[AsyncSurreal] = PerLoopConnections(
+        self._connections: PerLoopConnections[_Connection] = PerLoopConnections(
             self._connect, _close_connection, owner="SurrealDB ConnectionFactory"
         )
 
@@ -189,21 +191,26 @@ class ConnectionFactory:
         the loop it is used on) and reused by every table and batch on that
         loop (a SurrealDB WebSocket multiplexes concurrent requests).
         """
+        return (await self._connection()).conn
+
+    async def _connection(self) -> _Connection:
+        """The connection of the current event loop, with what its server can do."""
         # ponytail: one shared connection per loop; add a pool if a single
         # WebSocket becomes the throughput limit.
         return await self._connections.acquire()
 
-    async def _connect(self) -> AsyncSurreal:
+    async def _connect(self) -> _Connection:
         conn = AsyncSurreal(self._url)
         await conn.connect()  # type: ignore[call-arg]
         try:
             if self._credentials:
                 await conn.signin(self._credentials)  # type: ignore[arg-type]
             await conn.use(self._namespace, self._database)
+            recreates = _recreates_in_transaction(await conn.version())
         except BaseException:
             await conn.close()
             raise
-        return conn
+        return _Connection(conn, recreates)
 
     async def close(self) -> None:
         """Close the connection of the running event loop, if any. Call it on
@@ -213,8 +220,16 @@ class ConnectionFactory:
         await self._connections.close()
 
 
-async def _close_connection(conn: AsyncSurreal) -> None:
-    await conn.close()
+class _Connection(NamedTuple):
+    """An open connection, and its server's answer to `_recreates_in_transaction`,
+    read once when it connects."""
+
+    conn: AsyncSurreal
+    recreates_in_transaction: bool
+
+
+async def _close_connection(connection: _Connection) -> None:
+    await connection.conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -574,38 +589,164 @@ class TableSchema(Generic[RowT]):
 
 
 class _RecordAction(NamedTuple):
-    """Action to perform on a record (upsert or delete)."""
+    """Action to perform on a record: write fields, unset fields, or delete it."""
 
     table_name: str
     is_relation: bool
     record_id: Any
-    value: dict[str, Any] | None  # None = delete
+    # The fields to write (``UPSERT … MERGE``, or ``RELATE`` for a relation),
+    # or None to delete the whole record.
+    value: dict[str, Any] | None
     from_record: tuple[str, Any] | None  # (table, id) (relations only)
     to_record: tuple[str, Any] | None  # (table, id) (relations only)
-    # ``fields`` mode: "set" MERGEs into an existing record (zero rows affected
-    # raises), "unset" MERGEs NONE values (a missing record is fine).
-    fields_op: Literal["set", "unset"] | None = None
+    # ``value`` names the fields an owner stopped declaring, all None: they are
+    # unset (``UPDATE … MERGE`` with NONE values; a missing record is fine).
+    unset: bool = False
+    # With ``unset``, for the record's own declaration: once every write of the
+    # batch ran, the record is deleted if nothing but its ``id`` is left, so
+    # fields other owners (field groups) declare keep it.
+    delete_if_empty: bool = False
 
 
 _MAX_ACTIONS_PER_TXN = 500
 _MAX_ATTEMPTS = 5
 
-# One transaction per chunk. Values are bound as typed CBOR parameters.
-# ``MERGE`` with a NONE value removes the field, so owned fields that became
-# None are unset without touching fields written by other owners.
-_BATCH_SURQL = """\
-BEGIN;
-FOR $r IN $ups { UPSERT $r.id MERGE $r.c RETURN NONE; };
-FOR $r IN $flds {
-    LET $n = (UPDATE ONLY $r.id MERGE $r.c RETURN id);
-    IF $n = NONE { THROW 'fields target record missing: ' + <string>$r.id; };
-};
-FOR $r IN $unf { UPDATE $r.id MERGE $r.c RETURN NONE; };
+
+def _recreates_in_transaction(version: str) -> bool:
+    """Whether the server (``version()``, e.g. ``surrealdb-3.2.4``) can create a
+    record deleted earlier in the same transaction: SurrealDB 3.2 cannot (the
+    create fails with "already exists"), 3.3 and later can."""
+    match = re.search(r"(\d+)\.(\d+)", version)
+    return match is None or (int(match[1]), int(match[2])) >= (3, 3)
+
+
+# The records to delete: ``$dels``, and the records of ``$del_if_empty`` that
+# have nothing but their ``id`` left (a missing record answers NONE).
+_RECORDS_TO_DELETE = (
+    "array::concat($dels, array::filter($del_if_empty, "
+    '|$d| (SELECT VALUE object::keys($this) FROM ONLY $d) = ["id"]))'
+)
+
+# The edges of the records ``$gone`` names, as they are: their whole records,
+# ids and endpoints included.
+_EDGES_OF_DELETED = (
+    "array::distinct(array::flatten(array::map($gone, "
+    "|$d| array::concat($d->?, $d<-?)))).map(|$e| $e.*)"
+)
+
+
+def _batch_surql(recreate_in_transaction: bool) -> str:
+    """One transaction of record writes. Values are bound as typed CBOR parameters.
+
+    ``MERGE`` with a NONE value removes the field, so owned fields that became
+    None are unset without touching fields written by other owners. Field
+    unsets come first, so that a removed group cannot erase a field another
+    owner takes over in the same batch. A record whose own declaration went
+    away is deleted after every write, and only if nothing but its ``id`` is
+    left: a field group declared in the same batch, or still declared, keeps it.
+
+    An edge that exists between the same endpoints is updated in place; an edge
+    whose endpoints change is deleted and related again. A deleted record that
+    is not an edge keeps its edges: SurrealDB deletes them with it, while an
+    edge needs no endpoint record, so they are related again as they were.
+    SurrealDB 3.2 cannot create a record deleted earlier in the same
+    transaction: there, the batch only deletes, and ends with the edges to
+    relate in a second transaction (``_RECREATE_EDGES_SURQL``).
+    """
+    if recreate_in_transaction:
+        relate = """\
 FOR $r IN $rels {
-    DELETE $r.id RETURN NONE;
-    RELATE ($r.f) -> ($r.id) -> ($r.t) CONTENT $r.c RETURN NONE;
+    IF (SELECT VALUE [in, out] FROM ONLY $r.id) = [$r.f, $r.t] {
+        UPDATE $r.id CONTENT $r.c RETURN NONE;
+    } ELSE {
+        DELETE $r.id RETURN NONE;
+        RELATE ($r.f) -> ($r.id) -> ($r.t) CONTENT $r.c RETURN NONE;
+    };
 };
-FOR $d IN $dels { DELETE $d RETURN NONE; };
+"""
+        restore = """\
+FOR $e IN $edges {
+    IF (SELECT VALUE id FROM ONLY $e.id) = NONE {
+        RELATE ($e.in) -> ($e.id) -> ($e.out) CONTENT $e RETURN NONE;
+    };
+};
+"""
+    else:
+        relate = """\
+LET $moved = array::filter($rels,
+    |$r| (SELECT VALUE [in, out] FROM ONLY $r.id) NOT IN [NONE, [$r.f, $r.t]]);
+FOR $r IN $rels {
+    LET $cur = (SELECT VALUE [in, out] FROM ONLY $r.id);
+    IF $cur = [$r.f, $r.t] { UPDATE $r.id CONTENT $r.c RETURN NONE; }
+    ELSE IF $cur = NONE { RELATE ($r.f) -> ($r.id) -> ($r.t) CONTENT $r.c RETURN NONE; }
+    ELSE { DELETE $r.id RETURN NONE; };
+};
+"""
+        restore = "LET $restore = $edges;\n"
+    return (
+        "BEGIN;\n"
+        "LET $moved = [];\n"
+        "LET $restore = [];\n"
+        "FOR $r IN $unf { UPDATE $r.id MERGE $r.c RETURN NONE; };\n"
+        "FOR $r IN $ups { UPSERT $r.id MERGE $r.c RETURN NONE; };\n"
+        f"{relate}"
+        "FOR $d IN $rdels { DELETE $d RETURN NONE; };\n"
+        f"LET $gone = {_RECORDS_TO_DELETE};\n"
+        f"LET $edges = {_EDGES_OF_DELETED};\n"
+        "FOR $d IN $gone { DELETE $d RETURN NONE; };\n"
+        f"{restore}"
+        "[$moved, $restore];\n"
+        "COMMIT;\n"
+    )
+
+
+def _moved_and_restore(res: Any) -> tuple[list[Any], list[Any]]:
+    """The ``[$moved, $restore]`` of a `_batch_surql` response.
+
+    It is the last statement that answers a value: every other statement of the
+    transaction answers NONE, ``COMMIT`` included, so the value is found
+    whether or not the server gives ``BEGIN`` and ``COMMIT`` entries of their own.
+    """
+    statements = res.get("result") if isinstance(res, dict) else None
+    value = None
+    if isinstance(statements, list):
+        for statement in reversed(statements):
+            if not isinstance(statement, dict):
+                break
+            if (value := statement.get("result")) is not None:
+                break
+    if not (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(isinstance(v, list) for v in value)
+    ):
+        raise RuntimeError(
+            "SurrealDB answered the batch transaction with an unexpected shape; "
+            f"expected [$moved, $restore] as its last value, got: {res!r}"
+        )
+    return value[0], value[1]
+
+
+# The second transaction on SurrealDB 3.2: relate each moved edge (``$moved``)
+# and each edge of a deleted record (``$restore``), unless another writer
+# created it in between. A moved edge another writer created between other
+# endpoints fails the batch, and the next run moves it again. Between the two
+# transactions the edges are missing; if the second never lands, a moved edge
+# is written on the next run, but an edge of a deleted record stays missing
+# until its declaration changes or a full reprocess.
+_RECREATE_EDGES_SURQL = """\
+BEGIN;
+FOR $r IN $moved {
+    LET $cur = (SELECT VALUE [in, out] FROM ONLY $r.id);
+    IF $cur = NONE { RELATE ($r.f) -> ($r.id) -> ($r.t) CONTENT $r.c RETURN NONE; }
+    ELSE IF $cur = [$r.f, $r.t] { UPDATE $r.id CONTENT $r.c RETURN NONE; }
+    ELSE { THROW 'edge ' + <string>$r.id + ' was written by another writer while it moved'; };
+};
+FOR $e IN $restore {
+    IF (SELECT VALUE id FROM ONLY $e.id) = NONE {
+        RELATE ($e.in) -> ($e.id) -> ($e.out) CONTENT $e RETURN NONE;
+    };
+};
 COMMIT;
 """
 
@@ -632,15 +773,40 @@ def _check_response(res: Any) -> None:
         raise RuntimeError(f"SurrealDB batch failed: {msg}")
 
 
+async def _query_with_retry(
+    conn: AsyncSurreal, surql: str, params: dict[str, Any]
+) -> Any:
+    """Run ``surql``, retried when its transaction conflicts; its response.
+
+    The last attempt's conflict is raised.
+    """
+    for attempt in range(_MAX_ATTEMPTS - 1):
+        try:
+            return await _query_checked(conn, surql, params)
+        except _RetryableError:
+            await asyncio.sleep(0.05 * 2**attempt * (1 + random.random()))
+    return await _query_checked(conn, surql, params)
+
+
+async def _query_checked(conn: AsyncSurreal, surql: str, params: dict[str, Any]) -> Any:
+    """Run ``surql``; its response, once no statement of it failed."""
+    res = await conn.query_raw(surql, params)
+    _check_response(res)
+    return res
+
+
 @dataclass(frozen=True)
 class _SharedRecordApplier:
-    """The record sink callback shared by every record handler of one database.
+    """The record and index sink callback shared by every record handler of one database.
 
     Equal for the same ``ConnectionFactory``, so the record sinks of all tables
-    of one database — node and relation tables alike — share one identity (see
-    ``coco.TargetActionSink``) and the engine batches their actions together;
-    each batch is ordered by :meth:`_rank` so a relation is never written
-    before its endpoints exist.
+    of one database — node and relation tables alike — and their index sinks
+    share one identity (see ``coco.TargetActionSink``) and the engine batches
+    their actions together; each batch is ordered by :meth:`_rank` so a
+    relation is never written before its endpoints exist. Index changes wrap the
+    records: a changed index is removed before the records are written and
+    defined after them, since it can be defined neither over the old records (a
+    new dimension) nor before the new ones are written.
 
     Atomicity scope: the engine batches the actions of all components that share
     this sink; they are applied in chunks of ``_MAX_ACTIONS_PER_TXN``, each chunk one
@@ -652,63 +818,92 @@ class _SharedRecordApplier:
 
     @staticmethod
     def _rank(action: _RecordAction) -> int:
-        # Order: upserts, fields writes, relation upserts, relation deletes, deletes.
+        # Order: field unsets, upserts (records and field groups), relation
+        # upserts, relation deletes, deletes.
+        if action.unset:
+            return 0
         if action.value is not None:
-            if action.fields_op is not None:
-                return 1
-            return 2 if action.is_relation else 0
+            return 2 if action.is_relation else 1
         return 3 if action.is_relation else 4
 
     async def __call__(
-        self, context_provider: ContextProvider, actions: Sequence[_RecordAction]
+        self,
+        context_provider: ContextProvider,
+        actions: Sequence[_RecordAction | _VectorIndexAction],
     ) -> None:
         if not actions:
             return
-        conn = await self.factory.acquire()
-        ordered = sorted(actions, key=self._rank)  # stable
+        connection = await self.factory._connection()
+        conn = connection.conn
+        indexes = [a for a in actions if isinstance(a, _VectorIndexAction)]
+        records = [a for a in actions if isinstance(a, _RecordAction)]
+        for index in indexes:
+            _check_response(
+                await conn.query_raw(
+                    f"REMOVE INDEX IF EXISTS {index.name} ON TABLE {index.table_name}"
+                )
+            )
+        ordered = sorted(records, key=self._rank)  # stable
         for start in range(0, len(ordered), _MAX_ACTIONS_PER_TXN):
-            await self._apply_chunk(conn, ordered[start : start + _MAX_ACTIONS_PER_TXN])
+            await self._apply_chunk(
+                connection, ordered[start : start + _MAX_ACTIONS_PER_TXN]
+            )
+        for index in indexes:
+            if index.spec is not None:
+                _check_response(
+                    await conn.query_raw(_define_vector_index(index.name, index))
+                )
 
     async def _apply_chunk(
-        self, conn: AsyncSurreal, chunk: Sequence[_RecordAction]
+        self, connection: _Connection, chunk: Sequence[_RecordAction]
     ) -> None:
         ups: list[dict[str, Any]] = []
-        flds: list[dict[str, Any]] = []
         unf: list[dict[str, Any]] = []
+        del_if_empty: list[Any] = []
         rels: list[dict[str, Any]] = []
+        rdels: list[Any] = []
         dels: list[Any] = []
         for a in chunk:
             rid = _to_record_id(a.table_name, a.record_id)
             if a.value is None:
-                dels.append(rid)
+                (rdels if a.is_relation else dels).append(rid)
                 continue
             content = {k: _sanitize(v) for k, v in a.value.items() if k != "id"}
-            if a.fields_op == "set":
-                flds.append({"id": rid, "c": content})
-            elif a.fields_op == "unset":
+            if a.unset:
                 unf.append({"id": rid, "c": content})
+                if a.delete_if_empty:
+                    del_if_empty.append(rid)
             elif a.is_relation:
                 assert a.from_record is not None and a.to_record is not None
+                f = _to_record_id(*a.from_record)
+                t = _to_record_id(*a.to_record)
+                # The content carries the endpoints, so that `UPDATE … CONTENT`
+                # keeps them.
                 rels.append(
-                    {
-                        "id": rid,
-                        "f": _to_record_id(*a.from_record),
-                        "t": _to_record_id(*a.to_record),
-                        "c": content,
-                    }
+                    {"id": rid, "f": f, "t": t, "c": {**content, "in": f, "out": t}}
                 )
             else:
                 ups.append({"id": rid, "c": content})
-        params = {"ups": ups, "flds": flds, "unf": unf, "rels": rels, "dels": dels}
-
-        for attempt in range(_MAX_ATTEMPTS):
-            try:
-                _check_response(await conn.query_raw(_BATCH_SURQL, params))
-                return
-            except _RetryableError:
-                if attempt == _MAX_ATTEMPTS - 1:
-                    raise
-                await asyncio.sleep(0.05 * 2**attempt * (1 + random.random()))
+        params = {
+            "ups": ups,
+            "unf": unf,
+            "del_if_empty": del_if_empty,
+            "rels": rels,
+            "rdels": rdels,
+            "dels": dels,
+        }
+        conn = connection.conn
+        recreate_in_transaction = connection.recreates_in_transaction
+        res = await _query_with_retry(
+            conn, _batch_surql(recreate_in_transaction), params
+        )
+        if recreate_in_transaction:
+            return
+        moved, restore = _moved_and_restore(res)
+        if moved or restore:
+            await _query_with_retry(
+                conn, _RECREATE_EDGES_SURQL, {"moved": moved, "restore": restore}
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -737,45 +932,29 @@ class _VectorIndexAction(NamedTuple):
     spec: _VectorIndexSpec | None  # None = delete
 
 
-@dataclass(frozen=True)
-class _VectorIndexApplier:
-    """The vector index sink callback of one database (equal for the same
-    ``ConnectionFactory``, so one sink identity per database)."""
-
-    factory: ConnectionFactory
-
-    async def __call__(
-        self, context_provider: ContextProvider, actions: Sequence[_VectorIndexAction]
-    ) -> None:
-        if not actions:
-            return
-        conn = await self.factory.acquire()
-        for action in actions:
-            if action.spec is None:
-                await conn.query(
-                    f"REMOVE INDEX IF EXISTS {action.name} ON TABLE {action.table_name}"
-                )
-            else:
-                method = action.spec.method.upper()
-                dist = action.spec.metric.upper()
-                surql = (
-                    f"DEFINE INDEX OVERWRITE {action.name} ON {action.table_name} "
-                    f"FIELDS {action.spec.field} "
-                    f"{method} DIMENSION {action.spec.dimension} "
-                    f"DIST {dist} TYPE {action.spec.vector_type.upper()}"
-                )
-                await conn.query(surql)
+def _define_vector_index(name: str, action: _VectorIndexAction) -> str:
+    assert action.spec is not None
+    return (
+        f"DEFINE INDEX OVERWRITE {name} ON {action.table_name} "
+        f"FIELDS {action.spec.field} "
+        f"{action.spec.method.upper()} DIMENSION {action.spec.dimension} "
+        f"DIST {action.spec.metric.upper()} TYPE {action.spec.vector_type.upper()}"
+    )
 
 
 class _VectorIndexHandler:
-    """Attachment handler for vector indexes on a SurrealDB table."""
+    """Attachment handler for vector indexes on a SurrealDB table.
+
+    Its actions go to the table's record sink (see ``_SharedRecordApplier``),
+    which orders them around the records.
+    """
 
     _table_name: str
-    _sink: coco.TargetActionSink[_VectorIndexAction]
+    _sink: coco.TargetActionSink[_RecordAction | _VectorIndexAction]
 
     def __init__(self, factory: ConnectionFactory, table_name: str) -> None:
         self._table_name = table_name
-        self._sink = coco.TargetActionSink.from_async_fn(_VectorIndexApplier(factory))
+        self._sink = coco.TargetActionSink.from_async_fn(_SharedRecordApplier(factory))
 
     def reconcile(
         self,
@@ -837,6 +1016,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowTracking]):
     _is_relation: bool
     _table_schema: TableSchema[Any] | None
     _factory: ConnectionFactory
+    _db_key: str
     _sink: coco.TargetActionSink[_RecordAction]
 
     def __init__(
@@ -845,7 +1025,9 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowTracking]):
         is_relation: bool,
         table_schema: TableSchema[Any] | None,
         factory: ConnectionFactory,
+        db_key: str,
     ) -> None:
+        self._db_key = db_key
         self._table_name = table_name
         self._is_relation = is_relation
         self._table_schema = table_schema
@@ -870,17 +1052,12 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowTracking]):
             )
 
         if coco.is_non_existence(desired_state):
+            if not self._is_relation:
+                _release_field_owner(self._db_key, self._table_name, key[0], None)
             if not prev_possible_records and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
-                action=_RecordAction(
-                    table_name=self._table_name,
-                    is_relation=self._is_relation,
-                    record_id=key[0],
-                    value=None,
-                    from_record=None,
-                    to_record=None,
-                ),
+                action=self._undeclared_record_action(key[0], prev_possible_records),
                 sink=self._sink,
                 tracking_record=coco.NON_EXISTENCE,
             )
@@ -906,7 +1083,52 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowTracking]):
                 tracking_record=target_fp,
             )
         return self._merge_output(
-            key, desired_state, prev_possible_records, prev_may_be_missing, None
+            key, desired_state, prev_possible_records, prev_may_be_missing
+        )
+
+    def _undeclared_record_action(
+        self, record_id: Any, prev_possible_records: Collection[_RowTracking]
+    ) -> _RecordAction:
+        """The record's own declaration went away.
+
+        A relation, which has one owner, is deleted. A record's existence has
+        two owners, its own declaration and its field groups (``declare_fields``
+        creates the record too): the fields it declared are unset, and the record
+        is deleted only if nothing but its ``id`` is left. A record is deleted
+        whole when the fields it declared are not known (tracked by an earlier
+        version), or when one of them is a required field of the table's schema,
+        which the record cannot be without.
+        """
+        names = _owned_names(prev_possible_records)
+        columns = self._table_schema.columns if self._table_schema else {}
+        if (
+            self._is_relation
+            or any(
+                not isinstance(prev, _FieldsTracking) for prev in prev_possible_records
+            )
+            or any(
+                (col := columns.get(name)) is not None and not col.nullable
+                for name in names
+                if name != "id"
+            )
+        ):
+            return _RecordAction(
+                table_name=self._table_name,
+                is_relation=self._is_relation,
+                record_id=record_id,
+                value=None,
+                from_record=None,
+                to_record=None,
+            )
+        return _RecordAction(
+            table_name=self._table_name,
+            is_relation=False,
+            record_id=record_id,
+            value=dict.fromkeys(sorted(names)),
+            from_record=None,
+            to_record=None,
+            unset=True,
+            delete_if_empty=True,
         )
 
     def _merge_output(
@@ -915,10 +1137,11 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowTracking]):
         desired: dict[str, Any],
         prev_possible_records: Collection[_RowTracking],
         prev_may_be_missing: bool,
-        fields_op: Literal["set"] | None,
     ) -> coco.TargetReconcileOutput[_RecordAction, _RowTracking] | None:
-        """Record mode (``fields_op=None``, UPSERT ... MERGE) and ``fields`` mode
-        (``"set"``, UPDATE ... MERGE). Neither ever replaces the whole record.
+        """Record mode and ``fields`` mode alike: ``UPSERT … MERGE`` of the
+        declared fields, which creates the record when it is missing, and unsets
+        the fields declared before and dropped since. Never replaces the whole
+        record, so fields other owners declare stay.
         """
         names = tuple(sorted(desired))
         tracking = _FieldsTracking(fingerprint_object(desired), names)
@@ -937,7 +1160,6 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowTracking]):
                 value=value,
                 from_record=None,
                 to_record=None,
-                fields_op=fields_op,
             ),
             sink=self._sink,
             tracking_record=tracking,
@@ -950,8 +1172,15 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowTracking]):
         prev_possible_records: Collection[_RowTracking],
         prev_may_be_missing: bool,
     ) -> coco.TargetReconcileOutput[_RecordAction, _RowTracking] | None:
-        """``fields`` mode: key ``(id, group)``; MERGE this group's fields onto the record."""
+        """``fields`` mode: key ``(id, group)``; MERGE this group's fields onto the record.
+
+        When the group goes away, its fields are unset and the record stays,
+        also when nothing but its ``id`` is left: the group cannot tell whether
+        the record's own declaration, which may name no field but ``id``,
+        still declares it.
+        """
         if coco.is_non_existence(desired_state):
+            _release_field_owner(self._db_key, self._table_name, key[0], key[1])
             if not prev_possible_records and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
@@ -962,13 +1191,13 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowTracking]):
                     value=dict.fromkeys(sorted(_owned_names(prev_possible_records))),
                     from_record=None,
                     to_record=None,
-                    fields_op="unset",
+                    unset=True,
                 ),
                 sink=self._sink,
                 tracking_record=coco.NON_EXISTENCE,
             )
         return self._merge_output(
-            key, desired_state, prev_possible_records, prev_may_be_missing, "set"
+            key, desired_state, prev_possible_records, prev_may_be_missing
         )
 
 
@@ -1096,6 +1325,7 @@ class _TableHandler(
             is_relation=spec.is_relation,
             table_schema=spec.table_schema,
             factory=context_provider.get(action.key.db_key, ConnectionFactory),
+            db_key=action.key.db_key,
         )
 
     def reconcile(
@@ -1306,6 +1536,100 @@ _table_provider = coco.register_root_target_states_provider(
 # ---------------------------------------------------------------------------
 
 
+class _FieldOwners:
+    """The owners of the fields declared through one ``TableTarget``, so that a
+    field declared by two owners (the record itself, ``None``, or a field group)
+    is refused when it is declared.
+
+    A claim lasts while its owner declares it: declaring again replaces it, and
+    the engine's removal of the owner's declaration (see `_release_field_owner`)
+    releases it. An update mounts the table, and with it a new target, so its
+    claims are those of one run; in live mode the target outlives cycles, and an
+    owner that stops declaring a field in one cycle leaves it free for another
+    owner in the next. A claim's removal is seen only once it is reconciled, so
+    a field that moves between owners within one cycle may be refused there.
+
+    Every record declared through the target is in it, so it is kept small: a
+    record's own fields as one of the few distinct field-name sets of the table,
+    shared between records. Both maps are keyed by the record id's encoding
+    (`_endpoint_id_fragment`), so ``1`` and ``"1"`` stay apart.
+    """
+
+    def __init__(self, table_name: str) -> None:
+        self._table_name = table_name
+        self._lock = threading.Lock()
+        self._record_fields: dict[str, frozenset[str]] = {}
+        self._field_sets: dict[frozenset[str], frozenset[str]] = {}
+        self._groups: dict[str, dict[str, frozenset[str]]] = {}
+
+    def claim(
+        self, record_id: Any, group: str | None, fields: Mapping[str, Any]
+    ) -> None:
+        names = frozenset(name for name in fields if name != "id")
+        key = _endpoint_id_fragment(record_id)
+        with self._lock:
+            others: list[tuple[str, frozenset[str]]] = []
+            if group is not None and (own := self._record_fields.get(key)):
+                others.append(("the record's own declaration", own))
+            for other, other_names in self._groups.get(key, {}).items():
+                if other != group:
+                    others.append((f"field group {other!r}", other_names))
+            for other_owner, other_names in others:
+                if shared := sorted(names & other_names):
+                    owner = (
+                        "the record's own declaration"
+                        if group is None
+                        else f"field group {group!r}"
+                    )
+                    raise ValueError(
+                        f"SurrealDB field {shared[0]!r} of record {record_id!r} of "
+                        f"table {self._table_name!r} is declared by both "
+                        f"{other_owner} and {owner}: a field can have only one "
+                        "owner, since it is unset when either stops declaring it"
+                    )
+            if group is None:
+                self._record_fields[key] = self._field_sets.setdefault(names, names)
+            else:
+                self._groups.setdefault(key, {})[group] = names
+
+    def release(self, record_id: Any, group: str | None) -> None:
+        """The owner ``group`` (``None``: the record itself) no longer declares
+        the record."""
+        key = _endpoint_id_fragment(record_id)
+        with self._lock:
+            if group is None:
+                self._record_fields.pop(key, None)
+            elif (groups := self._groups.get(key)) is not None:
+                groups.pop(group, None)
+                if not groups:
+                    del self._groups[key]
+
+
+# The `_FieldOwners` of the live table targets, by (database key, table name).
+_field_owners_of_table: dict[tuple[str, str], weakref.WeakSet[_FieldOwners]] = {}
+_field_owners_lock = threading.Lock()
+
+
+def _register_field_owners(db_key: str, table_name: str, owners: _FieldOwners) -> None:
+    with _field_owners_lock:
+        _field_owners_of_table.setdefault((db_key, table_name), weakref.WeakSet()).add(
+            owners
+        )
+
+
+def _release_field_owner(
+    db_key: str, table_name: str, record_id: Any, group: str | None
+) -> None:
+    """Release the claim of ``group`` on ``record_id`` in every live target of the
+    table: the engine is removing that owner's declaration. A target that a
+    claim of its own was not released from keeps refusing; one released by
+    another app's removal misses a conflict, never refuses a valid field."""
+    with _field_owners_lock:
+        targets = list(_field_owners_of_table.get((db_key, table_name), ()))
+    for owners in targets:
+        owners.release(record_id, group)
+
+
 class TableTarget(
     Generic[RowT, coco.MaybePendingS], coco.ResolvesTo["TableTarget[RowT]"]
 ):
@@ -1324,15 +1648,25 @@ class TableTarget(
         self._provider = provider
         self._table_schema = table_schema
         self._table_name = table_name
+        self._field_owners = _FieldOwners(table_name)
 
     @property
     def table_name(self) -> str:
         return self._table_name
 
     def declare_record(self: TableTarget[RowT], *, row: RowT) -> None:
-        """Declare a record to be upserted to this table."""
+        """Declare a record to be upserted to this table.
+
+        Writes ``UPSERT $id MERGE`` with the record's fields, so fields that field
+        groups (``declare_fields``) or writers outside CocoIndex add stay. When the
+        declaration goes away, its fields are unset, and the record is deleted
+        only if nothing but its ``id`` is left; a record that declared a required
+        (non-nullable) field of the table's schema cannot be without it, and is
+        deleted whole.
+        """
         row_dict = self._row_to_dict(row)
         pk_values = (row_dict["id"],)
+        self._field_owners.claim(row_dict["id"], None, row_dict)
         coco.declare_target_state(self._provider.target_state(pk_values, row_dict))
 
     declare_row = declare_record
@@ -1340,12 +1674,22 @@ class TableTarget(
     def declare_fields(
         self: TableTarget[RowT], *, id: Any, group: str, fields: dict[str, Any]
     ) -> None:
-        """Declare the fields one owner (``group``) contributes to an existing record.
+        """Declare the fields one owner (``group``) contributes to a record whose
+        other fields other owners declare.
 
-        ``fields`` mode: writes ``UPDATE $id MERGE`` with only these fields, so fields
-        written by other owners (or by ``declare_record``) are never touched. When the
-        declaration goes away, or a field is dropped from it, those fields are unset.
-        If the record does not exist, the write raises and is retried on the next run.
+        ``fields`` mode: writes ``UPSERT $id MERGE`` with only these fields, so fields
+        written by other owners (or by ``declare_record``) are never touched, and the
+        record is created when it does not exist yet: a field group lands in the run
+        that declares it, also when the record itself is declared by the parent
+        component, which commits after its children. When the declaration goes away,
+        or a field is dropped from it, those fields are unset; the record stays,
+        also with nothing but its ``id`` left.
+
+        A field has one owner: declaring a field of a record that the record itself,
+        or another group, declares through this target raises ``ValueError``, since
+        the field would be unset when either owner stops declaring it. A field an
+        owner stopped declaring in an earlier run, or an earlier live cycle, is
+        free.
         """
         columns = self._table_schema.columns if self._table_schema else {}
         encoded: dict[str, Any] = {}
@@ -1355,6 +1699,7 @@ class TableTarget(
             if col is not None and col.encoder is not None and value is not None:
                 value = col.encoder(value)
             encoded[name] = value
+        self._field_owners.claim(id, group, encoded)
         coco.declare_target_state(self._provider.target_state((id, group), encoded))
 
     def _row_to_dict(self, row: RowT) -> dict[str, Any]:
@@ -1573,7 +1918,7 @@ def declare_table_target(
     provider = coco.declare_target_state_with_child(
         table_target(db, table_name, table_schema, managed_by=managed_by)
     )
-    return TableTarget(provider, table_schema, table_name)
+    return _registered_table_target(db, provider, table_schema, table_name)
 
 
 async def mount_table_target(
@@ -1587,7 +1932,19 @@ async def mount_table_target(
     provider = await coco.mount_target(
         table_target(db, table_name, table_schema, managed_by=managed_by)
     )
-    return TableTarget(provider, table_schema, table_name)
+    return _registered_table_target(db, provider, table_schema, table_name)
+
+
+def _registered_table_target(
+    db: ContextKey[ConnectionFactory],
+    provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
+    table_schema: TableSchema[RowT] | None,
+    table_name: str,
+) -> TableTarget[RowT, coco.MaybePendingS]:
+    """A new `TableTarget`, whose field claims the record handler releases."""
+    table = TableTarget(provider, table_schema, table_name)
+    _register_field_owners(db.key, table_name, table._field_owners)
+    return table
 
 
 def relation_target(

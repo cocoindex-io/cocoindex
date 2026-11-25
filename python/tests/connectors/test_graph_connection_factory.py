@@ -42,6 +42,9 @@ class _FakeConnection:
     async def use(self, namespace: str, database: str) -> None:
         pass
 
+    async def version(self) -> str:
+        return "surrealdb-3.3.0"
+
     # Neo4j driver, SurrealDB connection
     async def close(self) -> None:
         self.closed = True

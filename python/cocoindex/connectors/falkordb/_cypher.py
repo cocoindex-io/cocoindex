@@ -16,17 +16,18 @@ from typing import Sequence
 
 __all__ = [
     "IDENTIFIER_RE",
-    "build_node_upsert",
     "build_node_delete",
     "build_node_delete_all",
-    "build_node_vector_index_list",
-    "build_relationship_upsert",
-    "build_relationship_delete",
-    "build_relationship_delete_all",
     "build_node_index_create",
     "build_node_index_drop",
+    "build_node_reduce_to_key",
+    "build_node_upsert",
+    "build_node_vector_index_list",
+    "build_relationship_delete",
+    "build_relationship_delete_all",
     "build_relationship_index_create",
     "build_relationship_index_drop",
+    "build_relationship_upsert",
     "build_vector_index_create",
     "build_vector_index_drop",
     "validate_identifier",
@@ -83,18 +84,35 @@ def build_node_upsert(
     return cypher
 
 
-def build_node_delete(label: str, pk_fields: Sequence[str]) -> str:
-    """``MATCH (n:`Label` {pk: $key_0, ...}) DETACH DELETE n``.
+def build_node_reduce_to_key(label: str, pk_fields: Sequence[str]) -> str:
+    """``MATCH (n:`Label` {pk: $key_0, ...}) WHERE (n)--() SET n = {pk: $key_0, ...}``.
 
-    DETACH DELETE removes any incident edges as a safety measure for nodes that
-    are also referenced as relationship endpoints — without it, the DELETE
-    would fail on nodes that still have edges.
+    The first half of a node delete (see :func:`build_node_delete`): a node a
+    relationship still touches stays, reduced to its key. A relationship upsert
+    MERGEs its endpoints, so that bare node is what a build from scratch has
+    for the endpoint of a declared relationship whose node is not declared.
+    """
+    if not pk_fields:
+        raise ValueError(
+            "build_node_reduce_to_key requires at least one primary key field"
+        )
+    key = _key_clause("key", pk_fields, "n")
+    return f"MATCH (n:{_quote(label)} {key}) WHERE (n)--() SET n = {key}"
+
+
+def build_node_delete(label: str, pk_fields: Sequence[str]) -> str:
+    """``MATCH (n:`Label` {pk: $key_0, ...}) WHERE NOT (n)--() DELETE n``.
+
+    Deletes the node only when no relationship touches it; run after
+    :func:`build_node_reduce_to_key`, which keeps a touched one as its key.
+    ``DETACH DELETE`` would take along relationships still declared, which are
+    not written again while their declaration is unchanged.
     """
     if not pk_fields:
         raise ValueError("build_node_delete requires at least one primary key field")
     return (
         f"MATCH (n:{_quote(label)} {_key_clause('key', pk_fields, 'n')}) "
-        f"DETACH DELETE n"
+        "WHERE NOT (n)--() DELETE n"
     )
 
 
@@ -159,8 +177,13 @@ def build_relationship_upsert(
 def build_relationship_delete(rel_type: str, pk_fields: Sequence[str]) -> str:
     """``MATCH ()-[r:`RelType` {pk: $key_0, ...}]->() DELETE r``.
 
-    Endpoints are intentionally not deleted — they're tracked by their own
-    table handlers and will be deleted by their own reconciler if orphaned.
+    Endpoints are not deleted: a declared node is its own table's to delete.
+    An endpoint whose node was undeclared while this relationship was still
+    declared was reduced to its key then (see :func:`build_node_reduce_to_key`),
+    and its delete is done: it stays, a bare node no relationship touches,
+    until its node is declared again or its table is dropped. That is the bare
+    endpoint a build from scratch has for a declared relationship whose node is
+    not declared, kept after the relationship goes.
     """
     if not pk_fields:
         raise ValueError(
