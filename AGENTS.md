@@ -104,6 +104,7 @@ cocoindex/
 │   ├── code_match/             # Structural code pattern matching over tree-sitter ASTs
 │   ├── sdk/
 │   │   ├── cocoindex/          # Rust SDK (`cocoindex` crate); calls core engine APIs directly, like py/
+│   │   │   └── tests/it/       # Its integration tests: one test binary, a module per area (`main.rs` says where a new test file goes)
 │   │   └── cocoindex_macros/   # Proc macros for the Rust SDK (`#[function]`, `#[app]`, `#[lifespan]`, `#[main]`)
 │   └── cli/                    # `cocoindex` CLI for Rust projects: builds the user's crate, drives its binary (spec: dev/plans/rust-cli.md)
 │

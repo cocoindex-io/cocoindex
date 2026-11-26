@@ -147,7 +147,7 @@ pub async fn resolve_entities(
 
 `resolve_entities` returns a `ResolvedEntities` object — a read-only wrapper around the dedup map with safe chain-walking:
 
-{/* Rust: rust/sdk/cocoindex/src/entity_resolution.rs (ResolvedEntities), rust/sdk/cocoindex/tests/entity_resolution.rs */}
+{/* Rust: rust/sdk/cocoindex/src/entity_resolution.rs (ResolvedEntities), rust/sdk/cocoindex/tests/it/entity_resolution.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -237,7 +237,7 @@ Pass a predicate that returns `true` for names you consider already-established 
 
 Existing canonicals are immutable. They are seeded directly as canonicals without consulting the resolver. Two existings never merge. Non-existing entities are resolved in a second pass; if they match an existing canonical, the existing always wins.
 
-{/* Rust: rust/sdk/cocoindex/tests/entity_resolution.rs (resolve helper) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/entity_resolution.rs (resolve helper) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -284,7 +284,7 @@ let result = entity_resolution::resolve_entities(
 
 A softer policy: existing-canonical status breaks ties, but the resolver is always consulted. When exactly one side of a match is existing-canonical, that side wins regardless of the resolver's verdict. When both or neither are existing, the resolver decides.
 
-{/* Rust: rust/sdk/cocoindex/tests/entity_resolution.rs (preferred_existing_can_repoint_non_existing_candidate) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/entity_resolution.rs (preferred_existing_can_repoint_non_existing_candidate) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -336,7 +336,7 @@ Call `resolve_entities_with_events` with an `on_resolution` callback to receive 
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/entity_resolution.rs (on_resolution_delivers_one_event_per_entity_in_order) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/entity_resolution.rs (on_resolution_delivers_one_event_per_entity_in_order) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -441,7 +441,7 @@ The resolver does not use litellm or `instructor`: it asks the endpoint for a JS
 
 ### Usage
 
-{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (LlmPairResolver builders), examples/rust/conversation_to_knowledge/src/pipeline.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs (LlmPairResolver builders), examples/rust/conversation_to_knowledge/src/pipeline.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -518,7 +518,7 @@ The resolver takes the bare model name the endpoint expects (`gpt-4o-mini`), wit
 
 Pass <Lang only="python">`entity_type`</Lang><Lang only="rust">`with_entity_type`</Lang> to tailor the prompt for specific entity categories:
 
-{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (with_entity_type) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs (with_entity_type) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -585,7 +585,7 @@ After each LLM call, the response is validated:
 
 The default retry budget is 2. If exhausted, no match is returned.
 
-{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (with_retries) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs (with_retries) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -652,7 +652,7 @@ Each unique `(entity, candidates)` pair's decision is [memoized](../programming_
 
 For cases where the built-in `LlmPairResolver` doesn't fit (rule-based matching, different LLM framework, etc.), implement the `PairResolver` <Lang only="python">protocol</Lang><Lang only="rust">trait</Lang>:
 
-{/* Rust: rust/sdk/cocoindex/tests/entity_resolution.rs (ScriptedResolver), PairDecision constructors from rust/sdk/cocoindex/src/entity_resolution.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/entity_resolution.rs (ScriptedResolver), PairDecision constructors from rust/sdk/cocoindex/src/entity_resolution.rs */}
 <LangTabs>
 <Fragment slot="python">
 

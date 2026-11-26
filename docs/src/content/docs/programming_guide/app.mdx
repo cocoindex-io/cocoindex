@@ -131,7 +131,7 @@ The main function is always an `async fn`. See [Async only](/docs/rust/programmi
 
 <Lang only="python">Call `update()` to execute the pipeline. It returns an `UpdateHandle` that is also `Awaitable`, so the simplest usage stays the same:</Lang><Lang only="rust">Call `run()` or `update()` with the main function to execute the pipeline:</Lang>
 
-{/* Rust: rust/sdk/SHOWCASE.md "Run apps with the `cocoindex` CLI", examples/rust/text_embedding/src/main.rs, rust/sdk/cocoindex/tests/pipeline.rs */}
+{/* Rust: rust/sdk/SHOWCASE.md "Run apps with the `cocoindex` CLI", examples/rust/text_embedding/src/main.rs, rust/sdk/cocoindex/tests/it/pipeline.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -192,7 +192,7 @@ let result = app.update_blocking(app_main)?;
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/fs_live.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/fs_live.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -235,7 +235,7 @@ Given the same logic and inputs, updates are repeatable. When logic or inputs ch
 
 Pass `component_selector` to run a slice of the app: the components at the given paths and what it takes to reach them. Every other component stays exactly as it is. This is what you want to inspect or debug a few components without processing the rest, for example the rows on one page of an observability UI.
 
-{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/pipeline.rs */}
 <LangTabs>
 <Fragment slot="python">
 

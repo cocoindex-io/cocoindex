@@ -4,6 +4,7 @@
 //!
 //!   cargo test -p cocoindex --test admission_env
 
+#[path = "it/admission_common/mod.rs"]
 mod admission_common;
 
 use admission_common::assert_admits;

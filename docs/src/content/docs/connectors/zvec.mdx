@@ -14,7 +14,7 @@ The `zvec` connector writes documents to [zvec](https://zvec.org), an embedded, 
 
 import LangTabs from '../../../components/LangTabs.astro';
 
-{/* Rust: rust/sdk/cocoindex/tests/zvec_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/zvec_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -147,7 +147,7 @@ Declare a context key for a `ManagedConnection` to identify your connection, the
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed documents. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
 
-{/* Rust: rust/sdk/cocoindex/tests/zvec_target.rs, rust/sdk/SHOWCASE.md (verified against zvec.rs) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/zvec_target.rs, rust/sdk/SHOWCASE.md (verified against zvec.rs) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -374,7 +374,7 @@ zvec is a vector database: every collection must declare at least one vector fie
 
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/zvec_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/zvec_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -474,7 +474,7 @@ There is no array of strings (`ARRAY_STRING`): a `Vec<String>` is stored as a JS
 
 Override the scalar type, encoder, or indexing for a field:
 
-{/* Rust: rust/sdk/cocoindex/tests/zvec_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/zvec_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -533,7 +533,7 @@ struct ArrayDoc {
 
 Mark a string field as full-text (FTS) indexed. The field is stored as a `STRING` field with a zvec FTS index, so you can run full-text match queries against it directly through zvec. Requires zvec >= 0.5.
 
-{/* Rust: rust/sdk/cocoindex/tests/zvec_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/zvec_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -603,7 +603,7 @@ A `Vec<f32>` field marked `#[coco(vector)]` becomes a dense vector (`VECTOR_FP32
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/zvec_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/zvec_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 

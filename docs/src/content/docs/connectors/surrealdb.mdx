@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
 
 To sign in as another kind of user, use `Graph::connect_with_credentials(url, ns, db, credentials)`:
 
-{/* Rust: rust/sdk/cocoindex/tests/surrealdb_target.rs (surrealdb_connects_with_a_database_user_when_available) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/surrealdb_target.rs (surrealdb_connects_with_a_database_user_when_available) */}
 ```rust
 let graph = Graph::connect_with_credentials(
     &url,
@@ -441,7 +441,7 @@ pub async fn mount_relation_target_unconstrained(
 
 Once a `RelationTarget` is resolved, declare relation records:
 
-{/* Rust: rust/sdk/cocoindex/src/connectors/surrealdb.rs; usage in rust/sdk/cocoindex/tests/surrealdb_target.rs */}
+{/* Rust: rust/sdk/cocoindex/src/connectors/surrealdb.rs; usage in rust/sdk/cocoindex/tests/it/surrealdb_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -513,7 +513,7 @@ statement_mentions.declare_relation_between(
 
 Declare a vector index on a field of the table. CocoIndex tracks the index spec and automatically creates, recreates, or drops the index as needed.
 
-{/* Rust: rust/sdk/cocoindex/src/connectors/surrealdb.rs; usage in rust/sdk/cocoindex/tests/surrealdb_target.rs */}
+{/* Rust: rust/sdk/cocoindex/src/connectors/surrealdb.rs; usage in rust/sdk/cocoindex/tests/it/surrealdb_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -775,7 +775,7 @@ For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_sche
 
 Or override a column of the derived schema. `with_column_type(field, surreal_type)` replaces the type of one column and keeps its nullability. `with_vector_schema(field, provider)` types a `#[coco(vector)]` column as `array<float, N>` from a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), typically the embedder that fills it (for an embedder held in the context, pass `ctx.get_key(&EMBEDDER)?`):
 
-{/* Rust: rust/sdk/cocoindex/tests/surrealdb_target.rs (surrealdb_from_row_takes_column_overrides) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/surrealdb_target.rs (surrealdb_from_row_takes_column_overrides) */}
 ```rust
 #[derive(cocoindex::SchemaFields)]
 struct Doc {
@@ -864,7 +864,7 @@ let schema = TableSchema::new([
 
 ### Example: Normal tables
 
-{/* Rust: examples/rust/conversation_to_knowledge/src/pipeline.rs and src/models.rs; vector index from rust/sdk/cocoindex/tests/surrealdb_target.rs */}
+{/* Rust: examples/rust/conversation_to_knowledge/src/pipeline.rs and src/models.rs; vector index from rust/sdk/cocoindex/tests/it/surrealdb_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 

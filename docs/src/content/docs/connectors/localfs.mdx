@@ -14,7 +14,7 @@ import LangTabs from '../../../components/LangTabs.astro';
 
 The <Lang only="python">`localfs`</Lang><Lang only="rust">local filesystem</Lang> connector provides utilities for reading files from and writing files to the local file system.
 
-{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/fs_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -52,7 +52,7 @@ Declare a `ContextKey<PathBuf>` with `context_key!`; its name is the stable iden
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/fs_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -575,7 +575,7 @@ pub struct FileOptions {
 
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/fs_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -728,7 +728,7 @@ target.declare_file_with_options(
 
 Declares a subdirectory target within the directory.
 
-{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/fs_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 

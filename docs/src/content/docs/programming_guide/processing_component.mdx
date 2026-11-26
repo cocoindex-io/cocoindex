@@ -24,7 +24,7 @@ A **component path** is the stable identifier for a processing component across 
 
 Component paths are hierarchical and form a tree structure. You specify child paths <Lang only="python">using `coco.component_subpath()`</Lang><Lang only="rust">as the key of each mount</Lang> with stable identifiers like string literals, file names, row keys, or entity IDs:
 
-{/* Rust: rust/sdk/cocoindex/tests/mount.rs (`mount!("b.md", ..)`, `ctx.with_subpath(&"process").mount(&"x", ..)`) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/mount.rs (`mount!("b.md", ..)`, `ctx.with_subpath(&"process").mount(&"x", ..)`) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -131,7 +131,7 @@ The Python API names map to the Rust forms as follows:
 ### Automatic subpath derivation
 <Lang only="python">`mount()`, `use_mount()`, and `mount_each()` all accept an optional `ComponentSubpath` as their first argument. When omitted, the subpath is **auto-derived** from the function name using `Symbol(fn.__name__)`.</Lang><Lang only="rust">`mount!`, `use_mount!`, `mount_each!` and `use_mount_each!` all accept an optional key as their first argument. When omitted, the subpath is **auto-derived** from the function name, as a plain string key.</Lang>
 
-{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (`mount!` doc), rust/sdk/cocoindex/tests/mount.rs */}
+{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (`mount!` doc), rust/sdk/cocoindex/tests/it/mount.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -181,7 +181,7 @@ Since sibling component paths must not collide, you need an explicit key when:
 
 Use <Lang only="python">`mount()`</Lang><Lang only="rust">`mount!`</Lang> when you don't need a return value from the processing component. It schedules the processing component to run and returns a handle:
 
-{/* Rust: rust/sdk/SHOWCASE.md "Mount processing components", verified against rust/sdk/cocoindex/tests/mount.rs */}
+{/* Rust: rust/sdk/SHOWCASE.md "Mount processing components", verified against rust/sdk/cocoindex/tests/it/mount.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -201,7 +201,7 @@ let handle = mount!(process_file(ctx, file, target)).await?;
 
 With an explicit subpath, for example when mounting multiple components of the same function:
 
-{/* Rust: rust/sdk/SHOWCASE.md "Nested component paths", verified against rust/sdk/cocoindex/tests/mount.rs (`with_subpath_nests_child_paths`) */}
+{/* Rust: rust/sdk/SHOWCASE.md "Nested component paths", verified against rust/sdk/cocoindex/tests/it/mount.rs (`with_subpath_nests_child_paths`) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -230,7 +230,7 @@ The macro reads the parent context from the `ctx` argument of the call, so bind 
 
 The handle provides a method you can call if you need to wait until the processing component is fully ***ready*** — meaning all its target states have been applied to external systems and all components in its sub-paths are ready:
 
-{/* Rust: rust/sdk/cocoindex/tests/mount.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/mount.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -258,7 +258,7 @@ You usually only need to call `ready()` when you have logic that depends on the 
 
 Use <Lang only="python">`use_mount()`</Lang><Lang only="rust">`use_mount!`</Lang> when you need the processing component's return value. It mounts the component, waits until it's ready, and returns the value directly:
 
-{/* Rust: rust/sdk/SHOWCASE.md "Mount processing components", verified against rust/sdk/cocoindex/tests/memo_deps.rs (`use_mount!`) */}
+{/* Rust: rust/sdk/SHOWCASE.md "Mount processing components", verified against rust/sdk/cocoindex/tests/it/memo_deps.rs (`use_mount!`) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -515,7 +515,7 @@ You can use `ctx.with_subpath()` to create nested paths without repeating common
 
 </Lang>
 
-{/* Rust: rust/sdk/SHOWCASE.md "Nested component paths", verified against rust/sdk/cocoindex/tests/mount.rs */}
+{/* Rust: rust/sdk/SHOWCASE.md "Nested component paths", verified against rust/sdk/cocoindex/tests/it/mount.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -732,7 +732,7 @@ This pattern ensures that CocoIndex can track component relationships and target
 
 The component context is the `Ctx` value your function receives, so it goes wherever you pass it. A `Ctx` is `Clone`: pass a clone into a spawned task, and CocoIndex still tracks component relationships and target state ownership there:
 
-{/* Rust: rust/sdk/cocoindex/tests/batching_runner.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/batching_runner.rs */}
 ```rust
 let ctx = ctx.clone();
 tokio::spawn(async move { limited(&ctx, item).await })

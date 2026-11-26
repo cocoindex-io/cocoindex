@@ -52,7 +52,7 @@ Use the structured progress APIs to stream progress from a daemon to a client, b
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/detailed_stats.rs, rust/sdk/cocoindex/src/app.rs (UpdateHandle) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/detailed_stats.rs, rust/sdk/cocoindex/src/app.rs (UpdateHandle) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -111,7 +111,7 @@ To read stats *while* an update is in flight, loop on `changed()` (below) and re
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/detailed_stats.rs, rust/sdk/cocoindex/src/app.rs (Progress, UpdateHandle::changed) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/detailed_stats.rs, rust/sdk/cocoindex/src/app.rs (Progress, UpdateHandle::changed) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -245,7 +245,7 @@ By default every component's stats roll up into one report for the whole update.
 A group is a closure, not a `with` block. `stats_group` prints nothing; `stats_group_with_options` takes `StatsGroupOptions` to print the group's progress.
 </RustNote>
 
-{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (ctx_stats_group_reports_scoped_child_stats, ctx_stats_group_with_options_reports_scoped_child_stats), rust/sdk/cocoindex/src/ctx.rs (stats_group, stats_group_with_options) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/pipeline.rs (ctx_stats_group_reports_scoped_child_stats, ctx_stats_group_with_options_reports_scoped_child_stats), rust/sdk/cocoindex/src/ctx.rs (stats_group, stats_group_with_options) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -318,7 +318,7 @@ The `StatsGroupHandle` has the same `stats_snapshot()`, `detailed_stats_snapshot
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (ctx_stats_group_reports_scoped_child_stats) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/pipeline.rs (ctx_stats_group_reports_scoped_child_stats) */}
 <LangTabs>
 <Fragment slot="python">
 
