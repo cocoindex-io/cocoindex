@@ -9,6 +9,11 @@ authorization link instead and accepts the address the browser lands on,
 pasted back. ``GoogleDriveSource`` then signs its requests with the stored
 access token and refreshes it with the refresh token as it expires.
 
+What a sign-in asks Google for is its ``Grant``: Drive's ``UserAccount`` asks
+for ``drive.readonly``; the Google Docs target's account, a sibling class over
+the same flow, asks for ``drive.file`` and keeps its own token file, so one
+sign-in never widens or narrows the other.
+
 What the file holds is a credential, so this module keeps it out of
 everything that persists or prints: the file is created ``0600`` and refused
 when another user can read it; no token enters a memo key (an account is
@@ -39,7 +44,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 from google.auth import credentials as google_credentials  # type: ignore
@@ -98,14 +103,44 @@ class _Refusal(SignInError):
         self.description = description
 
 
-def default_token_path() -> Path:
-    """Where ``UserAccount()`` keeps its token: under the user's config directory."""
+@dataclass(frozen=True)
+class Grant:
+    """What a sign-in asks Google for, and where and how it keeps what Google returns."""
+
+    # The provider's name in `cocoindex auth sign-in <provider>`.
+    provider: str
+    scope: str
+    # The token file's name under the user's config directory.
+    token_file_name: str
+    # The data notice's first line: what the scope lets CocoIndex do.
+    notice: str
+    # The error when the consent came back without ``scope``.
+    not_granted: str
+    # The first element of an account's memo key.
+    memo_namespace: str
+
+
+DRIVE_READONLY_GRANT = Grant(
+    provider="google-drive",
+    scope=DRIVE_READONLY_SCOPE,
+    token_file_name="google_drive_token.json",
+    notice="CocoIndex asks Google for read-only access to your Google Drive.",
+    not_granted=(
+        "The consent did not grant read access to Google Drive; sign in again "
+        "and keep the Drive permission selected."
+    ),
+    memo_namespace="cocoindex.google_drive.user_account",
+)
+
+
+def default_token_path(grant: Grant = DRIVE_READONLY_GRANT) -> Path:
+    """Where an account of ``grant`` keeps its token by default: under the user's config directory."""
     if os.name == "nt":
         base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
     else:
         xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
         base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "cocoindex" / "google_drive_token.json"
+    return base / "cocoindex" / grant.token_file_name
 
 
 @dataclass
@@ -524,10 +559,10 @@ def _await_redirect(
     raise SignInError("The sign-in timed out before Google redirected back.")
 
 
-def _data_notice(token_path: Path) -> str:
+def _data_notice(token_path: Path, grant: Grant) -> str:
     """What the sign-in asks Google for, and where it keeps what Google returns."""
     return (
-        "CocoIndex asks Google for read-only access to your Google Drive.\n"
+        f"{grant.notice}\n"
         f"The sign-in is stored at {token_path}, on this computer only; "
         "nothing is sent to CocoIndex.\n"
         f"How CocoIndex handles Google user data: {PRIVACY_POLICY}\n"
@@ -569,6 +604,7 @@ def _instructions(url: str, port: int, browser_opened: bool) -> str:
 def _run_consent(
     client_cfg: _Client,
     *,
+    scope: str,
     http_client: httpx.Client,
     open_browser: Callable[[str], object],
     read_line: Callable[[], str | None],
@@ -600,7 +636,7 @@ def _run_consent(
                     "response_type": "code",
                     "client_id": client_cfg.client_id,
                     "redirect_uri": redirect_uri,
-                    "scope": DRIVE_READONLY_SCOPE,
+                    "scope": scope,
                     "state": state,
                     "code_challenge": challenge,
                     "code_challenge_method": "S256",
@@ -665,6 +701,7 @@ def run_sign_in(
     client_secrets_path: Path | None,
     token_path: Path,
     *,
+    grant: Grant = DRIVE_READONLY_GRANT,
     http_client: httpx.Client | None = None,
     open_browser: Callable[[str], object] = webbrowser.open,
     read_line: Callable[[], str | None] = _read_stdin_line,
@@ -672,7 +709,7 @@ def run_sign_in(
     browser_available: bool | None = None,
     timeout: float = SIGN_IN_TIMEOUT_SECONDS,
 ) -> str:
-    """Sign in and store the tokens at ``token_path``; the account's address.
+    """Sign in for ``grant`` and store the tokens at ``token_path``; the account's address.
 
     ``client_secrets_path`` is the downloaded JSON of the user's own Desktop app
     client; ``None`` takes the client built into this release, and fails when
@@ -687,7 +724,7 @@ def run_sign_in(
     # Said before the browser opens or the link prints: Google's verification
     # of a restricted scope wants the app itself to disclose how it uses the
     # data, not only the privacy policy.
-    say(_data_notice(token_path))
+    say(_data_notice(token_path, grant))
     if browser_available is None:
         browser_available = has_browser()
     owned = http_client is None
@@ -695,6 +732,7 @@ def run_sign_in(
     try:
         payload = _run_consent(
             client_cfg,
+            scope=grant.scope,
             http_client=http_client,
             open_browser=open_browser,
             read_line=read_line,
@@ -703,11 +741,8 @@ def run_sign_in(
             timeout=timeout,
         )
         granted = str(payload.get("scope") or "").split()
-        if granted and DRIVE_READONLY_SCOPE not in granted:
-            raise SignInError(
-                "The consent did not grant read access to Google Drive; sign in "
-                "again and keep the Drive permission selected."
-            )
+        if granted and grant.scope not in granted:
+            raise SignInError(grant.not_granted)
         refresh_token = payload.get("refresh_token")
         if not isinstance(refresh_token, str) or not refresh_token:
             raise SignInError(
@@ -735,25 +770,25 @@ def run_sign_in(
 # --- the public handle -------------------------------------------------------
 
 
-class UserAccount:
-    """A personal Google account signed in with OAuth, kept in a token file.
+class UserAccountBase:
+    """A personal Google account signed in with OAuth for one ``Grant``, kept in a token file.
 
-    Experimental. ``sign_in`` is the interactive step; run it once, outside any
-    CocoIndex run (``cocoindex auth sign-in google-drive`` does the same from
-    the shell). A run then passes ``UserAccount()`` to ``GoogleDriveSource``,
-    which reads the file and raises ``SignInRequiredError`` when it holds no
-    usable sign-in.
+    Each connector's account is a subclass that names its grant; the classes
+    are siblings, so an account signed in for one connector's scope is never
+    taken for another's.
     """
+
+    _grant: ClassVar[Grant]
 
     def __init__(self, token_path: str | os.PathLike[str] | None = None) -> None:
         self._token_path = (
             Path(token_path).expanduser()
             if token_path is not None
-            else default_token_path()
+            else default_token_path(self._grant)
         )
 
     def __repr__(self) -> str:
-        return f"UserAccount(token_path={str(self._token_path)!r})"
+        return f"{type(self).__name__}(token_path={str(self._token_path)!r})"
 
     @property
     def token_path(self) -> Path:
@@ -773,7 +808,7 @@ class UserAccount:
             if client_secrets_path is not None
             else None
         )
-        return run_sign_in(path, self._token_path)
+        return run_sign_in(path, self._token_path, grant=self._grant)
 
     def sign_out(self) -> bool:
         """Revoke the stored sign-in at Google and delete the token file; whether one existed.
@@ -807,7 +842,7 @@ class UserAccount:
     def __coco_memo_key__(self) -> object:
         # The account, never its tokens: a refreshed token must not invalidate
         # memoized work, a different account must.
-        return ("cocoindex.google_drive.user_account", self.email)
+        return (self._grant.memo_namespace, self.email)
 
     def _tokens(self) -> _Tokens:
         tokens = _load_tokens(self._token_path)
@@ -815,14 +850,28 @@ class UserAccount:
             raise SignInRequiredError(
                 f"No usable Google sign-in is stored at {self._token_path}. "
                 "Sign in once with "
-                "`cocoindex auth sign-in google-drive <client_secret.json>` "
+                f"`cocoindex auth sign-in {self._grant.provider} <client_secret.json>` "
                 "or `UserAccount().sign_in(...)`."
             )
         return tokens
 
     def _credentials(self) -> _UserCredentials:
-        """What signs Drive API requests; refreshed as it expires and persisted."""
+        """What signs Google API requests; refreshed as it expires and persisted."""
         return _UserCredentials(self._token_path, self._tokens())
+
+
+class UserAccount(UserAccountBase):
+    """A personal Google account signed in with OAuth to read its Drive, kept in a token file.
+
+    Experimental. ``sign_in`` is the interactive step; run it once, outside any
+    CocoIndex run (``cocoindex auth sign-in google-drive`` does the same from
+    the shell). A run then passes ``UserAccount()`` to ``GoogleDriveSource``,
+    which reads the file and raises ``SignInRequiredError`` when it holds no
+    usable sign-in. The sign-in asks for read-only access to Drive
+    (``drive.readonly``).
+    """
+
+    _grant = DRIVE_READONLY_GRANT
 
 
 class _UserCredentials(google_credentials.Credentials):  # type: ignore[misc]

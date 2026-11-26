@@ -94,6 +94,13 @@ google_drive = [
     "httplib2>=0.22.0",
     "httpx>=0.27.0",
 ]
+google_docs = [
+    "google-api-python-client>=2.0.0",
+    "google-auth>=2.0.0",
+    "google-auth-httplib2>=0.2.0",
+    "httplib2>=0.22.0",
+    "httpx>=0.27.0",
+]
 amazon_s3 = ["aiobotocore>=2.0.0"]
 azure_blob = ["azure-identity>=1.15.0", "azure-storage-blob>=12.19.0"]
 doris = ["aiohttp>=3.9.0", "pymysql>=1.1.0", "aiomysql>=0.2.0"]
@@ -166,7 +173,8 @@ ci-enabled-optional-deps = [
     "pymysql>=1.1.0",
     "aiohttp>=3.9.0",
     "valkey-glide>=2.5.2; sys_platform != 'win32'",
-    # The Google Drive connector's tests, including the OAuth sign-in, run offline.
+    # The Google Drive and Google Docs connectors' tests, including the OAuth
+    # sign-in, run offline.
     "google-api-python-client>=2.0.0",
     "google-auth>=2.0.0",
     "google-auth-httplib2>=0.2.0",
