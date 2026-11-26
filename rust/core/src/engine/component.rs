@@ -131,10 +131,11 @@ struct ComponentInner<Prof: EngineProfile> {
     /// next decides whether to execute its body.
     build_semaphore: tokio::sync::Semaphore,
     /// The memo most recently stored under `build_semaphore`, if any. A run
-    /// that finds its own key here on acquiring the permit knows a same-key
-    /// run just completed and stored its result, so it re-checks the memo
-    /// instead of executing again — under `full_reprocess` only when that run
-    /// belonged to the same operation (see `execute_once`).
+    /// that finds its own key here on acquiring the permit, stored since its
+    /// memo fast path looked, knows a same-key run just completed and stored
+    /// its result, so it re-checks the memo instead of executing again — under
+    /// `full_reprocess` only when that run belonged to the same operation (see
+    /// `execute_once`).
     last_stored_memos: Mutex<LastStoredMemos>,
 
     /// Identity registry of child components, keyed by their full StablePath,
@@ -651,6 +652,17 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
     }
 }
 
+/// Whether a run reached every component under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunCompleteness {
+    /// The component and every component under it ran without a failure.
+    Complete,
+    /// The component or one under it failed, and the failure went to an
+    /// exception handler that absorbed it, or to the log, rather than to the
+    /// caller; or the run was cancelled.
+    Incomplete,
+}
+
 pub struct ComponentExecutionHandle {
     fut: Pin<Box<dyn Future<Output = SharedResult<()>> + Send + Sync>>,
 }
@@ -672,7 +684,7 @@ struct ComponentBuildOutput<Prof: EngineProfile> {
 
 /// A memo stored by a run of a component under its `build_semaphore`: the
 /// operation that stored it and the key it was stored under.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct StoredMemo {
     operation_generation: u64,
     memo_fp: Fingerprint,
@@ -1151,6 +1163,22 @@ impl<Prof: EngineProfile> Component<Prof> {
         context: ComponentProcessorContext<Prof>,
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
+        let run = self
+            .run_in_background_to_completeness(processor, context, on_error)
+            .await?;
+        Ok(ComponentExecutionHandle::new(async move {
+            run.await.map(|_| ())
+        }))
+    }
+
+    /// [`Self::run_in_background`], resolving to whether the run reached every
+    /// component under it.
+    pub(crate) async fn run_in_background_to_completeness(
+        self,
+        processor: Prof::ComponentProc,
+        context: ComponentProcessorContext<Prof>,
+        on_error: Option<OnError>,
+    ) -> Result<impl Future<Output = SharedResult<RunCompleteness>> + Send + Sync + 'static> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
         let started = self.start_task(&context)?;
         self.admit_before_spawn(&context, &started).await?;
@@ -1195,10 +1223,16 @@ impl<Prof: EngineProfile> Component<Prof> {
                         }
                     } else {
                         error!("component build failed at {}:\n{err:?}", self.stable_path());
+                        context.processing_stats().record_unhandled_failure();
                         Ok(())
                     };
                     (ComponentRunOutcome::exception(), task_result)
                 }
+            };
+            let completeness = if outcome.has_exception {
+                RunCompleteness::Incomplete
+            } else {
+                RunCompleteness::Complete
             };
             context.admission().finish();
             drop(processor);
@@ -1210,13 +1244,13 @@ impl<Prof: EngineProfile> Component<Prof> {
             if let Some(guard) = child_readiness_guard {
                 guard.resolve(outcome);
             }
-            task_result
+            task_result.map(|()| completeness)
         });
-        Ok(ComponentExecutionHandle::new(async move {
+        Ok(async move {
             join_handle
                 .await
                 .map_err(|e| SharedError::new(internal_error!("task panicked: {e}")))?
-        }))
+        })
     }
 
     pub fn delete(
@@ -1263,6 +1297,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                                 "component delete failed at {}:\n{err:?}",
                                 self.stable_path()
                             );
+                            context.processing_stats().record_unhandled_failure();
                             Ok(())
                         };
                         (ComponentRunOutcome::exception(), task_result)
@@ -1299,6 +1334,9 @@ impl<Prof: EngineProfile> Component<Prof> {
         // Memo states collected from state validation (on cache hit with invalid states)
         // or to be collected after execution (on cache miss).
         let mut memo_states_for_store: Option<MemoStatesPayload<Prof>> = None;
+        // What `last_stored_memos` held when the fast path below looked; the
+        // re-check under the permit compares against it (see there).
+        let mut memo_seen_by_fast_path: Option<StoredMemo> = None;
         let processing_stats = processor_context.processing_stats();
 
         if let Some(processor) = processor {
@@ -1312,6 +1350,15 @@ impl<Prof: EngineProfile> Component<Prof> {
             // operation stored it, which only the permit-holding re-check below can
             // tell, so the fast-path is skipped.
             if !processor_context.full_reprocess() {
+                // Read before the lookup: a store that races with the lookup
+                // then shows as new under the permit and costs one more probe,
+                // rather than going unseen and costing a second execution.
+                memo_seen_by_fast_path = self
+                    .inner
+                    .last_stored_memos
+                    .lock()
+                    .unwrap()
+                    .readable_by(processor_context.app_store());
                 match lookup_component_memo(processor_context, processor, memo_fp_to_store).await? {
                     MemoLookup::Reuse(outcome, output) => {
                         processing_stats.update(processor_name, |stats| {
@@ -1348,23 +1395,37 @@ impl<Prof: EngineProfile> Component<Prof> {
                     // calls on one app that both missed the fast-path above
                     // before either had stored a memo. Re-check the memo now;
                     // a failed run stores none (and records none), so a miss
-                    // falls through to executing. Under `full_reprocess` only
-                    // a memo stored by this same operation qualifies: that is
-                    // the operation's own execution of the component, not a
-                    // cache from a previous run.
+                    // falls through to executing. Only a memo stored since the
+                    // fast path looked qualifies: the one it saw, it already
+                    // probed, and a long-lived component object (the app's
+                    // root, a live component) holds that one on every rerun,
+                    // so probing again would run every memo-state and
+                    // data-dependency validator a second time to the same
+                    // verdict. A store that repeats the seen memo exactly,
+                    // operation and key alike, reads as nothing new: the body
+                    // runs again, which is only redundant. Under
+                    // `full_reprocess`, which skips the fast path, only a memo
+                    // stored by this same operation qualifies: that is the
+                    // operation's own execution of the component, not a cache
+                    // from a previous run.
                     let last_stored_memo = self
                         .inner
                         .last_stored_memos
                         .lock()
                         .unwrap()
                         .readable_by(processor_context.app_store());
+                    let qualifies_for_recheck = |stored: StoredMemo| {
+                        if processor_context.full_reprocess() {
+                            stored.operation_generation == processor_context.operation_generation()
+                        } else {
+                            Some(stored) != memo_seen_by_fast_path
+                        }
+                    };
                     if let Some(processor) = processor
                         && let Some(memo_fp) = memo_fp_to_store
                         && let Some(stored) = last_stored_memo
                         && stored.memo_fp == memo_fp
-                        && (!processor_context.full_reprocess()
-                            || stored.operation_generation
-                                == processor_context.operation_generation())
+                        && qualifies_for_recheck(stored)
                     {
                         match lookup_component_memo(processor_context, processor, memo_fp_to_store)
                             .await?
@@ -1914,6 +1975,15 @@ mod tests {
     struct NoopSink {
         apply_calls: Arc<AtomicUsize>,
         children: Option<(ChildHandling, Arc<AtomicUsize>)>,
+        failing: Option<Arc<AtomicBool>>,
+        /// `apply` appends its name to a shared list of applied sinks.
+        recording: Option<Recording>,
+    }
+
+    /// Where a [`NoopSink`] records its `apply` calls, and under which name.
+    struct Recording {
+        applied: Arc<Mutex<Vec<String>>>,
+        name: String,
     }
 
     impl NoopSink {
@@ -1923,15 +1993,24 @@ mod tests {
             let sink = Self {
                 apply_calls: apply_calls.clone(),
                 children: Some((child_handling, child_reconcile_calls.clone())),
+                failing: None,
+                recording: None,
             };
             (sink, apply_calls, child_reconcile_calls)
         }
 
         fn child_handler(&self) -> CountingHandler {
             let (_, child_reconcile_calls) = self.children.as_ref().expect("a container sink");
+            let child_sink = NoopSink {
+                recording: self.recording.as_ref().map(|recording| Recording {
+                    applied: recording.applied.clone(),
+                    name: format!("{}/rows", recording.name),
+                }),
+                ..Default::default()
+            };
             CountingHandler {
                 reconcile_calls: child_reconcile_calls.clone(),
-                sink: TargetActionSinkKeeper::new(NoopSink::default()),
+                sink: TargetActionSinkKeeper::new(child_sink),
                 reject: false,
                 change_only: false,
             }
@@ -1962,6 +2041,18 @@ mod tests {
             actions: &[TargetActionWithChildSlot<TestProfile>],
         ) -> crate::prelude::Result<()> {
             self.apply_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(recording) = &self.recording {
+                recording
+                    .applied
+                    .lock()
+                    .unwrap()
+                    .push(recording.name.clone());
+            }
+            if let Some(failing) = &self.failing
+                && failing.load(Ordering::SeqCst)
+            {
+                cocoindex_utils::client_bail!("injected sink failure");
+            }
             for slot in actions.iter().filter_map(|(_, slot)| slot.as_ref()) {
                 slot.fulfill(self.child_handler())?;
             }
@@ -2083,6 +2174,9 @@ mod tests {
         /// Whether the processor has a memo key (`memo_fp`); a processor
         /// without one re-runs every time and stores no component memo.
         memoized: bool,
+        /// Counts the memo state handler's validations of stored states (a
+        /// memo probe); the initial collection after a body run is not one.
+        validations: Arc<AtomicUsize>,
         on_process: Option<ProcessHook>,
     }
 
@@ -2101,6 +2195,7 @@ mod tests {
                 memo_states_reusable: false,
                 memo_states_changed: false,
                 memoized: true,
+                validations: Arc::new(AtomicUsize::new(0)),
                 on_process: None,
             }
         }
@@ -2126,6 +2221,12 @@ mod tests {
 
         fn with_on_process(mut self, hook: ProcessHook) -> Self {
             self.on_process = Some(hook);
+            self
+        }
+
+        /// Share `counter` across the processors of several runs.
+        fn with_validation_counter(mut self, counter: Arc<AtomicUsize>) -> Self {
+            self.validations = counter;
             self
         }
     }
@@ -2168,7 +2269,7 @@ mod tests {
             &self,
             _host_runtime_ctx: &(),
             _comp_ctx: &ComponentProcessorContext<TestProfile>,
-            _stored_states: Option<MemoStatesPayload<TestProfile>>,
+            stored_states: Option<MemoStatesPayload<TestProfile>>,
         ) -> crate::prelude::Result<
             impl Future<Output = crate::prelude::Result<(MemoStatesPayload<TestProfile>, bool, bool)>>
             + Send
@@ -2177,6 +2278,9 @@ mod tests {
             let advance_clock = self.advance_clock_in_state_handler;
             let reusable = self.memo_states_reusable;
             let changed = self.memo_states_changed;
+            if stored_states.is_some() {
+                self.validations.fetch_add(1, Ordering::SeqCst);
+            }
             Ok(async move {
                 if advance_clock {
                     testing_advance_deadline_clock(Duration::from_secs(2));
@@ -2740,6 +2844,39 @@ mod tests {
         assert_eq!(body_runs.load(Ordering::SeqCst), 1);
     }
 
+    /// The re-check under the permit is for a memo stored since the fast path
+    /// looked, and a root that has run before holds a memo the fast path saw.
+    /// Two concurrent reruns of such a root whose stored memo is stale (its
+    /// key changed) still execute the body once: the loser finds the winner's
+    /// memo new under the permit and reuses it.
+    #[tokio::test]
+    async fn concurrent_same_key_reruns_of_a_root_with_a_stale_memo_execute_body_once() {
+        let (app, _dir) = test_app("memo_piggyback_rerun").await;
+        let (first, _) = app
+            .update(
+                TestProcessor::new(
+                    "root",
+                    Fingerprint::from(&"memo_piggyback_rerun/v1").unwrap(),
+                    Arc::new(AtomicBool::new(false)),
+                    false,
+                )
+                .with_reusable_memo_states(),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        first.result().await.unwrap();
+
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let body = counting_body(body_runs.clone(), Duration::from_millis(100));
+        let [first, second] =
+            update_twice_concurrently(&app, "memo_piggyback_rerun/v2", body).await;
+        assert_eq!(first.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(second.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(body_runs.load(Ordering::SeqCst), 1);
+    }
+
     /// The re-check under the permit consults the memo store, not only the
     /// key marker: a run that fails stores no memo, so the run queued behind
     /// it executes the body itself instead of reusing a stale result.
@@ -2770,6 +2907,55 @@ mod tests {
             succeeded.into_iter().next().unwrap().unwrap(),
             TestData(b"ret".to_vec())
         );
+    }
+
+    /// A rerun of the app's root whose memo misses probes the memo once. The
+    /// root component object lives as long as the app, so its last stored
+    /// memo carries the rerun's key; the re-check under the permit is for a
+    /// memo stored since the fast path looked, not for the one the fast path
+    /// already probed — a second probe would run every validator again to
+    /// the same verdict.
+    #[tokio::test]
+    async fn a_root_rerun_whose_memo_misses_probes_once() {
+        let (app, _dir) = test_app("root_rerun_probes_once").await;
+        let validations = Arc::new(AtomicUsize::new(0));
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let memo_fp = Fingerprint::from(&"root_rerun_probes_once").unwrap();
+        let run = |states_reusable: bool| {
+            let processor =
+                TestProcessor::new("root", memo_fp, Arc::new(AtomicBool::new(false)), false)
+                    .with_validation_counter(validations.clone())
+                    .with_on_process(counting_body(body_runs.clone(), Duration::ZERO));
+            let processor = if states_reusable {
+                processor.with_reusable_memo_states()
+            } else {
+                processor
+            };
+            let (handle, _) = app
+                .update(processor, AppUpdateOptions::default(), Arc::new(()), None)
+                .unwrap();
+            async move { handle.result().await.unwrap() }
+        };
+        let counts = || {
+            (
+                validations.load(Ordering::SeqCst),
+                body_runs.load(Ordering::SeqCst),
+            )
+        };
+
+        // Fresh: no memo to probe; the body runs and its states are collected.
+        run(true).await;
+        assert_eq!(counts(), (0, 1));
+        // Unchanged: one probe, which hits.
+        run(true).await;
+        assert_eq!(counts(), (1, 1));
+        // The stored states no longer validate: one probe, which misses, then
+        // the body.
+        run(false).await;
+        assert_eq!(counts(), (2, 2));
+        // Unchanged again: one probe, which hits.
+        run(true).await;
+        assert_eq!(counts(), (3, 2));
     }
 
     /// Run one update whose root runs the same memoizable child component
@@ -2925,6 +3111,16 @@ mod tests {
         container_sink: TargetActionSinkKeeper<TestProfile>,
         num_rows: i64,
     ) -> TestProcessor {
+        container_root_with(container_sink, num_rows, None)
+    }
+
+    /// [`container_root`] that also registers a root provider `also` and
+    /// declares one target state through it, after the rows.
+    fn container_root_with(
+        container_sink: TargetActionSinkKeeper<TestProfile>,
+        num_rows: i64,
+        also: Option<(&'static str, TargetActionSinkKeeper<TestProfile>)>,
+    ) -> TestProcessor {
         let new_processor = |name: &str| {
             TestProcessor::new(
                 name,
@@ -2967,6 +3163,7 @@ mod tests {
         }));
         new_processor("root").with_on_process(Arc::new(move |ctx| {
             let (table_processor, child_provider) = table_processor.lock().unwrap().take().unwrap();
+            let also = also.clone();
             Box::pin(async move {
                 let table = ctx.component().mount_child(
                     &FnCallContext::new(true),
@@ -2984,6 +3181,25 @@ mod tests {
                         &FnCallContext::default(),
                         rows.clone(),
                         StableKey::Int(i),
+                        (),
+                    )?;
+                }
+                if let Some((name, sink)) = also.clone() {
+                    let provider = register_root_target_state_provider(
+                        &ctx,
+                        name.to_string(),
+                        CountingHandler {
+                            reconcile_calls: Default::default(),
+                            sink,
+                            reject: false,
+                            change_only: false,
+                        },
+                    )?;
+                    declare_target_state(
+                        &ctx,
+                        &FnCallContext::default(),
+                        provider,
+                        StableKey::Int(0),
                         (),
                     )?;
                 }
@@ -3378,6 +3594,76 @@ mod tests {
         );
     }
 
+    /// `drop_app` reverts the target states of a root provider that a run
+    /// registered at run time (in its build state, not in the environment's
+    /// registry): the handler sees a deletion for each of them, and its sink
+    /// applies it.
+    #[tokio::test]
+    async fn drop_app_reverts_a_root_provider_registered_at_run_time() {
+        let (app, _dir) = test_app("drop_run_time_provider").await;
+        let apply_calls = Arc::new(AtomicUsize::new(0));
+        let reconcile_calls = Arc::new(AtomicUsize::new(0));
+        let root = {
+            let (apply_calls, reconcile_calls) = (apply_calls.clone(), reconcile_calls.clone());
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&"drop_run_time_provider").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .without_memo()
+            .with_on_process(Arc::new(move |ctx| {
+                let sink = TargetActionSinkKeeper::new(NoopSink {
+                    apply_calls: apply_calls.clone(),
+                    children: None,
+                    failing: None,
+                    recording: None,
+                });
+                let reconcile_calls = reconcile_calls.clone();
+                Box::pin(async move {
+                    let provider = register_root_target_state_provider(
+                        &ctx,
+                        "target".to_string(),
+                        CountingHandler {
+                            reconcile_calls,
+                            sink,
+                            reject: false,
+                            change_only: true,
+                        },
+                    )?;
+                    for key in [0, 1] {
+                        declare_target_state(
+                            &ctx,
+                            &FnCallContext::default(),
+                            provider.clone(),
+                            StableKey::Int(key),
+                            (),
+                        )?;
+                    }
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            }))
+        };
+        let (handle, _) = app
+            .update(root, AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        handle.result().await.unwrap();
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(reconcile_calls.load(Ordering::SeqCst), 2);
+
+        app.drop_app(Arc::new(())).unwrap().result().await.unwrap();
+        assert_eq!(
+            reconcile_calls.load(Ordering::SeqCst),
+            4,
+            "drop reconciles both target states of the run-time provider away"
+        );
+        assert_eq!(
+            apply_calls.load(Ordering::SeqCst),
+            2,
+            "drop applies the deletions through the provider's sink"
+        );
+    }
+
     /// A re-run of an unmemoized component that declares the same target
     /// states, which its handler finds unchanged, writes nothing: neither its
     /// precommit nor its commit has a page to write, so no write txn commits
@@ -3401,6 +3687,8 @@ mod tests {
                 let sink = TargetActionSinkKeeper::new(NoopSink {
                     apply_calls: apply_calls.clone(),
                     children: None,
+                    failing: None,
+                    recording: None,
                 });
                 Box::pin(async move {
                     let provider = register_root_target_state_provider(
@@ -3623,5 +3911,140 @@ mod tests {
             2,
             "the accepting precommit runs again to commit without the rejected one"
         );
+    }
+
+    /// A root processor that registers a run-time root provider per entry of
+    /// `sinks`, in their order, and declares one target state through each.
+    fn declaring_root(
+        test: &str,
+        sinks: Vec<(&'static str, TargetActionSinkKeeper<TestProfile>)>,
+    ) -> TestProcessor {
+        TestProcessor::new(
+            "root",
+            Fingerprint::from(&test).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .without_memo()
+        .with_on_process(Arc::new(move |ctx| {
+            let sinks = sinks.clone();
+            Box::pin(async move {
+                for (name, sink) in sinks {
+                    let provider = register_root_target_state_provider(
+                        &ctx,
+                        name.to_string(),
+                        CountingHandler {
+                            reconcile_calls: Default::default(),
+                            sink,
+                            reject: false,
+                            change_only: false,
+                        },
+                    )?;
+                    declare_target_state(
+                        &ctx,
+                        &FnCallContext::default(),
+                        provider,
+                        StableKey::Int(0),
+                        (),
+                    )?;
+                }
+                Ok(TestData(b"ret".to_vec()))
+            })
+        }))
+    }
+
+    /// Sinks of providers at one depth apply in the order of the providers'
+    /// keys, whatever order the run declared through them, on every run.
+    #[tokio::test]
+    async fn sinks_of_providers_at_one_depth_apply_in_provider_key_order() {
+        let (app, _dir) = test_app("sink_order").await;
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        let sink = |name: &str| {
+            TargetActionSinkKeeper::new(NoopSink {
+                recording: Some(Recording {
+                    applied: applied.clone(),
+                    name: name.to_string(),
+                }),
+                ..Default::default()
+            })
+        };
+        let sinks = vec![("c", sink("c")), ("a", sink("a")), ("b", sink("b"))];
+        for run in 0..8 {
+            applied.lock().unwrap().clear();
+            let (handle, _) = app
+                .update(
+                    declaring_root("sink_order", sinks.clone()),
+                    AppUpdateOptions::default(),
+                    Arc::new(()),
+                    None,
+                )
+                .unwrap();
+            handle.result().await.unwrap();
+            assert_eq!(*applied.lock().unwrap(), ["a", "b", "c"], "run {run}");
+        }
+    }
+
+    /// Sinks of shallower providers apply first, whatever their keys: the
+    /// container's provider is keyed `tables` and the other root provider `z`,
+    /// which sorts after it, yet the rows (depth 1, under `tables`) apply
+    /// last. The key chain alone would put the rows before `z`.
+    #[tokio::test]
+    async fn sinks_of_shallower_providers_apply_first_whatever_their_keys() {
+        let (app, _dir) = test_app("sink_depth_order").await;
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        let recording = |name: &str| Recording {
+            applied: applied.clone(),
+            name: name.to_string(),
+        };
+        let (mut container, _, _) = NoopSink::container(ChildHandling::Factory);
+        container.recording = Some(recording("a"));
+        let container_sink = TargetActionSinkKeeper::new(container);
+        let root_sink = TargetActionSinkKeeper::new(NoopSink {
+            recording: Some(recording("z")),
+            ..Default::default()
+        });
+        for run in 0..8 {
+            applied.lock().unwrap().clear();
+            let root =
+                container_root_with(container_sink.clone(), 2, Some(("z", root_sink.clone())));
+            let (handle, _) = app
+                .update(root, AppUpdateOptions::default(), Arc::new(()), None)
+                .unwrap();
+            handle.result().await.unwrap();
+            assert_eq!(
+                *applied.lock().unwrap(),
+                ["a", "z", "a/rows"],
+                "run {run}: containers before rows, keys within a depth"
+            );
+        }
+    }
+
+    /// A failed sink's error names the target states it was applying: the
+    /// connector's own error says what failed, not where.
+    #[tokio::test]
+    async fn a_failed_sink_names_the_target_states_it_was_applying() {
+        let (app, _dir) = test_app("failing_sink").await;
+        let sink = TargetActionSinkKeeper::new(NoopSink {
+            failing: Some(Arc::new(AtomicBool::new(true))),
+            ..Default::default()
+        });
+        let (handle, _) = app
+            .update(
+                declaring_root("failing_sink", vec![("orders", sink)]),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        let message = handle
+            .result()
+            .await
+            .expect_err("the sink fails")
+            .to_string();
+        assert!(
+            message.contains("failed to apply changes to target states under @orders"),
+            "{message}"
+        );
+        assert!(message.contains("injected sink failure"), "{message}");
     }
 }

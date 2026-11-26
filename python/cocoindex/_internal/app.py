@@ -90,6 +90,14 @@ class UpdateHandle(Generic[R]):
             return None
         return self._snapshot_from_handle(self._core_handle).stats
 
+    def _unhandled_failures(self) -> int:
+        """Number of component failures nobody took ownership of: no
+        exception handler was registered for them, or every handler
+        re-raised. Returns 0 if not yet started."""
+        if self._core_handle is None:
+            return 0
+        return self._core_handle.unhandled_failures()
+
     async def watch(self) -> AsyncIterator[UpdateSnapshot[R]]:
         """Async iterator that yields progress snapshots.
 
@@ -340,6 +348,8 @@ class App(Generic[P, R]):
         """
         Update the app synchronously (run the app once to process all pending changes).
 
+        Ctrl+C stops the update and raises ``KeyboardInterrupt``.
+
         Args:
             report_to_stdout: If truthy, periodically report processing stats to
                 stdout. Pass a ``timedelta`` to set the refresh interval; ``True``
@@ -403,6 +413,10 @@ class App(Generic[P, R]):
         - Abandon user-managed containers (e.g., message topics): CocoIndex stops
           writing to them and leaves their contents as-is. See the connector's docs.
         - Clear the app's internal state database
+
+        A drop is not stopped partway: Ctrl+C raises ``KeyboardInterrupt`` once it
+        finishes. A second Ctrl+C raises at once, and the drop goes on in the
+        background.
 
         Args:
             report_to_stdout: If truthy, periodically report processing stats to

@@ -6,6 +6,7 @@ use crate::{
     stable_path::{PyStableKey, PyStablePath},
 };
 
+use cocoindex_core::engine::component::RunCompleteness;
 use cocoindex_core::engine::live_component::LiveComponentController;
 use cocoindex_py_utils::from_py_future;
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -26,10 +27,11 @@ impl PyLiveComponentController {
         let host_runtime_ctx = ctrl.component().app_ctx().env().host_runtime_ctx().clone();
         let on_error = build_on_error(host_runtime_ctx, handler_callback);
         future_into_py(py, async move {
-            ctrl.update_full(processor, on_error)
+            let completeness = ctrl
+                .update_full(processor, on_error)
                 .await
                 .into_py_result()?;
-            Ok(())
+            Ok(completeness == RunCompleteness::Complete)
         })
     }
 

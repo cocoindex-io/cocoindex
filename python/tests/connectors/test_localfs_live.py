@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -205,6 +207,61 @@ async def test_localfs_live_rescan_none_disables(tmp_path: Path) -> None:
         await _wait_for_target_keys({"a.txt", "b.txt"})
         assert GlobalDictTarget.store.data["b.txt"].data == "bbb"
     finally:
+        update_task.cancel()
+        try:
+            await update_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX permission bits")
+async def test_localfs_live_permission_change_reprocesses(tmp_path: Path) -> None:
+    """A file that becomes readable through a change to its metadata alone is processed.
+
+    Linux reports a chmod as an attribute event, not as a modification.
+    """
+    GlobalDictTarget.store.clear()
+
+    path = tmp_path / "a.txt"
+    path.write_text("aaa")
+    path.chmod(0)
+    if os.access(path, os.R_OK):
+        path.chmod(0o644)
+        pytest.skip("permission bits do not stop this user (root?) from reading")
+    attempts = {"count": 0}
+
+    @coco.fn
+    async def count_attempts(file: localfs.File) -> None:
+        attempts["count"] += 1
+        await process_file(file)
+
+    @coco.fn
+    async def app_main() -> None:
+        # No periodic rescan: only the file event can trigger the second attempt.
+        files = localfs.walk_dir(tmp_path, live=True, rescan_interval=None)
+        await coco.mount_each(count_attempts, files.items())
+
+    app = coco.App(
+        coco.AppConfig(name="test_localfs_live_permission", environment=coco_env),
+        app_main,
+    )
+
+    handle = app.update(live=True)
+    update_task = asyncio.create_task(handle.result())
+
+    try:
+        # The first attempt fails to read the file.
+        deadline = asyncio.get_running_loop().time() + 20.0
+        while attempts["count"] == 0:
+            assert asyncio.get_running_loop().time() < deadline, "no first attempt"
+            await asyncio.sleep(0.1)
+        assert "a.txt" not in GlobalDictTarget.store.data
+
+        path.chmod(0o644)
+        await _wait_for_value("a.txt", "aaa")
+    finally:
+        path.chmod(0o644)
         update_task.cancel()
         try:
             await update_task

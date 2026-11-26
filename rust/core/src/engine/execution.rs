@@ -491,12 +491,23 @@ pub fn register_root_target_state_provider<Prof: EngineProfile>(
     name: String,
     handler: Prof::TargetHdl,
 ) -> Result<TargetStateProvider<Prof>> {
-    comp_ctx.update_building_state(|building_state| {
-        building_state
-            .target_states
-            .provider_registry
-            .register_root(name, handler)
-    })
+    let (provider, added) = comp_ctx.update_building_state(|building_state| {
+        let registry = &mut building_state.target_states.provider_registry;
+        let before = registry.providers.clone();
+        let provider = registry.register_root(name, handler)?;
+        // The root provider and the attachment providers it registered.
+        let added: Vec<_> = registry
+            .providers
+            .iter()
+            .filter(|(path, _)| !before.contains_key(*path))
+            .map(|(path, provider)| (path.clone(), provider.clone()))
+            .collect();
+        Ok((provider, added))
+    })?;
+    // A provider registered by a run lives in that run's build state only;
+    // the app remembers it so `App::drop_app` can revert its target states.
+    comp_ctx.app_ctx().remember_run_root_providers(added);
+    Ok(provider)
 }
 
 pub fn declare_target_state_with_child<Prof: EngineProfile>(
@@ -891,10 +902,13 @@ struct SinkInput<Prof: EngineProfile> {
     /// sink for the declaring action. Read back after the sink call; a slot the
     /// sink left unfulfilled is an error.
     pending_children: Vec<(TargetStateProvider<Prof>, ChildTargetSlot<Prof>)>,
-    /// The smallest [`TargetStateProvider::depth`] of the providers whose
-    /// target states sent actions to this sink: sinks apply in this order
-    /// (see [`sinks_in_apply_order`]).
-    provider_depth: usize,
+    /// The distinct providers of the target states that sent actions to this
+    /// sink (usually one: a table's rows), to name them when the sink fails
+    /// and to order the sink among the others (see [`sinks_in_apply_order`]).
+    providers: Vec<TargetStateProvider<Prof>>,
+    /// The providers in `providers`, by identity, for the dedup: a sink
+    /// shared by many providers gets many actions.
+    provider_ids: HashSet<usize>,
 }
 
 impl<Prof: EngineProfile> Default for SinkInput<Prof> {
@@ -903,7 +917,8 @@ impl<Prof: EngineProfile> Default for SinkInput<Prof> {
             actions: Vec::new(),
             factory_children: Vec::new(),
             pending_children: Vec::new(),
-            provider_depth: usize::MAX,
+            providers: Vec::new(),
+            provider_ids: HashSet::new(),
         }
     }
 }
@@ -918,7 +933,12 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
         action: Prof::TargetAction,
         child: Option<(TargetStateProvider<Prof>, ChildHandling)>,
     ) -> Result<()> {
-        self.provider_depth = self.provider_depth.min(provider.depth());
+        if self
+            .provider_ids
+            .insert(Arc::as_ptr(&provider.inner) as usize)
+        {
+            self.providers.push(provider.clone());
+        }
         let child_slot = match child {
             None => None,
             Some((child_provider, ChildHandling::Factory)) => {
@@ -946,11 +966,35 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
     }
 }
 
+/// The names of `providers` for an error message, a few of them when there
+/// are many: a sink shared by many providers gets the actions of all.
+fn provider_names<'a, Prof: EngineProfile>(
+    providers: impl ExactSizeIterator<Item = &'a TargetStateProvider<Prof>>,
+) -> String {
+    const NAMED: usize = 5;
+    let total = providers.len();
+    let mut names: Vec<String> = providers
+        .take(NAMED)
+        .map(|provider| provider.display_name())
+        .collect();
+    if total > NAMED {
+        names.push(format!("and {} more", total - NAMED));
+    }
+    names.join(", ")
+}
+
 /// A component's sinks in the order they apply: those of shallower providers
 /// first, so a container's sink (a table) applies before the sink of the
 /// target states inside it (its rows), and those before the sinks of their
 /// provider's attachments (an index over the rows, which may need the rows
-/// to build). Sinks at one depth keep no particular order.
+/// to build). Sinks at one depth apply in the order of their providers'
+/// stable keys from the root provider down (e.g. table `a` before table `b`),
+/// so the order between providers is the same on every run. Two sinks fed by
+/// one provider (a handler that routes some of its target states to each)
+/// share a key and keep no particular order between them, which can differ
+/// from run to run and between a preview and the update after it. A sink fed
+/// by providers at several depths is placed by the shallowest of them, so
+/// such a sink must not depend on another provider's sink at a deeper level.
 #[allow(
     clippy::mutable_key_type,
     reason = "`TargetActionSinkKeeper` hashes and compares by `Arc` identity"
@@ -959,7 +1003,17 @@ fn sinks_in_apply_order<Prof: EngineProfile>(
     actions_by_sinks: HashMap<TargetActionSinkKeeper<Prof>, SinkInput<Prof>>,
 ) -> Vec<(TargetActionSinkKeeper<Prof>, SinkInput<Prof>)> {
     let mut sinks: Vec<_> = actions_by_sinks.into_iter().collect();
-    sinks.sort_by_key(|(_, input)| input.provider_depth);
+    // Where a sink applies: by the depth of a provider that sent it actions,
+    // then by that provider's stable keys from the root provider down; a sink
+    // fed by several providers takes the first of them. A sink with no action
+    // is never queued; `None` would sort first.
+    sinks.sort_by_cached_key(|(_, input)| {
+        input
+            .providers
+            .iter()
+            .map(|p| (p.depth(), p.stable_key_chain()))
+            .min()
+    });
     sinks
 }
 
@@ -990,14 +1044,14 @@ async fn build_factory_children<Prof: EngineProfile>(
             .child_handlers(host_runtime_ctx, Arc::clone(comp_ctx.host_ctx()), &actions)
             .await
             .with_context(|| {
-                let paths: Vec<String> = input
-                    .factory_children
-                    .iter()
-                    .map(|(child_provider, _)| child_provider.display_name())
-                    .collect();
                 format!(
                     "failed to build the child handlers for target states {}",
-                    paths.join(", ")
+                    provider_names(
+                        input
+                            .factory_children
+                            .iter()
+                            .map(|(child_provider, _)| child_provider)
+                    )
                 )
             })?;
         if handlers.len() != actions.len() {
@@ -2056,10 +2110,13 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 child_provider.fulfill_handler(handler, registry)?;
             }
         }
+        // The plan lists a component's actions in the order an update applies
+        // them (up to the order among sinks that share a key; see
+        // `sinks_in_apply_order`).
         collector.lock().unwrap().extend(
-            actions_by_sinks
-                .into_values()
-                .flat_map(|input| input.actions.into_iter().map(|(action, _)| action)),
+            sinks_in_apply_order(actions_by_sinks)
+                .into_iter()
+                .flat_map(|(_, input)| input.actions.into_iter().map(|(action, _)| action)),
         );
         return Ok(SubmitOutput {
             built_target_states_providers,
@@ -2076,12 +2133,20 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         pending_fulfillments.extend(build_factory_children(comp_ctx, &actions_by_sinks).await?);
         let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
         for (sink, input) in sinks_in_apply_order(actions_by_sinks) {
+            // Connectors report what failed (`postgres: ...`), not which
+            // target: name the target states here, once for every connector.
             sink.apply(
                 host_runtime_ctx,
                 Arc::clone(comp_ctx.host_ctx()),
                 input.actions,
             )
-            .await?;
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to apply changes to target states under {}",
+                    provider_names(input.providers.iter())
+                )
+            })?;
             for (child_provider, slot) in input.pending_children {
                 let Some(handler) = slot.take()? else {
                     client_bail!(

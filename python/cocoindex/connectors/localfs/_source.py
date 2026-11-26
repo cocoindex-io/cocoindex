@@ -220,6 +220,14 @@ class _LiveDirItems:
         async for pair in self._walker._items_iter():
             yield pair
 
+    def _is_file_included(self, relative: Path) -> bool:
+        matcher = self._walker._path_matcher
+        return matcher.is_file_included(relative) and all(
+            matcher.is_dir_included(parent)
+            for parent in relative.parents
+            if parent != Path(".")
+        )
+
     async def watch(self, subscriber: LiveMapSubscriber[str, File]) -> None:
         """Deliver an initial scan then live filesystem changes to the subscriber."""
         with self._watch_guard:
@@ -227,6 +235,7 @@ class _LiveDirItems:
 
     async def _watch(self, subscriber: LiveMapSubscriber[str, File]) -> None:
         from watchdog.events import (
+            EVENT_TYPE_ATTRIB,
             EVENT_TYPE_CREATED,
             EVENT_TYPE_DELETED,
             EVENT_TYPE_MODIFIED,
@@ -328,16 +337,23 @@ class _LiveDirItems:
                             # not all. Trigger a rescan as a safety net.
                             await subscriber.update_all()
                             continue
-                        if self._walker._path_matcher.is_file_included(relative):
+                        if self._is_file_included(relative):
                             handle = await subscriber.delete(key)
                             await handle.ready()
                         continue
 
-                    if kind not in (EVENT_TYPE_CREATED, EVENT_TYPE_MODIFIED):
+                    # A metadata-only change (a touch or chmod) arrives as its own
+                    # event type, not as a modification: re-process it as a
+                    # rescan would, since the file's stat changed.
+                    if kind not in (
+                        EVENT_TYPE_CREATED,
+                        EVENT_TYPE_MODIFIED,
+                        EVENT_TYPE_ATTRIB,
+                    ):
                         continue
                     if event.is_directory:
                         continue
-                    if not self._walker._path_matcher.is_file_included(relative):
+                    if not self._is_file_included(relative):
                         continue
 
                     file_path = self._walker._root_path / relative

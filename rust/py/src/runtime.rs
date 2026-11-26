@@ -1,6 +1,8 @@
 use std::{
     hash::{Hash, Hasher},
+    pin::Pin,
     sync::{Arc, OnceLock},
+    time::Duration,
 };
 
 use crate::prelude::*;
@@ -81,9 +83,67 @@ pub fn init_runtime(
     Ok(())
 }
 
+/// Shut the Tokio runtime down with the GIL released. The tasks it drops can
+/// hold a Python awaitable (a `process_live` still running, for one), and
+/// dropping one takes the GIL to cancel its Python task: with the GIL held
+/// here, those drops wait out the shutdown timeout and keep their worker
+/// threads running past it.
 #[pyfunction]
-pub fn shutdown_tokio_runtime() {
-    shutdown_runtime();
+pub fn shutdown_tokio_runtime(py: Python<'_>) {
+    py.detach(shutdown_runtime);
+}
+
+/// How often [`block_on_interruptibly`] wakes to run Python's signal handlers.
+const SIGNAL_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Block on `work` on the engine runtime with the GIL released, as a blocking
+/// entry point (`App.update_blocking`, `App.drop_blocking`) does, and stay
+/// responsive to Ctrl+C while waiting.
+///
+/// CPython only records a signal when it arrives; its Python handler (the one
+/// raising `KeyboardInterrupt` for SIGINT) runs once the main thread runs
+/// Python code again, which a wait on work that never ends (a live update)
+/// never does. So the wait wakes every [`SIGNAL_CHECK_INTERVAL`] to run the
+/// pending handlers (`check_signals`, which does nothing off the main thread).
+/// When a handler raises, `stop` is called to cancel the work, and the wait
+/// goes on while the work winds down, so a progress display ends with its
+/// final line; then the handler's exception is raised in place of the work's
+/// result. A handler raising again before that (a second Ctrl+C) ends the wait
+/// at once with its exception, leaving the work to finish on the runtime.
+pub fn block_on_interruptibly<T: Send>(
+    py: Python<'_>,
+    work: impl Future<Output = PyResult<T>> + Send,
+    stop: impl FnOnce(),
+) -> PyResult<T> {
+    let mut work = std::pin::pin!(work);
+    let interrupt = loop {
+        if let Some(result) = wait_a_while(py, work.as_mut()) {
+            return result;
+        }
+        if let Err(err) = py.check_signals() {
+            break err;
+        }
+    };
+    stop();
+    loop {
+        if wait_a_while(py, work.as_mut()).is_some() {
+            return Err(interrupt);
+        }
+        py.check_signals()?;
+    }
+}
+
+/// Poll `work` with the GIL released for up to [`SIGNAL_CHECK_INTERVAL`];
+/// `None` if it has not finished by then.
+fn wait_a_while<F>(py: Python<'_>, work: Pin<&mut F>) -> Option<F::Output>
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    py.detach(|| {
+        get_runtime()
+            .block_on(async { tokio::time::timeout(SIGNAL_CHECK_INTERVAL, work).await.ok() })
+    })
 }
 
 /// Cancel the global cancellation token, causing all in-flight operations to
