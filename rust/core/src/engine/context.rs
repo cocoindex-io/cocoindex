@@ -977,6 +977,15 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
             preview_collector,
         })
     }
+
+    /// The collector of a preview run's actions: a build's, or a delete's that
+    /// the preview launched for a component it no longer mounts.
+    fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
+        match self {
+            Self::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
+            Self::Delete(delete_ctx) => delete_ctx.preview_collector.as_ref(),
+        }
+    }
 }
 
 struct ComponentProcessorContextInner<Prof: EngineProfile> {
@@ -1065,12 +1074,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         let app_store = match &parent_context {
             Some(parent) => parent.app_store().clone(),
             None => {
-                let preview_collector = match &processing_action {
-                    ComponentProcessingAction::Build(build_ctx) => &build_ctx.preview_collector,
-                    ComponentProcessingAction::Delete(delete_ctx) => &delete_ctx.preview_collector,
-                };
                 let persisting_app_store = component.app_ctx().persisting_app_store();
-                if preview_collector.is_some() {
+                if processing_action.preview_collector().is_some() {
                     persisting_app_store.discarding_writes()
                 } else {
                     persisting_app_store.clone()
@@ -1499,13 +1504,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         &self.inner.data_dep_verdicts
     }
 
-    /// The collector of a preview run's actions: a build's, or a delete's that
-    /// the preview launched for a component it no longer mounts.
+    /// The collector of a preview run's actions; see
+    /// [`ComponentProcessingAction::preview_collector`].
     pub(crate) fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
-        match &self.inner.processing_action {
-            ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
-            ComponentProcessingAction::Delete(delete_ctx) => delete_ctx.preview_collector.as_ref(),
-        }
+        self.inner.processing_action.preview_collector()
     }
 
     /// The selector this run is under. A delete has none: it is reached only
