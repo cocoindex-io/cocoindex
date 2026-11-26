@@ -261,8 +261,6 @@ class PersonEdit:
 class Plan:
     requests: list[dict[str, Any]]
     person_edits: list[PersonEdit]
-    # The text the plan changes, not only named ranges.
-    rewrites: bool
 
 
 @dataclass
@@ -482,9 +480,8 @@ def plan_write(
                 in (state.ranges[block_id].start, state.ranges[block_id].end)
             )
 
-    rewrites = bool(inserts or deletes)
-    if not rewrites and not touched and not dropped and not state.stray_range_ids:
-        return Plan([], edits, rewrites=False)
+    if not (inserts or deletes or touched or dropped or state.stray_range_ids):
+        return Plan([], edits)
 
     requests: list[dict[str, Any]] = []
     for block_id in sorted(touched | dropped):
@@ -519,7 +516,7 @@ def plan_write(
                 }
             }
         )
-    return Plan(requests, edits, rewrites)
+    return Plan(requests, edits)
 
 
 def _placement(
