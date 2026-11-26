@@ -859,6 +859,18 @@ def _plain(obj: Any, depth: int = 0) -> Any:
     return (type(obj).__name__, tuple(out)) if out else repr(obj)
 
 
+def _stored_item(item: Any) -> Any:
+    """A target-state item as the component's own record holds it.
+
+    Inspection renders ``target_state_path`` from ``fingerprint_path`` and reads
+    the key of a container segment from the container owner's record. A selected
+    container owner that is gone takes that record with it, so the rendering for
+    an unselected row component can change while its own record does not.
+    """
+    name, fields = _plain(item)
+    return (name, tuple(f for f in fields if f[0] != "target_state_path"))
+
+
 def path_details(app: coco.App[Any, Any]) -> dict[Path, Any]:
     async def collect() -> dict[Path, Any]:
         out: dict[Path, Any] = {}
@@ -868,7 +880,7 @@ def path_details(app: coco.App[Any, Any]) -> dict[Path, Any]:
                 d.version,
                 d.processor_name,
                 d.has_memoization,
-                sorted(repr(_plain(i)) for i in d.target_state_items),
+                sorted(repr(_stored_item(i)) for i in d.target_state_items),
             )
         return out
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 import cocoindex as coco
+import cocoindex.inspect as coco_inspect
 
 from tests import common
 from tests.common.target_states import DictsTarget
@@ -180,3 +182,90 @@ def test_container_change_is_applied_when_every_row_owner_runs(memo: bool) -> No
             app.update_blocking(component_selector=[coco.ROOT_PATH / "rows" / "a"])
     finally:
         DictsTarget.store.child_invalidation = None
+
+
+def _own_record(app: coco.App[Any, Any], path: coco.StablePath) -> Any:
+    """What the store holds for the component at `path` in its own record.
+
+    `fingerprint_path` is the target-state path the record holds. The
+    `target_state_path` that inspection renders from it reads the key of a
+    container segment from the container owner's record instead, so it is left
+    out here.
+    """
+    detail = asyncio.run(coco_inspect.get_stable_path_detail(app, path))
+    assert detail is not None
+    return (
+        str(detail.node_type),
+        detail.version,
+        detail.processor_name,
+        detail.has_memoization,
+        [
+            (
+                item.fingerprint_path,
+                item.key,
+                [(s.state, s.version) for s in item.states],
+                item.provider_schema_version,
+                item.provider_generation,
+            )
+            for item in detail.target_state_items
+        ],
+    )
+
+
+@pytest.mark.parametrize("memo", [False, True])
+def test_gone_selected_container_owner_leaves_unselected_row_records_as_they_were(
+    memo: bool,
+) -> None:
+    """Seed 199 of the component-selector fuzz, as a plain test.
+
+    A selected container owner that is gone removes its container, rows of
+    unselected components included. The unselected row component is not run:
+    its record stays as it was until a plain update covers it.
+    """
+    mounted = {"on": True}
+
+    @coco.fn
+    async def main() -> None:
+        if not mounted["on"]:
+            return
+        provider = await coco.use_mount(
+            coco.component_subpath("setup"), DictsTarget.declare_dict_target, "D"
+        )
+        with coco.component_subpath("rows"):
+            for key, value in sorted(_rows.items()):
+                await coco.mount(
+                    coco.component_subpath(key),
+                    _memo_row if memo else _row,
+                    provider,
+                    key,
+                    value,
+                )
+
+    DictsTarget.store.clear()
+    _rows.clear()
+    _rows.update(a=1)
+    app = coco.App(
+        coco.AppConfig(
+            name=f"selector_container_gone_owner_{memo}", environment=coco_env
+        ),
+        main,
+    )
+    app.update_blocking()
+    assert _data() == {"a": 1}
+    row_path = coco.ROOT_PATH / "rows" / "a"
+    before = _own_record(app, row_path)
+
+    # The whole group is gone. The selector names its container owner and a row
+    # that never existed; row "a" is not selected.
+    mounted["on"] = False
+    app.update_blocking(
+        component_selector=[coco.ROOT_PATH / "setup", coco.ROOT_PATH / "rows" / "c"]
+    )
+    assert DictsTarget.store.data == {}
+    assert row_path in coco_inspect.list_stable_paths_sync(app)
+    assert _own_record(app, row_path) == before
+
+    # A plain update covers the row component and deletes it.
+    app.update_blocking()
+    assert DictsTarget.store.data == {}
+    assert coco_inspect.list_stable_paths_sync(app) == [coco.ROOT_PATH]
