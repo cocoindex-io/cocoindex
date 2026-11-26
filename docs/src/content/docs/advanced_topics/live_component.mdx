@@ -33,7 +33,7 @@ A live component is a type that implements the `LiveComponent` trait, with two m
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/src/live_component.rs (LiveComponent trait), rust/sdk/cocoindex/tests/it/live_map.rs (Producer) */}
+{/* Rust: rust/sdk/cocoindex/src/live_component.rs (LiveComponent trait), rust/sdk/cocoindex/tests/live_map.rs (Producer) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -198,7 +198,7 @@ You **don't** need `report_exception` around `update_full` / `update` / `delete`
 
 A component that watches a local folder and processes each file:
 
-{/* Rust: rust/sdk/cocoindex/tests/it/live_component.rs (DirectDelete), rust/sdk/cocoindex/tests/it/live_map.rs (Producer) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/live_component.rs (DirectDelete), rust/sdk/cocoindex/tests/live_map.rs (Producer) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -646,7 +646,7 @@ To add live support to a source connector, make your source return <Lang only="p
 
 `LiveMap<K, V>` joins live data-*producing* logic and live data-*consuming* logic inside one session. The producer declares `(key, value)` entries as target states with `declare_entry`; the consumer reads the map as a `LiveMapView` through `ctx.mount_each_live`. An entry exists as long as some component declares it; when its declaring component stops declaring it, the entry is removed, and the consumer's child for it is deleted.
 
-{/* Rust: rust/sdk/cocoindex/tests/it/live_map.rs (Producer, Consumer), rust/sdk/cocoindex/src/resources/live_map.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/live_map.rs (Producer, Consumer), rust/sdk/cocoindex/src/resources/live_map.rs */}
 ```rust
 use cocoindex::prelude::*;
 

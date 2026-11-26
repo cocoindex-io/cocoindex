@@ -19,7 +19,7 @@ It is designed for [live mode](../programming_guide/live_mode): the producer and
 
 ## Example
 
-{/* Rust: rust/sdk/cocoindex/tests/it/live_map.rs (live module: Producer, Consumer) */}
+{/* Rust: rust/sdk/cocoindex/tests/live_map.rs (live module: Producer, Consumer) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -125,7 +125,7 @@ The producer and the consumer are [live components](../advanced_topics/live_comp
 
 ## Creating a LiveMap
 
-{/* Rust: rust/sdk/cocoindex/tests/it/live_map.rs (live_map_create_and_declare) */}
+{/* Rust: rust/sdk/cocoindex/tests/live_map.rs (live_map_create_and_declare) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -159,7 +159,7 @@ let lm: LiveMap<String, String> = LiveMap::create(&ctx).await?;
 
 ## Producing entries
 
-{/* Rust: rust/sdk/cocoindex/tests/it/live_map.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/live_map.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -189,7 +189,7 @@ Multiple components may declare into the same map, as long as each key has a sin
 
 A `LiveMap` is a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview), so pass it straight to <Lang only="python">`coco.mount_each`</Lang><Lang only="rust">`ctx.mount_each_live`</Lang> — it behaves just like a live source:
 
-{/* Rust: rust/sdk/cocoindex/tests/it/live_map.rs (Consumer::process) */}
+{/* Rust: rust/sdk/cocoindex/tests/live_map.rs (Consumer::process) */}
 <LangTabs>
 <Fragment slot="python">
 

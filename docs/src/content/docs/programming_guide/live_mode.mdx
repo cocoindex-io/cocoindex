@@ -233,7 +233,7 @@ When one part of your pipeline produces keyed data and another consumes it (with
 
 `LiveMap<K, V>` takes any `LiveMapKey` as `K` (`String`, `i64`, `u64` or a `StableKey`):
 
-{/* Rust: rust/sdk/SHOWCASE.md "In-memory `LiveMap`", verified against rust/sdk/cocoindex/tests/it/live_map.rs */}
+{/* Rust: rust/sdk/SHOWCASE.md "In-memory `LiveMap`", verified against rust/sdk/cocoindex/tests/live_map.rs */}
 ```rust
 let lm: LiveMap<i64, String> = LiveMap::create(&ctx).await?;
 lm.declare_entry(&ctx, 7, "seven".to_string())?;           // producer side

@@ -18,7 +18,7 @@ The `cocoindex::ops::api` module calls hosted models over an OpenAI-compatible H
 
 Each client defaults to the OpenAI base URL (`https://api.openai.com/v1`) and reads the API key from the `OPENAI_API_KEY` environment variable. Point a client at any compatible endpoint (OpenAI, Together, vLLM, Ollama, ...) with `with_base_url`, and give the model name that endpoint expects, with no provider prefix.
 
-{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs */}
 ```rust
 use cocoindex::ops::api::{ApiChatClient, ApiEmbedder, ApiTranscriber, ChatMessage, LlmPairResolver};
 ```
@@ -42,7 +42,7 @@ cocoindex = { version = "...", features = ["embed_api"] }
 
 ### Creating an embedder
 
-{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs (ApiEmbedder builders) */}
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (ApiEmbedder builders) */}
 ```rust
 use std::time::Duration;
 
@@ -72,7 +72,7 @@ The embedder is cheap to clone. Clones share the in-flight cap and the probed di
 
 ### Embedding text
 
-{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs (embed, embed_with_input_type, embed_batch) */}
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (embed, embed_with_input_type, embed_batch) */}
 ```rust
 // In a CocoIndex function: memoized per text, batched across concurrent calls.
 let embedding = embedder.embed(&ctx, "Hello, world!").await?;
@@ -113,7 +113,7 @@ async fn embed_chunks(ctx: &Ctx, chunks: Vec<String>) -> Result<Vec<Vec<f32>>> {
 
 Concurrent `embed` calls are batched into requests of up to 64 texts, and the embedder sends as many such requests in parallel as there is work queued. `with_max_inflight_requests` caps how many requests the embedder keeps open against the backend at once. Use it for a self-hosted endpoint (Infinity, TEI, Ollama, vLLM, ...) that rejects bursts with 429s:
 
-{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs (with_max_inflight_requests) */}
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (with_max_inflight_requests) */}
 ```rust
 let embedder = ApiEmbedder::new("bge-m3")
     .with_base_url("http://localhost:7997")
@@ -167,7 +167,7 @@ The embedder finds its dimension by embedding a probe text (`"hello"`) once, and
 
 ### Creating a transcriber
 
-{/* Rust: examples/rust/audio_to_text/src/main.rs, rust/sdk/cocoindex/tests/it/ops_api.rs (ApiTranscriber builders) */}
+{/* Rust: examples/rust/audio_to_text/src/main.rs, rust/sdk/cocoindex/tests/ops_api.rs (ApiTranscriber builders) */}
 ```rust
 use std::time::Duration;
 
@@ -229,7 +229,7 @@ The client has `new(model)`, `with_base_url` and `with_api_key`. Two methods sen
 - `extract::<T>(&ctx, &messages)` deserializes the answer into `T` and memoizes it through the engine, keyed by the model, the endpoint and the messages. This is the way to extract structured data with an LLM inside an update.
 - `chat_json(&messages)` returns the raw JSON string of the answer, with no memoization.
 
-{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs (chat_client_extract_deserializes_and_memoizes) */}
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (chat_client_extract_deserializes_and_memoizes) */}
 ```rust
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Person {
@@ -248,7 +248,7 @@ The endpoint's JSON mode guarantees JSON, not a shape: the prompt has to describ
 
 The client's memo key is the model and the endpoint (the base URL). So a `detect_change` context key that holds a client invalidates memoized work when the model or the endpoint changes:
 
-{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs */}
 ```rust
 cocoindex::context_key!(static CHAT: ApiChatClient, detect_change);
 ```
@@ -259,7 +259,7 @@ Complete pipelines that extract with `ApiChatClient` are in [`examples/rust/prod
 
 `LlmPairResolver` implements the `PairResolver` trait of [entity resolution](./entity_resolution). Given a new entity name and a list of canonical candidates, it asks the LLM whether the new name refers to one of them, and which name stays canonical.
 
-{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs (LlmPairResolver builders); with_client from examples/rust/conversation_to_knowledge/src/pipeline.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (LlmPairResolver builders); with_client from examples/rust/conversation_to_knowledge/src/pipeline.rs */}
 ```rust
 use cocoindex::ops::api::LlmPairResolver;
 
@@ -293,7 +293,7 @@ All four clients reach their endpoint the same way.
 
 A request is bounded end to end, retries included. The default bound is 10 minutes. `ApiEmbedder` and `ApiTranscriber` take `with_timeout(Duration)`; `ApiChatClient` and `LlmPairResolver` use the default.
 
-{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs (with_timeout) */}
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (with_timeout) */}
 ```rust
 let embedder = ApiEmbedder::new("text-embedding-3-small").with_timeout(Duration::from_secs(30 * 60));
 let transcriber = ApiTranscriber::new("whisper-1").with_timeout(Duration::from_secs(30 * 60));

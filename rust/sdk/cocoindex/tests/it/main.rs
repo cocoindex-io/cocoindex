@@ -31,7 +31,6 @@ mod doris_target;
 mod drop_state;
 mod entity_resolution;
 mod fs_live;
-mod fs_live_battle;
 mod fs_live_restart;
 mod fs_target;
 mod gdrive_source;
@@ -43,9 +42,7 @@ mod inspect;
 mod kafka_target;
 mod lancedb_battle;
 mod lancedb_target;
-mod live_battle;
 mod live_component;
-mod live_map;
 mod live_soak;
 mod live_stream;
 mod logic_tracking;
@@ -55,7 +52,6 @@ mod model_based;
 mod mount;
 mod mount_each;
 mod oci_live;
-mod ops_api;
 mod ops_text;
 mod ops_text_fuzz;
 mod pipeline;
@@ -74,8 +70,8 @@ mod zvec_battle;
 mod zvec_target;
 
 /// The test files that are binaries of their own, directly under `tests/`.
-/// Each one changes or reads something the whole process shares, so it cannot
-/// run beside the other tests.
+/// Each one changes or reads something the whole process shares, or needs the
+/// process to itself, so it cannot run beside the other tests.
 const OWN_PROCESS_TESTS: &[&str] = &[
     // Sets `COCOINDEX_MAX_INFLIGHT_COMPONENTS`.
     "admission_env",
@@ -83,9 +79,17 @@ const OWN_PROCESS_TESTS: &[&str] = &[
     "azure_blob_token",
     // Drives the engine's deadline test clock.
     "deadline",
+    // Assert that work ends within a few seconds, to show that a timeout
+    // fired or that items ran side by side. Beside the other tests, which
+    // share the machine and the engine's runtime, they miss the bound.
+    "fs_live_battle",
     // Stop their live runs through the engine's cancellation of every run.
     "iggy_source",
     "kafka_source",
+    // Assert that work ends within a few seconds, as `fs_live_battle` does.
+    "live_battle",
+    "live_map",
+    "ops_api",
     // Sets `HF_ENDPOINT` and `HF_HOME`.
     "ops_sentence_transformers",
     // Record the SQL statements `sqlx` runs through the process's `tracing`

@@ -441,7 +441,7 @@ The resolver does not use litellm or `instructor`: it asks the endpoint for a JS
 
 ### Usage
 
-{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs (LlmPairResolver builders), examples/rust/conversation_to_knowledge/src/pipeline.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (LlmPairResolver builders), examples/rust/conversation_to_knowledge/src/pipeline.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -518,7 +518,7 @@ The resolver takes the bare model name the endpoint expects (`gpt-4o-mini`), wit
 
 Pass <Lang only="python">`entity_type`</Lang><Lang only="rust">`with_entity_type`</Lang> to tailor the prompt for specific entity categories:
 
-{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs (with_entity_type) */}
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (with_entity_type) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -585,7 +585,7 @@ After each LLM call, the response is validated:
 
 The default retry budget is 2. If exhausted, no match is returned.
 
-{/* Rust: rust/sdk/cocoindex/tests/it/ops_api.rs (with_retries) */}
+{/* Rust: rust/sdk/cocoindex/tests/ops_api.rs (with_retries) */}
 <LangTabs>
 <Fragment slot="python">
 

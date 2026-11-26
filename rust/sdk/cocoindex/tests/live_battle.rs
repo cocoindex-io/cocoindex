@@ -8,7 +8,7 @@
 //! hands it out through a channel and then waits, so each test can issue
 //! exactly the sequence of operations it wants to probe.
 //!
-//!   cargo test -p cocoindex --test it live_battle::
+//!   cargo test -p cocoindex --test live_battle
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
