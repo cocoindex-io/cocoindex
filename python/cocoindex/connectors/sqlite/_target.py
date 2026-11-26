@@ -809,6 +809,18 @@ def _column_shape(
     return None
 
 
+def _has_shape(actual: _ColumnShape, col: ColumnDef) -> bool:
+    """Whether `actual` (from PRAGMA table_info) has `col`'s type and nullability.
+
+    PRAGMA table_info reports only the type name: for a declared type that also
+    carries COLLATE, DEFAULT, CHECK and so on, it reports the words before them.
+    """
+    declared = col.type.strip().upper()
+    return actual.not_null == (not col.nullable) and (
+        declared == actual.type or declared.startswith(actual.type + " ")
+    )
+
+
 def _apply_column_actions(
     conn: sqlite3.Connection,
     table_name: str,
@@ -869,22 +881,26 @@ def _apply_column_actions(
             continue
 
         # insert / upsert / replace: bring the column to the desired shape.
-        desired = _ColumnShape(desired_col.type.upper(), not desired_col.nullable)
         actual = _column_shape(conn, table_name, col_name)
-        if actual == desired:
-            # Already there: an idempotent re-run, or a change made out of band.
-            continue
         if actual is not None:
-            # SQLite has no ALTER COLUMN TYPE: drop, then re-add. A failed DROP
-            # (an index references the column, or SQLite < 3.35) fails the
-            # action, or the new shape would be recorded while the table keeps
-            # the old one.
+            if action != "replace" and _has_shape(actual, desired_col):
+                # Already in place: an idempotent re-run, or a full reprocess.
+                continue
+            # SQLite has no ALTER COLUMN TYPE: drop, then re-add. A `replace`
+            # always rebuilds, since PRAGMA can't show a change to COLLATE,
+            # DEFAULT or CHECK. A failed DROP (an index references the column, or
+            # SQLite < 3.35) fails the action, unless the column already has the
+            # desired shape (changed out of band); otherwise the new shape would
+            # be recorded while the table keeps the old one.
             try:
                 conn.execute(f'ALTER TABLE {qualified_name} DROP COLUMN "{col_name}"')
             except sqlite3.OperationalError as e:
+                if _has_shape(actual, desired_col):
+                    continue
                 raise RuntimeError(
                     f"Failed to change the shape of column {col_name!r} in SQLite "
-                    f"table {table_name!r} from {actual} to {desired}: {e}"
+                    f"table {table_name!r} from {actual} to type "
+                    f"{desired_col.type!r}, nullable={desired_col.nullable}: {e}"
                 ) from e
         nullable = "" if desired_col.nullable else " NOT NULL"
         try:

@@ -75,6 +75,17 @@ def get_table_columns(
         return {row[1]: row[2] for row in cursor.fetchall()}
 
 
+def get_table_sql(managed_conn: sqlite.ManagedConnection, table_name: str) -> str:
+    """Get the CREATE TABLE statement of a table."""
+    with managed_conn.readonly() as conn:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        ).fetchone()
+    assert row is not None
+    return str(row[0])
+
+
 def get_column_notnull(
     managed_conn: sqlite.ManagedConnection, table_name: str, column_name: str
 ) -> bool:
@@ -152,6 +163,12 @@ class NullableStrValueRow:
     id: str
     name: str
     value: str | None
+
+
+@dataclass
+class CollatedNameRow:
+    id: str
+    name: Annotated[str, sqlite.SqliteType("TEXT COLLATE NOCASE")]
 
 
 @dataclass
@@ -1963,10 +1980,10 @@ def test_readded_column_after_blocked_drop_raises_until_index_is_dropped(
         _table_name = old_table_name
 
 
-def test_duplicate_column_error_is_ignored_on_idempotent_rerun(
+def test_existing_column_is_kept_on_idempotent_rerun(
     sqlite_db: tuple[sqlite.ManagedConnection, Path],
 ) -> None:
-    """Test that duplicate column errors are safely ignored during idempotent ADD COLUMN execution."""
+    """Test that an insert for a column that already has the shape is skipped."""
     managed_conn, _ = sqlite_db
     table_name = "test_duplicate_col"
 
@@ -1986,8 +2003,92 @@ def test_duplicate_column_error_is_ignored_on_idempotent_rerun(
     # Manually call _apply_column_actions with action 'insert' for col1 (which already exists)
     column_actions: dict[str, statediff.DiffAction] = {"col:col1": "insert"}
     with managed_conn.transaction() as conn:
-        # Should not raise an exception because 'duplicate column name' is caught and ignored
+        # No-op: the shape check sees col1 already has the desired shape.
         sqlite._target._apply_column_actions(conn, table_name, schema, column_actions)
 
     cols = get_table_columns(managed_conn, table_name)
     assert "col1" in cols
+
+
+def test_full_reprocess_keeps_a_column_whose_type_carries_a_constraint(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that a full reprocess leaves a column whose declared type carries a constraint alone.
+
+    PRAGMA table_info reports only the type name, so `TEXT COLLATE NOCASE` has
+    to compare equal to the reported `TEXT`; otherwise every full reprocess drops
+    and re-adds the column, and the re-add fails with NOT NULL once the table has
+    rows.
+    """
+    managed_conn, _ = sqlite_db
+    global _source_rows, _row_type, _table_name
+
+    old_source_rows = _source_rows
+    old_row_type = _row_type
+    old_table_name = _table_name
+    try:
+        _source_rows = [CollatedNameRow(id="1", name="Alice")]
+        _row_type = CollatedNameRow
+        _table_name = "test_collated_name_full_reprocess"
+
+        app_name = "test_full_reprocess_keeps_a_column_whose_type_carries_a_constraint"
+        app = coco.App(
+            coco.AppConfig(
+                name=app_name, environment=make_test_env(managed_conn, app_name)
+            ),
+            declare_table_and_rows,
+        )
+
+        app.update_blocking()
+        assert get_table_columns(managed_conn, _table_name)["name"] == "TEXT"
+        assert get_column_notnull(managed_conn, _table_name, "name") is True
+
+        app.update_blocking(full_reprocess=True)
+        app.update_blocking(full_reprocess=True)
+
+        assert get_table_columns(managed_conn, _table_name)["name"] == "TEXT"
+        assert get_column_notnull(managed_conn, _table_name, "name") is True
+        assert read_table_data(managed_conn, _table_name) == [
+            {"id": "1", "name": "Alice"}
+        ]
+    finally:
+        _source_rows = old_source_rows
+        _row_type = old_row_type
+        _table_name = old_table_name
+
+
+def test_replace_rebuilds_a_column_to_drop_its_constraint(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that a replace rebuilds the column, since PRAGMA can't show a lost constraint."""
+    managed_conn, _ = sqlite_db
+    table_name = "test_drop_collation"
+    collated = sqlite.TableSchema(
+        columns={
+            "id": sqlite.ColumnDef(type="TEXT", nullable=False),
+            "name": sqlite.ColumnDef(type="TEXT COLLATE NOCASE", nullable=True),
+        },
+        primary_key=["id"],
+    )
+    plain = sqlite.TableSchema(
+        columns={
+            "id": sqlite.ColumnDef(type="TEXT", nullable=False),
+            "name": sqlite.ColumnDef(type="TEXT", nullable=True),
+        },
+        primary_key=["id"],
+    )
+
+    with managed_conn.transaction() as conn:
+        sqlite._target._create_table(
+            conn, table_name, collated, if_not_exists=True, has_vec_extension=False
+        )
+    assert "COLLATE" in get_table_sql(managed_conn, table_name)
+
+    # PRAGMA reports plain TEXT for the collated column, so a shape check alone
+    # would skip this replace and keep the collation while recording plain TEXT.
+    column_actions: dict[str, statediff.DiffAction] = {"col:name": "replace"}
+    with managed_conn.transaction() as conn:
+        sqlite._target._apply_column_actions(conn, table_name, plain, column_actions)
+
+    assert "COLLATE" not in get_table_sql(managed_conn, table_name)
+    assert get_table_columns(managed_conn, table_name)["name"] == "TEXT"
