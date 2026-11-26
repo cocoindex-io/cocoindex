@@ -92,14 +92,16 @@ runs:
 
     # Linux arm64 links through `dev/cc_with_lld.sh`, which uses lld where
     # it is installed and GNU ld otherwise. The runner image has no lld.
+    # The image's package lists are tried as they are first: refreshing
+    # them takes most of the time this step would otherwise take.
     - name: Install lld
       if: runner.os == 'Linux' && runner.arch == 'ARM64'
       shell: bash
       run: |
         if ! command -v ld.lld > /dev/null; then
           start=$SECONDS
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends lld
+          install() { sudo apt-get install -y -qq --no-install-recommends lld; }
+          install || { sudo apt-get update -qq && install; }
           echo "Installed lld in $((SECONDS - start)) s"
         fi
         ld.lld --version
