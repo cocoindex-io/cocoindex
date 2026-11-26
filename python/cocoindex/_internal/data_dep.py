@@ -302,18 +302,13 @@ def decode_stored_data_deps(
     return decoded
 
 
-# A verdict as the engine holds it: `(memo_valid, new_state)`, `new_state` the
-# validator's changed state as a `StoredValue`, `None` when unchanged.
-_Verdict = tuple[bool, "core.StoredValue | None"]
-
-
 class _PendingValidation(NamedTuple):
     """The validate phase split by the operation's verdicts (see
-    ``core.DataDepVerdicts``): one known verdict per record, ``None`` where
-    the record's validator must run; ``outcomes`` holds those validators'
-    results (or awaitables), in record order."""
+    ``core.DataDepVerdicts``), one entry per record in both lists: the verdict
+    the operation already holds, or ``None``; and where that is ``None``, the
+    validator's result (or awaitable), ``None`` otherwise."""
 
-    known: list[_Verdict | None]
+    known: list[core.DataDepVerdict | None]
     outcomes: list[Any]
 
 
@@ -322,21 +317,18 @@ def _call_validators(
 ) -> _PendingValidation:
     """Call the validator of each record this operation has not validated
     yet; a record validated earlier in the operation takes that verdict."""
-    known: list[_Verdict | None] = []
-    outcomes: list[Any] = []
-    for rec in decoded:
-        verdict = verdicts.get(rec.kind_fp, rec.key_fp, rec.state_fp)
-        known.append(verdict)
-        if verdict is None:
-            outcomes.append(rec.kind._validate(rec.key, rec.state))
+    known = [verdicts.get(rec.kind_fp, rec.key_fp, rec.state_fp) for rec in decoded]
+    outcomes = [
+        rec.kind._validate(rec.key, rec.state) if verdict is None else None
+        for rec, verdict in zip(decoded, known)
+    ]
     return _PendingValidation(known, outcomes)
 
 
 def _fold_outcomes(
     decoded: Sequence[_DecodedDataDep],
     verdicts: core.DataDepVerdicts,
-    known: Sequence[_Verdict | None],
-    outcomes: Sequence[Any],
+    pending: _PendingValidation,
 ) -> DataDepValidation:
     """Combine known verdicts and fresh outcomes, recording each fresh outcome
     in the operation's verdicts. A probe acts on the verdict ``record``
@@ -344,10 +336,8 @@ def _fold_outcomes(
     refreshed: list[RefreshedDataDep] = []
     can_reuse = True
     states_changed = False
-    fresh = iter(outcomes)
-    for rec, verdict in zip(decoded, known):
+    for rec, verdict, outcome in zip(decoded, pending.known, pending.outcomes):
         if verdict is None:
-            outcome = next(fresh)
             if not isinstance(outcome, MemoStateOutcome):
                 raise TypeError(
                     f"{rec.kind!r}.validate must return coco.MemoStateOutcome, "
@@ -361,9 +351,9 @@ def _fold_outcomes(
                 outcome.state != rec.state,
                 outcome.state,
             )
-        memo_valid, new_state = verdict
-        if not memo_valid:
+        if not verdict.memo_valid:
             can_reuse = False
+        new_state = verdict.new_state
         if new_state is not None:
             states_changed = True
         state_out = new_state if new_state is not None else rec.state_stored
@@ -384,7 +374,7 @@ def validate_data_deps_sync(
     outcomes = resolve_awaitables_sync(
         pending.outcomes, running_loop_error_msg=running_loop_error_msg
     )
-    return _fold_outcomes(decoded, verdicts, pending.known, outcomes)
+    return _fold_outcomes(decoded, verdicts, pending._replace(outcomes=outcomes))
 
 
 async def validate_data_deps_async(
@@ -399,7 +389,7 @@ async def validate_data_deps_async(
         resolved = await asyncio.gather(*(outcomes[i] for i in awaitable_indices))
         for i, value in zip(awaitable_indices, resolved):
             outcomes[i] = value
-    return _fold_outcomes(decoded, verdicts, pending.known, outcomes)
+    return _fold_outcomes(decoded, verdicts, pending)
 
 
 async def validate_stored_data_deps(

@@ -123,16 +123,36 @@ pub(crate) fn data_deps_to_pylist<'py>(
     PyList::new(py, items)
 }
 
-/// A verdict as Python sees it: `(memo_valid, new_state)`, `new_state` the
-/// validator's changed state as a `StoredValue`, or `None` when unchanged.
-type PyDataDepVerdict = (bool, Option<PyStoredValue>);
+/// What a validator answered for one record identity, as a probe reads it.
+#[pyclass(frozen, name = "DataDepVerdict")]
+pub struct PyDataDepVerdict {
+    memo_valid: bool,
+    new_state: Option<PyStoredValue>,
+}
+
+#[pymethods]
+impl PyDataDepVerdict {
+    #[getter]
+    fn memo_valid(&self) -> bool {
+        self.memo_valid
+    }
+
+    /// The validator's changed state; `None` when it equals the stored one.
+    #[getter]
+    fn new_state(&self) -> Option<PyStoredValue> {
+        self.new_state.clone()
+    }
+}
 
 fn verdict_to_py(verdict: DataDepVerdict) -> PyResult<PyDataDepVerdict> {
     let new_state = verdict
         .new_state
         .map(|bytes| PyStoredValue::from_bytes(&bytes).into_py_result())
         .transpose()?;
-    Ok((verdict.memo_valid, new_state))
+    Ok(PyDataDepVerdict {
+        memo_valid: verdict.memo_valid,
+        new_state,
+    })
 }
 
 fn identity(

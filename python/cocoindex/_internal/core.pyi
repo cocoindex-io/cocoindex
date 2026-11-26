@@ -147,13 +147,22 @@ class FnCallContext:
 class StoredValue:
     def get(self, deserialize_fn: Callable[[bytes], T], /) -> T: ...
 
+class DataDepVerdict:
+    """What a validator answered for one record identity."""
+
+    @property
+    def memo_valid(self) -> bool: ...
+    @property
+    def new_state(self) -> StoredValue | None:
+        """The validator's changed state; `None` when it equals the stored one."""
+        ...
+
 class DataDepVerdicts:
-    """The data-dependency verdicts of one operation: `(memo_valid,
-    new_state)` by record identity, `new_state` `None` when unchanged."""
+    """The data-dependency verdicts of one operation, by record identity."""
 
     def get(
         self, kind_fp: Fingerprint, key_fp: Fingerprint, state_fp: Fingerprint, /
-    ) -> tuple[bool, StoredValue | None] | None: ...
+    ) -> DataDepVerdict | None: ...
     def record(
         self,
         kind_fp: Fingerprint,
@@ -163,7 +172,7 @@ class DataDepVerdicts:
         state_changed: bool,
         state: Any,
         /,
-    ) -> tuple[bool, StoredValue | None]: ...
+    ) -> DataDepVerdict: ...
 
 # --- FnCallMemoGuard ---
 class FnCallMemoGuard:
