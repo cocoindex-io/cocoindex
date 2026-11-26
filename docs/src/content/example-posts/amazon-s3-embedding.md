@@ -108,7 +108,7 @@ async def app_main() -> None:
 
 ## Run the pipeline
 
-The [`amazon_s3` source](/docs/connectors/amazon_s3/) does not support live mode, so this is a one-shot catch-up run — scan the bucket, sync, exit:
+This example uses the [`amazon_s3` source](/docs/connectors/amazon_s3/) as a one-shot catch-up run: scan the bucket, sync, exit. For notification-driven updates, see `S3Walker.live_items()` and the MinIO webhook example in the connector docs:
 
 ```sh
 cocoindex update main

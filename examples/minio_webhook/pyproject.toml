@@ -1,0 +1,9 @@
+[project]
+name = "minio-webhook"
+version = "0.1.0"
+description = "Reconcile MinIO object notifications into a live CocoIndex file index."
+requires-python = ">=3.11"
+dependencies = ["cocoindex[amazon_s3]>=1.0.7", "python-dotenv", "uvicorn>=0.30"]
+
+[tool.setuptools]
+packages = []

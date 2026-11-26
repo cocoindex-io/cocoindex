@@ -80,7 +80,7 @@ cp .env.example .env     # set S3_BUCKET, optional S3_PREFIX; AWS creds from env
 pip install -e .
 ```
 
-**3. Build the index** — the `amazon_s3` source does not support live mode, so this is a one-shot catch-up run (scan the bucket, sync, exit):
+**3. Build the index** — this example performs a one-shot catch-up run (scan the bucket, sync, exit). See [the MinIO webhook example](../minio_webhook/) for notification-driven live updates:
 
 ```sh
 cocoindex update main
