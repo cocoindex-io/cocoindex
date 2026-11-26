@@ -24,9 +24,11 @@ Positions are UTF-16 code units, as the Docs API counts them.
 from __future__ import annotations
 
 import bisect
+import hashlib
+import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, NamedTuple
 
 from ._markdown import (
@@ -37,6 +39,7 @@ from ._markdown import (
     Run,
     fingerprint,
     merge_runs,
+    normalized,
 )
 
 RANGE_PREFIX = "cocoindex:"
@@ -259,6 +262,75 @@ def read_document(document: Mapping[str, Any]) -> DocState:
     )
 
 
+def classify(
+    state: DocState, rng: OurRange, declared_fp: str
+) -> Literal["same", "update", "kept"]:
+    """What the block in ``rng`` is, against the declared version ``declared_fp``.
+
+    ``same``: the doc has the declared version (written by the target, or
+    typed by a person). ``update``: it has what the target last wrote, and the
+    declaration changed. ``kept``: a person changed it since the target wrote
+    it, to something other than the declared version.
+    """
+    current = fingerprint(state.content(rng))
+    whole = state.whole(rng)
+    if whole and current == declared_fp:
+        return "same"
+    if whole and current == rng.written:
+        return "update"
+    return "kept"
+
+
+def observe(state: DocState) -> str:
+    """A digest of what a person can change in the target's blocks: which are
+    there, and the text of each one edited since the target wrote it. Neither a
+    comment nor text outside every block changes it."""
+    seen = []
+    for block_id, rng in sorted(state.ranges.items()):
+        current = fingerprint(state.content(rng))
+        edited = not state.whole(rng) or current != rng.written
+        seen.append([block_id, current if edited else ""])
+    payload = json.dumps(seen, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _adopt_renamed(
+    state: DocState, blocks: Sequence[Block], written_blocks: frozenset[str] | None
+) -> tuple[DocState, frozenset[str]]:
+    """``state`` with each declared block that the doc has under another block's
+    range taken as that range, and those blocks: a person renamed a heading
+    (which renames the blocks under it), and the declaration took the new name
+    in. The range is recreated under the new name rather than its text
+    written again."""
+    declared = {block.block_id for block in blocks}
+    loose: dict[str, list[OurRange]] = {}  # by current fingerprint, in doc order
+    for rng in sorted(state.ranges.values(), key=lambda r: r.start):
+        if rng.block_id not in declared and state.whole(rng):
+            loose.setdefault(fingerprint(state.content(rng)), []).append(rng)
+    if not loose:
+        return state, frozenset()
+    ranges = dict(state.ranges)
+    adopted: set[str] = set()
+    for block in blocks:
+        if block.block_id in ranges or (
+            written_blocks is not None and block.block_id in written_blocks
+        ):
+            continue
+        candidates = loose.get(fingerprint(block.paragraphs))
+        if not candidates:
+            continue
+        rng = candidates.pop(0)
+        del ranges[rng.block_id]
+        ranges[block.block_id] = replace(rng, block_id=block.block_id)
+        adopted.add(block.block_id)
+    if not adopted:
+        return state, frozenset()
+    renamed = DocState(
+        state.revision_id, state.paragraphs, ranges, state.stray_range_ids
+    )
+    return renamed, frozenset(adopted)
+
+
 # --- planning --------------------------------------------------------------------
 
 
@@ -383,6 +455,7 @@ def plan_write(
     edits: list[PersonEdit] = []
     declared = {block.block_id: block for block in blocks}
     new_fps = {block.block_id: fingerprint(block.paragraphs) for block in blocks}
+    state, adopted = _adopt_renamed(state, blocks, written_blocks)
 
     # What each declared block is now.
     status: dict[str, _Status] = {}
@@ -396,20 +469,13 @@ def plan_write(
             else:
                 status[block.block_id] = "new"
             continue
-        current = fingerprint(state.content(rng))
-        if not state.whole(rng) or current != rng.written:
-            if current == new_fp and state.whole(rng):
-                # The person wrote what the flow now says: the block is ours again.
-                status[block.block_id] = "same"
-                continue
-            status[block.block_id] = "kept"
+        # "same" covers a person who wrote what the flow now says: the block
+        # is the target's again.
+        status[block.block_id] = classify(state, rng, new_fp)
+        if status[block.block_id] == "kept":
             edits.append(
                 PersonEdit(block.label, "edited", withheld=new_fp != rng.written)
             )
-        elif current == new_fp:
-            status[block.block_id] = "same"
-        else:
-            status[block.block_id] = "update"
 
     # Blocks that keep their place: the most already in the declared order. A
     # block a person edited never moves, so the order is chosen around those
@@ -485,7 +551,10 @@ def plan_write(
                 continue
         pending = None
         if kind == "same":
-            if state.ranges[block_id].written != new_fps[block_id]:
+            # A range taken from a renamed block is named for that block.
+            if state.ranges[block_id].written != new_fps[block_id] or (
+                block_id in adopted
+            ):
                 touched.add(block_id)
             seq += len(block.paragraphs)
         elif kind == "update":
@@ -591,9 +660,11 @@ def _diff_block(
     """Plan the paragraphs of a changed block that changed; the next ``seq``."""
     rng = state.ranges[block.block_id]
     old = state.overlapping(rng.start, rng.end)
-    old_paragraphs = [p.clipped(rng.start, rng.end) for p in old]
+    # Compared as edits are told from noise, so a paragraph a person retyped
+    # the same (a trailing space) is not rewritten.
+    old_paragraphs = [normalized(p.clipped(rng.start, rng.end)) for p in old]
     new = block.paragraphs
-    pairs = _lcs(old_paragraphs, new) + [(len(old), len(new))]
+    pairs = _lcs(old_paragraphs, [normalized(p) for p in new]) + [(len(old), len(new))]
     i = j = 0
     for next_i, next_j in pairs:
         removed, added = old[i:next_i], new[j:next_j]

@@ -1,21 +1,27 @@
 """Google Docs target: a doc the target creates and keeps in step with declared Markdown.
 
-The doc is found by a tag of the target's own (a Drive ``appProperties`` entry
-holding an id kept in the tracking record), not by its name, so a person may
-rename or move it. A change is written in place through the Docs API's
-``batchUpdate``: only the blocks whose content changed (see ``_docs.py``), with
-``requiredRevisionId`` so that an edit made while the target writes is read and
-planned around rather than overwritten. A block a person edited since the
-target wrote it keeps the person's text and is reported. Deleting the
-declaration moves the doc to the trash.
+The doc is found by a tag of the target's own (a Drive ``appProperties``
+entry derived from the declaration's context key and name), not by its title,
+so a person may rename or move it, and ``read_doc`` finds it too. A change is
+written in place through the Docs API's ``batchUpdate``: only the blocks whose
+content changed (see ``_docs.py``), with ``requiredRevisionId`` so that an
+edit made while the target writes is read and planned around rather than
+overwritten. A block a person edited since the target wrote it keeps the
+person's text and is reported. Deleting the declaration moves the doc to the
+trash.
+
+After each write the target stamps the doc (another ``appProperties`` entry)
+with the revision it planned on, the revision its write produced, and a digest
+of the blocks as it left them, so that ``read_doc``'s record can tell the
+target's own write from a person's edit without a second read.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
-import uuid
 from dataclasses import dataclass
 from typing import Any, Collection, NamedTuple, Sequence
 
@@ -55,6 +61,10 @@ _WRITE_ATTEMPTS = 3
 _DOC_MIME = "application/vnd.google-apps.document"
 # The Drive appProperties key that tags a doc with the target's id for it.
 _TAG_PROPERTY = "cocoindexDoc"
+# The Drive appProperties key of the stamp a write leaves (see the module docstring).
+_STAMP_PROPERTY = "cocoindexWrite"
+# A stamp's base for a doc the target created in that write.
+NEW = "new"
 # Raised when what a declaration writes changes, so every doc is planned again.
 _FORMAT_VERSION = 1
 
@@ -79,10 +89,25 @@ class _DocKey(NamedTuple):
 _KEY_CHECKER = TypeChecker(tuple[str, str])
 
 
+def tag_of(account_key: str, name: str) -> str:
+    """The target's id for the doc declared as ``name`` under ``account_key``.
+
+    It is in the doc's appProperties, so the doc is found by it: Google assigns
+    the doc's own id only when the sink creates it. It depends on the
+    declaration alone, as a table's name does for a database target, so a
+    reader finds the doc without the target's state, and a run with a new state
+    (another machine, a deleted state store) keeps writing to the same doc.
+    """
+    digest = hashlib.sha256(f"cocoindex/google_docs\0{account_key}\0{name}".encode())
+    return digest.hexdigest()[:32]
+
+
+def short(revision_id: str) -> str:
+    """A revision id as a stamp holds it: Drive limits a property to 124 bytes."""
+    return hashlib.sha256(revision_id.encode()).hexdigest()[:16]
+
+
 class _DocRecord(msgspec.Struct, frozen=True):
-    # The target's id for the doc, in the doc's appProperties: Google assigns
-    # the doc's own id when the sink creates it, after this record is fixed.
-    tag: str
     content_fingerprint: bytes
     # The blocks the declaration had: a later write tells a block a person
     # deleted from one that is new.
@@ -92,7 +117,6 @@ class _DocRecord(msgspec.Struct, frozen=True):
 @dataclass(frozen=True)
 class _DocAction:
     key: _DocKey
-    tags: tuple[str, ...]
     blocks: tuple[_markdown.Block, ...] | None  # None: trash the doc
     written_blocks: frozenset[str] | None
 
@@ -111,17 +135,15 @@ class _DocHandler(coco.TargetHandler[str, _DocRecord, None]):
         /,
     ) -> coco.TargetReconcileOutput[_DocAction, _DocRecord, None] | None:
         doc_key = _DocKey(*_KEY_CHECKER.check(key))
-        tags = sorted({record.tag for record in prev_possible_records})
         if coco.is_non_existence(desired_target_state):
-            if not tags:
+            if not prev_possible_records:
                 return None
             return coco.TargetReconcileOutput(
-                action=_DocAction(doc_key, tuple(tags), None, None),
+                action=_DocAction(doc_key, None, None),
                 sink=_sink,
                 tracking_record=coco.NON_EXISTENCE,
             )
         content_fp = _content_fingerprint(desired_target_state)
-        tag = tags[0] if tags else uuid.uuid4().hex
         if (
             not prev_may_be_missing
             and prev_possible_records
@@ -133,10 +155,9 @@ class _DocHandler(coco.TargetHandler[str, _DocRecord, None]):
         if len(prev_possible_records) == 1 and not prev_may_be_missing:
             written = frozenset(next(iter(prev_possible_records)).block_ids)
         return coco.TargetReconcileOutput(
-            action=_DocAction(doc_key, (tag,), blocks, written),
+            action=_DocAction(doc_key, blocks, written),
             sink=_sink,
             tracking_record=_DocRecord(
-                tag=tag,
                 content_fingerprint=content_fp,
                 block_ids=tuple(block.block_id for block in blocks),
             ),
@@ -184,30 +205,59 @@ def _execute(request: Any, retries: int = _RETRIES) -> Any:
         raise explained from exc
 
 
+class Stamp(NamedTuple):
+    """What the target's last write to a doc left in its appProperties."""
+
+    base: str  # the revision it planned on (``short``), or ``NEW`` for a doc it created
+    after: str  # the revision its write produced (``short``)
+    observed: str  # ``_docs.observe`` of the doc right after it; "" when unknown
+
+    def encode(self) -> str:
+        return f"{self.base}:{self.after}:{self.observed}"
+
+    @staticmethod
+    def decode(value: object) -> Stamp | None:
+        parts = str(value).split(":") if isinstance(value, str) else []
+        return Stamp(*parts) if len(parts) == 3 else None
+
+
+class Found(NamedTuple):
+    doc_id: str
+    stamp: Stamp | None
+
+
 class _Google:
-    """The Docs and Drive calls of one write, signed with the account's token."""
+    """The Docs and Drive calls of one write or read, signed with the account's token."""
 
     def __init__(self, account: UserAccount) -> None:
         http = AuthorizedHttp(account._credentials(), http=_new_http())
         self._docs = build("docs", "v1", http=http, cache_discovery=False)
         self._drive = build("drive", "v3", http=http, cache_discovery=False)
 
-    def find(self, tag: str) -> str | None:
-        """The doc tagged ``tag`` that is not in the trash; the oldest, if copies carry the tag."""
+    def find(self, tag: str) -> Found | None:
+        """The doc tagged ``tag`` that is not in the trash; the newest, when a
+        person restored an older one from the trash."""
         query = (
             f"appProperties has {{ key='{_TAG_PROPERTY}' and value='{tag}' }} "
             "and trashed = false"
         )
         response = _execute(
             self._drive.files().list(
-                q=query, spaces="drive", fields="files(id, createdTime)", pageSize=100
+                q=query,
+                spaces="drive",
+                fields="files(id, createdTime, appProperties)",
+                pageSize=100,
             )
         )
         files = sorted(
             response.get("files", []),
             key=lambda f: (str(f.get("createdTime", "")), str(f["id"])),
         )
-        return str(files[0]["id"]) if files else None
+        if not files:
+            return None
+        newest = files[-1]
+        properties = newest.get("appProperties") or {}
+        return Found(str(newest["id"]), Stamp.decode(properties.get(_STAMP_PROPERTY)))
 
     def create(self, name: str, tag: str) -> str:
         body = {
@@ -231,6 +281,15 @@ class _Google:
             if exc.resp.status != 404:
                 raise
 
+    def stamp(self, doc_id: str, stamp: Stamp) -> None:
+        _execute(
+            self._drive.files().update(
+                fileId=doc_id,
+                body={"appProperties": {_STAMP_PROPERTY: stamp.encode()}},
+                fields="id",
+            )
+        )
+
     def get(self, doc_id: str) -> Any:
         return _execute(
             self._docs.documents().get(
@@ -238,61 +297,79 @@ class _Google:
             )
         )
 
+    def revision(self, doc_id: str) -> str:
+        current = _execute(
+            self._docs.documents().get(documentId=doc_id, fields="revisionId")
+        )
+        return str(current.get("revisionId", ""))
+
     def update(
         self, doc_id: str, requests: list[dict[str, Any]], revision_id: str
-    ) -> bool:
-        """Apply ``requests`` to revision ``revision_id``; ``False`` when the doc moved on."""
+    ) -> _Written | None:
+        """Apply ``requests`` to revision ``revision_id``; ``None`` when the doc moved on."""
         body = {
             "requests": requests,
             "writeControl": {"requiredRevisionId": revision_id},
         }
         try:
-            _execute(self._docs.documents().batchUpdate(documentId=doc_id, body=body))
+            response = _execute(
+                self._docs.documents().batchUpdate(documentId=doc_id, body=body)
+            )
         except HttpError as exc:
             if exc.resp.status != 400:
                 raise
-            current = _execute(
-                self._docs.documents().get(documentId=doc_id, fields="revisionId")
-            )
-            if current.get("revisionId") == revision_id:
+            if self.revision(doc_id) == revision_id:
                 raise
-            return False
-        return True
+            return None
+        after = (response.get("writeControl") or {}).get("requiredRevisionId")
+        return _Written(str(after) if after else None)
+
+
+class _Written(NamedTuple):
+    # The revision the write produced, as Docs reports it; None when it did not.
+    after: str | None
 
 
 def _apply_action(account: UserAccount, action: _DocAction) -> None:
     google = _Google(account)
     name = action.key.name
+    tag = tag_of(*action.key)
+    found = google.find(tag)
     if action.blocks is None:
-        for tag in action.tags:
-            doc_id = google.find(tag)
-            if doc_id is not None:
-                google.trash(doc_id)
-                _logger.info(
-                    "Moved Google Doc %r to the trash: %s", name, doc_url(doc_id)
-                )
+        if found is not None:
+            google.trash(found.doc_id)
+            _logger.info(
+                "Moved Google Doc %r to the trash: %s", name, doc_url(found.doc_id)
+            )
         return
 
-    (tag,) = action.tags
     written_blocks = action.written_blocks
-    doc_id = google.find(tag)
-    if doc_id is None:
+    created = found is None
+    if found is None:
         doc_id = google.create(name, tag)
         # A new doc (the first, or one replacing a doc that was deleted or
         # trashed) has none of the blocks yet; none of them was deleted by a person.
         written_blocks = None
         _logger.info("Created Google Doc %r: %s", name, doc_url(doc_id))
+    else:
+        doc_id = found.doc_id
 
+    written: _Written | None = None
     for _ in range(_WRITE_ATTEMPTS):
         state = _docs.read_document(google.get(doc_id))
         plan = _docs.plan_write(state, action.blocks, written_blocks)
-        if not plan.requests or google.update(doc_id, plan.requests, state.revision_id):
+        if not plan.requests:
+            break
+        written = google.update(doc_id, plan.requests, state.revision_id)
+        if written is not None:
             break
     else:
         raise RuntimeError(
             f"Google Doc {name!r} ({doc_url(doc_id)}) changed every time CocoIndex "
             f"read it to write, {_WRITE_ATTEMPTS} times; run again once it is quiet."
         )
+    if written is not None or created:
+        _stamp(google, doc_id, NEW if created else short(state.revision_id), written)
     if plan.person_edits:
         _logger.warning(
             "Google Doc %r (%s) keeps a person's edits; CocoIndex left these blocks "
@@ -301,6 +378,19 @@ def _apply_action(account: UserAccount, action: _DocAction) -> None:
             doc_url(doc_id),
             "; ".join(_describe(edit) for edit in plan.person_edits),
         )
+
+
+def _stamp(google: _Google, doc_id: str, base: str, written: _Written | None) -> None:
+    """Record that the doc's latest revision is the target's own write, planned
+    on ``base``: read it again, and stamp it only if no one edited it since."""
+    state = _docs.read_document(google.get(doc_id))
+    after = written.after if written is not None else None
+    if after is None or after == state.revision_id:
+        observed = _docs.observe(state)
+        after = state.revision_id
+    else:
+        observed = ""  # someone edited after the write; no stamp vouches for it
+    google.stamp(doc_id, Stamp(base, short(after), observed))
 
 
 def _describe(edit: _docs.PersonEdit) -> str:

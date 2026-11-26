@@ -470,7 +470,11 @@ class FakeGoogle:
             return 400, {"error": {"code": 400, "message": str(exc)}}
         doc.commit(trial, origin)
         doc.revision += 1
-        return 200, {"documentId": doc_id, "replies": [{} for _ in payload["requests"]]}
+        return 200, {
+            "documentId": doc_id,
+            "replies": [{} for _ in payload["requests"]],
+            "writeControl": {"requiredRevisionId": f"rev-{doc.revision}"},
+        }
 
     def _drive_api(
         self, method: str, path: str, query: dict[str, str], payload: Any
@@ -495,13 +499,23 @@ class FakeGoogle:
             )
             assert "trashed = false" in q
             found = [
-                {"id": f["id"], "createdTime": f["createdTime"]}
+                {
+                    "id": f["id"],
+                    "createdTime": f["createdTime"],
+                    "appProperties": dict(f["appProperties"]),
+                }
                 for f in self.files.values()
                 if f["appProperties"].get(key) == value and not f["trashed"]
             ]
             return 200, {"files": found}
         file_id = path.removeprefix("/drive/v3/files/")
         if method == "PATCH" and file_id in self.files:
+            # Drive merges appProperties key by key; the doc's revision is
+            # untouched, as metadata is not content.
+            payload = dict(payload)
+            self.files[file_id]["appProperties"].update(
+                payload.pop("appProperties", None) or {}
+            )
             self.files[file_id].update(payload)
             return 200, {"id": file_id}
         return 404, {"error": {"code": 404, "message": "File not found"}}
@@ -663,7 +677,8 @@ def test_the_first_run_creates_the_doc_with_a_named_range_per_block(
     (file,) = google.files.values()
     assert file["name"] == "Weekly brief"
     assert file["mimeType"] == "application/vnd.google-apps.document"
-    assert set(file["appProperties"]) == {"cocoindexDoc"}
+    # The tag the doc is found by, and the stamp of the target's last write.
+    assert set(file["appProperties"]) == {"cocoindexDoc", "cocoindexWrite"}
     doc = google.only_doc()
     assert doc.lines() == [
         ("NORMAL_TEXT", None, "Kept current from the sources."),
@@ -702,8 +717,8 @@ def test_the_first_run_creates_the_doc_with_a_named_range_per_block(
         _docs.plan_write(state, blocks, frozenset(b.block_id for b in blocks)).requests
         == []
     )
-    # One create, one batchUpdate.
-    assert [m for m, _ in google.writes()] == ["POST", "POST"]
+    # One create, one batchUpdate, one stamp.
+    assert [m for m, _ in google.writes()] == ["POST", "POST", "PATCH"]
 
 
 def test_an_unchanged_rerun_makes_no_api_call(setup: Setup) -> None:
@@ -739,7 +754,8 @@ def test_a_changed_section_rewrites_only_its_changed_paragraphs(setup: Setup) ->
     )
     setup.run(app, changed)
 
-    assert [m for m, _ in setup.google.writes()] == ["POST"]  # one batchUpdate
+    # One batchUpdate, and the stamp.
+    assert [m for m, _ in setup.google.writes()] == ["POST", "PATCH"]
     assert (
         "NORMAL_TEXT",
         0,
@@ -1300,3 +1316,230 @@ def test_random_successive_versions_leave_exactly_the_declared_doc(
         state = _docs.read_document(doc.to_json())
         assert _docs.plan_write(state, blocks, None).requests == [], f"step {step}"
         assert set(state.ranges) == {b.block_id for b in blocks}
+
+
+# --- reading back a person's edits --------------------------------------------------
+
+
+def _read(setup: Setup, declared: str) -> google_docs.DocRead | None:
+    """``read_doc`` run in a component of its own app, as a flow would."""
+    out: dict[str, google_docs.DocRead | None] = {}
+
+    @coco.fn
+    async def main() -> None:
+        out["read"] = await google_docs.read_doc(GDOCS, "Weekly brief", declared)
+
+    setup.google.calls.clear()
+    coco.App(
+        coco.AppConfig(name="read_back", environment=coco_env), main
+    ).update_blocking()
+    return out["read"]
+
+
+def _person_deletes_block(doc: FakeDoc, block: _markdown.Block) -> None:
+    (rid,) = [
+        r for r, n in doc.range_names().items() if n.split(":")[1] == block.block_id
+    ]
+    _, start, end = doc.ranges[rid]
+    doc.delete(start, end)
+    doc.revision += 1
+
+
+def test_read_doc_hands_back_a_persons_edits_in_the_declared_markdown(
+    setup: Setup,
+) -> None:
+    setup.run(setup.app("read_back_doc"), BRIEF)
+    doc = setup.google.only_doc()
+    (doc_id,) = setup.google.files
+
+    # Nothing changed by a person: the declared text exactly, and two reads.
+    read = _read(setup, BRIEF)
+    assert read == google_docs.DocRead(
+        url=f"https://docs.google.com/document/d/{doc_id}/edit",
+        content=BRIEF,
+        edited=(),
+        deleted=(),
+    )
+    assert [m for m, _ in setup.google.calls] == ["GET", "GET"]  # find, read
+    assert setup.google.writes() == []
+
+    # A person rewords a sentence in Risks (bold included), deletes Sources,
+    # comments on Decisions, and adds an empty paragraph to the preamble.
+    doc.person_replace("Google may change", "Google could change")
+    doc.comment("Ship the")
+    doc.insert(doc.find("Kept current") + len("Kept current from the sources."), "\n")
+    doc.revision += 1
+    _person_deletes_block(doc, _blocks(BRIEF)[4])
+
+    read = _read(setup, BRIEF)
+    assert read is not None
+    assert read.edited == (("Brief", "Risks"),)
+    assert read.deleted == (("Brief", "Sources"),)
+    assert read.content == BRIEF.replace(
+        "## Risks\n\nGoogle may change *named range* behavior.\n\n",
+        "## Risks\n\nGoogle could change _named range_ behavior.\n\n",
+    ).replace("## Sources\n\nhttps://example.com/a and https://example.com/b.\n", "")
+    # The person's text parses back to what the doc holds.
+    risks = _markdown.parse_blocks(read.content)[3]
+    state = _docs.read_document(doc.to_json())
+    assert _markdown.fingerprint(risks.paragraphs) == _markdown.fingerprint(
+        state.content(state.ranges[risks.block_id])
+    )
+    assert setup.google.writes() == []  # reading writes nothing
+
+
+def test_declaring_the_content_read_back_makes_the_blocks_the_targets_again(
+    setup: Setup, caplog: pytest.LogCaptureFixture
+) -> None:
+    app = setup.app("adopt")
+    setup.run(app, BRIEF)
+    doc = setup.google.only_doc()
+    doc.person_replace("Google may change", "Google could change")
+    on_edit = doc.comment("could change")
+    read = _read(setup, BRIEF)
+    assert read is not None and read.edited == (("Brief", "Risks"),)
+
+    with caplog.at_level(logging.WARNING, logger=_target.__name__):
+        setup.run(app, read.content)
+    assert not _warnings(caplog)  # nothing kept from the flow any more
+    assert doc.comment_survives(on_edit)  # the person's text is not rewritten
+    assert _read(setup, read.content) == google_docs.DocRead(
+        read.url, read.content, (), ()
+    )
+    # The block is the flow's again: its next change is written.
+    setup.run(app, read.content.replace("could change", "will change"))
+    assert (
+        "NORMAL_TEXT",
+        None,
+        "Google will change named range behavior.",
+    ) in doc.lines()
+
+
+def test_a_heading_a_person_renamed_is_taken_in_without_a_second_copy(
+    setup: Setup,
+) -> None:
+    app = setup.app("rename")
+    markdown = "## Plan\n\n### Risks\n\nr1\n\n### Costs\n\nc1\n\n## Next\n\nn1\n"
+    setup.run(app, markdown)
+    doc = setup.google.only_doc()
+    on_c1 = doc.comment("c1")
+    doc.person_replace("Plan", "The plan")  # renames the blocks under it too
+    read = _read(setup, markdown)
+    assert read is not None and read.edited == (("Plan",),)
+    assert read.content == markdown.replace("## Plan", "## The plan")
+
+    setup.run(app, read.content)
+    assert [text for _, _, text in doc.lines()] == [
+        "The plan",
+        "Risks",
+        "r1",
+        "Costs",
+        "c1",
+        "Next",
+        "n1",
+    ]
+    assert doc.comment_survives(on_c1)  # the blocks under it were not rewritten
+    state = _docs.read_document(doc.to_json())
+    assert set(state.ranges) == {b.block_id for b in _blocks(read.content)}
+    assert _docs.plan_write(state, _blocks(read.content), None).requests == []
+
+
+_watch_runs: list[str | None] = []
+
+
+@coco.fn(memo=True)
+async def _watch(declared: str) -> None:
+    read = await google_docs.read_doc(GDOCS, "Weekly brief", declared)
+    _watch_runs.append(None if read is None else read.content)
+
+
+def test_a_read_reruns_its_reader_on_a_persons_edit_only(setup: Setup) -> None:
+    """The read's record survives the target's own writes (a create, an update,
+    a person's edit taken in) and a comment, and not a person's edit."""
+    content: dict[str, str] = {"content": BRIEF}
+
+    @coco.fn
+    async def main() -> None:
+        google_docs.declare_doc(GDOCS, "Weekly brief", content["content"])
+        await coco.use_mount(coco.component_subpath("watch"), _watch, BRIEF)
+
+    app = coco.App(coco.AppConfig(name="watch", environment=coco_env), main)
+    _watch_runs.clear()
+
+    def run(new: str | None = None) -> int:
+        if new is not None:
+            content["content"] = new
+        before = len(_watch_runs)
+        app.update_blocking()
+        return len(_watch_runs) - before
+
+    assert run() == 1 and _watch_runs[-1] is None  # read before the doc existed
+    assert run() == 0  # the target created it: not a change by a person
+    assert run(BRIEF.replace("Ship the", "Ship the new")) == 0
+    assert run() == 0  # after the target's own update
+    doc = setup.google.only_doc()
+    doc.comment("Google may")
+    doc.revision += 1  # a comment may move the revision
+    assert run() == 0
+    doc.person_replace("Google may change", "Google could change")
+    assert run() == 1 and "Google could change" in str(_watch_runs[-1])
+    assert run() == 0
+    # The flow takes the person's text in: the target's write, planned on the
+    # revision the reader read, makes the blocks the target's again.
+    edited = BRIEF.replace("Ship the", "Ship the new").replace(
+        "Google may change *named range*", "Google could change _named range_"
+    )
+    assert run(edited) == 0
+    assert run() == 0
+    _person_deletes_block(doc, _blocks(BRIEF)[1])  # the preamble
+    assert run() == 1
+    assert run() == 0
+
+
+def test_the_doc_is_the_same_for_a_run_with_a_new_state(setup: Setup) -> None:
+    """The doc's tag comes from the declaration, so a fresh state store (another
+    machine, a deleted database) finds the doc rather than creating a copy."""
+    setup.run(setup.app("first_state"), BRIEF)
+    (doc_id,) = setup.google.files
+    setup.run(setup.app("second_state"), BRIEF.replace("Ship the", "Ship the new"))
+    assert list(setup.google.files) == [doc_id]
+    assert "Ship the new connector in 1.3." in [
+        t for _, _, t in setup.google.only_doc().lines()
+    ]
+
+
+_ROUND_TRIP = [
+    "plain words, with punctuation: a; b! (c) [d] e_f *g* `h` <i> 1. 2) #3 \\\\ ~",
+    "**bold**, *italic*, ***both***, `code`, `` a ` b ``, and **bold `code`**",
+    "a [link](https://e.com/a_(b)), <https://e.com/c>, https://e.com/d. done",
+    "snake_case and _italic_ and __bold__ and a*b*c",
+    "- item with **bold**\n  - nested *italic*\n    - deeper `code`\n- back",
+    "## Heading with *style* and a #tag #",
+    "# Top\n\n### Skips a level",
+    "\\# not a heading, \\- not an item, \\+ not either, \\~~~ no fence",
+    "text ending in a backslash \\\\",
+    "Café 🎉 — “quotes” and an em dash",
+]
+
+
+@pytest.mark.parametrize("markdown", _ROUND_TRIP)
+def test_rendered_markdown_parses_back_to_the_same_paragraphs(markdown: str) -> None:
+    paragraphs = _markdown.parse(markdown)
+    rendered = _markdown.render(paragraphs)
+    assert _markdown.parse(rendered) == [_markdown.normalized(p) for p in paragraphs]
+    assert _markdown.render(_markdown.parse(rendered)) == rendered
+
+
+def test_whitespace_a_person_adds_is_not_an_edit() -> None:
+    run = _markdown.Run
+    written = _markdown.parse("a **bold** word")
+    typed = [
+        _markdown.Paragraph(
+            "NORMAL_TEXT",
+            None,
+            (run(" a "), run("bold ", bold=True), run("word  ")),
+        ),
+        _markdown.Paragraph("NORMAL_TEXT", None, ()),
+    ]
+    assert _markdown.fingerprint(typed) == _markdown.fingerprint(written)
+    assert _markdown.render(typed) == "a **bold** word"

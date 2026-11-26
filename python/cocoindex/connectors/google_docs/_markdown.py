@@ -13,6 +13,8 @@ headings that leads to it.
 
 Paragraphs are the same model the target reads back from a document
 (``_docs.py``), so what was written and what is there compare as equals.
+``render`` goes the other way, from paragraphs read back to Markdown that
+parses to the same paragraphs: how a person's text in the doc is handed back.
 """
 
 from __future__ import annotations
@@ -20,7 +22,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import string
 from dataclasses import dataclass
+from typing import NamedTuple
 
 # The font that marks inline code, written and read back.
 CODE_FONT = "Roboto Mono"
@@ -107,19 +111,62 @@ def merge_runs(runs: list[Run]) -> tuple[Run, ...]:
     return tuple(merged)
 
 
+def normalized(paragraph: Paragraph) -> Paragraph:
+    """The paragraph as edits are told from noise: what Markdown cannot spell
+    taken out, so a person's text and the same text written back compare equal.
+
+    Whitespace at the paragraph's ends is dropped, and whitespace at the ends of
+    a bold or italic run loses that style (``**`` and ``*`` cannot open or close
+    next to a space).
+    """
+    runs: list[Run] = []
+    for run in paragraph.runs:
+        if not (run.bold or run.italic):
+            runs.append(run)
+            continue
+        core = run.text.strip()
+        if not core:
+            runs.append(Run(run.text, False, False, run.code, run.link))
+            continue
+        lead = run.text[: len(run.text) - len(run.text.lstrip())]
+        trail = run.text[len(run.text.rstrip()) :]
+        if lead:
+            runs.append(Run(lead, False, False, run.code, run.link))
+        runs.append(Run(core, run.bold, run.italic, run.code, run.link))
+        if trail:
+            runs.append(Run(trail, False, False, run.code, run.link))
+    while runs and not runs[0].text.lstrip():
+        runs.pop(0)
+    while runs and not runs[-1].text.rstrip():
+        runs.pop()
+    if runs:
+        first = runs[0]
+        runs[0] = Run(
+            first.text.lstrip(), first.bold, first.italic, first.code, first.link
+        )
+        last = runs[-1]
+        runs[-1] = Run(last.text.rstrip(), last.bold, last.italic, last.code, last.link)
+    return Paragraph(paragraph.style, paragraph.bullet, merge_runs(runs))
+
+
 def fingerprint(paragraphs: tuple[Paragraph, ...] | list[Paragraph]) -> str:
-    """A short, stable digest of paragraphs, as they would read back from Docs."""
-    payload = json.dumps(
-        [p.canonical() for p in paragraphs], ensure_ascii=False, separators=(",", ":")
-    )
+    """A short, stable digest of paragraphs, as they would read back from Docs.
+
+    Paragraphs are compared ``normalized``, and an empty one is left out: a
+    person pressing Enter twice has not edited the block.
+    """
+    canonical = [n.canonical() for n in (normalized(p) for p in paragraphs) if n.runs]
+    payload = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 # --- inline ------------------------------------------------------------------
 
-_ESCAPABLE = set("\\`*_{}[]()#+-.!<>|~")
+# Any ASCII punctuation can be escaped with a backslash, as in CommonMark.
+_ESCAPABLE = set(string.punctuation)
 _LINK = re.compile(
-    r"\[((?:[^\[\]\\]|\\.)*)\]"  # [text]
+    # [text], where a code span may hold brackets
+    r"\[((?:[^\[\]\\`]|\\.|`[^`]*`|``(?:[^`]|`(?!`))*``)*)\]"
     r"\(\s*<?((?:[^\s()<>]|\([^\s()<>]*\))+)>?"  # (url, with balanced parentheses
     r"(?:\s+\"[^\"]*\")?\s*\)"  # and an optional "title")
 )
@@ -139,14 +186,50 @@ class _Style:
         return Run(text, self.bold, self.italic, self.code, self.link)
 
 
+def _escaped(text: str, index: int) -> bool:
+    """Whether ``text[index]`` follows an odd number of backslashes."""
+    count = 0
+    while index - count - 1 >= 0 and text[index - count - 1] == "\\":
+        count += 1
+    return count % 2 == 1
+
+
+def _code_spans(text: str, start: int) -> list[tuple[int, int]]:
+    """The code spans from ``start`` on, as ``parse_inline`` reads them."""
+    spans: list[tuple[int, int]] = []
+    i = start
+    while True:
+        i = text.find("`", i)
+        if i < 0:
+            return spans
+        if _escaped(text, i):
+            i += 1
+            continue
+        ticks = len(text[i:]) - len(text[i:].lstrip("`"))
+        end = text.find("`" * ticks, i + ticks)
+        if end < 0:
+            i += ticks
+            continue
+        spans.append((i, end + ticks))
+        i = end + ticks
+
+
 def _closing(text: str, marker: str, start: int) -> int:
-    """Where the emphasis opened before ``start`` closes, or -1."""
+    """Where the emphasis opened before ``start`` closes, or -1.
+
+    A marker that is escaped, or inside a code span, closes nothing.
+    """
+    code = _code_spans(text, start)
     position = start
     while True:
         found = text.find(marker, position)
         if found < 0:
             return -1
-        if text[found - 1] == "\\":
+        inside = next((hi for lo, hi in code if lo <= found < hi), None)
+        if inside is not None:
+            position = inside
+            continue
+        if _escaped(text, found):
             position = found + 1
             continue
         if found == start or text[found - 1].isspace():
@@ -281,30 +364,38 @@ def _paragraph(style: str, bullet: int | None, text: str) -> Paragraph:
 
 def parse(markdown: str) -> list[Paragraph]:
     """The paragraphs of ``markdown``, in order; blank paragraphs dropped outside code."""
-    paragraphs: list[Paragraph] = []
-    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    # The paragraph being gathered: (bullet level or None, lines so far).
-    pending: tuple[int | None, list[str]] | None = None
+    return [paragraph for _, paragraph in _parse_lines(markdown)]
+
+
+def _lines(markdown: str) -> list[str]:
+    return markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
+def _parse_lines(markdown: str) -> list[tuple[int, Paragraph]]:
+    """The paragraphs of ``markdown``, each with the index of its first line."""
+    paragraphs: list[tuple[int, Paragraph]] = []
+    # The paragraph being gathered: (first line, bullet level or None, lines so far).
+    pending: tuple[int, int | None, list[str]] | None = None
     list_indents: list[int] = []
     fence: str | None = None
 
     def flush() -> None:
         nonlocal pending
         if pending is not None:
-            level, parts = pending
+            first, level, parts = pending
             paragraph = _paragraph(NORMAL_TEXT, level, " ".join(parts))
             if paragraph.runs or level is not None:
-                paragraphs.append(paragraph)
+                paragraphs.append((first, paragraph))
             pending = None
 
-    for line in lines:
+    for number, line in enumerate(_lines(markdown)):
         if fence is not None:
             if line.strip().startswith(fence) and not line.strip().strip(fence[0]):
                 fence = None
                 continue
             text = _clean(line.expandtabs(4))
             runs = (Run(text, code=True),) if text else ()
-            paragraphs.append(Paragraph(NORMAL_TEXT, None, runs))
+            paragraphs.append((number, Paragraph(NORMAL_TEXT, None, runs)))
             continue
         fence_match = _FENCE.match(line)
         if fence_match is not None:
@@ -324,7 +415,7 @@ def parse(markdown: str) -> list[Paragraph]:
                 HEADING_STYLES[len(heading.group(1)) - 1], None, text
             )
             if paragraph.runs:
-                paragraphs.append(paragraph)
+                paragraphs.append((number, paragraph))
             continue
         if _RULE.match(line):
             flush()
@@ -339,43 +430,172 @@ def parse(markdown: str) -> list[Paragraph]:
             if not list_indents or list_indents[-1] < indent:
                 list_indents.append(indent)
             level = min(len(list_indents) - 1, MAX_NESTING_LEVEL)
-            pending = (level, [bullet.group(2)])
+            pending = (number, level, [bullet.group(2)])
             continue
         if pending is not None:
             # A continuation line of the paragraph or list item being gathered.
-            pending[1].append(line.strip())
+            pending[2].append(line.strip())
             continue
         list_indents.clear()
-        pending = (None, [line.strip()])
+        pending = (number, None, [line.strip()])
     flush()
     return paragraphs
 
 
-def split_blocks(paragraphs: list[Paragraph]) -> list[Block]:
-    """The blocks of ``paragraphs``: the preamble, if any, then one per heading."""
-    groups: list[tuple[tuple[str, ...], list[Paragraph]]] = []
+def _grouped(paragraphs: list[tuple[int, Paragraph]]) -> list[tuple[Block, int]]:
+    """The blocks of ``paragraphs``, each with the first line of its first paragraph."""
+    groups: list[tuple[tuple[str, ...], int, list[Paragraph]]] = []
     path: list[tuple[int, str]] = []  # (level, text) of the enclosing headings
-    for paragraph in paragraphs:
+    for line, paragraph in paragraphs:
         if paragraph.style in HEADING_STYLES:
             level = HEADING_STYLES.index(paragraph.style)
             while path and path[-1][0] >= level:
                 path.pop()
             path.append((level, paragraph.text))
-            groups.append((tuple(text for _, text in path), [paragraph]))
+            groups.append((tuple(text for _, text in path), line, [paragraph]))
         elif groups:
-            groups[-1][1].append(paragraph)
+            groups[-1][2].append(paragraph)
         else:
-            groups.append(((), [paragraph]))
+            groups.append(((), line, [paragraph]))
     seen: dict[tuple[str, ...], int] = {}
-    blocks: list[Block] = []
-    for block_path, block_paragraphs in groups:
+    blocks: list[tuple[Block, int]] = []
+    for block_path, line, block_paragraphs in groups:
         occurrence = seen.get(block_path, 0)
         seen[block_path] = occurrence + 1
         key = json.dumps([list(block_path), occurrence], ensure_ascii=False)
         block_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-        blocks.append(Block(block_id, block_path, tuple(block_paragraphs)))
+        blocks.append((Block(block_id, block_path, tuple(block_paragraphs)), line))
     return blocks
 
 
+def split_blocks(paragraphs: list[Paragraph]) -> list[Block]:
+    """The blocks of ``paragraphs``: the preamble, if any, then one per heading."""
+    return [block for block, _ in _grouped([(0, p) for p in paragraphs])]
+
+
 def parse_blocks(markdown: str) -> list[Block]:
-    return split_blocks(parse(markdown))
+    return [block for block, _ in _grouped(_parse_lines(markdown))]
+
+
+class Span(NamedTuple):
+    """A block and where its text is in the Markdown it was parsed from."""
+
+    block: Block
+    start: int  # character offsets: the start of the block's first line
+    end: int  # the start of the next block's first line, or the end of the text
+
+
+_LINE_BREAK = re.compile("\r\n|\r|\n")
+
+
+def block_spans(markdown: str) -> list[Span]:
+    """The blocks of ``markdown``, each with the stretch of text it was parsed from.
+
+    A block's text runs from its first line up to the next block's, blank lines
+    and anything the target does not write (a horizontal rule) included; what
+    is before the first block belongs to none.
+    """
+    starts = [0] + [m.end() for m in _LINE_BREAK.finditer(markdown)]
+    blocks = _grouped(_parse_lines(markdown))
+    spans: list[Span] = []
+    for index, (block, line) in enumerate(blocks):
+        end = starts[blocks[index + 1][1]] if index + 1 < len(blocks) else len(markdown)
+        spans.append(Span(block, starts[line], end))
+    return spans
+
+
+# --- back to Markdown -------------------------------------------------------------
+
+# Escaped wherever they are: each can open a span (``*`` and ``_`` emphasis,
+# a code span, a link, an autolink) or is the escape itself.
+_ALWAYS_ESCAPED = set("\\`*[]<")
+_URL_SCHEME = re.compile(r"(https?):(?=//)")
+# What starts a line that is not a paragraph's: a heading, a list item, a fence.
+_LINE_START_ESCAPED = set("#-+~")
+
+
+def _escape(text: str) -> str:
+    out: list[str] = []
+    for i, char in enumerate(text):
+        if char in _ALWAYS_ESCAPED:
+            out.append("\\" + char)
+        elif char == "_" and not (
+            0 < i < len(text) - 1 and text[i - 1].isalnum() and text[i + 1].isalnum()
+        ):
+            # ``snake_case`` cannot open emphasis; an ``_`` at a word's edge can.
+            out.append("\\_")
+        else:
+            out.append(char)
+    # A bare URL in plain text would be read back as a link.
+    return _URL_SCHEME.sub(r"\1\\:", "".join(out))
+
+
+def _code_span(text: str) -> str:
+    longest = max((len(m) for m in re.findall("`+", text)), default=0)
+    ticks = "`" * (longest + 1)
+    if (
+        text.startswith("`")
+        or text.endswith("`")
+        or (text.startswith(" ") and text.endswith(" ") and text.strip())
+    ):
+        text = f" {text} "
+    return ticks + text + ticks
+
+
+def _render_runs(runs: tuple[Run, ...]) -> str:
+    parts: list[str] = []
+    for index, run in enumerate(runs):
+        inner = _code_span(run.text) if run.code else _escape(run.text)
+        if run.bold and run.italic:
+            inner = f"**_{inner}_**"
+        elif run.bold:
+            inner = f"**{inner}**"
+        elif run.italic:
+            before = parts[-1][-1:] if parts else ""
+            after = runs[index + 1].text[:1] if index + 1 < len(runs) else ""
+            if runs[index + 1 :] and (runs[index + 1].bold or runs[index + 1].italic):
+                after = "*"
+            # ``_`` cannot open or close next to a letter; ``*`` closes wrongly
+            # right before ``**``.
+            marker = "_" if not before.isalnum() and not after.isalnum() else "*"
+            inner = f"{marker}{inner}{marker}"
+        if run.link is not None:
+            inner = f"[{inner}]({run.link})"
+        parts.append(inner)
+    return "".join(parts)
+
+
+def _render_paragraph(paragraph: Paragraph) -> str:
+    text = _render_runs(paragraph.runs)
+    if paragraph.style in HEADING_STYLES:
+        if text.endswith("#"):
+            text = text[:-1] + "\\#"  # a closing sequence would be dropped
+        return "#" * (HEADING_STYLES.index(paragraph.style) + 1) + " " + text
+    if paragraph.bullet is not None:
+        return "  " * paragraph.bullet + "- " + text
+    if text[:1] in _LINE_START_ESCAPED:
+        text = "\\" + text
+    return text
+
+
+def render(paragraphs: tuple[Paragraph, ...] | list[Paragraph]) -> str:
+    """Markdown that parses back to ``paragraphs``, each ``normalized``.
+
+    Empty paragraphs are left out, as ``fingerprint`` leaves them out. What the
+    subset cannot spell (a named style other than a heading, a list nested two
+    levels below its parent, a link whose URL has a space) reads back otherwise.
+    """
+    out: list[str] = []
+    previous: Paragraph | None = None
+    for paragraph in paragraphs:
+        paragraph = normalized(paragraph)
+        if not paragraph.runs:
+            continue
+        if previous is not None:
+            # A list item follows the one before it on the next line; anything
+            # else after a blank line, so it is not read as a continuation.
+            both_items = previous.bullet is not None and paragraph.bullet is not None
+            out.append("\n" if both_items else "\n\n")
+        out.append(_render_paragraph(paragraph))
+        previous = paragraph
+    return "".join(out)

@@ -12,10 +12,17 @@ another; then it changes a third section and checks:
 1. the doc it created reads back as exactly what was declared (nothing left
    to write), which is what makes "a person's edit" detectable at all;
 2. a rerun with unchanged content makes no request to Google;
-3. a change to one section rewrites that section only: the commented section
+3. ``read_doc`` hands back your edit of Gamma, and a memoized reader runs
+   again for it but not for the target's own writes;
+4. a change to one section rewrites that section only: the commented section
    keeps its text, and the comment is still there, quoting the same text;
-4. the section you edited keeps your text, and the run warns about it;
-5. dropping the declaration moves the doc to the trash (not deleted for good).
+5. the section you edited keeps your text, and the run warns about it;
+6. declaring what ``read_doc`` returned takes your edit in, without rewriting it;
+7. dropping the declaration moves the doc to the trash (not deleted for good).
+
+It also reports whether stamping the doc's Drive appProperties leaves its
+Docs revision where the write left it, which keeps a reader's validation to
+two requests.
 
 The state database lives in a temporary directory, so every run starts fresh.
 """
@@ -78,6 +85,14 @@ class _Counting:
         return getattr(self._inner, name)
 
 
+_watch_runs: list[google_docs.DocRead | None] = []
+
+
+@coco.fn(memo=True)
+async def _watch(name: str, declared: str) -> None:
+    _watch_runs.append(await google_docs.read_doc(GDOCS, name, declared))
+
+
 def _pause(prompt: str) -> None:
     input(f"\n{prompt}\nPress Enter when done. ")
 
@@ -133,6 +148,34 @@ def main() -> int:
         )
 
         app.update_blocking()
+
+        @coco.fn
+        async def watch_main() -> None:
+            await coco.use_mount(coco.component_subpath("watch"), _watch, name, V1)
+
+        watcher = coco.App(
+            coco.AppConfig(name="GoogleDocsRealAccountWatch", environment=env),
+            watch_main,
+        )
+
+        def watch() -> int:
+            before = len(_watch_runs)
+            watcher.update_blocking()
+            return len(_watch_runs) - before
+
+        def read_back(declared: str) -> google_docs.DocRead | None:
+            out: list[google_docs.DocRead | None] = []
+
+            @coco.fn
+            async def read_main() -> None:
+                out.append(await google_docs.read_doc(GDOCS, name, declared))
+
+            coco.App(
+                coco.AppConfig(name="GoogleDocsRealAccountRead", environment=env),
+                read_main,
+            ).update_blocking()
+            return out[0]
+
         google = _target._Google(account)
         files = (
             google._drive.files()
@@ -158,6 +201,9 @@ def main() -> int:
         app.update_blocking()
         check("an unchanged rerun makes no request", _Counting.count == 0)
 
+        check("a reader reads the doc", watch() == 1 and _watch_runs[-1] is not None)
+        check("an unchanged doc does not run the reader again", watch() == 0)
+
         _pause(
             f"In the doc, add a comment on the sentence {COMMENTED!r} (section "
             "Beta), and change one word in the Gamma sentence. Leave Alpha alone."
@@ -177,8 +223,26 @@ def main() -> int:
             print("No comment found on the doc; add one and run the check again.")
             return 1
 
+        gamma = ("CocoIndex real-account check", "Gamma")
+        check("your edit runs the reader again", watch() == 1)
+        seen = _watch_runs[-1]
+        check(
+            "read_doc names Gamma as edited, and nothing as deleted",
+            seen is not None and seen.edited == (gamma,) and seen.deleted == (),
+        )
+        if seen is not None:
+            print("  read back:", [ln for ln in seen.content.splitlines() if ln][-1])
+            check("read_doc gives the doc's link", seen.url == _target.doc_url(doc_id))
+
         content["content"] = V2
         app.update_blocking()
+        found = google.find(_target.tag_of(GDOCS.key, name))
+        stamp = found.stamp if found is not None else None
+        check(
+            "(cost) stamping the doc leaves its Docs revision where the write left it",
+            stamp is not None and _target.short(google.revision(doc_id)) == stamp.after,
+        )
+        check("the target's own write does not run the reader again", watch() == 0)
         after = _docs.read_document(google.get(doc_id))
         alpha_text = [p.text for p in after.content(after.ranges[blocks[1].block_id])]
         check("Alpha was rewritten", "The alpha section, version two." in alpha_text)
@@ -218,6 +282,23 @@ def main() -> int:
             "in the browser, the comment is still anchored to its sentence",
             _yes("Look at the doc: is the comment still on its sentence in Beta?"),
         )
+
+        taken = read_back(V2)
+        gamma_before = after.content(after.ranges[blocks[3].block_id])
+        warnings.clear()
+        if taken is not None:
+            content["content"] = taken.content
+            app.update_blocking()
+        adopted = _docs.read_document(google.get(doc_id))
+        check(
+            "declaring what read_doc returned takes your edit in, unchanged",
+            taken is not None
+            and not any("Gamma" in w for w in warnings)
+            and adopted.content(adopted.ranges[blocks[3].block_id]) == gamma_before
+            and adopted.ranges[blocks[3].block_id].written
+            == _markdown.fingerprint(gamma_before),
+        )
+        check("taking your edit in does not run the reader again", watch() == 0)
 
         content["content"] = None
         app.update_blocking()
