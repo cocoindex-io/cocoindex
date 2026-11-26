@@ -526,6 +526,55 @@ def test_a_table_dropped_outside_cocoindex_comes_back_with_its_rows(
     assert _row_component_runs == 4, "unchanged children are skipped again"
 
 
+def _reconcile_change(
+    old_columns: dict[str, bigquery.ColumnDef],
+    new_columns: dict[str, bigquery.ColumnDef],
+) -> Any:
+    def spec(columns: dict[str, bigquery.ColumnDef]) -> Any:
+        return _target._TableSpec(
+            table_schema=bigquery.TableSchema(columns=columns, primary_key=["id"]),
+            managed_by=target.ManagedBy.SYSTEM,
+            missing=False,
+        )
+
+    prev = statediff.MutualTrackingRecord(
+        tracking_record=_target._table_composite_tracking_record_from_spec(
+            spec(old_columns)
+        ),
+        managed_by=target.ManagedBy.SYSTEM,
+    )
+    return _target._TableHandler().reconcile(
+        (BIGQUERY_DB.key, "demo-project", "analytics", "events"),
+        spec(new_columns),
+        [prev],
+        False,
+    )
+
+
+def test_required_column_added_or_changed_recreates_the_table() -> None:
+    """BigQuery adds no REQUIRED column and makes none REQUIRED: a declared NOT
+    NULL column that is added or changed recreates the table (rows written again).
+    Before, `ADD COLUMN ... NOT NULL` failed every run."""
+    base = {
+        "id": bigquery.ColumnDef(type="INT64", nullable=False),
+        "a": bigquery.ColumnDef(type="STRING"),
+    }
+    for new in [
+        {**base, "b": bigquery.ColumnDef(type="INT64", nullable=False)},
+        {**base, "a": bigquery.ColumnDef(type="STRING", nullable=False)},
+    ]:
+        output = _reconcile_change(base, new)
+        assert output.action.main_action == "replace"
+        assert output.action.column_actions == {}
+        assert output.child_invalidation == "destructive"
+
+    # A nullable column is still added in place.
+    output = _reconcile_change(base, {**base, "b": bigquery.ColumnDef(type="INT64")})
+    assert output.action.main_action is None
+    assert output.action.column_actions == {"col:b": "insert"}
+    assert output.child_invalidation is None
+
+
 REQUIRED_BIGQUERY_ENV = [
     "BIGQUERY_PROJECT",
     "BIGQUERY_DATASET",
@@ -612,3 +661,52 @@ def test_live_bigquery_upsert_and_delete() -> None:
                 f"DROP TABLE IF EXISTS "
                 f"{_target._qualified_table_name(os.environ['BIGQUERY_PROJECT'], dataset, table_name)}",
             )
+
+
+def test_required_column_of_a_failed_run_still_recreates_the_table() -> None:
+    """A run that added a REQUIRED column and failed leaves two previous records,
+    only one with the column, so the column plans as "upsert". The table may still
+    lack it, so the next run recreates the table instead of an `ADD COLUMN` that
+    BigQuery refuses. A full reprocess, where every previous record has the
+    column, does not recreate it."""
+    base = {
+        "id": bigquery.ColumnDef(type="STRING", nullable=False),
+        "a": bigquery.ColumnDef(type="STRING"),
+    }
+    with_b = {**base, "b": bigquery.ColumnDef(type="INT64", nullable=False)}
+
+    def record(columns: dict[str, bigquery.ColumnDef]) -> Any:
+        return statediff.MutualTrackingRecord(
+            tracking_record=_target._table_composite_tracking_record_from_spec(
+                _target._TableSpec(
+                    table_schema=bigquery.TableSchema(
+                        columns=columns, primary_key=["id"]
+                    ),
+                    managed_by=target.ManagedBy.SYSTEM,
+                    missing=False,
+                )
+            ),
+            managed_by=target.ManagedBy.SYSTEM,
+        )
+
+    def reconcile(prev: list[Any], prev_may_be_missing: bool) -> Any:
+        return _target._TableHandler().reconcile(
+            (BIGQUERY_DB.key, "demo-project", "analytics", "events"),
+            _target._TableSpec(
+                table_schema=bigquery.TableSchema(columns=with_b, primary_key=["id"]),
+                managed_by=target.ManagedBy.SYSTEM,
+                missing=False,
+            ),
+            prev,
+            prev_may_be_missing,
+        )
+
+    after_failed_run = reconcile([record(base), record(with_b)], True)
+    assert after_failed_run is not None
+    assert after_failed_run.action.main_action == "replace"
+    assert after_failed_run.child_invalidation == "destructive"
+
+    full_reprocess = reconcile([record(with_b)], True)
+    assert full_reprocess is not None
+    assert full_reprocess.action.main_action != "replace"
+    assert full_reprocess.child_invalidation is None

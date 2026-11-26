@@ -771,7 +771,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         child_invalidation: Literal["destructive", "lossy"] | None = None
         if recreated.dropped or main_action == "replace":
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
+        elif any(_container.may_lose_data(a) for a in column_actions.values()):
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(

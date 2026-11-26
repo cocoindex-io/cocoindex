@@ -1,11 +1,14 @@
 """Shared reconcile logic for container target handlers (tables, collections,
-namespaces, indexes): a container dropped outside CocoIndex."""
+namespaces, indexes): a container dropped outside CocoIndex, sub-state
+actions that invalidate the rows a container holds, and a NOT NULL column that
+needs the table rebuilt."""
 
 from __future__ import annotations
 
-from typing import Collection, Generic, NamedTuple, Protocol, TypeVar
+from typing import Any, Collection, Generic, Mapping, NamedTuple, Protocol, TypeVar
 
 from cocoindex._internal.typing import NonExistenceType, is_non_existence
+from cocoindex.connectorkits.statediff import DiffAction, TrackingRecordTransition, diff
 from cocoindex.connectorkits.target import ManagedBy
 
 
@@ -75,3 +78,63 @@ def recreate_if_dropped(
     if was_dropped(desired_state, prev_possible_records):
         return PrevRecords([], True, True)
     return PrevRecords(prev_possible_records, prev_may_be_missing, False)
+
+
+def may_lose_data(action: DiffAction, /) -> bool:
+    """Whether applying `action` to a sub-state (a column) may lose data that
+    rows already written hold: a "replace" (a retype) or a "delete" may.
+
+    An "insert" adds what no row has written yet, and an "upsert" only ensures a
+    sub-state that the tracked rows were written with (it is planned when the
+    previous state may be missing, e.g. in a full reprocess or after an
+    interrupted run), so neither invalidates the rows.
+    """
+    return action in ("replace", "delete")
+
+
+class _NullableColumn(Protocol):
+    @property
+    def nullable(self) -> bool: ...
+
+
+def _declared_not_null(
+    columns: Mapping[str, _NullableColumn], sub_key_prefix: str, sub_key: str
+) -> bool:
+    """Whether the column of `sub_key` is declared NOT NULL."""
+    if not sub_key.startswith(sub_key_prefix):
+        return False
+    col = columns.get(sub_key[len(sub_key_prefix) :])
+    return col is not None and not col.nullable
+
+
+def adds_not_null_column(
+    column_transitions: Mapping[str, TrackingRecordTransition[Any]],
+    num_prev_records: int,
+    columns: Mapping[str, _NullableColumn],
+    sub_key_prefix: str,
+) -> bool:
+    """Whether the column transitions add a column declared NOT NULL, or change one.
+
+    For a database that can't add a NOT NULL column to a table with rows, nor
+    give an existing column the constraint (SQLite, BigQuery): when this holds,
+    the handler rebuilds the table instead ("replace"), and the rows are written
+    again. All of them change anyway: a new column changes every row, and a
+    changed one is lossy. Otherwise the change would fail on every run.
+
+    A column that only some of the `num_prev_records` previous records have
+    counts as added even when it plans as "upsert": a run that added it may
+    have failed before the table had it, and the table may still be without
+    it. A full reprocess does not rebuild, since every previous record has
+    each column it keeps.
+
+    `columns` are the declared columns by name; a column's sub key is its name
+    after `sub_key_prefix`.
+    """
+    for sub_key, transition in column_transitions.items():
+        action = diff(transition)
+        added = action in ("insert", "replace") or (
+            action == "upsert" and len(transition.prev) < num_prev_records
+        )
+        if added and _declared_not_null(columns, sub_key_prefix, sub_key):
+            return True
+    return False

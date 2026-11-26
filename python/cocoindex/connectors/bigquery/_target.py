@@ -863,11 +863,26 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 action = statediff.diff(t)
                 if action is not None:
                     column_actions[sub_key] = action
+            # BigQuery can't add a NOT NULL column to a table with rows: rebuild
+            # it (see `_container.adds_not_null_column`). A user-managed table
+            # resolves to no transition (`resolve_system_transition`).
+            if (
+                resolved is not None
+                and not coco.is_non_existence(desired_state)
+                and _container.adds_not_null_column(
+                    column_transitions,
+                    len(resolved.prev),
+                    desired_state.table_schema.columns,
+                    _COL_SUBKEY_PREFIX,
+                )
+            ):
+                main_action = "replace"
+                column_actions = {}
 
         child_invalidation: Literal["destructive", "lossy"] | None = None
         if recreated.dropped or main_action == "replace":
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
+        elif any(_container.may_lose_data(a) for a in column_actions.values()):
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(

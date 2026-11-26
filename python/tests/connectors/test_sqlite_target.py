@@ -1552,69 +1552,6 @@ def test_regular_table_vs_vec0_switch(
     assert data[0]["id"] == 1
 
 
-def test_unsupported_sqlite_migration_raises_error(
-    sqlite_db: tuple[sqlite.ManagedConnection, Path],
-) -> None:
-    """Test that attempting an invalid SQLite migration (adding NOT NULL column without DEFAULT to a populated table) raises RuntimeError loudly instead of silently swallowing the failure."""
-    managed_conn, _ = sqlite_db
-    global _source_rows, _row_type, _table_name
-
-    old_source_rows = _source_rows
-    old_row_type = _row_type
-    old_table_name = _table_name
-    try:
-        _source_rows = [SimpleRow(id="1", name="Alice", value=100)]
-        _row_type = SimpleRow
-        _table_name = "test_alter_non_nullable_raises"
-
-        test_env = make_test_env(
-            managed_conn, "test_unsupported_sqlite_migration_raises_error"
-        )
-
-        async def declare_dynamic_schema() -> None:
-            table = await coco.use_mount(
-                coco.component_subpath("setup", "table"),
-                sqlite.declare_table_target,
-                SQLITE_DB,
-                _table_name,
-                await sqlite.TableSchema.from_class(_row_type, primary_key=["id"]),
-            )
-            for row in _source_rows:
-                table.declare_row(row=row)
-
-        app = coco.App(
-            coco.AppConfig(
-                name="test_unsupported_sqlite_migration_raises_error",
-                environment=test_env,
-            ),
-            declare_dynamic_schema,
-        )
-
-        # Initial update creates table with SimpleRow and inserts data
-        app.update_blocking()
-        assert table_exists(managed_conn, _table_name)
-        assert "extra" not in get_table_columns(managed_conn, _table_name)
-
-        # Update schema to ExtendedRow (adds 'extra' column which is NOT NULL)
-        _row_type = ExtendedRow
-        _source_rows = [
-            ExtendedRow(id="1", name="Alice", value=100, extra="new_field"),
-        ]
-
-        # SQLite rejects adding NOT NULL column without DEFAULT to a populated table.
-        # This MUST fail loudly with RuntimeError instead of silently proceeding.
-        with pytest.raises(RuntimeError, match="Failed to add column 'extra'"):
-            app.update_blocking()
-
-        # Database schema must remain consistent (unaltered)
-        cols = get_table_columns(managed_conn, _table_name)
-        assert "extra" not in cols
-    finally:
-        _source_rows = old_source_rows
-        _row_type = old_row_type
-        _table_name = old_table_name
-
-
 def test_column_type_change_blocked_by_index_raises_and_retries(
     sqlite_db: tuple[sqlite.ManagedConnection, Path],
 ) -> None:
@@ -2092,6 +2029,150 @@ def test_replace_rebuilds_a_column_to_drop_its_constraint(
 
     assert "COLLATE" not in get_table_sql(managed_conn, table_name)
     assert get_table_columns(managed_conn, table_name)["name"] == "TEXT"
+
+
+def test_unchanged_columns_whose_state_may_be_missing_do_not_invalidate_rows() -> None:
+    """A table whose previous state may be missing (a full reprocess, or a run
+    interrupted while the table's tracking was pending) plans an upsert of its
+    unchanged columns. That loses no data, so it must not invalidate the rows: a
+    lossy invalidation moves the table's schema version and makes every row and
+    memo under it miss. A retyped column still does."""
+
+    def spec(score_type: str) -> Any:
+        return sqlite._target._TableSpec(
+            table_schema=sqlite.TableSchema(
+                columns={
+                    "id": sqlite.ColumnDef(type="INTEGER", nullable=False),
+                    "name": sqlite.ColumnDef(type="TEXT"),
+                    "score": sqlite.ColumnDef(type=score_type),
+                },
+                primary_key=["id"],
+            ),
+            missing=False,
+        )
+
+    prev = statediff.MutualTrackingRecord(
+        tracking_record=sqlite._target._table_composite_tracking_record_from_spec(
+            spec("REAL")
+        ),
+        managed_by=target.ManagedBy.SYSTEM,
+    )
+    handler = sqlite._target._TableHandler()
+
+    out = handler.reconcile(("db", "items"), spec("REAL"), [prev], True)
+    assert out is not None
+    assert out.action.main_action == "upsert"
+    assert set(out.action.column_actions.values()) == {"upsert"}
+    assert out.child_invalidation is None
+
+    out = handler.reconcile(("db", "items"), spec("INTEGER"), [prev], True)
+    assert out is not None
+    assert out.child_invalidation == "lossy"
+
+
+def _not_null_columns(
+    managed_conn: sqlite.ManagedConnection, table_name: str
+) -> set[str]:
+    with managed_conn.readonly() as conn:
+        cursor = conn.execute(f'PRAGMA table_info("{table_name}")')
+        return {row[1] for row in cursor.fetchall() if row[3]}
+
+
+def test_not_null_column_added_or_retyped_rebuilds_the_table(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """A NOT NULL column added to a table with rows, or retyped, rebuilds the table:
+    SQLite can't add a NOT NULL column to rows that have no value for it. Before,
+    `ADD COLUMN ... NOT NULL` failed every run."""
+    managed_conn, _ = sqlite_db
+    global _source_rows, _row_type, _table_name
+
+    @dataclass
+    class RetypedRow:
+        id: str
+        name: str
+        value: int
+        extra: int
+
+    _row_type = SimpleRow
+    _table_name = "test_not_null_rebuild"
+    _source_rows = [SimpleRow(id="1", name="Alice", value=100)]
+    test_env = make_test_env(managed_conn, "test_not_null_rebuild")
+    app = coco.App(
+        coco.AppConfig(name="test_not_null_rebuild", environment=test_env),
+        declare_table_and_rows,
+    )
+    app.update_blocking()
+
+    _row_type = ExtendedRow
+    _source_rows = [ExtendedRow(id="1", name="Alice", value=100, extra="x")]
+    app.update_blocking()
+    assert "extra" in _not_null_columns(managed_conn, _table_name)
+    assert read_table_data(managed_conn, _table_name) == [
+        {"id": "1", "name": "Alice", "value": 100, "extra": "x"}
+    ]
+
+    _row_type = RetypedRow
+    _source_rows = [RetypedRow(id="1", name="Alice", value=100, extra=7)]
+    app.update_blocking()
+    assert get_table_columns(managed_conn, _table_name)["extra"] == "INTEGER"
+    assert "extra" in _not_null_columns(managed_conn, _table_name)
+    assert read_table_data(managed_conn, _table_name) == [
+        {"id": "1", "name": "Alice", "value": 100, "extra": 7}
+    ]
+
+
+def test_a_failed_not_null_rebuild_recovers_on_the_next_run() -> None:
+    """A run that adds a NOT NULL column and fails before its commit leaves both
+    tracking records as possible previous states; the column is in only one of
+    them, so it plans as "upsert". The next run still rebuilds the table, and
+    the rows come back with the new column, instead of failing on every run with
+    `Failed to add column`."""
+    global _source_rows, _row_type, _table_name
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "t.db"
+        # A short busy timeout, so the run that meets the lock fails at once.
+        managed_conn = sqlite.connect(db_path, timeout=0.1)
+        _row_type = SimpleRow
+        _table_name = "test_failed_not_null_rebuild"
+        _source_rows = [
+            SimpleRow(id="1", name="Alice", value=100),
+            SimpleRow(id="2", name="Bob", value=200),
+        ]
+        app_name = "test_a_failed_not_null_rebuild_recovers_on_the_next_run"
+        app = coco.App(
+            coco.AppConfig(
+                name=app_name, environment=make_test_env(managed_conn, app_name)
+            ),
+            declare_table_and_rows,
+        )
+        app.update_blocking()
+
+        _row_type = ExtendedRow
+        _source_rows = [
+            ExtendedRow(id="1", name="Alice", value=100, extra="a"),
+            ExtendedRow(id="2", name="Bob", value=200, extra="b"),
+        ]
+        # A second connection holds the write lock, so the rebuild's DROP TABLE
+        # fails with "database is locked".
+        blocker = sqlite3.connect(db_path, timeout=0.1)
+        blocker.execute("BEGIN IMMEDIATE")
+        try:
+            with pytest.raises(Exception, match="locked"):
+                app.update_blocking()
+        finally:
+            blocker.rollback()
+            blocker.close()
+        assert "extra" not in get_table_columns(managed_conn, _table_name)
+
+        app.update_blocking()
+        assert "extra" in _not_null_columns(managed_conn, _table_name)
+        assert read_table_data(managed_conn, _table_name) == [
+            {"id": "1", "name": "Alice", "value": 100, "extra": "a"},
+            {"id": "2", "name": "Bob", "value": 200, "extra": "b"},
+        ]
+        managed_conn.close()
 
 
 _row_component_runs = 0
