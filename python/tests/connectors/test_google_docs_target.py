@@ -1494,6 +1494,13 @@ def test_a_read_reruns_its_reader_on_a_persons_edit_only(setup: Setup) -> None:
     _person_deletes_block(doc, _blocks(BRIEF)[1])  # the preamble
     assert run() == 1
     assert run() == 0
+    # A person trashes the doc: the reader runs and finds none.
+    (doc_id,) = setup.google.files
+    setup.google.files[doc_id]["trashed"] = True
+    content["content"] = BRIEF  # ... and the target writes a new one next run
+    before = len(_watch_runs)
+    app.update_blocking()
+    assert len(_watch_runs) - before == 1 and _watch_runs[-1] is None
 
 
 def test_the_doc_is_the_same_for_a_run_with_a_new_state(setup: Setup) -> None:
