@@ -19,8 +19,8 @@ input.
 
 ## Running
 
-It runs on the CocoIndex in this repository: it uses APIs no release has
-yet, so install it from a clone, not from PyPI. Once, from the repository
+It needs CocoIndex 1.2.0 or later. The steps below run it from a clone of
+this repository, on the CocoIndex built from it. Once, from the repository
 root:
 
 ```sh
@@ -60,15 +60,22 @@ Two more ways to run it:
   See [`flows/README.md`](flows/README.md).
 - **A Google Drive folder** of your own, read as your account after a one-time
   sign-in: see *The `drive` flow* in [`flows/README.md`](flows/README.md).
+- **The web**: a prompt that names a topic to research makes the orchestrator
+  search (Wikipedia with no key, Tavily with `TAVILY_API_KEY`), read the
+  pages, follow the leads and write a cited report; a rerun fetches each page
+  conditionally and re-reads only what changed. Needs `trafilatura`
+  (`uv pip install trafilatura`). See *The `research` flow* in
+  [`flows/README.md`](flows/README.md).
 
 ## Layout
 
 - `cocoindex_agents/` — the package (see DESIGN.md §9 for the module map, §8 for
   what is implemented and tested)
 - `tests/` — scripted-model tests; no API keys needed
-- `flows/` — five sample flows with their data and a runner: one per shape
-  of DESIGN.md §2, one over PDFs the model reads natively, and one over a
-  Google Drive folder read as the signed-in account; see
+- `flows/` — six sample flows with their data and a runner: one per shape
+  of DESIGN.md §2, one over PDFs the model reads natively, one over a
+  Google Drive folder read as the signed-in account, and one that researches
+  a topic on the web (`flows/research/`, with the survey behind it); see
   [`flows/README.md`](flows/README.md) for how to run them and the measured
   model calls (`--stats` for cache usage, `--plan` for the plan it chose and
   what it reused)
@@ -81,6 +88,5 @@ From the repository root, after `uv run maturin develop`:
 uv run pytest examples/cocoindex_agents/tests
 ```
 
-The tests need no API key. They also need this repository's CocoIndex, so
-there is no standalone install yet: `uv sync` inside this directory would
-take the last CocoIndex release from PyPI, which lacks APIs this package uses.
+The tests need no API key. They run on this repository's CocoIndex, in the
+same environment as the steps under [Running](#running).

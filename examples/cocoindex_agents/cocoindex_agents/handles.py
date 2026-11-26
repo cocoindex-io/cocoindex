@@ -175,6 +175,13 @@ class HandleTable:
         own = set(self._objects)
         return own | self._parent.names() if self._parent is not None else own
 
+    def objects(self) -> dict[str, HandleObject]:
+        """Every handle visible from this table, parents included: the snapshot a
+        call of one turn sees (DESIGN.md §3, *Calls in one turn are independent*)."""
+        out = dict(self._parent.objects()) if self._parent is not None else {}
+        out.update(self._objects)
+        return out
+
     def __contains__(self, handle: str) -> bool:
         return self._lookup(handle) is not None
 

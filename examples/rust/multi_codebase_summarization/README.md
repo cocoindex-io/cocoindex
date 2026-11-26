@@ -45,14 +45,20 @@ cargo run -- ../.. ./output
 # Much faster — skips files and project summaries already analyzed
 ```
 
+**Switch the model** — the model and the `CodebaseInfo` schema are in the LLM steps' `deps`, so a new `LLM_MODEL` re-analyzes every file, unchanged ones included:
+
+```sh
+LLM_MODEL=gpt-4o cargo run -- ../.. ./output
+```
+
 ## Macro Showcase
 
 This example demonstrates:
 
 | Macro | Purpose |
 |---|---|
-| `#[cocoindex::function(memo)]` | `extract_file_info` — LLM call cached per file fingerprint |
-| `#[cocoindex::function(memo)]` | `aggregate_project_info` — LLM call cached until any file summary changes |
+| `#[cocoindex::function(deps = llm_deps())]` | `extract_file_info` — one component per file, skipped while the file and `deps` are unchanged |
+| `#[cocoindex::function(memo, deps = llm_deps())]` | `aggregate_project_info` — LLM call cached until any file summary or `deps` changes |
 | `#[cocoindex::function]` | `generate_markdown` — pure transform, no caching needed |
 | `ctx.scope(...)` | Mirror Python's per-project `coco.mount(...)` component |
 | `ctx.mount_each(...)` | Process all files concurrently within each project |

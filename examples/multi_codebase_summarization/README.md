@@ -35,7 +35,11 @@ Your code is the source of truth, but a hand-written wiki drifts the moment some
 Each top-level subdirectory is treated as a project. The pipeline extracts a structured `CodebaseInfo` per file with an LLM, aggregates files into a project summary, and writes Markdown with Mermaid diagrams. Read it in [`main.py`](main.py):
 
 ```python
-@coco.fn(memo=True)   # per file — structured LLM extraction, cached by content
+# The model and schema are module-level values that CocoIndex cannot see in the
+# function's source, so `deps=` declares them: changing either re-runs the extraction.
+_LLM_DEPS = {"model": LLM_MODEL, "schema": CodebaseInfo.model_json_schema()}
+
+@coco.fn(memo=True, deps=_LLM_DEPS)   # per file — structured LLM extraction, cached by content
 async def extract_file_info(file: FileLike) -> CodebaseInfo:
     result = await _instructor_client.chat.completions.create(
         model=LLM_MODEL, response_model=CodebaseInfo,
@@ -73,7 +77,7 @@ Extraction is [instructor](https://github.com/instructor-ai/instructor) over [Li
 ## Why it's worth a star ⭐
 
 - **Always fresh, never by hand.** The wiki is a [target state](https://cocoindex.io/docs/programming_guide/target_state/) regenerated from the code — edit a file and the one-pager updates itself; the docs can't drift from the source.
-- **Incremental by default.** `@coco.fn(memo=True)` caches each file's extraction by content, so re-running only re-analyzes changed files. Add a project and only that project is processed.
+- **Incremental by default.** `@coco.fn(memo=True)` caches each file's extraction by content, so re-running only re-analyzes changed files. Add a project and only that project is processed. Switch `LLM_MODEL` and every file is re-analyzed with the new model, because the model is in `deps=`.
 - **Concurrent by construction.** `coco.map(extract_file_info, files)` fans every file out at once while staying visible to the pipeline — far faster than sequential LLM calls.
 - **You pick the granularity.** Here it's one wiki page per project directory, but the same shape works per file, per page, or per semantic unit.
 - **Structured outputs, your stack.** One `CodebaseInfo` Pydantic model drives both file- and project-level extraction; swap `LLM_MODEL` for any [LiteLLM provider](https://docs.litellm.ai/docs/providers).
