@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use cocoindex::{
     App, Ctx, Error, LiveComponent, LiveComponentOperator, LiveMapFeed, LiveMapSubscriber,
-    LiveMapView, MountKind, Result, StableKey, TargetAction, TargetActionSink, TargetHandler,
-    TargetReconcileOutput, TargetStateProvider, UpdateOptions, async_trait, declare_target_state,
-    register_root_target_states_provider,
+    LiveMapView, MountKind, PreviewAction, Result, StableKey, TargetAction, TargetActionSink,
+    TargetHandler, TargetReconcileOutput, TargetStateProvider, UpdateOptions, async_trait,
+    declare_target_state, register_root_target_states_provider,
 };
 use tokio::sync::Notify;
 
@@ -358,9 +358,10 @@ impl LiveComponent for Rows {
     }
 }
 
-/// A preview through a live component applies nothing and persists nothing:
-/// the update after it finds no tracking of the rows the preview planned, so
-/// it creates them rather than finding them in place.
+/// A preview through a live component plans what an update would do, the
+/// live delete included, applies nothing and persists nothing: the update
+/// after it finds no tracking of the rows the preview planned, so it creates
+/// them rather than finding them in place.
 #[tokio::test]
 async fn preview_through_live_component_persists_nothing() {
     let (app, _dir) = temp_app("live_preview_persists_nothing").await;
@@ -389,7 +390,20 @@ async fn preview_through_live_component_persists_nothing() {
         })
         .await
         .unwrap();
-    assert_eq!(actions.len(), 2, "the preview plans a create per row");
+    let mut verbs: Vec<&str> = actions
+        .iter()
+        .map(|action| match action {
+            PreviewAction::Create(_) => "create",
+            PreviewAction::Update(_) => "update",
+            PreviewAction::Delete(_) => "delete",
+        })
+        .collect();
+    verbs.sort();
+    assert_eq!(
+        verbs,
+        ["create", "create", "delete"],
+        "the preview plans a create per row, and the delete of `a`"
+    );
     assert!(
         drain_sorted(&log).is_empty(),
         "the preview applied an action"

@@ -1856,12 +1856,14 @@ impl<Prof: EngineProfile> Component<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         on_error: Option<OnError>,
     ) -> ComponentProcessorContext<Prof> {
+        // A delete that a preview launches previews too.
+        let preview_collector = parent_ctx.and_then(|parent| parent.preview_collector().cloned());
         ComponentProcessorContext::new(
             self.clone(),
             parent_ctx.cloned(),
             processing_stats,
             host_ctx,
-            ComponentProcessingAction::new_delete(providers, on_error),
+            ComponentProcessingAction::new_delete(providers, on_error, preview_collector),
         )
     }
 }
@@ -3389,6 +3391,120 @@ mod tests {
         handle.result().await.unwrap();
         assert_eq!(collector.lock().unwrap().len(), 1 + NUM_ROWS as usize);
         assert_eq!(container_apply_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A root that registers a root provider routed to `sink` and, with
+    /// `with_kid`, mounts a child `kid` declaring `NUM_KID_ROWS` target states
+    /// through it, which the handler deletes once the child is gone.
+    fn root_with_kid(sink: TargetActionSinkKeeper<TestProfile>, with_kid: bool) -> TestProcessor {
+        const NUM_KID_ROWS: i64 = 2;
+        let new_processor = |name: &str| {
+            TestProcessor::new(
+                name,
+                Fingerprint::from(&format!("root_with_kid/{name}")).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .without_memo()
+        };
+        let kid = new_processor("kid");
+        let kid = Mutex::new(Some(kid));
+        new_processor("root").with_on_process(Arc::new(move |ctx| {
+            let sink = sink.clone();
+            let kid = kid.lock().unwrap().take();
+            Box::pin(async move {
+                let rows = register_root_target_state_provider(
+                    &ctx,
+                    "rows".to_string(),
+                    CountingHandler {
+                        reconcile_calls: Default::default(),
+                        sink,
+                        reject: false,
+                        change_only: true,
+                        plans_deletes: true,
+                    },
+                )?;
+                if with_kid {
+                    let kid = kid.unwrap().with_on_process(Arc::new(move |ctx| {
+                        let rows = rows.clone();
+                        Box::pin(async move {
+                            for i in 0..NUM_KID_ROWS {
+                                declare_target_state(
+                                    &ctx,
+                                    &FnCallContext::default(),
+                                    rows.clone(),
+                                    StableKey::Int(i),
+                                    (),
+                                )?;
+                            }
+                            Ok(TestData(b"kid".to_vec()))
+                        })
+                    }));
+                    ctx.component()
+                        .mount_child(&FnCallContext::new(true), key_path(ctx.component(), "kid"))?
+                        .use_mount(&ctx, kid, DeadlineContext::NONE)
+                        .await?
+                        .result(Some(&ctx))
+                        .await?;
+                }
+                Ok(TestData(b"ret".to_vec()))
+            })
+        }))
+    }
+
+    /// A preview plans the deletion of the target states of a child component
+    /// that the run no longer mounts, applies none of it and writes nothing;
+    /// the update after it applies the deletion.
+    #[tokio::test]
+    async fn preview_plans_the_deletes_of_a_child_no_longer_mounted() {
+        let (app, _dir) = test_app("preview_gone_child").await;
+        let apply_calls = Arc::new(AtomicUsize::new(0));
+        let sink = TargetActionSinkKeeper::new(NoopSink {
+            apply_calls: apply_calls.clone(),
+            ..Default::default()
+        });
+        let update = |with_kid: bool, collector: Option<PreviewActionCollector<TestProfile>>| {
+            let (handle, _) = app
+                .update(
+                    root_with_kid(sink.clone(), with_kid),
+                    AppUpdateOptions::default(),
+                    Arc::new(()),
+                    collector,
+                )
+                .unwrap();
+            handle.result()
+        };
+        update(true, None).await.unwrap();
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 1);
+
+        let contents_before = app_store_contents(&app).await;
+        for _ in 0..2 {
+            let collector = PreviewActionCollector::<TestProfile>::default();
+            update(false, Some(collector.clone())).await.unwrap();
+            assert_eq!(
+                collector.lock().unwrap().len(),
+                2,
+                "one deletion per target state of the gone child"
+            );
+            assert_eq!(
+                apply_calls.load(Ordering::SeqCst),
+                1,
+                "preview applies nothing"
+            );
+            assert!(
+                app_store_contents(&app).await == contents_before,
+                "preview must not write to the state store"
+            );
+        }
+
+        update(false, None).await.unwrap();
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 2);
+        let collector = PreviewActionCollector::<TestProfile>::default();
+        update(false, Some(collector.clone())).await.unwrap();
+        assert!(
+            collector.lock().unwrap().is_empty(),
+            "nothing left to delete"
+        );
     }
 
     /// A preview that runs a live component writes nothing: not the marker

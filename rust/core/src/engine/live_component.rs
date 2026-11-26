@@ -840,9 +840,9 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// returned handle. The tombstone always remains in the DB, so even
     /// a failed delete is retried by the next reconcile's GC sweep.
     ///
-    /// A preview deletes nothing: like the deletes of the components an update
-    /// no longer mounts, a live delete is not previewed (the tombstone never
-    /// persists, and the drain task skips the op).
+    /// In a preview, the delete plans its actions into the preview's collector
+    /// and applies none of them; the tombstone stays in the preview's store
+    /// handle, which persists nothing.
     ///
     /// Under a selector, only a covered path is deleted: an ancestor of a
     /// selected path holds unselected descendants too (the same call as
@@ -1463,11 +1463,6 @@ async fn run_op<Prof: EngineProfile>(
             inner_handle.ready().await
         }
         Op::Delete { on_error } => {
-            // A run that persists nothing (a preview) previews no deletes of
-            // components (see `LiveComponentController::delete`).
-            if app_store.write_scope() != crate::state_store::WriteScope::Persisted {
-                return Ok(());
-            }
             // Remove the existence entry again, now that this subpath's
             // earlier ops have finished. An update that was already running
             // when the delete was dispatched wrote it back (its build's eager
@@ -1483,7 +1478,11 @@ async fn run_op<Prof: EngineProfile>(
                 share.new_update(),
                 processing_stats.clone(),
                 host_ctx.clone(),
-                ComponentProcessingAction::new_delete(providers.clone(), on_error),
+                ComponentProcessingAction::new_delete(
+                    providers.clone(),
+                    on_error,
+                    preview_collector.clone(),
+                ),
                 app_store.clone(),
                 update_refusal.clone(),
             );

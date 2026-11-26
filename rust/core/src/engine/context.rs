@@ -919,6 +919,9 @@ pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
     ///
     /// See `specs/core/error_handling.md` for the unified principle.
     pub on_error: Option<crate::engine::component::OnError>,
+    /// The preview collector of the run that launched this delete: in a
+    /// preview, the delete plans its actions into it instead of applying them.
+    pub preview_collector: Option<PreviewActionCollector<Prof>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -966,10 +969,12 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
     pub fn new_delete(
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         on_error: Option<crate::engine::component::OnError>,
+        preview_collector: Option<PreviewActionCollector<Prof>>,
     ) -> Self {
         Self::Delete(ComponentDeleteContext {
             providers,
             on_error,
+            preview_collector,
         })
     }
 }
@@ -1059,19 +1064,18 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         // store, or in a preview one handle whose writes never persist.
         let app_store = match &parent_context {
             Some(parent) => parent.app_store().clone(),
-            None => match &processing_action {
-                ComponentProcessingAction::Build(build_ctx)
-                    if build_ctx.preview_collector.is_some() =>
-                {
-                    component
-                        .app_ctx()
-                        .persisting_app_store()
-                        .discarding_writes()
+            None => {
+                let preview_collector = match &processing_action {
+                    ComponentProcessingAction::Build(build_ctx) => &build_ctx.preview_collector,
+                    ComponentProcessingAction::Delete(delete_ctx) => &delete_ctx.preview_collector,
+                };
+                let persisting_app_store = component.app_ctx().persisting_app_store();
+                if preview_collector.is_some() {
+                    persisting_app_store.discarding_writes()
+                } else {
+                    persisting_app_store.clone()
                 }
-                ComponentProcessingAction::Build(_) | ComponentProcessingAction::Delete(_) => {
-                    component.app_ctx().persisting_app_store().clone()
-                }
-            },
+            }
         };
         Self::from_parts(
             component,
@@ -1495,12 +1499,12 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         &self.inner.data_dep_verdicts
     }
 
-    /// The collector of a preview run's actions. Only a build runs as a
-    /// preview: a preview plans no deletes of components.
+    /// The collector of a preview run's actions: a build's, or a delete's that
+    /// the preview launched for a component it no longer mounts.
     pub(crate) fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
-            ComponentProcessingAction::Delete(_) => None,
+            ComponentProcessingAction::Delete(delete_ctx) => delete_ctx.preview_collector.as_ref(),
         }
     }
 

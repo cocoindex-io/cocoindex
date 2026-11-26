@@ -41,6 +41,12 @@ def _planned(actions: Any) -> dict[str, Any]:
     return {key: value.data for key, value in actions}
 
 
+def _planned_deletes(actions: Any) -> set[str]:
+    """The keys of the planned actions, each of which must be a delete."""
+    assert all(coco.is_non_existence(value) for _, value in actions)
+    return {key for key, _ in actions}
+
+
 def _declare(key: Any, value: Any) -> None:
     coco.declare_target_state(GlobalDictTarget.target_state(str(key), value))
 
@@ -361,10 +367,14 @@ def test_ancestor_no_longer_mounted_keeps_its_whole_subtree() -> None:
     _run_all_then_clear_log(app)
 
     mounted[0] = False
-    app.update_blocking(
-        component_selector=[coco.ROOT_PATH / "parent" / "kids" / "a"],
-    )
+    selector = [coco.ROOT_PATH / "parent" / "kids" / "a"]
+    assert app.update_blocking(preview=True, component_selector=selector) == []
     assert _runs == []
+    app.update_blocking(component_selector=selector)
+    assert _runs == []
+    assert _stored() == {"a": 1, "b": 1}
+
+    assert _planned_deletes(app.update_blocking(preview=True)) == {"a", "b"}
     assert _stored() == {"a": 1, "b": 1}
 
     app.update_blocking()
@@ -383,7 +393,12 @@ def test_selected_gone_under_a_directory_is_deleted_and_its_sibling_kept() -> No
     _run_all_then_clear_log(app)
 
     _source.clear()
-    app.update_blocking(component_selector=[coco.ROOT_PATH / "dir" / "deep" / "a"])
+    selector = [coco.ROOT_PATH / "dir" / "deep" / "a"]
+    actions = app.update_blocking(preview=True, component_selector=selector)
+    assert _planned_deletes(actions) == {"a"}
+    assert _stored() == {"a": 1, "b": 1}
+
+    app.update_blocking(component_selector=selector)
 
     assert _stored() == {"b": 1}
 
@@ -749,18 +764,28 @@ def test_preview_of_an_unselected_deleted_item_plans_nothing() -> None:
     assert _stored() == {"a": 1, "b": 1}
 
 
-def test_preview_does_not_plan_deletes_of_selected_gone_components() -> None:
-    # As in a preview without a selector: the deletes of the components a run
-    # no longer mounts are not previewed.
-    _source.update(a=1)
+def test_preview_plans_the_deletes_the_selected_update_makes() -> None:
+    # "a" and "c" are gone; only "a" is selected, so only its delete is planned.
+    _source.update(a=1, b=1, c=1)
     app = _app("preview_selected_deleted")
     _run_all_then_clear_log(app)
+    paths_before = {str(p) for p in list_stable_paths_sync(app)}
+    GlobalDictTarget.store.metrics.clear()
 
     del _source["a"]
-    actions = app.update_blocking(preview=True, component_selector=[_items_path("a")])
+    del _source["c"]
+    selector = [_items_path("a"), _items_path("b")]
+    actions = app.update_blocking(preview=True, component_selector=selector)
 
-    assert actions == []
-    assert _stored() == {"a": 1}
+    assert _planned_deletes(actions) == {"a"}
+    assert _stored() == {"a": 1, "b": 1, "c": 1}
+    assert {str(p) for p in list_stable_paths_sync(app)} == paths_before
+    assert GlobalDictTarget.store.metrics.collect() == {}
+
+    # The sliced update makes exactly the planned deletes.
+    app.update_blocking(component_selector=selector)
+    assert GlobalDictTarget.store.metrics.collect() == {"delete": 1, "sink": 1}
+    assert _stored() == {"b": 1, "c": 1}
 
 
 def test_preview_includes_the_own_changes_of_the_ancestors_that_run() -> None:
@@ -874,9 +899,14 @@ def test_tombstone_left_by_a_failed_delete_waits_for_a_run_that_covers_it() -> N
     assert _stored() == {"a": 1, "b": 1}
 
     # This run's GC sweep leaves the tombstone: "b" is not selected.
+    assert (
+        app.update_blocking(preview=True, component_selector=[_items_path("a")]) == []
+    )
     app.update_blocking(component_selector=[_items_path("a")])
     assert _stored() == {"a": 1, "b": 1}
 
+    actions = app.update_blocking(preview=True, component_selector=[_items_path("b")])
+    assert _planned_deletes(actions) == {"b"}
     app.update_blocking(component_selector=[_items_path("b")])
     assert _stored() == {"a": 1}
 
