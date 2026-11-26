@@ -6,10 +6,10 @@ rust_counterpart: connectors
 description: >
   Keep a Google Doc in step with Markdown your flow declares. The doc is
   updated in place, block by block, so unchanged paragraphs and the comments
-  on them stay; a person's edits are kept and reported. Signs in with the
-  drive.file scope only.
+  on them stay; a person's edits are kept and reported, and can be read back
+  as Markdown. Signs in with the drive.file scope only.
 ---
-The `google_docs` connector keeps a Google Doc in step with Markdown your flow declares: a report, a brief, a summary that people read and comment on in Google Docs. It creates the doc on the first run and, on each change, rewrites only the parts whose content changed.
+The `google_docs` connector keeps a Google Doc in step with Markdown your flow declares: a report, a brief, a summary that people read and comment on in Google Docs. It creates the doc on the first run and, on each change, rewrites only the parts whose content changed. What people change in the doc can be read back, so a flow can take their edits in.
 
 ```python
 from cocoindex.connectors import google_docs
@@ -87,10 +87,12 @@ def declare_doc(account: ContextKey[UserAccount], name: str, content: str) -> No
 Declares a Google Doc whose content is `content`, in Markdown.
 
 - `account` is the [`ContextKey`](../programming_guide/context) under which the app's lifespan provides the signed-in `UserAccount`.
-- `name` is the doc's title when it is created, and, with the context key's name, its identity across runs.
+- `name` is the doc's title when it is created, and, with the context key's name, its identity.
 - `content` is Markdown; see [Markdown](#markdown).
 
-On the first run, the target creates the doc in your My Drive and tags it with an id it keeps in its own state. From then on it finds the doc by that tag, not by its name: rename the doc or move it to another folder, and the target keeps writing to it. Changing `name` in your code declares a different doc: the old one is trashed and a new one created.
+On the first run, the target creates the doc in your My Drive and tags it with an id made from the context key's name and `name`. From then on it finds the doc by that tag, not by its title: rename the doc or move it to another folder, and the target keeps writing to it. Changing `name` in your code declares a different doc: the old one is trashed and a new one created.
+
+The tag depends on the declaration alone, as a table's name does for a database target. A run that starts with a new state (on another machine, or after deleting the state database) finds the doc and keeps writing to it, and two apps that declare the same `name` under the same context key name with the same account write the same doc.
 
 ```python
 from typing import AsyncIterator
@@ -133,13 +135,55 @@ People can edit the doc. A block a person changed since the target last wrote it
 - A block a person deleted as a whole stays deleted, and is reported the same way.
 - A block the flow no longer declares, but that a person edited, is left in the doc with the person's text, and the target lets go of it.
 
-A change of formatting counts as an edit as well, since the target compares the text with its bold, italic, code and links. Text a person adds between blocks belongs to no block, and the target leaves it alone.
+A change of formatting counts as an edit as well, since the target compares the text with its bold, italic, code and links. Whitespace does not: an empty paragraph, a space at either end of a paragraph, or bold that takes in the space after a word. Text a person adds between blocks belongs to no block, and the target leaves it alone.
+
+When a person renames a heading and the flow's version takes the new name in, the target keeps the block where it is, under its new name, rather than writing it again (the blocks under the heading, whose heading paths changed with it, too).
 
 ### Deleting the declaration
 
-When the declaration goes away (the code no longer declares the doc, or the app is dropped), the target moves the doc to the **trash**. It never deletes a doc permanently: Google Drive keeps a trashed file for 30 days, and you can restore it from there. A doc restored from the trash is not the target's again; the next declaration with the same `name` creates a new doc.
+When the declaration goes away (the code no longer declares the doc, or the app is dropped), the target moves the doc to the **trash**. It never deletes a doc permanently: Google Drive keeps a trashed file for 30 days, and you can restore it from there. Restored before the next declaration with the same `name`, the doc is the target's again; restored after it, it is not, since that declaration created a new doc, and the newer one stays the target's.
 
 If a person moves the doc to the trash while it is still declared, the next change creates a new doc with the full content.
+
+### Reading back a person's edits
+
+```python
+async def read_doc(
+    account: ContextKey[UserAccount], name: str, declared: str
+) -> DocRead | None
+
+@dataclass(frozen=True)
+class DocRead:
+    url: str
+    content: str
+    edited: tuple[tuple[str, ...], ...]
+    deleted: tuple[tuple[str, ...], ...]
+```
+
+`read_doc` reads back the doc that `declare_doc(account, name, ...)` keeps, and returns `None` when there is none (not created yet, or in the trash). `declared` is the Markdown the doc was last declared with: the content of the run that last wrote it.
+
+- `url` is the doc's link.
+- `content` is `declared`, with each block a person edited in the doc replaced by the person's text, in Markdown, and each block a person deleted left out. The rest is `declared` exactly, so `content == declared` when no one changed a block. Declaring `content` takes the person's edits in: those blocks are the target's again, and their text is not rewritten.
+- `edited` and `deleted` are the heading paths of those blocks, as declared, in order: `("Brief", "Risks")` for the block under `## Risks` under `# Brief`, and `()` for the text before the first heading.
+
+It tells a person's edit from the target's own writes the same way the target does, by the [named ranges](#how-a-change-is-written).
+
+```python
+@coco.fn
+async def app_main() -> None:
+    report = await write_report()  # Markdown
+    last = coco.use_state("brief", initial_value=None)  # what the doc was declared with
+    if last.value is not None:
+        doc = await google_docs.read_doc(GDOCS, "Weekly brief", last.value)
+        if doc is not None and doc.content != last.value:
+            print(f"People edited {doc.edited} and deleted {doc.deleted} in {doc.url}")
+    google_docs.declare_doc(GDOCS, "Weekly brief", report)
+    last.value = report
+```
+
+A read is a data dependency of the function that made it, as a read of a file is. A memoized function that called `read_doc` runs again when a person edits or deletes a block of the doc, or the doc goes to the trash or is replaced, and is reused otherwise. The target's own writes do not make it run again: after each write the target stamps the doc with the revision it wrote, so that the next run can tell its write from a person's. Neither does a comment. Checking the record costs one Drive and one Docs request per run, and one more read of the doc when the doc's revision moved for another reason than the target's write. In a [preview](../programming_guide/app#previewing-an-update), `read_doc` reads the doc too.
+
+A person's text comes back in the [Markdown](#markdown) below, which parses back to what the doc holds. What the subset cannot spell (a style other than a heading, such as Title; a list item two levels deeper than the one above it) reads back otherwise, and the block stays the person's after `content` is declared.
 
 ### Markdown
 
@@ -156,4 +200,4 @@ The target writes the subset of Markdown a report needs:
 | `[text](url)`, `<url>`, bare `http://` and `https://` URLs | Link |
 | Fenced code blocks | One Roboto Mono paragraph per line |
 
-Anything else (a table, a numbered list, a block quote) is written as the text it is. A horizontal rule is dropped.
+Anything else (a table, a numbered list, a block quote) is written as the text it is. A horizontal rule is dropped. A backslash before any ASCII punctuation character writes that character as it is (`\*`, `\#`, `\[`).
