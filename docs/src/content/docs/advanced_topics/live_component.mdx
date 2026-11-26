@@ -299,6 +299,8 @@ async def app_main(folder: pathlib.Path, outdir: pathlib.Path) -> None:
     await coco.mount(FolderWatcher, folder, target)
 ```
 
+In live mode the component keeps running in the background until it is deleted (its parent no longer mounts it, or its key is deleted) or the app is dropped; either cancels `process_live()`.
+
 </Fragment>
 <Fragment slot="rust">
 
@@ -309,7 +311,7 @@ app.update(move |ctx| async move {
 .await?;
 ```
 
-`mount_live` returns when the component marks itself ready. In live mode the component keeps running in the background until the app is dropped.
+`mount_live` returns when the component marks itself ready. In live mode the component keeps running in the background until it is deleted (its parent no longer mounts it, or its key is deleted) or the app is dropped; either cancels `process_live`.
 
 </Fragment>
 </LangTabs>
@@ -828,7 +830,7 @@ This lets you use the same `LiveComponent` type in both modes without code chang
 
 ### A catch-up update beside a running live update
 
-A catch-up update of an app whose live update is still running leaves the live component running. The catch-up mounts its own instance of the component beside it, so two `process_live()` calls for one component can run at the same time: the live one, and the catch-up one, which ends at `mark_ready()`. Their full passes take turns, and an `update()` or `delete()` from the live one that arrives during the catch-up's full pass runs after that pass commits. If `process_live()` takes an exclusive resource (a lock, a port, a consumer group membership) before `mark_ready()`, the catch-up instance must be able to wait for it or do without it.
+A catch-up update of an app whose live update is still running leaves the live component running. The catch-up mounts its own instance of the component beside it, so two `process_live()` calls for one component can run at the same time: the live one, and the catch-up one, which ends at `mark_ready()`. Their full passes take turns, and an `update()` or `delete()` from the live one that arrives during the catch-up's full pass runs after that pass commits. If `process_live()` takes an exclusive resource (a lock, a port, a consumer group membership) before `mark_ready()`, the catch-up instance must be able to wait for it or do without it. A catch-up update that no longer mounts the component deletes it, and that stops the live one too.
 
 ## Restrictions
 

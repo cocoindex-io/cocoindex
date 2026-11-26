@@ -22,16 +22,41 @@ use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt};
 
 use tokio::sync::oneshot;
 
-/// Per-component drain timeout, used in two places:
+/// Per-component drain timeout, used in three places:
 ///   - `mount_live_async`'s cancel-and-drain of a prior incarnation at
 ///     the same path (without a timeout, a wedged prior incarnation
 ///     could hold the parent's `update_full_lock` forever).
+///   - `stop_deleted_live_component`'s cancel-and-drain of a deleted
+///     component's incarnation (the delete holds the component's build
+///     permit meanwhile).
 ///   - `App::drop_app`'s registry walk (per-component, in parallel).
 ///
-/// Single source of truth: both call sites should match so the design's
+/// Single source of truth: the call sites should match so the design's
 /// "drop_app" contract behaves the same as a re-mount's drain — see
 /// specs/live_component/design.md.
 pub(crate) const LIVE_COMPONENT_DRAIN_TIMEOUT_SECS: u64 = 30;
+
+/// Stop `state`, the live incarnation of a component a delete removes, if it is
+/// still the one installed (a re-mount since the delete was decided replaced
+/// it, and that one keeps running): cancel it, and drain it with the same
+/// timeout as a re-mount's drain of a prior incarnation.
+pub(crate) async fn stop_deleted_live_component<Prof: EngineProfile>(
+    component: &Component<Prof>,
+    state: &Arc<LiveComponentState<Prof>>,
+) {
+    if !component.clear_live_state_if(state) {
+        return;
+    }
+    if !state.cancel_and_drain_within_timeout().await {
+        tracing::warn!(
+            "cancel_and_drain of the live component deleted at {} timed out \
+             after {}s; proceeding with the delete. What its running subpath \
+             ops write after the delete may be left behind.",
+            component.stable_path(),
+            LIVE_COMPONENT_DRAIN_TIMEOUT_SECS
+        );
+    }
+}
 
 /// Result of mounting a live component.
 pub struct MountLiveResult<Prof: EngineProfile> {
@@ -155,22 +180,15 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             .is_some_and(|state| state.is_running_live());
         let leaves_existing =
             existing_state.is_some() && (!replaces_running || (!live && existing_runs_live));
-        if let Some(existing_state) = existing_state.as_ref().filter(|_| !leaves_existing) {
-            let drain_fut = existing_state.cancel_and_drain();
-            if tokio::time::timeout(
-                std::time::Duration::from_secs(LIVE_COMPONENT_DRAIN_TIMEOUT_SECS),
-                drain_fut,
-            )
-            .await
-            .is_err()
-            {
-                tracing::warn!(
-                    "mount_live_async: cancel_and_drain of prior incarnation \
-                     timed out after {}s; proceeding with new mount. The orphan \
-                     drain may continue briefly; next update_full will reconcile.",
-                    LIVE_COMPONENT_DRAIN_TIMEOUT_SECS
-                );
-            }
+        if let Some(existing_state) = existing_state.as_ref().filter(|_| !leaves_existing)
+            && !existing_state.cancel_and_drain_within_timeout().await
+        {
+            tracing::warn!(
+                "mount_live_async: cancel_and_drain of prior incarnation \
+                 timed out after {}s; proceeding with new mount. The orphan \
+                 drain may continue briefly; next update_full will reconcile.",
+                LIVE_COMPONENT_DRAIN_TIMEOUT_SECS
+            );
         }
 
         // 2b. Write the live component's own `ChildExistence` row (and any
@@ -384,7 +402,7 @@ pub struct LiveComponentState<Prof: EngineProfile> {
     /// Signaled once when `mark_ready` is called.
     ready_notify: tokio::sync::Notify,
 
-    /// Cancellation token — triggered on re-mount, app shutdown, or
+    /// Cancellation token — triggered on re-mount, delete, app shutdown, or
     /// catch-up `mark_ready`.
     cancellation_token: tokio_util::sync::CancellationToken,
 
@@ -540,6 +558,48 @@ impl<Prof: EngineProfile> LiveComponentState<Prof> {
             let _ = handle.await;
         }
         self.cancel_and_await_quiescence().await;
+    }
+
+    /// [`Self::cancel_and_drain`], giving up after
+    /// [`LIVE_COMPONENT_DRAIN_TIMEOUT_SECS`]; whether the drain finished.
+    pub(crate) async fn cancel_and_drain_within_timeout(&self) -> bool {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(LIVE_COMPONENT_DRAIN_TIMEOUT_SECS),
+            self.cancel_and_drain(),
+        )
+        .await
+        .is_ok()
+    }
+
+    /// Retire the ops dispatched for `subpath` so far: supersede the queued
+    /// one, and wait for the running one to finish. An op dispatched later is
+    /// left to run.
+    async fn settle_subpath_ops(&self, subpath: &StablePath) {
+        if let Some(displaced) = self
+            .pending
+            .lock()
+            .map
+            .get_mut(subpath)
+            .and_then(|entry| entry.queued.take())
+        {
+            let _ = displaced.handle_tx.send(HandleOutcome::Superseded);
+        }
+        loop {
+            let notified = self.pending_changed.notified();
+            tokio::pin!(notified);
+            {
+                let pending = self.pending.lock();
+                if !pending
+                    .map
+                    .get(subpath)
+                    .is_some_and(|entry| entry.processing)
+                {
+                    return;
+                }
+                notified.as_mut().enable();
+            }
+            notified.await;
+        }
     }
 
     /// Cancel the token and wait until `pending` is fully empty.
@@ -779,7 +839,8 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 on_error.clone(),
                 self.preview_collector.clone(),
                 self.component_selector.clone(),
-            ),
+            )
+            .for_live_cycle(),
             self.app_store.clone(),
             self.update_refusal.clone(),
         );
@@ -1050,7 +1111,10 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// then constructs a fresh parent processor context anchored at this
     /// controller's component (mirroring `update_full`'s ctx construction)
     /// and calls `mount_live_prepare` + `MountLivePending::complete()` to
-    /// install the inner live state at the child path.
+    /// install the inner live state at the child path. Before it mounts, it
+    /// retires the child path's earlier ops (see
+    /// `LiveComponentState::settle_subpath_ops`), waiting, under the lock,
+    /// for the one running.
     ///
     /// The `update_full_lock` is held for the duration of `complete()`,
     /// which does:
@@ -1079,6 +1143,16 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             _ = self.state.cancellation_token.cancelled() => return Err(make_cancelled_error()),
             guard = self.state.update_full_lock.lock() => guard,
         };
+
+        // The mount takes the place of the child's earlier ops, which don't run
+        // after it: it doesn't go through the subpath's queue, and an
+        // `operator.delete` queued before it would otherwise run later, and
+        // delete the component it mounts.
+        tokio::select! {
+            biased;
+            _ = self.state.cancellation_token.cancelled() => return Err(make_cancelled_error()),
+            _ = self.state.settle_subpath_ops(&child_path) => {}
+        }
 
         // Post-acquire re-check: the token may have fired *while we were
         // waiting* but after the cancelled-arm was last polled.
@@ -1474,8 +1548,10 @@ async fn run_op<Prof: EngineProfile>(
             // existence upsert), and the delete run below takes an existing
             // `Component` entry for a re-mount and deletes nothing, which
             // would leave the update's target states behind. Ops of one
-            // subpath run one at a time, and none runs during `update_full`,
-            // so nothing writes the entry between here and the delete run.
+            // subpath run one at a time, none runs during `update_full`, and a
+            // live component mounted at the subpath waits for this op (see
+            // `mount_inner_live`), so nothing mounts the subpath between here
+            // and the delete run.
             remove_existence_with_tombstone(app_store, component.stable_path(), subpath).await?;
             let context = ComponentProcessorContext::new_borrowing_from(
                 child.clone(),

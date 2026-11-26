@@ -13,6 +13,7 @@ use crate::engine::context::{
 use crate::engine::context::{
     FnCallContext, FnCallMemoEntry, FnMemoCache, UserStateCache, decode_stored_entry,
 };
+use crate::engine::live_component::stop_deleted_live_component;
 use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
@@ -2048,6 +2049,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // write a stage marker.
     let mut demote_component_only = false;
     if comp_mode == ComponentProcessingMode::Delete {
+        // Taken before the existence check: an incarnation that a re-mount
+        // installs after the check is not the deleted component's.
+        let live_state = comp_ctx.component().live_state();
         app_store.delete_component_memo(&stable_path).await?;
         if let Some((parent_path, key)) = stable_path.as_ref().split_parent() {
             match app_store.read_path_node_type(parent_path, key).await? {
@@ -2063,6 +2067,13 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 }
                 None => {}
             }
+        }
+        // A deleted live component stops: its `process_live` would otherwise
+        // keep running cycles that declare the target states deleted here.
+        // Its running subpath ops finish before this delete's child sweep, and
+        // its queued ones are dropped, unless the drain times out.
+        if let Some(live_state) = live_state {
+            stop_deleted_live_component(comp_ctx.component(), &live_state).await;
         }
     }
     let child_existence = if demote_component_only {
@@ -2549,6 +2560,27 @@ pub(crate) async fn eager_existence_upsert<Prof: EngineProfile>(
         .app_store()
         .ensure_existence_chain(path, &known_parent_path)
         .await
+}
+
+/// Whether a live component's cycle may run, checked in place of
+/// [`eager_existence_upsert`]: its existence entry, written when it was
+/// mounted, still marks a component. A delete removes the entry (or keeps it as
+/// a directory) before its own run, which waits for the cycle's permit, so a
+/// cycle that finds it gone stops instead of writing it back, and one that
+/// still finds it commits before the delete runs.
+pub(crate) async fn live_cycle_component_is_mounted<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+) -> Result<bool> {
+    let Some((parent_path, key)) = comp_ctx.stable_path().as_ref().split_parent() else {
+        return Ok(true);
+    };
+    Ok(matches!(
+        comp_ctx
+            .app_store()
+            .read_path_node_type(parent_path, key)
+            .await?,
+        Some(db_schema::StablePathNodeType::Component)
+    ))
 }
 
 /// Walk every entry in the function-memo cache and produce the set of
