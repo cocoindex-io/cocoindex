@@ -90,6 +90,20 @@ runs:
       shell: bash
       run: rustup toolchain install stable --profile minimal${{ inputs.clippy == 'true' && ' --component clippy' || '' }}
 
+    # Linux arm64 links through `dev/cc_with_lld.sh`, which uses lld where
+    # it is installed and GNU ld otherwise. The runner image has no lld.
+    - name: Install lld
+      if: runner.os == 'Linux' && runner.arch == 'ARM64'
+      shell: bash
+      run: |
+        if ! command -v ld.lld > /dev/null; then
+          start=$SECONDS
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends lld
+          echo "Installed lld in $((SECONDS - start)) s"
+        fi
+        ld.lld --version
+
     # Every job needs `protoc` on some leg: the SDK's Qdrant feature
     # (`qdrant-client`) and the Rust examples that enable it or LanceDB
     # (`lance-encoding`) compile protobufs via `prost-build`, and `uv sync`
