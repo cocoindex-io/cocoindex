@@ -1,0 +1,1474 @@
+//! Integration test for the native LanceDB target connector.
+//!
+//! Fully hermetic: it runs a real CocoIndex pipeline into a LanceDB database in a
+//! temp directory (no external services), then reads it back to assert the
+//! managed-target reconcile semantics (create, upsert, skip-unchanged, search,
+//! delete-orphan).
+//!
+//!   cargo test -p cocoindex --features lancedb --test it lancedb_target::
+#![cfg(feature = "lancedb")]
+
+use cocoindex::connectors::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
+use cocoindex::{Ctx, Environment, ManagedTargetOptions, PreviewAction, Result, SchemaFields};
+use serde::Serialize;
+
+cocoindex::context_key!(
+    static DB: LanceDatabase, key = "lancedb_test"
+);
+
+const TABLE: &str = "docs";
+const HALF_TABLE: &str = "half_docs";
+
+#[derive(Clone, Serialize)]
+struct Row {
+    id: i64,
+    text: String,
+    embedding: Vec<f32>,
+}
+
+#[derive(Clone, Serialize)]
+struct RowV2 {
+    id: i64,
+    text: String,
+    summary: String,
+    embedding: Vec<f32>,
+}
+
+#[derive(Clone, Serialize)]
+struct RowV2Nullable {
+    id: i64,
+    text: String,
+    summary: Option<String>,
+    embedding: Vec<f32>,
+}
+
+#[derive(Clone, Serialize, SchemaFields)]
+struct HalfRow {
+    id: i64,
+    #[coco(vector, half)]
+    embedding: Vec<f32>,
+}
+
+#[tokio::test]
+async fn lancedb_from_row_writes_float16_vectors_without_downgrading() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceHalfVectorTest")
+        .await?;
+
+    app.run(move |ctx| async move {
+        let schema = TableSchema::from_row::<HalfRow>(["id"])?.with_vector_dim("embedding", 3)?;
+        let table = lancedb::mount_table_target(&ctx, &DB, HALF_TABLE, schema).await?;
+        table.declare_row(
+            &ctx,
+            &HalfRow {
+                id: 1,
+                embedding: vec![0.25, 0.5, 0.75],
+            },
+        )?;
+        Ok(())
+    })
+    .await?;
+
+    let table = db
+        .connection()
+        .open_table(HALF_TABLE)
+        .execute()
+        .await
+        .unwrap();
+    let schema = table.schema().await.unwrap();
+    assert_eq!(
+        schema.field_with_name("embedding").unwrap().data_type(),
+        &arrow_schema::DataType::FixedSizeList(
+            std::sync::Arc::new(arrow_schema::Field::new(
+                "item",
+                arrow_schema::DataType::Float16,
+                true,
+            )),
+            3,
+        )
+    );
+    assert_eq!(table.count_rows(None).await.unwrap(), 1);
+    Ok(())
+}
+
+fn schema() -> TableSchema {
+    TableSchema::new(
+        [
+            ("id", ColumnDef::new(ColumnType::Int64)),
+            ("text", ColumnDef::new(ColumnType::Text)),
+            ("embedding", ColumnDef::new(ColumnType::Vector(3))),
+        ],
+        ["id"],
+    )
+    .unwrap()
+}
+
+fn schema_v2() -> TableSchema {
+    TableSchema::new(
+        [
+            ("id", ColumnDef::new(ColumnType::Int64)),
+            ("text", ColumnDef::new(ColumnType::Text)),
+            ("summary", ColumnDef::new(ColumnType::Text).nullable()),
+            ("embedding", ColumnDef::new(ColumnType::Vector(3))),
+        ],
+        ["id"],
+    )
+    .unwrap()
+}
+
+fn schema_dim4() -> TableSchema {
+    TableSchema::new(
+        [
+            ("id", ColumnDef::new(ColumnType::Int64)),
+            ("text", ColumnDef::new(ColumnType::Text)),
+            ("embedding", ColumnDef::new(ColumnType::Vector(4))),
+        ],
+        ["id"],
+    )
+    .unwrap()
+}
+
+fn schema_nullable_text() -> TableSchema {
+    TableSchema::new(
+        [
+            ("id", ColumnDef::new(ColumnType::Int64)),
+            ("text", ColumnDef::new(ColumnType::Text).nullable()),
+            ("embedding", ColumnDef::new(ColumnType::Vector(3))),
+        ],
+        ["id"],
+    )
+    .unwrap()
+}
+
+async fn row_count(db: &LanceDatabase) -> usize {
+    db.connection()
+        .open_table(TABLE)
+        .execute()
+        .await
+        .unwrap()
+        .count_rows(None)
+        .await
+        .unwrap()
+}
+
+async fn table_version(db: &LanceDatabase) -> u64 {
+    db.connection()
+        .open_table(TABLE)
+        .execute()
+        .await
+        .unwrap()
+        .version()
+        .await
+        .unwrap()
+}
+
+async fn table_exists(db: &LanceDatabase, table_name: &str) -> bool {
+    db.connection()
+        .table_names()
+        .execute()
+        .await
+        .unwrap()
+        .iter()
+        .any(|name| name == table_name)
+}
+
+#[tokio::test]
+async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    // Build + run a pipeline declaring the given rows. coco_db_path persists
+    // across runs so reconciliation sees prior tracking records.
+    let run = |rows: Vec<Row>| {
+        let db = db.clone();
+        let coco_db_path = coco_db_path.clone();
+        async move {
+            let app = Environment::builder()
+                .db_path(&coco_db_path)
+                .provide_key(&DB, db)
+                .build()
+                .await
+                .unwrap()
+                .app("LanceTargetTest")
+                .await
+                .unwrap();
+            app.run(move |ctx| {
+                let rows = rows.clone();
+                async move {
+                    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+                    for row in &rows {
+                        table.declare_row(&ctx, row)?;
+                    }
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+
+    let mk = |id: i64, text: &str, emb: [f32; 3]| Row {
+        id,
+        text: text.to_string(),
+        embedding: emb.to_vec(),
+    };
+    let mk_v2 = |id: i64, text: &str, summary: &str, emb: [f32; 3]| RowV2 {
+        id,
+        text: text.to_string(),
+        summary: summary.to_string(),
+        embedding: emb.to_vec(),
+    };
+
+    // --- Run 1: create table + insert 3 rows ---
+    run(vec![
+        mk(1, "alpha", [1.0, 0.0, 0.0]),
+        mk(2, "beta", [0.0, 1.0, 0.0]),
+        mk(3, "gamma", [0.0, 0.0, 1.0]),
+    ])
+    .await;
+    assert_eq!(row_count(&db).await, 3, "three rows inserted");
+
+    // --- Vector search returns the nearest row ---
+    let hits = lancedb::vector_search(&db, TABLE, "embedding", vec![0.0, 0.9, 0.1], 1).await?;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["text"], "beta", "nearest vector is beta");
+    assert!(hits[0].contains_key("_distance"));
+
+    // --- Run 2: unchanged → still 3 rows (no duplication) ---
+    run(vec![
+        mk(1, "alpha", [1.0, 0.0, 0.0]),
+        mk(2, "beta", [0.0, 1.0, 0.0]),
+        mk(3, "gamma", [0.0, 0.0, 1.0]),
+    ])
+    .await;
+    assert_eq!(
+        row_count(&db).await,
+        3,
+        "unchanged re-run does not duplicate"
+    );
+
+    // --- Run 3: change row 1's text → upsert updates in place (still 3 rows) ---
+    run(vec![
+        mk(1, "alpha-updated", [1.0, 0.0, 0.0]),
+        mk(2, "beta", [0.0, 1.0, 0.0]),
+        mk(3, "gamma", [0.0, 0.0, 1.0]),
+    ])
+    .await;
+    assert_eq!(row_count(&db).await, 3, "update is in-place, not an insert");
+    let hit = lancedb::vector_search(&db, TABLE, "embedding", vec![1.0, 0.0, 0.0], 1).await?;
+    assert_eq!(hit[0]["text"], "alpha-updated", "row 1 text was updated");
+
+    // --- Run 4: drop row 3 → orphan reconciled away (2 rows) ---
+    run(vec![
+        mk(1, "alpha-updated", [1.0, 0.0, 0.0]),
+        mk(2, "beta", [0.0, 1.0, 0.0]),
+    ])
+    .await;
+    assert_eq!(row_count(&db).await, 2, "removed row is deleted");
+
+    // --- Run 5: add a scalar column → table is evolved, not rebuilt ---
+    let db_for_v2 = db.clone();
+    let coco_db_path_for_v2 = coco_db_path.clone();
+    let rows_v2 = vec![
+        mk_v2(1, "alpha-updated", "first", [1.0, 0.0, 0.0]),
+        mk_v2(2, "beta", "second", [0.0, 1.0, 0.0]),
+    ];
+    let app = Environment::builder()
+        .db_path(&coco_db_path_for_v2)
+        .provide_key(&DB, db_for_v2)
+        .build()
+        .await
+        .unwrap()
+        .app("LanceTargetTest")
+        .await
+        .unwrap();
+    app.run(move |ctx| {
+        let rows = rows_v2.clone();
+        async move {
+            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema_v2()).await?;
+            for row in &rows {
+                table.declare_row(&ctx, row)?;
+            }
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        row_count(&db).await,
+        2,
+        "schema evolution preserves existing rows"
+    );
+    let hit = lancedb::vector_search(&db, TABLE, "embedding", vec![0.0, 1.0, 0.0], 1).await?;
+    assert_eq!(hit[0]["summary"], "second");
+
+    Ok(())
+}
+
+/// A table that a later run no longer declares is dropped, and so is one
+/// declared when the app's state is dropped. Covers both the sync
+/// `declare_table_target` (whose row provider is run-scoped) and
+/// `mount_table_target` (whose rows are a child of the table): re-declaring the
+/// table afterwards re-inserts every row and index, so no stale row or index
+/// tracking survives the drop.
+#[tokio::test]
+async fn lancedb_undeclared_and_dropped_tables_are_removed() -> Result<()> {
+    for mount in [false, true] {
+        let tempdir = tempfile::tempdir().unwrap();
+        let uri = tempdir.path().join("lancedb_data");
+        let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+        let app = Environment::builder()
+            .db_path(tempdir.path().join(".cocoindex_db"))
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceTableRemovalTest")
+            .await?;
+        let declare = move |ctx: cocoindex::Ctx| async move {
+            let table = if mount {
+                lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?
+            } else {
+                lancedb::declare_table_target(&ctx, &DB, TABLE, schema())?
+            };
+            for id in 0..5i64 {
+                table.declare_row(
+                    &ctx,
+                    &Row {
+                        id,
+                        text: format!("document number {id}"),
+                        embedding: vec![0.0, 0.0, 0.0],
+                    },
+                )?;
+            }
+            table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+            Ok(())
+        };
+        let assert_declared = |db: LanceDatabase| async move {
+            assert!(table_exists(&db, TABLE).await, "mount={mount}");
+            assert_eq!(row_count(&db).await, 5, "mount={mount}");
+            let names = index_names(&db, TABLE).await;
+            assert!(
+                names.iter().any(|n| n == "text_fts_idx"),
+                "mount={mount}: fts index created, got {names:?}"
+            );
+        };
+
+        app.run(declare).await?;
+        assert_declared(db.clone()).await;
+
+        // A run that no longer declares the table drops it.
+        app.run(|_ctx| async { Ok(()) }).await?;
+        assert!(
+            !table_exists(&db, TABLE).await,
+            "mount={mount}: a table no longer declared is dropped"
+        );
+
+        app.run(declare).await?;
+        assert_declared(db.clone()).await;
+
+        app.drop_state().await?;
+        assert!(
+            !table_exists(&db, TABLE).await,
+            "mount={mount}: drop_state drops the table"
+        );
+
+        app.run(declare).await?;
+        assert_declared(db.clone()).await;
+    }
+    Ok(())
+}
+
+/// Declare the rows of [`lancedb_nullable_schema_only_add_does_not_upsert_rows`]
+/// under `schema_v2`, with the added nullable `summary` column null.
+async fn declare_v2_nullable_rows(ctx: Ctx) -> Result<()> {
+    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema_v2()).await?;
+    for row in [
+        RowV2Nullable {
+            id: 1,
+            text: "alpha".to_string(),
+            summary: None,
+            embedding: vec![1.0, 0.0, 0.0],
+        },
+        RowV2Nullable {
+            id: 2,
+            text: "beta".to_string(),
+            summary: None,
+            embedding: vec![0.0, 1.0, 0.0],
+        },
+    ] {
+        table.declare_row(&ctx, &row)?;
+    }
+    Ok(())
+}
+
+/// Planned actions as sorted strings. The connector's actions encode as
+/// positional arrays: a table action is `[db_key, table_name, spec, recreate,
+/// null_backfilled_columns]`, a row action `[pk, state, track_only]`.
+fn describe(actions: &[PreviewAction]) -> Vec<String> {
+    let mut described: Vec<String> = actions
+        .iter()
+        .map(|action| {
+            let (verb, value) = match action {
+                PreviewAction::Create(v) => ("create", v),
+                PreviewAction::Update(v) => ("update", v),
+                PreviewAction::Delete(v) => ("delete", v),
+            };
+            let value: serde_json::Value = value.decode().unwrap();
+            match value.as_array().map(Vec::as_slice) {
+                Some([_db_key, table, _spec, recreate, null_backfilled]) => format!(
+                    "{verb} table {table} recreate={recreate} null_backfilled={null_backfilled}"
+                ),
+                Some([pk, state, track_only]) => {
+                    format!("{verb} row {pk} state={state} track_only={track_only}")
+                }
+                _ => panic!("unexpected action payload {value}"),
+            }
+        })
+        .collect();
+    described.sort();
+    described
+}
+
+#[tokio::test]
+async fn lancedb_nullable_schema_only_add_does_not_upsert_rows() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    {
+        let app = Environment::builder()
+            .db_path(&coco_db_path)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceNullableSchemaOnlyTest")
+            .await?;
+        app.run(move |ctx| async move {
+            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+            for row in [
+                Row {
+                    id: 1,
+                    text: "alpha".to_string(),
+                    embedding: vec![1.0, 0.0, 0.0],
+                },
+                Row {
+                    id: 2,
+                    text: "beta".to_string(),
+                    embedding: vec![0.0, 1.0, 0.0],
+                },
+            ] {
+                table.declare_row(&ctx, &row)?;
+            }
+            Ok(())
+        })
+        .await?;
+    }
+
+    let initial_version = table_version(&db).await;
+
+    // Preview plans the column add the way the update below applies it: the
+    // rows, null in the added column, only advance their tracking.
+    {
+        let app = Environment::builder()
+            .db_path(&coco_db_path)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceNullableSchemaOnlyTest")
+            .await?;
+        let actions = app.preview(declare_v2_nullable_rows).await?;
+        assert_eq!(
+            describe(&actions),
+            vec![
+                "update row [1] state=null track_only=true",
+                "update row [2] state=null track_only=true",
+                r#"update table "docs" recreate=false null_backfilled=["summary"]"#,
+            ]
+        );
+    }
+    assert_eq!(table_version(&db).await, initial_version);
+
+    {
+        let app = Environment::builder()
+            .db_path(&coco_db_path)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceNullableSchemaOnlyTest")
+            .await?;
+        app.run(declare_v2_nullable_rows).await?;
+    }
+
+    let table = db.connection().open_table(TABLE).execute().await.unwrap();
+    assert!(
+        table
+            .schema()
+            .await
+            .unwrap()
+            .field_with_name("summary")
+            .is_ok(),
+        "nullable column was added"
+    );
+    assert_eq!(row_count(&db).await, 2);
+
+    let schema_only_version = table_version(&db).await;
+    assert_eq!(
+        schema_only_version,
+        initial_version + 1,
+        "schema-only change should only commit the add_columns version"
+    );
+
+    {
+        let app = Environment::builder()
+            .db_path(&coco_db_path)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceNullableSchemaOnlyTest")
+            .await?;
+        app.run(declare_v2_nullable_rows).await?;
+    }
+    assert_eq!(table_version(&db).await, schema_only_version);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn lancedb_replays_unchanged_rows_after_destructive_schema_change() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+    let rows = vec![Row {
+        id: 1,
+        text: "same".to_string(),
+        embedding: vec![1.0, 0.0, 0.0],
+    }];
+
+    let run = |schema: TableSchema| {
+        let db = db.clone();
+        let coco_db_path = coco_db_path.clone();
+        let rows = rows.clone();
+        async move {
+            let app = Environment::builder()
+                .db_path(&coco_db_path)
+                .provide_key(&DB, db)
+                .build()
+                .await?
+                .app("LanceTargetReplayRowsTest")
+                .await?;
+            app.run(move |ctx| {
+                let rows = rows.clone();
+                let schema = schema.clone();
+                async move {
+                    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema).await?;
+                    for row in &rows {
+                        table.declare_row(&ctx, row)?;
+                    }
+                    Ok(())
+                }
+            })
+            .await
+        }
+    };
+
+    run(schema()).await?;
+    assert_eq!(row_count(&db).await, 1);
+
+    run(schema_nullable_text()).await?;
+    assert_eq!(
+        row_count(&db).await,
+        1,
+        "destructive table replacement must replay unchanged child rows"
+    );
+    let hits = lancedb::vector_search(&db, TABLE, "embedding", vec![1.0, 0.0, 0.0], 1).await?;
+    assert_eq!(hits[0]["text"], "same");
+    Ok(())
+}
+
+#[tokio::test]
+async fn lancedb_replaces_table_on_destructive_schema_change() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    let run = |schema: TableSchema, rows: Vec<Row>| {
+        let db = db.clone();
+        let coco_db_path = coco_db_path.clone();
+        async move {
+            let app = Environment::builder()
+                .db_path(&coco_db_path)
+                .provide_key(&DB, db)
+                .build()
+                .await?
+                .app("LanceTargetReplaceTest")
+                .await?;
+            app.run(move |ctx| {
+                let rows = rows.clone();
+                let schema = schema.clone();
+                async move {
+                    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema).await?;
+                    for row in &rows {
+                        table.declare_row(&ctx, row)?;
+                    }
+                    Ok(())
+                }
+            })
+            .await
+        }
+    };
+
+    run(
+        schema(),
+        vec![
+            Row {
+                id: 1,
+                text: "old".to_string(),
+                embedding: vec![1.0, 0.0, 0.0],
+            },
+            Row {
+                id: 2,
+                text: "removed".to_string(),
+                embedding: vec![0.0, 1.0, 0.0],
+            },
+        ],
+    )
+    .await?;
+    assert_eq!(row_count(&db).await, 2);
+
+    run(
+        schema_dim4(),
+        vec![Row {
+            id: 1,
+            text: "new".to_string(),
+            embedding: vec![1.0, 0.0, 0.0, 0.0],
+        }],
+    )
+    .await?;
+
+    assert_eq!(
+        row_count(&db).await,
+        1,
+        "destructive table replacement should rebuild only declared rows"
+    );
+    let hits = lancedb::vector_search(&db, TABLE, "embedding", vec![1.0, 0.0, 0.0, 0.0], 1).await?;
+    assert_eq!(hits[0]["text"], "new");
+    Ok(())
+}
+
+#[tokio::test]
+async fn lancedb_user_managed_target_does_not_create_table() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceUserManagedTargetTest")
+        .await?;
+
+    app.run(move |ctx| async move {
+        let _table = lancedb::mount_table_target_with_options(
+            &ctx,
+            &DB,
+            TABLE,
+            schema(),
+            ManagedTargetOptions::user_managed(),
+        )
+        .await?;
+        Ok(())
+    })
+    .await?;
+
+    assert!(
+        !table_exists(&db, TABLE).await,
+        "user-managed LanceDB target should not create the table"
+    );
+    Ok(())
+}
+
+/// `declare_table_target_with_options` (the sync, same-component form) honors
+/// `managed_by`: a user-managed table is neither created nor dropped, and its
+/// rows are written once the user has created it.
+#[tokio::test]
+async fn lancedb_declare_table_target_with_options_user_managed() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceDeclareUserManagedTest")
+        .await?;
+
+    let declare_user_managed = |ctx: Ctx, row: Option<Row>| async move {
+        let table = lancedb::declare_table_target_with_options(
+            &ctx,
+            &DB,
+            TABLE,
+            schema(),
+            ManagedTargetOptions::user_managed(),
+        )?;
+        if let Some(row) = row {
+            table.declare_row(&ctx, &row)?;
+        }
+        Ok(())
+    };
+
+    app.run(move |ctx| declare_user_managed(ctx, None)).await?;
+    assert!(!table_exists(&db, TABLE).await, "user-managed: not created");
+
+    // Created outside CocoIndex, the table takes rows.
+    db.connection()
+        .create_empty_table(TABLE, schema_arrow())
+        .execute()
+        .await
+        .unwrap();
+    app.run(move |ctx| {
+        declare_user_managed(
+            ctx,
+            Some(Row {
+                id: 1,
+                text: "one".to_string(),
+                embedding: vec![0.1, 0.2, 0.3],
+            }),
+        )
+    })
+    .await?;
+    assert_eq!(row_count(&db).await, 1);
+
+    // No longer declared: the user-managed table stays.
+    app.run(|_ctx| async { Ok(()) }).await?;
+    assert!(table_exists(&db, TABLE).await, "user-managed: not dropped");
+    assert_eq!(row_count(&db).await, 1);
+    Ok(())
+}
+
+fn schema_arrow() -> arrow_schema::SchemaRef {
+    std::sync::Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new("id", arrow_schema::DataType::Int64, false),
+        arrow_schema::Field::new("text", arrow_schema::DataType::Utf8, false),
+        arrow_schema::Field::new(
+            "embedding",
+            arrow_schema::DataType::FixedSizeList(
+                std::sync::Arc::new(arrow_schema::Field::new(
+                    "item",
+                    arrow_schema::DataType::Float32,
+                    true,
+                )),
+                3,
+            ),
+            false,
+        ),
+    ]))
+}
+
+#[derive(Clone, Serialize)]
+struct WideRow {
+    id: i64,
+    tiny: i8,
+    byte: u8,
+    short: u16,
+    word: u32,
+    long: u64,
+    half: f32,
+}
+
+/// The integer and float widths the Python connector maps (`np.int8`,
+/// `np.uint*`, `np.float16`) are stored with their Arrow types.
+#[tokio::test]
+async fn lancedb_stores_every_integer_width_and_float16() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceWideRowTest")
+        .await?;
+    const WIDE: &str = "wide";
+
+    app.run(move |ctx| async move {
+        let schema = TableSchema::new(
+            [
+                ("id", ColumnDef::new(ColumnType::Int64)),
+                ("tiny", ColumnDef::new(ColumnType::Int8)),
+                ("byte", ColumnDef::new(ColumnType::UInt8)),
+                ("short", ColumnDef::new(ColumnType::UInt16)),
+                ("word", ColumnDef::new(ColumnType::UInt32)),
+                ("long", ColumnDef::new(ColumnType::UInt64)),
+                ("half", ColumnDef::new(ColumnType::Float16)),
+            ],
+            ["id"],
+        )?;
+        let table = lancedb::mount_table_target(&ctx, &DB, WIDE, schema).await?;
+        table.declare_row(
+            &ctx,
+            &WideRow {
+                id: 1,
+                tiny: -8,
+                byte: 255,
+                short: 65_535,
+                word: 4_000_000_000,
+                long: 1 << 40,
+                half: 0.5,
+            },
+        )?;
+        Ok(())
+    })
+    .await?;
+
+    let table = db.connection().open_table(WIDE).execute().await.unwrap();
+    let schema = table.schema().await.unwrap();
+    let data_type = |name: &str| schema.field_with_name(name).unwrap().data_type().clone();
+    assert_eq!(data_type("tiny"), arrow_schema::DataType::Int8);
+    assert_eq!(data_type("byte"), arrow_schema::DataType::UInt8);
+    assert_eq!(data_type("short"), arrow_schema::DataType::UInt16);
+    assert_eq!(data_type("word"), arrow_schema::DataType::UInt32);
+    assert_eq!(data_type("long"), arrow_schema::DataType::UInt64);
+    assert_eq!(data_type("half"), arrow_schema::DataType::Float16);
+    assert_eq!(
+        table
+            .count_rows(Some(
+                "long = 1099511627776 AND byte = 255 AND tiny = -8".to_string()
+            ))
+            .await
+            .unwrap(),
+        1
+    );
+    Ok(())
+}
+
+/// An FTS index stores token positions by default, as in the Python connector,
+/// so it answers a phrase query.
+#[tokio::test]
+async fn lancedb_fts_index_answers_phrase_queries_by_default() -> Result<()> {
+    use ::lancedb::index::scalar::{FtsQuery, FullTextSearchQuery, PhraseQuery};
+    use ::lancedb::query::{ExecutableQuery, QueryBase};
+    use futures::TryStreamExt;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceFtsPhraseTest")
+        .await?;
+    app.run(move |ctx| async move {
+        let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+        for (id, text) in [(1, "red fox jumps"), (2, "fox red jumps")] {
+            table.declare_row(
+                &ctx,
+                &Row {
+                    id,
+                    text: text.to_string(),
+                    embedding: vec![0.1, 0.2, 0.3],
+                },
+            )?;
+        }
+        table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+        Ok(())
+    })
+    .await?;
+
+    let table = db.connection().open_table(TABLE).execute().await.unwrap();
+    // One commit's sinks run in no fixed order, so the index may predate the
+    // rows. Fold them in: a phrase query reads only indexed rows.
+    table
+        .optimize(::lancedb::table::OptimizeAction::All)
+        .await
+        .unwrap();
+    let phrase = PhraseQuery::new("red fox".to_string()).with_column(Some("text".to_string()));
+    let batches: Vec<_> = table
+        .query()
+        .full_text_search(FullTextSearchQuery::new_query(FtsQuery::Phrase(phrase)))
+        .execute()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    let hits: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(hits, 1, "only the row with the words in order matches");
+    Ok(())
+}
+
+/// `connect_with_options` passes the options Python's `connect_async(uri,
+/// **options)` takes; the state id stays the URI.
+#[tokio::test]
+async fn lancedb_connect_with_options() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let uri = uri.to_str().unwrap();
+    let db = LanceDatabase::connect_with_options(
+        uri,
+        lancedb::ConnectOptions {
+            read_consistency_interval: Some(std::time::Duration::ZERO),
+            storage_options: [("timeout".to_string(), "30s".to_string())].into(),
+        },
+    )
+    .await?;
+    assert_eq!(db.state_id(), uri);
+    db.connection()
+        .create_empty_table(TABLE, schema_arrow())
+        .execute()
+        .await
+        .unwrap();
+    assert!(table_exists(&db, TABLE).await);
+    Ok(())
+}
+
+#[derive(Clone, Serialize)]
+struct RowTwoVec {
+    id: i64,
+    text: String,
+    embedding: Vec<f32>,
+    embedding2: Vec<f32>,
+}
+
+fn schema_two_vec() -> TableSchema {
+    TableSchema::new(
+        [
+            ("id", ColumnDef::new(ColumnType::Int64)),
+            ("text", ColumnDef::new(ColumnType::Text)),
+            ("embedding", ColumnDef::new(ColumnType::Vector(3))),
+            (
+                "embedding2",
+                ColumnDef::new(ColumnType::Vector(2)).nullable(),
+            ),
+        ],
+        ["id"],
+    )
+    .unwrap()
+}
+
+/// Adding a new vector column must evolve the table additively (via `AllNulls`),
+/// not trigger a destructive rebuild — and the rows + new vector column work.
+#[tokio::test]
+async fn lancedb_adds_vector_column_additively() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    // v1: single vector column.
+    {
+        let app = Environment::builder()
+            .db_path(&coco_db_path)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceAddVecTest")
+            .await?;
+        app.run(move |ctx| async move {
+            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+            table.declare_row(
+                &ctx,
+                &Row {
+                    id: 1,
+                    text: "a".into(),
+                    embedding: vec![1.0, 0.0, 0.0],
+                },
+            )?;
+            table.declare_row(
+                &ctx,
+                &Row {
+                    id: 2,
+                    text: "b".into(),
+                    embedding: vec![0.0, 1.0, 0.0],
+                },
+            )?;
+            Ok(())
+        })
+        .await?;
+    }
+    assert_eq!(row_count(&db).await, 2);
+
+    // v2: add a second (nullable) vector column. Additive evolution.
+    {
+        let app = Environment::builder()
+            .db_path(&coco_db_path)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceAddVecTest")
+            .await?;
+        app.run(move |ctx| async move {
+            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema_two_vec()).await?;
+            table.declare_row(
+                &ctx,
+                &RowTwoVec {
+                    id: 1,
+                    text: "a".into(),
+                    embedding: vec![1.0, 0.0, 0.0],
+                    embedding2: vec![0.5, 0.5],
+                },
+            )?;
+            table.declare_row(
+                &ctx,
+                &RowTwoVec {
+                    id: 2,
+                    text: "b".into(),
+                    embedding: vec![0.0, 1.0, 0.0],
+                    embedding2: vec![0.1, 0.9],
+                },
+            )?;
+            Ok(())
+        })
+        .await?;
+    }
+    assert_eq!(row_count(&db).await, 2, "vector-column add preserves rows");
+    // Both the original and the new vector column are searchable.
+    let h1 = lancedb::vector_search(&db, TABLE, "embedding", vec![1.0, 0.0, 0.0], 1).await?;
+    assert_eq!(h1[0]["text"], "a");
+    let h2 = lancedb::vector_search(&db, TABLE, "embedding2", vec![0.1, 0.9], 1).await?;
+    assert_eq!(h2[0]["text"], "b", "the added vector column is queryable");
+    Ok(())
+}
+
+async fn index_names(db: &LanceDatabase, table_name: &str) -> Vec<String> {
+    db.connection()
+        .open_table(table_name)
+        .execute()
+        .await
+        .unwrap()
+        .list_indices()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|i| i.name)
+        .collect()
+}
+
+/// An FTS index attachment is created when declared and dropped when the
+/// declaration is removed (the attachment reconcile create/delete path). FTS is
+/// used because, unlike PQ vector indexes, it needs no training data and so is
+/// reliable on a tiny hermetic table.
+#[tokio::test]
+async fn lancedb_fts_index_created_then_dropped() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    let run = |declare_index: bool| {
+        let db = db.clone();
+        let coco_db_path = coco_db_path.clone();
+        async move {
+            let app = Environment::builder()
+                .db_path(&coco_db_path)
+                .provide_key(&DB, db)
+                .build()
+                .await
+                .unwrap()
+                .app("LanceFtsTest")
+                .await
+                .unwrap();
+            app.run(move |ctx| async move {
+                let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+                for id in 0..5i64 {
+                    table.declare_row(
+                        &ctx,
+                        &Row {
+                            id,
+                            text: format!("document number {id}"),
+                            embedding: vec![0.0, 0.0, 0.0],
+                        },
+                    )?;
+                }
+                if declare_index {
+                    table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+    };
+
+    // Run 1: declare the FTS index → it is created.
+    run(true).await;
+    let names = index_names(&db, TABLE).await;
+    assert!(
+        names.iter().any(|n| n == "text_fts_idx"),
+        "fts index created, got {names:?}"
+    );
+
+    // Run 2: stop declaring it → the orphaned attachment is dropped.
+    run(false).await;
+    let names = index_names(&db, TABLE).await;
+    assert!(
+        !names.iter().any(|n| n == "text_fts_idx"),
+        "fts index dropped, got {names:?}"
+    );
+    Ok(())
+}
+
+/// A user-managed FTS index must NOT be dropped by CocoIndex when it stops being
+/// declared — CocoIndex doesn't own user-managed DDL. Regression test for the
+/// drop path not carrying `managed_by`.
+#[tokio::test]
+async fn lancedb_user_managed_fts_index_not_dropped_on_undeclare() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+
+    // Stage 1: a system-managed run physically creates the table + FTS index.
+    {
+        let coco = tempdir.path().join(".coco_system");
+        let app = Environment::builder()
+            .db_path(&coco)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceSysSetup")
+            .await?;
+        app.run(move |ctx| async move {
+            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+            table.declare_row(
+                &ctx,
+                &Row {
+                    id: 1,
+                    text: "hello world".to_string(),
+                    embedding: vec![0.0, 0.0, 0.0],
+                },
+            )?;
+            table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+            Ok(())
+        })
+        .await?;
+    }
+    assert!(
+        index_names(&db, TABLE)
+            .await
+            .iter()
+            .any(|n| n == "text_fts_idx"),
+        "system setup should have created the index"
+    );
+
+    // Stage 2: a *user-managed* CocoIndex deployment (separate tracking db) adopts
+    // the existing table + index, then stops declaring the index. The index must
+    // survive — CocoIndex doesn't own it.
+    let coco_user = tempdir.path().join(".coco_user");
+    let run_user = |declare_index: bool| {
+        let db = db.clone();
+        let coco_user = coco_user.clone();
+        async move {
+            let app = Environment::builder()
+                .db_path(&coco_user)
+                .provide_key(&DB, db)
+                .build()
+                .await
+                .unwrap()
+                .app("LanceUserManaged")
+                .await
+                .unwrap();
+            app.run(move |ctx| async move {
+                let table = lancedb::mount_table_target_with_options(
+                    &ctx,
+                    &DB,
+                    TABLE,
+                    schema(),
+                    ManagedTargetOptions::user_managed(),
+                )
+                .await?;
+                if declare_index {
+                    table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+    };
+
+    run_user(true).await; // adopt the index as user-managed
+    run_user(false).await; // stop declaring it
+    assert!(
+        index_names(&db, TABLE)
+            .await
+            .iter()
+            .any(|n| n == "text_fts_idx"),
+        "user-managed FTS index must NOT be dropped on undeclare, got {:?}",
+        index_names(&db, TABLE).await
+    );
+    Ok(())
+}
+
+/// An FTS index can be created with an explicit stemming language (parity with
+/// the Python connector's `language` option).
+#[tokio::test]
+async fn lancedb_fts_index_with_language() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceFtsLangTest")
+        .await?;
+    app.run(move |ctx| async move {
+        let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+        table.declare_row(
+            &ctx,
+            &Row {
+                id: 1,
+                text: "running runs runner".to_string(),
+                embedding: vec![0.0, 0.0, 0.0],
+            },
+        )?;
+        table.declare_fts_index(
+            &ctx,
+            "text",
+            lancedb::FtsIndexOptions {
+                language: Some("English".to_string()),
+                ..Default::default()
+            },
+        )?;
+        Ok(())
+    })
+    .await?;
+    assert!(
+        index_names(&db, TABLE)
+            .await
+            .iter()
+            .any(|n| n == "text_fts_idx"),
+        "fts index with a language should be created"
+    );
+    Ok(())
+}
+
+/// A destructive table replace (dim-3 → dim-4 vector column) drops and recreates
+/// the underlying table, destroying its indices. A still-declared FTS index must
+/// be rebuilt on the new table — not silently lost. Regression test for the
+/// index-attachment-on-the-wrong-provider bug.
+#[tokio::test]
+async fn lancedb_fts_index_survives_destructive_table_replace() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    let run = |schema: TableSchema, embedding: Vec<f32>| {
+        let db = db.clone();
+        let coco_db_path = coco_db_path.clone();
+        async move {
+            let app = Environment::builder()
+                .db_path(&coco_db_path)
+                .provide_key(&DB, db)
+                .build()
+                .await
+                .unwrap()
+                .app("LanceFtsReplaceTest")
+                .await
+                .unwrap();
+            app.run(move |ctx| {
+                let embedding = embedding.clone();
+                async move {
+                    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema).await?;
+                    table.declare_row(
+                        &ctx,
+                        &Row {
+                            id: 1,
+                            text: "hello world".to_string(),
+                            embedding,
+                        },
+                    )?;
+                    table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+
+    // Run 1: dim-3 schema + FTS index → created.
+    run(schema(), vec![1.0, 0.0, 0.0]).await;
+    assert!(
+        index_names(&db, TABLE)
+            .await
+            .iter()
+            .any(|n| n == "text_fts_idx"),
+        "fts index should exist after the first run"
+    );
+
+    // Run 2: dim-4 schema forces a destructive table replace; index still declared.
+    run(schema_dim4(), vec![1.0, 0.0, 0.0, 0.0]).await;
+    let names = index_names(&db, TABLE).await;
+    assert!(
+        names.iter().any(|n| n == "text_fts_idx"),
+        "fts index must be rebuilt after a destructive table replace, got {names:?}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Derived-schema overrides: the embedder supplies the vector schema.
+// ---------------------------------------------------------------------------
+
+cocoindex::context_key!(
+    static EMBEDDER: cocoindex::VectorSchema, key = "lancedb_test_embedder"
+);
+
+#[derive(Clone, Serialize, SchemaFields)]
+struct ProviderRow {
+    id: i64,
+    rank: i64,
+    #[coco(vector)]
+    embedding: Vec<f32>,
+}
+
+/// `with_vector_schema` takes the dimension and the element type from the
+/// provider held in the context, and `with_column_type` replaces one derived
+/// column type; both reach the created table.
+#[tokio::test]
+async fn lancedb_from_row_resolves_vector_from_context_provider() -> Result<()> {
+    const PROVIDER_TABLE: &str = "provider_docs";
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .provide_key(
+            &EMBEDDER,
+            cocoindex::VectorSchema {
+                element_type: cocoindex::VectorElementType::Float16,
+                size: 3,
+            },
+        )
+        .build()
+        .await?
+        .app("LanceProviderSchemaTest")
+        .await?;
+
+    app.run(move |ctx| async move {
+        let schema = TableSchema::from_row::<ProviderRow>(["id"])?
+            .with_vector_schema("embedding", ctx.get_key(&EMBEDDER)?)
+            .await?
+            .with_column_type("rank", ColumnType::Int32)?;
+        let table = lancedb::mount_table_target(&ctx, &DB, PROVIDER_TABLE, schema).await?;
+        table.declare_row(
+            &ctx,
+            &ProviderRow {
+                id: 1,
+                rank: 7,
+                embedding: vec![0.25, 0.5, 0.75],
+            },
+        )?;
+        Ok(())
+    })
+    .await?;
+
+    let table = db
+        .connection()
+        .open_table(PROVIDER_TABLE)
+        .execute()
+        .await
+        .unwrap();
+    let schema = table.schema().await.unwrap();
+    assert_eq!(
+        schema.field_with_name("embedding").unwrap().data_type(),
+        &arrow_schema::DataType::FixedSizeList(
+            std::sync::Arc::new(arrow_schema::Field::new(
+                "item",
+                arrow_schema::DataType::Float16,
+                true,
+            )),
+            3,
+        )
+    );
+    assert_eq!(
+        schema.field_with_name("rank").unwrap().data_type(),
+        &arrow_schema::DataType::Int32
+    );
+    assert_eq!(table.count_rows(None).await.unwrap(), 1);
+    Ok(())
+}
+
+static TARGET_ARG_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A LanceDB handle as a mount argument: the component is keyed by the id and
+/// the table's stable key.
+#[cocoindex::function]
+async fn declare_row_in_component(
+    ctx: &Ctx,
+    id: i64,
+    table: lancedb::LanceTableTarget,
+) -> Result<()> {
+    TARGET_ARG_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    table.declare_row(
+        ctx,
+        &Row {
+            id,
+            text: format!("doc{id}"),
+            embedding: vec![1.0, 0.0, 0.0],
+        },
+    )
+}
+
+#[tokio::test]
+async fn lancedb_table_target_is_a_mount_argument_keyed_by_its_table() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let db = LanceDatabase::connect(tempdir.path().join("data").to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceTargetArgTest")
+        .await?;
+    let calls = || TARGET_ARG_CALLS.load(std::sync::atomic::Ordering::SeqCst);
+    let run = |table_name: &'static str| {
+        let app = app.clone();
+        async move {
+            app.run(move |ctx| async move {
+                let table = lancedb::mount_table_target(&ctx, &DB, table_name, schema()).await?;
+                cocoindex::use_mount_each!(vec![("1".to_string(), 1_i64)], |id| {
+                    declare_row_in_component(ctx, id, table.clone())
+                })
+                .await?;
+                Ok(())
+            })
+            .await
+        }
+    };
+
+    run(TABLE).await?;
+    assert_eq!(calls(), 1);
+    assert_eq!(row_count(&db).await, 1);
+
+    // The same table: the unchanged child is skipped, and its row stays.
+    run(TABLE).await?;
+    assert_eq!(calls(), 1, "same table: the child is skipped");
+    assert_eq!(row_count(&db).await, 1);
+
+    // Another table is another key: the child runs again and writes there.
+    run(HALF_TABLE).await?;
+    assert_eq!(calls(), 2, "another table: the child runs");
+    assert!(table_exists(&db, HALF_TABLE).await);
+    Ok(())
+}

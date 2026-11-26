@@ -19,7 +19,9 @@ cargo check -p cocoindex --all-features --all-targets
 # features left out probe localhost for a server, or pull in a large dependency
 # tree only to skip. The build without features has no tests of its own
 # (cargo-clippy-sdk compiles it). Arguments narrow the run, e.g.
-# `--test fs_live`.
+# `--test it fs_live::` (the integration tests are the modules of one test
+# binary, `tests/it`; a few that need a process of their own are binaries
+# beside it).
 SDK_TEST_FEATURES="azure_blob,bigquery,code_match,doris,embed_api,fs_live,google_drive,kafka,lancedb"
 SDK_TEST_FEATURES+=",oci_object_storage,postgres,snowflake,sqlite,surrealdb,surrealdb_mem,testing,text,turbopuffer,valkey"
 # The zvec tests link the prebuilt `zvec_c_api` shared library that the

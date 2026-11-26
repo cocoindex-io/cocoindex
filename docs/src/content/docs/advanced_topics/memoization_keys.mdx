@@ -155,7 +155,7 @@ Return something that uniquely identifies the **semantic content** your function
 
 **Example — DB row:**
 
-{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (impl MemoInput for Resource, write_memo_key) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/pipeline.rs (impl MemoInput for Resource, write_memo_key) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -338,7 +338,7 @@ The two approaches above are **type-level**: every memoized function sees the sa
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (memo_key_transform_and_skip_for_function_macro) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/pipeline.rs (memo_key_transform_and_skip_for_function_macro) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -405,7 +405,7 @@ The macro checks the names at compile time. A transform also suppresses the argu
 
 **Target handles.** A target handle is where output goes, not an input of the computation, so it is not `MemoInput`. `DirTarget`, the Postgres, SQLite, Doris, SurrealDB, LanceDB, Neo4j and FalkorDB table and relation targets, the Qdrant collection, the Valkey index and the Turbopuffer namespace targets are `Serialize` instead: as an argument of a memoized function or of `mount!`, `use_mount!` or `mount_each!`, one is keyed by its stable key. The other connectors' handles are only `Clone`. Skip those in the memo key; you can skip any handle the same way:
 
-{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (target_state_of_nested_memo_survives_outer_memo_hit) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/pipeline.rs (target_state_of_nested_memo_survives_outer_memo_hit) */}
 ```rust
 #[cocoindex::function(memo, memo_key(target = skip))]
 async fn declare_nested(ctx: &Ctx, target: DirTarget, content: String) -> Result<()> {
@@ -499,7 +499,7 @@ Implement the async `memo_state` method of `MemoInput` beside `write_memo_key`, 
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (type_owned_context_memo_state_invalidates_cached_function) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/pipeline.rs (type_owned_context_memo_state_invalidates_cached_function) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -717,7 +717,7 @@ A function's memo key covers its arguments and the context values it reads. Thre
 
 `version = N` replaces the body hash as the function's logic: bump it to invalidate every memo of the function, for example when a helper the macro cannot see has changed. `deps = <expr>` folds a value into the logic fingerprint, so every call of the function depends on it. The expression is evaluated and fingerprinted once per process, through `MemoInput`.
 
-{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (version docs), rust/sdk/cocoindex/tests/memo_deps.rs (with_deps) */}
+{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (version docs), rust/sdk/cocoindex/tests/it/memo_deps.rs (with_deps) */}
 ```rust
 #[cocoindex::function(memo, version = 2)]
 async fn my_fn(ctx: &Ctx, arg: &String) -> Result<String> { /* ... */ }
@@ -736,7 +736,7 @@ Some dependencies are known only per call: a tree walk's `visit_file` depends on
 
 Construct a `LogicDep` before any component runs, never per call: a memo entry is validated against the dependencies registered at that moment, and one that is dropped at the end of a call evicts every entry that recorded it. A `static` behind `LazyLock`, forced in `main` or a lifespan, is the usual form.
 
-{/* Rust: rust/sdk/cocoindex/tests/memo_deps.rs (release, leaf); static form from rust/sdk/SHOWCASE.md, verified against src/deps.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/memo_deps.rs (release, leaf); static form from rust/sdk/SHOWCASE.md, verified against src/deps.rs */}
 ```rust
 use std::sync::LazyLock;
 
@@ -758,7 +758,7 @@ A `LogicDep` is itself a `MemoInput`, keyed by its fingerprint, so it can also b
 
 Logic, arguments and context values are known before a body runs. Some bodies read things decided only while they run: an agent session opens the files the model chose. `DataDep::new(name, validate)` declares such a *kind* of read with a validator; `ctx.use_data_dep(&kind, &key, &state)?` records one read as a key and the state observed. The next probe validates each record from the stored key and state alone, through the validator, so the entry can be reused even though nothing in its arguments covers the read. Construct a `DataDep` before any component runs, as with `LogicDep`; renaming a kind invalidates every entry that recorded it.
 
-{/* Rust: rust/sdk/cocoindex/tests/memo_deps.rs (file_kind, read) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/memo_deps.rs (file_kind, read) */}
 ```rust
 use cocoindex::Fingerprint;
 

@@ -41,7 +41,7 @@ Every ID function takes the component's `Ctx` first: the memo that keeps an ID s
 
 <Lang only="python">`generate_id` is an async function and `generate_uuid` a sync one;</Lang><Lang only="rust">Async functions that</Lang> <Lang only="python">both</Lang> return the **same** ID/UUID for the **same** `dep` value. These are idempotent: calling multiple times with identical `dep` yields identical results.
 
-{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (generate_id_returns_same_id_for_same_dep_across_runs, generate_uuid_...) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/pipeline.rs (generate_id_returns_same_id_for_same_dep_across_runs, generate_uuid_...) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -120,7 +120,7 @@ let uuids = vec![
 
 Use these when you need multiple IDs for potentially non-distinct inputs, such as splitting text into chunks where chunks may have identical content but still need unique IDs.
 
-{/* Rust: examples/rust/text_embedding/src/main.rs (process_file), rust/sdk/cocoindex/tests/pipeline.rs (with_deps, UuidGenerator) */}
+{/* Rust: examples/rust/text_embedding/src/main.rs (process_file), rust/sdk/cocoindex/tests/it/pipeline.rs (with_deps, UuidGenerator) */}
 <LangTabs>
 <Fragment slot="python">
 

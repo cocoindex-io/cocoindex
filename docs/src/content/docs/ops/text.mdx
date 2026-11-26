@@ -8,7 +8,7 @@ description: >
 
 The <Lang only="python">`cocoindex.ops.text`</Lang><Lang only="rust">`cocoindex::ops::text`</Lang> module provides operations for text processing.
 
-{/* Rust: rust/sdk/cocoindex/tests/ops_text.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/ops_text.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -53,7 +53,7 @@ Detect the programming language from a filename.
 
 **Usage:**
 
-{/* Rust: rust/sdk/cocoindex/src/ops/text.rs (doctest), rust/sdk/cocoindex/tests/ops_text.rs */}
+{/* Rust: rust/sdk/cocoindex/src/ops/text.rs (doctest), rust/sdk/cocoindex/tests/it/ops_text.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -92,7 +92,7 @@ Split text by regex separators.
 
 **Usage:**
 
-{/* Rust: rust/sdk/cocoindex/tests/ops_text.rs (separator_splitter_basic, separator_splitter_keep_separator_left) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/ops_text.rs (separator_splitter_basic, separator_splitter_keep_separator_left) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -149,7 +149,7 @@ Advanced text chunking with language awareness and syntax-aware splitting for co
 
 **Usage:**
 
-{/* Rust: examples/rust/text_embedding/src/main.rs, rust/sdk/cocoindex/tests/ops_text.rs */}
+{/* Rust: examples/rust/text_embedding/src/main.rs, rust/sdk/cocoindex/tests/it/ops_text.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -210,7 +210,7 @@ let chunks = splitter.split("Short text.", 100);
 
 **Language-aware code splitting:**
 
-{/* Rust: examples/rust/code_embedding/src/main.rs, rust/sdk/cocoindex/tests/ops_text.rs (recursive_splitter_with_languages) */}
+{/* Rust: examples/rust/code_embedding/src/main.rs, rust/sdk/cocoindex/tests/it/ops_text.rs (recursive_splitter_with_languages) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -260,7 +260,7 @@ When the same code is passed to several parse-consuming APIs (e.g. splitting *an
 structural pattern matching), wrap it in a `CodeSource` so it is parsed at most once.
 The `CodeSource` carries its own language, so <Lang only="python">the `language=` argument must be omitted</Lang><Lang only="rust">`config.language` is ignored</Lang>:
 
-{/* Rust: CodeSource::with_language and RecursiveSplitter::split_source from rust/sdk/cocoindex/src/ops/text.rs (signatures); CodePattern::compile from rust/sdk/cocoindex/tests/code.rs */}
+{/* Rust: CodeSource::with_language and RecursiveSplitter::split_source from rust/sdk/cocoindex/src/ops/text.rs (signatures); CodePattern::compile from rust/sdk/cocoindex/tests/it/code.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -353,7 +353,7 @@ Define custom language splitting rules.
 
 **Usage:**
 
-{/* Rust: rust/sdk/cocoindex/tests/ops_text.rs (custom_language_config_and_alias) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/ops_text.rs (custom_language_config_and_alias) */}
 <LangTabs>
 <Fragment slot="python">
 

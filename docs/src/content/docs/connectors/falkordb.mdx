@@ -448,7 +448,7 @@ An edge id names one edge. When the endpoints of an edge with an explicit id cha
 
 Declares a vector index on a column of a node table. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a <Lang only="python">`NodeTarget`</Lang><Lang only="rust">`TableTarget`</Lang>:
 
-{/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro); usage in rust/sdk/cocoindex/tests/graph_vector_index.rs */}
+{/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (graph_target_api! macro); usage in rust/sdk/cocoindex/tests/it/graph_vector_index.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -534,7 +534,7 @@ Build a `TableSchema` from a struct that derives `SchemaFields`:
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (TableSchema::from_row doc example); usage in rust/sdk/cocoindex/tests/graph_target.rs */}
+{/* Rust: rust/sdk/cocoindex/src/cypher_graph.rs (TableSchema::from_row doc example); usage in rust/sdk/cocoindex/tests/it/graph_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -626,7 +626,7 @@ Override the default mapping for a single column with a field attribute:
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/graph_target.rs (from_row_matches_explicit_schema) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/graph_target.rs (from_row_matches_explicit_schema) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -666,7 +666,7 @@ struct Row {
 
 To override a column for one schema only, call `with_column_type` on the derived schema. It replaces the column's type and keeps its nullability:
 
-{/* Rust: rust/sdk/cocoindex/tests/graph_target.rs (from_row_takes_column_type_overrides) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/graph_target.rs (from_row_takes_column_type_overrides) */}
 ```rust
 let schema = TableSchema::from_row::<Row>("id")?.with_column_type("location", "POINT")?;
 ```
@@ -699,7 +699,7 @@ Mark a vector field `#[coco(vector)]` (or `#[coco(vector = N)]`). The property i
 
 Build a `TableSchema` directly from <Lang only="python">a dict of</Lang><Lang only="rust">a list of</Lang> column definitions when the row type is dynamic:
 
-{/* Rust: rust/sdk/cocoindex/tests/graph_target.rs (from_row_matches_explicit_schema) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/graph_target.rs (from_row_matches_explicit_schema) */}
 <LangTabs>
 <Fragment slot="python">
 

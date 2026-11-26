@@ -28,7 +28,7 @@ The labels distinguish types you implement from types CocoIndex provides.
 
 <Lang only="rust">
 
-The types are in `cocoindex::prelude`: the `TargetHandler<V>` trait, `TargetActionSink<A>`, `TargetAction<A>`, `TargetReconcileOutput<A, R>`, `TargetChildInvalidation`, `TargetStateProvider<V>`, `TargetState<V>`, `ChildTargetDef`, `StableKey`, and the functions `register_root_target_states_provider`, `declare_target_state`, `declare_target_state_with_child` and `mount_target`. The Rust snippets on this page come from `rust/sdk/cocoindex/tests/target_state.rs`, which exercises each piece without an external service. For a complete connector against a database, read `rust/sdk/cocoindex/src/connectors/valkey.rs` (a container target with child documents).
+The types are in `cocoindex::prelude`: the `TargetHandler<V>` trait, `TargetActionSink<A>`, `TargetAction<A>`, `TargetReconcileOutput<A, R>`, `TargetChildInvalidation`, `TargetStateProvider<V>`, `TargetState<V>`, `ChildTargetDef`, `StableKey`, and the functions `register_root_target_states_provider`, `declare_target_state`, `declare_target_state_with_child` and `mount_target`. The Rust snippets on this page come from `rust/sdk/cocoindex/tests/it/target_state.rs`, which exercises each piece without an external service. For a complete connector against a database, read `rust/sdk/cocoindex/src/connectors/valkey.rs` (a container target with child documents).
 
 </Lang>
 
@@ -168,7 +168,7 @@ A **tracking record** captures the essential information needed to detect change
 - Are **deterministic**: Same input always produces the same record
 - Are **serializable**: Must be persistable<Lang only="python"> (typically a NamedTuple or dataclass). Dataclasses and NamedTuples are serialized with msgspec automatically. For types requiring pickle, use `@coco.serialize_by_pickle`.</Lang><Lang only="rust">: any `Serialize + DeserializeOwned` type.</Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (TableSpec, the tracking record of TableHandler) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/target_state.rs (TableSpec, the tracking record of TableHandler) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -227,7 +227,7 @@ For content-based change detection, keep a fingerprint instead of the full conte
 
 An **action** (you define) describes what operation to perform on the external system:
 
-{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (RowAction) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/target_state.rs (RowAction) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -255,7 +255,7 @@ struct RowAction {
 
 A **TargetActionSink** batches and executes actions:
 
-{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (recording_sink), rust/sdk/cocoindex/src/target_state.rs (TargetActionSink::from_async_fn) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/target_state.rs (recording_sink), rust/sdk/cocoindex/src/target_state.rs (TargetActionSink::from_async_fn) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -455,7 +455,7 @@ Due to interrupted updates, `prev_possible_records` may contain multiple records
 
 Start by defining the types for your provider:
 
-{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (RowAction; RowHandler keeps the row value as its tracking record) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/target_state.rs (RowAction; RowHandler keeps the row value as its tracking record) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -514,7 +514,7 @@ struct RowAction {
 
 ### Step 2: Implement the handler
 
-{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (RowHandler, key_str) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/target_state.rs (RowHandler, key_str) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -652,7 +652,7 @@ impl TargetHandler<String> for RowHandler {
 
 For root-level target states (not nested within another target), register a provider:
 
-{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (flat_target_insert_update_nochange_delete) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/target_state.rs (flat_target_insert_update_nochange_delete) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -755,7 +755,7 @@ When a container target undergoes certain changes, the child target states may b
 
 Set `child_invalidation` in the **parent handler's** `reconcile()` method when you detect that the container itself has changed in a way that affects its children:
 
-{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (TableSpec, TableAction, TableHandler) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/target_state.rs (TableSpec, TableAction, TableHandler) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -904,7 +904,7 @@ The parent is the `TableHandler` [above](#child-invalidation), a `TargetHandler<
 
 The parent's sink is built with <Lang only="python">`from_fn()` (or `from_async_fn()`), plus a `child_handler` factory</Lang><Lang only="rust">`TargetActionSink::from_async_fn_with_child_handler(apply, child_handler)`</Lang>. The callback creates and drops containers; the factory returns the handler for a container's child target states<Lang only="rust">: it takes `&A` and returns a `ChildTargetDef`, which wraps a typed child handler</Lang>:
 
-{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (table_sink, log_table_action) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/target_state.rs (table_sink, log_table_action) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -976,7 +976,7 @@ The container handler's `reconcile()` returns an action on every run while the c
 
 The user-facing API uses <Lang only="python">`declare_target_state_with_child()`</Lang><Lang only="rust">`declare_target_state_with_child()` or `mount_target()`</Lang> and exposes methods for declaring children:
 
-{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (run_table_with), rust/sdk/cocoindex/src/connectors/valkey.rs (declare_index_target_with_options, mount_index_target_with_options) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/target_state.rs (run_table_with), rust/sdk/cocoindex/src/connectors/valkey.rs (declare_index_target_with_options, mount_index_target_with_options) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -1191,7 +1191,7 @@ class _VectorIndexHandler:
 
 The parent handler (which manages regular children) returns <Lang only="python">a dict of </Lang>all supported attachment types:
 
-{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (MainHandler) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/target_state.rs (MainHandler) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -1260,7 +1260,7 @@ impl TargetHandler<String> for MainHandler {
 
 The user-facing target <Lang only="python">class</Lang><Lang only="rust">struct</Lang> calls `provider.attachment()` to get the attachment sub-provider, then declares target states on it:
 
-{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (attachment_lifecycle_create_and_cleanup) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/target_state.rs (attachment_lifecycle_create_and_cleanup) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -1396,7 +1396,7 @@ await conn.execute("INSERT ...")  # Fails on duplicate key
 
 Due to interrupted updates, `prev_possible_records` may contain multiple records. Design your reconciliation logic to handle this:
 
-{/* Rust: rust/sdk/cocoindex/tests/target_state.rs (RowHandler) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/target_state.rs (RowHandler) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -1613,7 +1613,7 @@ See the full implementations in:
 
 ## Complete examples
 
-- [`rust/sdk/cocoindex/tests/target_state.rs`](https://github.com/cocoindex-io/cocoindex/blob/main/rust/sdk/cocoindex/tests/target_state.rs) — the handler, sink and provider snippets on this page, runnable without an external service: flat targets, containers with `mount_target`, child invalidation, attachments, and the deprecated sink shapes
+- [`rust/sdk/cocoindex/tests/it/target_state.rs`](https://github.com/cocoindex-io/cocoindex/blob/main/rust/sdk/cocoindex/tests/it/target_state.rs) — the handler, sink and provider snippets on this page, runnable without an external service: flat targets, containers with `mount_target`, child invalidation, attachments, and the deprecated sink shapes
 - [`rust/sdk/cocoindex/src/resources/fs.rs`](https://github.com/cocoindex-io/cocoindex/blob/main/rust/sdk/cocoindex/src/resources/fs.rs) — `DirTarget`, file system targets
 - [`rust/sdk/cocoindex/src/connectors/valkey.rs`](https://github.com/cocoindex-io/cocoindex/blob/main/rust/sdk/cocoindex/src/connectors/valkey.rs) — a Valkey index (container) and its documents, with `statediff` and `ManagedBy`
 
