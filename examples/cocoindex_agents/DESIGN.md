@@ -1328,7 +1328,7 @@ workers skipped) pins that the trace changed nothing memoized.
 |---|---|---|---|
 | Progress survives failure | solved by `use_mount` per turn | ✅ | partial fn-memo flush on failure (S–M; pure entries only) |
 | Skip unchanged **open** sessions | shipped: `coco.DataDep` + `use_data_dep` + `cannot_skip`; adopted 2026-11-04 (*Open vs closed*) | ✅ | — |
-| Skip the **parent** of an open session | shipped: transitive validation by path (engine PR #2671, 2026-11-04); one validation per record per run (engine PR #2836, 2026-11-21: the root's records were validated twice when its body re-ran, a search and a request per page each time, §3 *Sources: the web*); no change on this side | ✅ | — |
+| Skip the **parent** of an open session | shipped: transitive validation by path (engine PR #2671, 2026-11-04); one validation per record per run (engine PR #2836, 2026-11-21: the root's records were validated twice when its body re-ran, a search and a request per page each time, §3 *Sources: the web*); a record shared by several probes of one run (a component and the memoized function beneath it, each level above an open session, sibling sessions) validated once per run (engine PR #2850, 2026-11-26); no change on this side | ✅ | — |
 | Memo probe ("would this hit?") | deferred | — | S |
 | A component hit keeps its `use_state` values | engine behaviour | ✅ | — |
 
