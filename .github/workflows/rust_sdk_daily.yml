@@ -74,6 +74,8 @@ jobs:
           # cache.
           min-free-disk-gib: 30
           clippy: ${{ contains(matrix.platform.hooks, 'cargo-clippy-sdk') }}
+          # The SDK's test binaries link every connector; see the input.
+          lld: true
 
       - name: Run Rust SDK hooks
         uses: ./.github/actions/run-prek
