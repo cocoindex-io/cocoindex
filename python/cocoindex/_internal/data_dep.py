@@ -16,7 +16,10 @@ one bit upward instead (see the engine's ``ComponentRunOutcome``), and the
 parent's entry lists the children that reported it. A memoized ancestor's
 probe then validates those descendants' records from their own entries
 (``validate_stored_data_deps`` below) and reuses the ancestor when they all
-hold. Spec: cocoindex-specs ``data_deps/spec.md``.
+hold. Each stored record is validated at most once per operation: the
+engine keeps the operation's verdicts by record identity
+(``core.DataDepVerdicts``), and every probe consults them before calling a
+validator. Spec: cocoindex-specs ``data_deps/spec.md``.
 """
 
 from __future__ import annotations
@@ -77,6 +80,12 @@ class DataDep:
     Annotate both parameters: the annotations drive typed deserialization of
     the stored key and state, as a state function's ``prev_state`` annotation
     does.
+
+    A stored record is validated at most once per operation (one
+    ``App.update``): every later probe in the same operation that holds the
+    same kind, key and stored state takes the first answer without calling
+    ``validate``. A source that changes after that answer is seen by the next
+    operation.
 
     **Construct at module import, never inside a component.** A memo entry is
     validated against the kinds registered at that moment, so a kind
@@ -219,15 +228,20 @@ def use_data_dep(kind: DataDep, /, *, key: object, state: object) -> None:
 # ---------------------------------------------------------------------------
 
 # A stored record as the engine hands it to a probe:
-# (kind_fp, key_fp, key, state), key and state as `StoredValue`s.
+# (kind_fp, key_fp, state_fp, key, state), key and state as `StoredValue`s. The
+# three fingerprints are the record's identity in the operation's verdicts.
 StoredDataDep = tuple[
-    core.Fingerprint, core.Fingerprint, core.StoredValue, core.StoredValue
+    core.Fingerprint,
+    core.Fingerprint,
+    core.Fingerprint,
+    core.StoredValue,
+    core.StoredValue,
 ]
 # A record handed back after validation: (kind_fp, key_fp, key, state). The
 # key is the original `StoredValue`; the state is the original `StoredValue`
-# when unchanged, or the validator's new state object otherwise. The engine
-# keeps stored bytes and fingerprints as they are and serializes only a new
-# state, so a refreshed record equals a fresh record of the same observation.
+# when unchanged, or the new state otherwise. The engine keeps stored bytes and
+# fingerprints as they are and serializes only a new state object, so a
+# refreshed record equals a fresh record of the same observation.
 RefreshedDataDep = tuple[core.Fingerprint, core.Fingerprint, Any, Any]
 
 
@@ -235,6 +249,7 @@ class _DecodedDataDep(NamedTuple):
     kind: DataDep
     kind_fp: core.Fingerprint
     key_fp: core.Fingerprint
+    state_fp: core.Fingerprint
     key_stored: core.StoredValue
     state_stored: core.StoredValue
     key: Any
@@ -257,7 +272,7 @@ def decode_stored_data_deps(
     re-runs and re-records.
     """
     decoded: list[_DecodedDataDep] = []
-    for kind_fp, key_fp, key_stored, state_stored in stored:
+    for kind_fp, key_fp, state_fp, key_stored, state_stored in stored:
         kind = _registry.get(kind_fp)
         if kind is None:
             logger.warning(
@@ -280,66 +295,115 @@ def decode_stored_data_deps(
             )
             return None
         decoded.append(
-            _DecodedDataDep(kind, kind_fp, key_fp, key_stored, state_stored, key, state)
+            _DecodedDataDep(
+                kind, kind_fp, key_fp, state_fp, key_stored, state_stored, key, state
+            )
         )
     return decoded
 
 
-def _call_validators(decoded: Sequence[_DecodedDataDep]) -> list[Any]:
-    return [rec.kind._validate(rec.key, rec.state) for rec in decoded]
+# A verdict as the engine holds it: `(memo_valid, new_state)`, `new_state` the
+# validator's changed state as a `StoredValue`, `None` when unchanged.
+_Verdict = tuple[bool, "core.StoredValue | None"]
+
+
+class _PendingValidation(NamedTuple):
+    """The validate phase split by the operation's verdicts (see
+    ``core.DataDepVerdicts``): one known verdict per record, ``None`` where
+    the record's validator must run; ``outcomes`` holds those validators'
+    results (or awaitables), in record order."""
+
+    known: list[_Verdict | None]
+    outcomes: list[Any]
+
+
+def _call_validators(
+    decoded: Sequence[_DecodedDataDep], verdicts: core.DataDepVerdicts
+) -> _PendingValidation:
+    """Call the validator of each record this operation has not validated
+    yet; a record validated earlier in the operation takes that verdict."""
+    known: list[_Verdict | None] = []
+    outcomes: list[Any] = []
+    for rec in decoded:
+        verdict = verdicts.get(rec.kind_fp, rec.key_fp, rec.state_fp)
+        known.append(verdict)
+        if verdict is None:
+            outcomes.append(rec.kind._validate(rec.key, rec.state))
+    return _PendingValidation(known, outcomes)
 
 
 def _fold_outcomes(
-    decoded: Sequence[_DecodedDataDep], outcomes: Sequence[Any]
+    decoded: Sequence[_DecodedDataDep],
+    verdicts: core.DataDepVerdicts,
+    known: Sequence[_Verdict | None],
+    outcomes: Sequence[Any],
 ) -> DataDepValidation:
+    """Combine known verdicts and fresh outcomes, recording each fresh outcome
+    in the operation's verdicts. A probe acts on the verdict ``record``
+    returns: its own, or the one a concurrent probe recorded first."""
     refreshed: list[RefreshedDataDep] = []
     can_reuse = True
     states_changed = False
-    for rec, outcome in zip(decoded, outcomes):
-        if not isinstance(outcome, MemoStateOutcome):
-            raise TypeError(
-                f"{rec.kind!r}.validate must return coco.MemoStateOutcome, got "
-                f"{outcome!r}"
+    fresh = iter(outcomes)
+    for rec, verdict in zip(decoded, known):
+        if verdict is None:
+            outcome = next(fresh)
+            if not isinstance(outcome, MemoStateOutcome):
+                raise TypeError(
+                    f"{rec.kind!r}.validate must return coco.MemoStateOutcome, "
+                    f"got {outcome!r}"
+                )
+            verdict = verdicts.record(
+                rec.kind_fp,
+                rec.key_fp,
+                rec.state_fp,
+                outcome.memo_valid,
+                outcome.state != rec.state,
+                outcome.state,
             )
-        if not outcome.memo_valid:
+        memo_valid, new_state = verdict
+        if not memo_valid:
             can_reuse = False
-        if outcome.state != rec.state:
+        if new_state is not None:
             states_changed = True
-            state_out: Any = outcome.state
-        else:
-            state_out = rec.state_stored
+        state_out = new_state if new_state is not None else rec.state_stored
         refreshed.append((rec.kind_fp, rec.key_fp, rec.key_stored, state_out))
     return DataDepValidation(refreshed, can_reuse, states_changed)
 
 
 def validate_data_deps_sync(
-    decoded: Sequence[_DecodedDataDep], *, running_loop_error_msg: str
+    decoded: Sequence[_DecodedDataDep],
+    verdicts: core.DataDepVerdicts,
+    *,
+    running_loop_error_msg: str,
 ) -> DataDepValidation:
-    """Validate phase, sync: call every validator; a validator's exception
-    propagates. Awaitables are resolved as memo state functions' are."""
-    outcomes = _call_validators(decoded)
+    """Validate phase, sync: call the validator of every record the operation
+    has not validated yet; a validator's exception propagates. Awaitables are
+    resolved as memo state functions' are."""
+    pending = _call_validators(decoded, verdicts)
     outcomes = resolve_awaitables_sync(
-        outcomes, running_loop_error_msg=running_loop_error_msg
+        pending.outcomes, running_loop_error_msg=running_loop_error_msg
     )
-    return _fold_outcomes(decoded, outcomes)
+    return _fold_outcomes(decoded, verdicts, pending.known, outcomes)
 
 
 async def validate_data_deps_async(
-    decoded: Sequence[_DecodedDataDep],
+    decoded: Sequence[_DecodedDataDep], verdicts: core.DataDepVerdicts
 ) -> DataDepValidation:
-    """Validate phase, async: validators run concurrently; an exception
-    propagates."""
-    outcomes = _call_validators(decoded)
+    """Validate phase, async: the validators of the records the operation has
+    not validated yet run concurrently; an exception propagates."""
+    pending = _call_validators(decoded, verdicts)
+    outcomes = pending.outcomes
     awaitable_indices = [i for i, o in enumerate(outcomes) if isinstance(o, Awaitable)]
     if awaitable_indices:
         resolved = await asyncio.gather(*(outcomes[i] for i in awaitable_indices))
         for i, value in zip(awaitable_indices, resolved):
             outcomes[i] = value
-    return _fold_outcomes(decoded, outcomes)
+    return _fold_outcomes(decoded, verdicts, pending.known, outcomes)
 
 
 async def validate_stored_data_deps(
-    path: str, stored: list[StoredDataDep]
+    verdicts: core.DataDepVerdicts, path: str, stored: list[StoredDataDep]
 ) -> tuple[list[RefreshedDataDep], bool, bool]:
     """The engine's processor-free entry (``EngineProfile::validate_data_deps``).
 
@@ -348,10 +412,11 @@ async def validate_stored_data_deps(
     there is no processor, no state handler and no component context for the
     row at ``path``, only its records. Same two phases as a component's own
     probe: decode (a failure is a logged miss, no validator called), then the
-    validators, whose exceptions propagate. Registered at ``init_runtime``.
+    validators, whose exceptions propagate, against the operation's
+    ``verdicts``. Registered at ``init_runtime``.
     """
     decoded = decode_stored_data_deps(stored, where=f"component {path}")
     if decoded is None:
         return [], False, False
-    validation = await validate_data_deps_async(decoded)
+    validation = await validate_data_deps_async(decoded, verdicts)
     return validation.refreshed, validation.can_reuse, validation.states_changed

@@ -14,7 +14,9 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::{Arc, LazyLock, RwLock, Weak};
 
-use cocoindex_core::engine::context::{DataDepRecord, FnCallContext};
+use cocoindex_core::engine::context::{
+    DataDepRecord, DataDepVerdict, DataDepVerdicts, FnCallContext,
+};
 use cocoindex_core::engine::logic_registry;
 use cocoindex_utils::fingerprint::Fingerprint;
 use futures::future::BoxFuture;
@@ -180,6 +182,11 @@ impl Drop for DataDepInner {
 /// in place of the old one when it differs) and whether the entry is still
 /// valid. `K` and `S` are the key and state types; both are stored serialized.
 ///
+/// A stored record is validated at most once per operation (one update):
+/// every later probe in the same operation that holds the same kind, key and
+/// stored state takes the first answer without calling `validate`. A source
+/// that changes after that answer is seen by the next operation.
+///
 /// **Construct before any component runs.** A memo entry is validated against
 /// the kinds registered at that moment, so a kind constructed inside a
 /// component registers too late for the entries that recorded it. A second
@@ -326,12 +333,31 @@ impl DataDepsOutcome {
 /// SDK: decode (a kind no longer registered or a stored key or state that no
 /// longer deserializes is a logged miss, and no validator runs), then the
 /// validators, concurrently; a validator's error propagates.
+///
+/// `verdicts` is the operation's: a record whose identity it holds takes that
+/// verdict and calls no validator, and each validator's answer is recorded
+/// there, so a record is validated once per operation (see
+/// `DataDepVerdicts`).
 pub(crate) async fn validate_data_deps(
+    verdicts: &DataDepVerdicts,
     records: Vec<DataDepRecord>,
     where_: &str,
 ) -> Result<DataDepsOutcome> {
-    let mut validations = Vec::with_capacity(records.len());
+    use futures::future::{Either, TryFutureExt, ready};
+
+    /// A record's answer: the verdict the operation already holds, or what its
+    /// validator decided just now.
+    enum Answer {
+        Known(DataDepVerdict),
+        Decided(MemoStateDecision),
+    }
+
+    let mut answers = Vec::with_capacity(records.len());
     for record in &records {
+        if let Some(verdict) = verdicts.get(&record.identity()) {
+            answers.push(Either::Left(ready(Ok(Answer::Known(verdict)))));
+            continue;
+        }
         let Some(kind) = registered_kind(&record.kind_fp) else {
             tracing::warn!(
                 "{where_}: memo misses on a data dependency of kind {}, which is no longer registered (renamed or removed); the body re-runs",
@@ -340,7 +366,7 @@ pub(crate) async fn validate_data_deps(
             return Ok(DataDepsOutcome::miss(records));
         };
         match (kind.validate)(&record.key, &record.state) {
-            Ok(fut) => validations.push(fut),
+            Ok(fut) => answers.push(Either::Right(fut.map_ok(Answer::Decided))),
             Err(err) => {
                 tracing::warn!(
                     "{where_}: memo misses on a data dependency of kind {:?} whose stored key or state failed to deserialize ({err}); the body re-runs",
@@ -350,25 +376,27 @@ pub(crate) async fn validate_data_deps(
             }
         }
     }
-    let decisions = futures::future::try_join_all(validations).await?;
+    let answers = futures::future::try_join_all(answers).await?;
     let mut can_reuse = true;
     let mut states_changed = false;
     let refreshed = records
         .into_iter()
-        .zip(decisions)
-        .map(|(record, decision)| {
-            let (state, memo_valid) = decision.into_parts();
-            can_reuse &= memo_valid;
-            if state.0 == record.state {
-                record
-            } else {
-                states_changed = true;
-                DataDepRecord {
-                    state_fp: Fingerprint::from_bytes(&state.0),
-                    state: state.0,
-                    ..record
+        .zip(answers)
+        .map(|(record, answer)| {
+            let verdict = match answer {
+                Answer::Known(verdict) => verdict,
+                Answer::Decided(decision) => {
+                    let (state, memo_valid) = decision.into_parts();
+                    let verdict = DataDepVerdict {
+                        memo_valid,
+                        new_state: (state.0 != record.state).then_some(state.0),
+                    };
+                    verdicts.record(record.identity(), verdict)
                 }
-            }
+            };
+            can_reuse &= verdict.memo_valid;
+            states_changed |= verdict.new_state.is_some();
+            verdict.apply(record)
         })
         .collect();
     Ok(DataDepsOutcome {

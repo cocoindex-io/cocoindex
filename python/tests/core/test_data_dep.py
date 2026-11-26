@@ -343,6 +343,158 @@ def test_a_hit_re_offers_its_records_to_a_caller_stored_later() -> None:
 
 
 # ---------------------------------------------------------------------------
+# One validation per record per operation
+# ---------------------------------------------------------------------------
+
+_fn_read_path: dict[str, pathlib.Path] = {}
+_own_read_path: dict[str, pathlib.Path] = {}
+# Run by the component's body between its own read and the function call, to
+# change a source after the component's probe validated it.
+_between_probes: dict[str, Any] = {}
+
+
+@coco.fn(memo=True)
+def _fn_reading(name: str) -> str:
+    _metrics.increment("run.fn")
+    return _read(_fn_read_path[name]).decode()
+
+
+@coco.fn(memo=True)
+def _component_reading(name: str) -> None:
+    _metrics.increment("run.component")
+    own = _read(_own_read_path[name]).decode()
+    between = _between_probes.pop(name, None)
+    if between is not None:
+        between()
+    coco.declare_target_state(
+        GlobalDictTarget.target_state(name, own + _fn_reading(name))
+    )
+
+
+@coco.fn
+async def _component_reading_main(name: str) -> None:
+    await coco.use_mount(coco.component_subpath(name), _component_reading, name)
+
+
+def test_a_record_validated_at_a_component_is_not_validated_again_beneath_it() -> None:
+    """The function's read rides into the component's entry too. When the
+    component's own read invalidates it, the body re-runs and the function's
+    probe takes the verdict the component's probe got for the shared record
+    instead of calling the validator again."""
+    _reset()
+    _between_probes.clear()
+    with tempfile.TemporaryDirectory() as d:
+        a = pathlib.Path(d) / "a.txt"
+        b = pathlib.Path(d) / "b.txt"
+        _write(a, "A1")
+        _write(b, "B1")
+        _fn_read_path["n"] = a
+        _own_read_path["n"] = b
+        app = _app("test_dd_once_per_op", _component_reading_main, "n")
+        app.update_blocking()
+        assert _metrics.collect() == {"run.component": 1, "run.fn": 1}
+
+        # b changed: a is validated once, at the component's probe.
+        _write(b, "B2")
+        app.update_blocking()
+        assert _metrics.collect() == {
+            "run.component": 1,
+            "validate.file": 2,
+            "validate.file.digest": 1,
+        }
+        assert _data() == {"n": "B2A1"}
+
+        # a moved while staying valid and b changed: the function's probe
+        # takes a's changed-but-valid verdict and refreshes its entry with it.
+        _touch(a)
+        _write(b, "B3")
+        app.update_blocking()
+        assert _metrics.collect() == {
+            "run.component": 1,
+            "validate.file": 2,
+            "validate.file.digest": 2,
+        }
+        assert _data() == {"n": "B3A1"}
+
+        # Both entries hold a's refreshed state: the next probe takes the
+        # fast path for it. Each operation validates afresh.
+        app.update_blocking()
+        assert _metrics.collect() == {"validate.file": 2}
+
+
+def test_a_change_between_two_probes_is_seen_by_the_next_operation() -> None:
+    """An operation acts on the first verdict for a record: a source that
+    changes after the component's probe validated it does not make the
+    function's probe in the same operation miss. The next operation validates
+    the stored record afresh and re-runs both."""
+    _reset()
+    _between_probes.clear()
+    with tempfile.TemporaryDirectory() as d:
+        a = pathlib.Path(d) / "a.txt"
+        b = pathlib.Path(d) / "b.txt"
+        _write(a, "A1")
+        _write(b, "B1")
+        _fn_read_path["n"] = a
+        _own_read_path["n"] = b
+        app = _app("test_dd_change_between", _component_reading_main, "n")
+        app.update_blocking()
+        _metrics.clear()
+
+        _write(b, "B2")
+        _between_probes["n"] = lambda: _write(a, "A2")
+        app.update_blocking()
+        assert _metrics.collect() == {
+            "run.component": 1,
+            "validate.file": 2,
+            "validate.file.digest": 1,
+        }
+        assert _data() == {"n": "B2A1"}
+
+        app.update_blocking()
+        assert _metrics.collect() == {
+            "run.component": 1,
+            "run.fn": 1,
+            "validate.file": 2,
+            "validate.file.digest": 1,
+        }
+        assert _data() == {"n": "B2A2"}
+
+        app.update_blocking()
+        assert _metrics.collect() == {"validate.file": 2}
+
+
+def test_a_record_shared_by_sibling_components_is_validated_once() -> None:
+    """Two components that read one file, mounted one after the other, hold
+    the same record: the second probe takes the first one's verdict."""
+    _reset()
+    with tempfile.TemporaryDirectory() as d:
+        a = pathlib.Path(d) / "a.txt"
+        _write(a, "A1")
+        _reads["s1"] = [a]
+        _reads["s2"] = [a]
+        app = _app("test_dd_shared_siblings", _sessions_main, ["s1", "s2"])
+        app.update_blocking()
+        _metrics.clear()
+
+        app.update_blocking()
+        assert _metrics.collect() == {"validate.file": 1}
+
+        _touch(a)
+        app.update_blocking()
+        assert _metrics.collect() == {"validate.file": 1, "validate.file.digest": 1}
+
+        _write(a, "A2")
+        app.update_blocking()
+        assert _metrics.collect() == {
+            "run.s1": 1,
+            "run.s2": 1,
+            "validate.file": 1,
+            "validate.file.digest": 1,
+        }
+        assert _data() == {"s1": "A2", "s2": "A2"}
+
+
+# ---------------------------------------------------------------------------
 # Snapshots and coarse memo keys
 # ---------------------------------------------------------------------------
 
@@ -492,10 +644,11 @@ def test_a_memoized_ancestor_is_reused_while_its_open_descendants_reads_validate
         app.update_blocking()
         assert _metrics.collect() == {"validate.file": 1}
 
-        # Edited: the read is invalid at the grandparent's probe, then at the
-        # parent's, then at the open child's own; each level re-runs its body.
-        # This run records nothing, so the ancestors store unflagged memos and
-        # the next run reuses the grandparent without validating anything.
+        # Edited: the read is invalid at the grandparent's probe; each level
+        # re-runs its body, and the parent's probe and the open child's own
+        # take that verdict without validating again. This run records
+        # nothing, so the ancestors store unflagged memos and the next run
+        # reuses the grandparent without validating anything.
         _reads["open"] = []
         _write(a, "A2")
         app.update_blocking()
@@ -503,8 +656,8 @@ def test_a_memoized_ancestor_is_reused_while_its_open_descendants_reads_validate
             "run.gp": 1,
             "run.p": 1,
             "run.open": 1,
-            "validate.file": 3,
-            "validate.file.digest": 3,
+            "validate.file": 1,
+            "validate.file.digest": 1,
         }
         app.update_blocking()
         assert _metrics.collect() == {}

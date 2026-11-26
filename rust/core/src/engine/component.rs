@@ -2223,6 +2223,7 @@ mod tests {
         /// The test profile registers no kinds, so no record validates.
         fn validate_data_deps(
             _host_runtime_ctx: &(),
+            _verdicts: Arc<crate::engine::context::DataDepVerdicts>,
             _path: &StablePath,
             records: Vec<crate::engine::context::DataDepRecord>,
         ) -> crate::prelude::Result<

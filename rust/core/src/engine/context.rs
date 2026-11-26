@@ -341,6 +341,87 @@ pub(crate) fn decode_data_deps(entries: Vec<db_schema::DataDepEntry<'_>>) -> Vec
         .collect()
 }
 
+/// A stored data-dependency record as one validation sees it: its kind, its
+/// key and the state it was recorded with. Two probes that hold this identity
+/// ask the validator the same question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DataDepIdentity {
+    pub kind_fp: Fingerprint,
+    pub key_fp: Fingerprint,
+    pub state_fp: Fingerprint,
+}
+
+impl DataDepRecord {
+    pub fn identity(&self) -> DataDepIdentity {
+        DataDepIdentity {
+            kind_fp: self.kind_fp,
+            key_fp: self.key_fp,
+            state_fp: self.state_fp,
+        }
+    }
+}
+
+/// What a validator answered for one record identity.
+#[derive(Clone, Debug)]
+pub struct DataDepVerdict {
+    pub memo_valid: bool,
+    /// The state the validator returned, serialized, when it differs from the
+    /// record's; `None` when it is unchanged.
+    pub new_state: Option<bytes::Bytes>,
+}
+
+impl DataDepVerdict {
+    /// The record as this verdict leaves it: as stored, or with the new state.
+    pub fn apply(&self, record: DataDepRecord) -> DataDepRecord {
+        match &self.new_state {
+            None => record,
+            Some(state) => DataDepRecord {
+                state_fp: Fingerprint::from_bytes(state),
+                state: state.clone(),
+                ..record
+            },
+        }
+    }
+}
+
+/// The verdicts of the data-dependency records validated in one operation, by
+/// record identity. Every context of the operation shares one (see
+/// [`ComponentProcessorContext::data_dep_verdicts`]), so a record a probe
+/// validated is not validated again by a later probe in the same operation:
+/// a component's probe and then, when its body re-runs, the probe of a
+/// memoized function beneath it that recorded the same read, or each level
+/// of a chain of flagged ancestors.
+///
+/// An operation acts on the first verdict recorded for an identity. A source
+/// that changes after it is seen by the next operation, which validates the
+/// stored records afresh. Probes of one identity that run concurrently may
+/// each call the validator; [`record`](Self::record) then hands every one the
+/// first verdict, so they still agree. Nothing here persists: the cache lives
+/// as long as the operation's contexts.
+#[derive(Debug, Default)]
+pub struct DataDepVerdicts {
+    verdicts: Mutex<HashMap<DataDepIdentity, DataDepVerdict>>,
+}
+
+impl DataDepVerdicts {
+    /// The verdict this operation already holds for `identity`, if any.
+    pub fn get(&self, identity: &DataDepIdentity) -> Option<DataDepVerdict> {
+        self.verdicts.lock().unwrap().get(identity).cloned()
+    }
+
+    /// Record the verdict a validator just returned for `identity`, and return
+    /// the verdict the operation acts on: this one, or the one a concurrent
+    /// probe recorded first.
+    pub fn record(&self, identity: DataDepIdentity, verdict: DataDepVerdict) -> DataDepVerdict {
+        self.verdicts
+            .lock()
+            .unwrap()
+            .entry(identity)
+            .or_insert(verdict)
+            .clone()
+    }
+}
+
 pub struct FnCallMemo<Prof: EngineProfile> {
     pub ret: Prof::FunctionData,
     pub(crate) target_state_paths: Vec<TargetStatePath>,
@@ -901,6 +982,8 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     app_store: AppStore,
     /// See [`ComponentProcessorContext::operation_generation`].
     operation_generation: u64,
+    /// See [`ComponentProcessorContext::data_dep_verdicts`].
+    data_dep_verdicts: Arc<DataDepVerdicts>,
 
     /// This run's in-flight token and the lender its children borrow from;
     /// see [`crate::engine::admission`].
@@ -1050,6 +1133,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             Some(parent) => parent.operation_generation(),
             None => component.app_ctx().next_operation_generation(),
         };
+        let data_dep_verdicts = match &parent_context {
+            Some(parent) => parent.data_dep_verdicts().clone(),
+            None => Arc::default(),
+        };
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
@@ -1057,6 +1144,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 processing_action,
                 app_store,
                 operation_generation,
+                data_dep_verdicts,
                 admission,
                 update_refusal,
                 left_out_children: Arc::new(AtomicBool::new(false)),
@@ -1395,6 +1483,16 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// ignore). See `Component::execute_once`.
     pub(crate) fn operation_generation(&self) -> u64 {
         self.inner.operation_generation
+    }
+
+    /// The verdicts of the data-dependency records validated so far in this
+    /// context's operation (see [`DataDepVerdicts`]). It follows
+    /// [`operation_generation`](Self::operation_generation): a context without
+    /// a parent starts an empty one, children share their parent's. A preview
+    /// is an operation of its own, so it validates afresh and keeps its
+    /// verdicts to itself.
+    pub fn data_dep_verdicts(&self) -> &Arc<DataDepVerdicts> {
+        &self.inner.data_dep_verdicts
     }
 
     /// The collector of a preview run's actions. Only a build runs as a

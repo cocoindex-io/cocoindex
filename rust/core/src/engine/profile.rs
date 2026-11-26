@@ -2,7 +2,7 @@ use std::{fmt::Debug, hash::Hash, sync::Arc};
 
 use crate::engine::{
     component::ComponentProcessor,
-    context::DataDepRecord,
+    context::{DataDepRecord, DataDepVerdicts},
     target_state::{TargetActionSink, TargetHandler},
 };
 use crate::prelude::*;
@@ -62,8 +62,14 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'stat
     /// longer registered, or whose key or state no longer decodes, make
     /// `can_reuse` false (logged, no validator called); a validator's own
     /// error propagates.
+    ///
+    /// `verdicts` is the operation's (see `DataDepVerdicts`): a record whose
+    /// identity it holds takes that verdict without calling its validator, and
+    /// a validator's answer is recorded there, as at a component's or a
+    /// function's probe.
     fn validate_data_deps(
         host_runtime_ctx: &Self::HostRuntimeCtx,
+        verdicts: Arc<DataDepVerdicts>,
         path: &StablePath,
         records: Vec<DataDepRecord>,
     ) -> Result<impl Future<Output = Result<DataDepsValidation>> + Send + 'static>;

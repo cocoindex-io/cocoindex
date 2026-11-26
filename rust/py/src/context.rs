@@ -1,5 +1,5 @@
 use crate::fingerprint::PyFingerprint;
-use crate::function::context_initial_states_to_pydict;
+use crate::function::{PyDataDepVerdicts, context_initial_states_to_pydict};
 use crate::prelude::*;
 
 use crate::deadline::PyDeadlineContext;
@@ -32,6 +32,12 @@ impl PyComponentProcessorContext {
     #[getter]
     fn live(&self) -> bool {
         self.0.live()
+    }
+
+    /// The data-dependency verdicts of this context's operation.
+    #[getter]
+    fn data_dep_verdicts(&self) -> PyDataDepVerdicts {
+        PyDataDepVerdicts(self.0.data_dep_verdicts().clone())
     }
 
     fn join_fn_call(&self, fn_ctx: &PyFnCallContext) -> PyResult<()> {
