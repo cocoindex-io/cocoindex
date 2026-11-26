@@ -920,9 +920,14 @@ impl<'a> MemoProbe<'a> {
         // Data dependencies the entry recorded (`use_data_dep`): validated only
         // when the states still allow a reuse.
         let data_deps = match guard.cached() {
-            Some(cached) if states_valid && !cached.data_deps.is_empty() => {
-                Some(validate_data_deps(cached.data_deps.to_vec(), "memoized function").await?)
-            }
+            Some(cached) if states_valid && !cached.data_deps.is_empty() => Some(
+                validate_data_deps(
+                    comp_ctx.data_dep_verdicts(),
+                    cached.data_deps.to_vec(),
+                    "memoized function",
+                )
+                .await?,
+            ),
             _ => None,
         };
 

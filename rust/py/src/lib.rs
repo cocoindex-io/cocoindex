@@ -53,6 +53,8 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     m.add_class::<context::PyComponentProcessorContext>()?;
     m.add_class::<context::PyFnCallContext>()?;
+    m.add_class::<function::PyDataDepVerdict>()?;
+    m.add_class::<function::PyDataDepVerdicts>()?;
 
     m.add_class::<deadline::PyDeadlineContext>()?;
     m.add_function(wrap_pyfunction!(deadline::deadline_none, m)?)?;

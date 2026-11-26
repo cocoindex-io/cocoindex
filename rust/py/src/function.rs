@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use cocoindex_core::engine::context::{DataDepRecord, MemoStatesPayload};
+use cocoindex_core::engine::context::{
+    DataDepIdentity, DataDepRecord, DataDepVerdict, DataDepVerdicts, MemoStatesPayload,
+};
 use cocoindex_core::engine::function::FnCallMemoGuard;
 use cocoindex_core::engine::profile::Persist;
 use cocoindex_core::engine::runtime::get_runtime;
@@ -97,9 +99,9 @@ pub(crate) fn build_memo_states_payload(
 }
 
 /// Convert stored data-dependency records into a Python list of
-/// `(kind_fp, key_fp, key, state)` tuples (the same shape as
-/// [`PyRefreshedDataDep`]), key and state as `StoredValue`s the probe decodes
-/// through the kind's deserializers.
+/// `(kind_fp, key_fp, state_fp, key, state)` tuples, key and state as
+/// `StoredValue`s the probe decodes through the kind's deserializers. The
+/// three fingerprints are the record's identity (see `DataDepVerdicts`).
 pub(crate) fn data_deps_to_pylist<'py>(
     py: Python<'py>,
     records: &[DataDepRecord],
@@ -112,12 +114,108 @@ pub(crate) fn data_deps_to_pylist<'py>(
             Ok((
                 Py::new(py, PyFingerprint(r.kind_fp))?,
                 Py::new(py, PyFingerprint(r.key_fp))?,
+                Py::new(py, PyFingerprint(r.state_fp))?,
                 key,
                 state,
             ))
         })
         .collect::<PyResult<Vec<_>>>()?;
     PyList::new(py, items)
+}
+
+/// What a validator answered for one record identity, as a probe reads it.
+#[pyclass(frozen, name = "DataDepVerdict")]
+pub struct PyDataDepVerdict {
+    memo_valid: bool,
+    new_state: Option<PyStoredValue>,
+}
+
+#[pymethods]
+impl PyDataDepVerdict {
+    #[getter]
+    fn memo_valid(&self) -> bool {
+        self.memo_valid
+    }
+
+    /// The validator's changed state; `None` when it equals the stored one.
+    #[getter]
+    fn new_state(&self) -> Option<PyStoredValue> {
+        self.new_state.clone()
+    }
+}
+
+fn verdict_to_py(verdict: DataDepVerdict) -> PyResult<PyDataDepVerdict> {
+    let new_state = verdict
+        .new_state
+        .map(|bytes| PyStoredValue::from_bytes(&bytes).into_py_result())
+        .transpose()?;
+    Ok(PyDataDepVerdict {
+        memo_valid: verdict.memo_valid,
+        new_state,
+    })
+}
+
+fn identity(
+    kind_fp: &PyFingerprint,
+    key_fp: &PyFingerprint,
+    state_fp: &PyFingerprint,
+) -> DataDepIdentity {
+    DataDepIdentity {
+        kind_fp: kind_fp.0,
+        key_fp: key_fp.0,
+        state_fp: state_fp.0,
+    }
+}
+
+/// The data-dependency verdicts of one operation (`DataDepVerdicts` in the
+/// core): a probe takes the verdict of a record identity validated earlier in
+/// the operation instead of calling its validator, and records the answer of
+/// each validator it does call.
+#[pyclass(frozen, name = "DataDepVerdicts")]
+pub struct PyDataDepVerdicts(pub Arc<DataDepVerdicts>);
+
+#[pymethods]
+impl PyDataDepVerdicts {
+    /// The verdict this operation holds for the record identity, if any.
+    fn get(
+        &self,
+        kind_fp: PyFingerprint,
+        key_fp: PyFingerprint,
+        state_fp: PyFingerprint,
+    ) -> PyResult<Option<PyDataDepVerdict>> {
+        self.0
+            .get(&identity(&kind_fp, &key_fp, &state_fp))
+            .map(verdict_to_py)
+            .transpose()
+    }
+
+    /// Record a validator's answer for the record identity: `memo_valid`, and
+    /// the state it returned, which is kept only when `state_changed` (it
+    /// differs from the stored one). Returns the verdict the operation acts
+    /// on: this one, or one a concurrent probe recorded first.
+    #[allow(clippy::too_many_arguments)]
+    fn record(
+        &self,
+        py: Python<'_>,
+        kind_fp: PyFingerprint,
+        key_fp: PyFingerprint,
+        state_fp: PyFingerprint,
+        memo_valid: bool,
+        state_changed: bool,
+        state: Py<PyAny>,
+    ) -> PyResult<PyDataDepVerdict> {
+        let new_state = state_changed
+            .then(|| data_dep_bytes(py, state))
+            .transpose()?;
+        let verdict = self.0.record(
+            identity(&kind_fp, &key_fp, &state_fp),
+            DataDepVerdict {
+                memo_valid,
+                new_state,
+            },
+        );
+        verdict_to_py(verdict)
+    }
 }
 
 /// Convert the stored context-borne memo states into a Python `dict`

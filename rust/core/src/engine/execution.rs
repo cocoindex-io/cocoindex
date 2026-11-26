@@ -326,7 +326,13 @@ pub(crate) async fn validate_open_descendants<Prof: EngineProfile>(
             };
         if !memo_info.data_deps.is_empty() {
             let records = decode_data_deps(memo_info.data_deps);
-            let validation = Prof::validate_data_deps(host_runtime_ctx, &path, records)?.await?;
+            let validation = Prof::validate_data_deps(
+                host_runtime_ctx,
+                comp_ctx.data_dep_verdicts().clone(),
+                &path,
+                records,
+            )?
+            .await?;
             if !validation.can_reuse {
                 return Ok(OpenDescendantsVerdict::NotReusable(format!(
                     "a data dependency of open descendant {path} no longer validates"

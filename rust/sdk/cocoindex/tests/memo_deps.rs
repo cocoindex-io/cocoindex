@@ -562,11 +562,19 @@ fn a_record_reaches_every_enclosing_memoized_function() {
     run(&app, "outer:A1");
     assert_eq!(collect(T), metrics(&[("validate", 1)]));
 
+    // The inner's probe takes the verdict the outer's probe got for the same
+    // record in this update: the read is validated once.
     write(&a, "A2");
     run(&app, "outer:A2");
-    let after = collect(T);
-    assert_eq!(after["run.outer"], 1);
-    assert_eq!(after["run.n"], 1);
+    assert_eq!(
+        collect(T),
+        metrics(&[
+            ("validate", 1),
+            ("validate.digest", 1),
+            ("run.outer", 1),
+            ("run.n", 1)
+        ])
+    );
 }
 
 #[cocoindex::function]
@@ -611,15 +619,15 @@ fn an_open_component_is_reused_while_its_reads_are_unchanged() {
     assert_eq!(collect(T), metrics(&[("validate", 1)]));
 
     // The read changed: the parent's walk finds the child's record invalid
-    // and the parent re-runs; the child's own probe validates once more when
-    // it is mounted, misses, and re-runs.
+    // and the parent re-runs; the child's own probe, when it is mounted, takes
+    // that verdict without validating again, misses, and re-runs.
     write(&a, "A2");
     run(&app, "A2");
     assert_eq!(
         collect(T),
         metrics(&[
-            ("validate", 2),
-            ("validate.digest", 2),
+            ("validate", 1),
+            ("validate.digest", 1),
             ("run.parent", 1),
             ("run.c", 1)
         ])
