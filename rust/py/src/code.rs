@@ -350,6 +350,49 @@ pub fn index_terms(
     })
 }
 
+// Plain tuples keep this internal bridge independent of the public Python
+// graph model. Names in that model are supplied by the Python wrapper.
+type GraphDeclaration = (String, String, String, usize, usize, Option<usize>);
+type GraphReference = (String, String, usize, usize, Option<usize>);
+type GraphFacts = (Vec<GraphDeclaration>, Vec<GraphReference>, bool);
+
+/// Extract conservative, unresolved C/C++ syntax from the shared parsed source.
+#[pyfunction]
+pub fn extract_code_graph(py: Python<'_>, source: &PyCodeSource) -> PyResult<GraphFacts> {
+    let inner = &source.inner;
+    let graph = py
+        .detach(|| cocoindex_code_ast::graph::extract_code_graph(inner))
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let declarations = graph
+        .declarations
+        .into_iter()
+        .map(|declaration| {
+            (
+                declaration.kind,
+                declaration.name,
+                declaration.signature,
+                declaration.start_byte,
+                declaration.end_byte,
+                declaration.parent_start_byte,
+            )
+        })
+        .collect();
+    let references = graph
+        .references
+        .into_iter()
+        .map(|reference| {
+            (
+                reference.kind,
+                reference.spelling,
+                reference.start_byte,
+                reference.end_byte,
+                reference.source_start_byte,
+            )
+        })
+        .collect();
+    Ok((declarations, references, graph.has_errors))
+}
+
 /// One-shot convenience: match `pattern` against `source` — a `str` (with
 /// `language` required) or a `CodeSource` (whose cached parse is reused;
 /// `language` must be omitted). Prefer a `CodePattern` when matching the same

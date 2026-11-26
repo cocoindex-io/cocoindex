@@ -16,6 +16,7 @@
 //!   layer/scope classification, and context-frame extraction.
 
 pub mod elements;
+pub mod graph;
 mod hazards;
 pub mod positions;
 pub mod prog_langs;
