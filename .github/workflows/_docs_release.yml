@@ -11,6 +11,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: docs-release
+    # The deploy and the publish step below clone and push over the network.
+    # A call that hangs must not hold the job for the default six hours.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
