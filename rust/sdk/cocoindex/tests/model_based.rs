@@ -308,7 +308,7 @@ struct Committed {
     memo_valid: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Model {
     /// The source directory: relative path to content.
     source: BTreeMap<String, Vec<u8>>,
@@ -322,6 +322,11 @@ struct Model {
     transform_memo: BTreeMap<(String, String), (Vec<u8>, String)>,
     logic: String,
     prefix: String,
+    /// Whether a run of this `App` instance (an update or a preview) has
+    /// registered the counting handler's provider since the app was opened.
+    /// The app remembers the root providers its runs registered, so a drop
+    /// reaches the handler only then; a restart opens the app anew.
+    counter_registered: bool,
 }
 
 /// What the model expects of one update.
@@ -334,6 +339,7 @@ struct Expected {
 impl Model {
     /// Plan one update over the current source, then advance as if it ran.
     fn plan_update(&mut self, failing: &BTreeSet<String>, full_reprocess: bool) -> Expected {
+        self.counter_registered = true;
         let mut counts = Counts::default();
         let mut failures = 0;
         let mut applied = BTreeMap::new();
@@ -418,13 +424,22 @@ impl Model {
         }
     }
 
-    /// The model after the app's state was dropped: the built-in targets are
-    /// reverted. The counting handler's provider is registered by the run
-    /// (`register_root_target_states_provider`), so the drop cannot reach it
-    /// and sends it nothing, as that function documents; its rows stay, and
-    /// the next run creates them again.
+    /// The model after the app's state was dropped: every target is reverted.
+    /// The counting handler's provider is registered by the run
+    /// (`register_root_target_states_provider`), and the drop reaches it
+    /// through the provider the app's latest run registered, so it deletes
+    /// the handler's rows. With no run since the app was opened, the drop
+    /// cannot reach the handler and sends it nothing; its rows stay, and the
+    /// next run creates them again.
     fn plan_drop(&mut self) -> Vec<CounterAction> {
-        let actions = Vec::new();
+        let actions = if self.counter_registered {
+            self.applied
+                .keys()
+                .map(|key| CounterAction::Delete(key.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
         self.applied.clear();
         self.committed.clear();
         self.header_memo.clear();
@@ -670,17 +685,10 @@ impl Harness {
     async fn preview_and_check(&mut self, step: &str) {
         let failing = self.probe.failing.lock().unwrap().clone();
         let before_db = dir_snapshot(&self.db_path);
-        // Plan on a copy: a preview does not advance the model.
-        let mut planned = Model {
-            source: self.model.source.clone(),
-            applied: self.model.applied.clone(),
-            committed: self.model.committed.clone(),
-            header_memo: self.model.header_memo.clone(),
-            transform_memo: self.model.transform_memo.clone(),
-            logic: self.model.logic.clone(),
-            prefix: self.model.prefix.clone(),
-        };
-        let expected = planned.plan_update(&failing, false);
+        // Plan on a copy: a preview does not advance the model, except that
+        // its run registers the counting handler's provider too.
+        let expected = self.model.clone().plan_update(&failing, false);
+        self.model.counter_registered = true;
         let (src, out, prefix) = (
             self.src.clone(),
             self.out.clone(),
@@ -788,6 +796,7 @@ impl Harness {
         let (env, app) = open_app(&self.db_path, &self.name, &self.db, &self.probe).await;
         self.env = env;
         self.app = app;
+        self.model.counter_registered = false;
     }
 
     async fn drop_and_check(&mut self, step: &str) {
@@ -1639,6 +1648,28 @@ async fn changing_mount_keys_moves_components_and_keeps_their_targets() {
     assert_eq!(run(false, vec!["a", "ccc"]).await, 2);
     assert_eq!(listing(&out), vec!["a.out", "ccc.out"]);
     env.shutdown().await;
+}
+
+/// A drop reaches the counting handler, whose provider a run registers,
+/// through the provider the app's latest run registered. An app opened anew
+/// has no such run: a drop right after a restart reverts the built-in targets
+/// only, and the next run creates the handler's rows again. A preview is a
+/// run too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_drop_reaches_a_run_time_provider_once_the_open_app_has_run() {
+    let mut h = Harness::new("drop_after_restart").await;
+    seed_files(&mut h, 5);
+    h.update_and_check(false, "initial").await;
+    h.drop_and_check("drop after a run").await;
+    h.update_and_check(false, "rebuilt after the drop").await;
+    h.restart().await;
+    h.drop_and_check("drop right after a restart").await;
+    h.update_and_check(false, "rebuilt after the drop that missed the handler")
+        .await;
+    h.restart().await;
+    h.preview_and_check("preview after a restart").await;
+    h.drop_and_check("drop after a restart and a preview").await;
+    h.env.shutdown().await;
 }
 
 /// `drop_state` while an update is running cancels it (or waits for it);

@@ -617,9 +617,11 @@ where
 /// Register a root target-state provider for the current run.
 ///
 /// The provider exists only while a run registers it: once a run stops
-/// registering it, or on [`App::drop_state`](crate::App::drop_state), the
-/// engine cannot reach its handler, so the target states declared through it
-/// are left in place.
+/// registering it, the engine cannot reach its handler, so the target states
+/// declared through it are left in place.
+/// [`App::drop_state`](crate::App::drop_state) reverts them through the
+/// handler the app's latest run registered; an app opened in a new process
+/// has to run once before its drop can reach the handler.
 pub fn register_root_target_states_provider<V, H>(
     ctx: &Ctx,
     name: impl Into<String>,
