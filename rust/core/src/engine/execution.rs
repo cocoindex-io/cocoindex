@@ -944,8 +944,8 @@ impl<Prof: EngineProfile> Committer<Prof> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChildDeletes {
     /// The run leaves no child delete owed: the sweep deleted every child it
-    /// found, or found none. A run that sweeps nothing reports it too: a
-    /// preview, which persists nothing, and the delete of a component that
+    /// found (in a preview: planned every child's delete), or found none. A
+    /// run that sweeps nothing reports it too: the delete of a component that
     /// was mounted again, whose own builds sweep its tombstones.
     Done,
     /// A child delete failed, and its tombstone stays under the component.
@@ -2264,8 +2264,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // handler factory, so the components declaring child target states can
     // preview theirs, and commits into its run's handle, where the run's
     // later reads find the component committed as an update would leave it,
-    // and nothing persists. The commit's Phase 5 deletes of the child
-    // components this run no longer declares are not previewed.
+    // and nothing persists. The commit's Phase 5 GC runs as in an update: the
+    // deletes of the child components this run no longer declares inherit
+    // the preview's collector and store handle, so they plan their actions
+    // into the preview too.
     // Whether the run applies its actions follows its store handle, as
     // whether it persists does: a run whose writes do not persist must not
     // apply its actions either, or LMDB would record states the targets no
@@ -2277,7 +2279,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 "a run that persists nothing reached submit without a preview collector"
             ));
         };
-        let planned: Result<Vec<_>> = async {
+        let planned: Result<(Vec<_>, ChildDeletes)> = async {
             if let Some((child_provider, _)) = actions_by_sinks
                 .values()
                 .find_map(|input| input.pending_children.first())
@@ -2294,14 +2296,14 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             // these target states waits on the staged token as it would there
             // (where the window also spans the sinks' apply).
             let children = build_factory_children(comp_ctx, &actions_by_sinks).await?;
-            Committer::new(comp_ctx, target_states_providers)?
-                .commit_writes(child_existence, fn_memos, user_states, tracking)
+            let child_deletes = Committer::new(comp_ctx, target_states_providers)?
+                .commit(child_existence, fn_memos, user_states, tracking)
                 .await?;
-            Ok(children)
+            Ok((children, child_deletes))
         }
         .await;
-        let children = match planned {
-            Ok(children) => children,
+        let (children, child_deletes) = match planned {
+            Ok(planned) => planned,
             Err(e) => {
                 cleanup_pending_token(comp_ctx, process_token).await;
                 return Err(e);
@@ -2323,7 +2325,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         return Ok(SubmitOutput {
             built_target_states_providers,
             touched_previous_states,
-            child_deletes: ChildDeletes::Done,
+            child_deletes,
         });
     }
 
