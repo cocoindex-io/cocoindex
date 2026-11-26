@@ -223,8 +223,12 @@ class FakeDoc:
         else:
             raise BadRequest(f"unknown request {kind}")
 
-    def clone(self) -> tuple[FakeDoc, dict[int, _Unit]]:
-        """A copy to try a batch on, and each copied unit's original, by the copy's id."""
+    def clone(self) -> tuple[FakeDoc, dict[int, tuple[_Unit, _Unit]]]:
+        """A copy to try a batch on, and (copy, original) by the copy's id.
+
+        The map holds every copy, so no unit the batch creates can take the id
+        of a copy the batch deleted.
+        """
         trial = FakeDoc(self.doc_id)
         trial.units = [
             _Unit(u.ch, copy.deepcopy(u.style), copy.deepcopy(u.para))
@@ -232,27 +236,21 @@ class FakeDoc:
         ]
         trial.ranges = dict(self.ranges)
         trial._next_range = self._next_range
-        origin = {id(c): u for c, u in zip(trial.units, self.units)}
-        trial.comments = {
-            "_keep": ("", list(trial.units))
-        }  # keeps the copies' ids unique
-        return trial, origin
+        return trial, {id(c): (c, u) for c, u in zip(trial.units, self.units)}
 
-    def commit(self, trial: FakeDoc, origin: dict[int, _Unit]) -> None:
+    def commit(self, trial: FakeDoc, origin: dict[int, tuple[_Unit, _Unit]]) -> None:
         """Take the batch's result, keeping the unit objects that survived it."""
         units = []
         for c in trial.units:
-            original = origin.get(id(c))
-            if original is None:
+            pair = origin.get(id(c))
+            if pair is None:
                 units.append(c)
             else:
+                original = pair[1]
                 original.style, original.para = c.style, c.para
                 units.append(original)
-        self.units, self.ranges, self._next_range = (
-            units,
-            trial.ranges,
-            trial._next_range,
-        )
+        self.units, self.ranges = units, trial.ranges
+        self._next_range = trial._next_range
 
     # What documents.get returns.
 

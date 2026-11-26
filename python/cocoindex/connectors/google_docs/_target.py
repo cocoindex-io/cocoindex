@@ -260,7 +260,7 @@ class _Google:
         return True
 
 
-def _write(account: UserAccount, action: _DocAction) -> None:
+def _apply_action(account: UserAccount, action: _DocAction) -> None:
     google = _Google(account)
     name = action.key.name
     if action.blocks is None:
@@ -320,7 +320,7 @@ async def _apply(
 ) -> None:
     for action in actions:
         account = context_provider.get(action.key.account_key, UserAccount)
-        await asyncio.to_thread(_write, account, action)
+        await asyncio.to_thread(_apply_action, account, action)
 
 
 _sink = coco.TargetActionSink.from_async_fn(_apply)

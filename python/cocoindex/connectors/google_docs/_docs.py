@@ -23,10 +23,11 @@ Positions are UTF-16 code units, as the Docs API counts them.
 
 from __future__ import annotations
 
+import bisect
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from ._markdown import (
     CODE_FONT,
@@ -118,19 +119,41 @@ class OurRange:
 @dataclass
 class DocState:
     revision_id: str
-    paragraphs: list[
-        DocParagraph
-    ]  # the body in order, the leading section break left out
+    # The body in order, the leading section break left out.
+    paragraphs: list[DocParagraph]
     ranges: dict[str, OurRange]  # by block id
     # Our named ranges beyond the first for one block, or of more than one stretch.
     stray_range_ids: list[str]
+    _starts: list[int] = field(init=False, repr=False)
+    # Blocks whose range shares text with another block's range.
+    _shared: set[str] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._starts = [p.start for p in self.paragraphs]
+        self._shared = set()
+        ordered = sorted(self.ranges.values(), key=lambda r: (r.start, r.end))
+        reach = -1  # the furthest end of the ranges before the current one
+        for i, rng in enumerate(ordered):
+            following = ordered[i + 1] if i + 1 < len(ordered) else None
+            if reach > rng.start or (
+                following is not None and following.start < rng.end
+            ):
+                self._shared.add(rng.block_id)
+            reach = max(reach, rng.end)
 
     @property
     def last(self) -> DocParagraph:
         return self.paragraphs[-1]
 
     def overlapping(self, start: int, end: int) -> list[DocParagraph]:
-        return [p for p in self.paragraphs if p.start < end and p.end > start]
+        first = max(bisect.bisect_right(self._starts, start) - 1, 0)
+        found = []
+        for p in self.paragraphs[first:]:
+            if p.start >= end:
+                break
+            if p.end > start:
+                found.append(p)
+        return found
 
     def content(self, rng: OurRange) -> list[Paragraph]:
         return [
@@ -147,12 +170,7 @@ class DocState:
             and inside[-1].end == rng.end
             and rng.end <= self.last.start
             and all(p.style != _STRUCTURAL for p in inside)
-            and not any(
-                other.block_id != rng.block_id
-                and other.start < rng.end
-                and other.end > rng.start
-                for other in self.ranges.values()
-            )
+            and rng.block_id not in self._shared
         )
 
 
@@ -263,6 +281,12 @@ class Plan:
     person_edits: list[PersonEdit]
 
 
+# same: the doc has the declared block. update: it has an older version the
+# target wrote. kept: a person edited it. new: the doc never had it. gone: a
+# person deleted it. move: the doc has it out of the declared order.
+_Status = Literal["same", "update", "kept", "new", "gone", "move"]
+
+
 @dataclass
 class _Insert:
     """New paragraphs after ``anchor`` (before its newline) or before it."""
@@ -360,8 +384,8 @@ def plan_write(
     declared = {block.block_id: block for block in blocks}
     new_fps = {block.block_id: fingerprint(block.paragraphs) for block in blocks}
 
-    # What each declared block is now: same, update, kept (a person's), new, gone.
-    status: dict[str, str] = {}
+    # What each declared block is now.
+    status: dict[str, _Status] = {}
     for block in blocks:
         rng = state.ranges.get(block.block_id)
         new_fp = new_fps[block.block_id]
@@ -445,7 +469,7 @@ def plan_write(
                 if kind == "move":
                     rng = state.ranges[block_id]
                     deletes.append(_Delete(rng.start, rng.end))
-                anchor, after, neighbor = place or (state.last, False, None)
+                anchor, after, neighbor = place or _Place(state.last, False, None)
                 if (
                     pending is None
                     or pending.anchor is not anchor
@@ -519,20 +543,25 @@ def plan_write(
     return Plan(requests, edits)
 
 
+class _Place(NamedTuple):
+    anchor: DocParagraph
+    after: bool  # after the anchor (before its newline), or before it
+    neighbor: str | None  # the block whose named range the insertion touches
+
+
 def _placement(
     state: DocState,
     blocks: Sequence[Block],
     index: int,
     in_order: set[str],
     anchors: set[str],
-) -> tuple[DocParagraph, bool, str | None] | None:
+) -> _Place | None:
     """Where the block at ``index`` goes so it sits in the declared order, or ``None``.
 
     After the nearest block before it that keeps its place; else before the
-    nearest one after it; at the end when no block keeps its place. The
-    answer is (the paragraph to insert at, after it?, the block whose named
-    range the insertion touches); ``None`` when the neighbors that keep their
-    place are a person's, with no paragraph boundary of the target's between them.
+    nearest one after it; at the end when no block keeps its place. ``None``
+    when the neighbors that keep their place are a person's, with no
+    paragraph boundary of the target's between them.
     """
     before = next(
         (b.block_id for b in reversed(blocks[:index]) if b.block_id in in_order), None
@@ -542,13 +571,13 @@ def _placement(
     )
     if before is not None and before in anchors:
         rng = state.ranges[before]
-        return state.overlapping(rng.start, rng.end)[-1], True, before
+        return _Place(state.overlapping(rng.start, rng.end)[-1], True, before)
     if after is not None and after in anchors:
         if before is None or state.ranges[before].end <= state.ranges[after].start:
             rng = state.ranges[after]
-            return state.overlapping(rng.start, rng.end)[0], False, after
+            return _Place(state.overlapping(rng.start, rng.end)[0], False, after)
     if before is None and after is None:
-        return state.last, False, None
+        return _Place(state.last, False, None)
     return None
 
 
@@ -602,6 +631,15 @@ class _Layout:
         return self._next_bullet[id(op)]
 
 
+class _Item(NamedTuple):
+    """A paragraph of the doc as the plan leaves it."""
+
+    length: int
+    owner: str | None  # the block whose named range covers it
+    bullet: bool
+    source: _Insert | None  # the insertion that adds it; None for one already there
+
+
 def _layout(
     state: DocState,
     inserts: list[_Insert],
@@ -612,49 +650,53 @@ def _layout(
     after: dict[int, list[_Insert]] = {}
     for op in inserts:
         (after if op.after else before).setdefault(op.anchor.start, []).append(op)
-    removed = [(d.start, d.end) for d in deletes] + [
+    # Deletions span whole paragraphs: the starts of those they remove.
+    removed: set[int] = set()
+    for lo, hi in [(d.start, d.end) for d in deletes] + [
         op.replaces for op in inserts if op.replaces is not None
-    ]
+    ]:
+        removed.update(p.start for p in state.overlapping(lo, hi) if p.start >= lo)
     owner_of: dict[int, str] = {}
     for block_id in in_place:
         rng = state.ranges[block_id]
         for p in state.overlapping(rng.start, rng.end):
             owner_of[p.start] = block_id
 
-    # The final sequence: (length, owner, bullet, the insertion it came from).
-    items: list[tuple[int, str | None, bool, _Insert | None]] = []
+    items: list[_Item] = []
 
     def add_inserts(ops: list[_Insert]) -> None:
         for op in sorted(ops, key=lambda o: o.seq):
             for owner, paragraph in op.paragraphs:
                 length = u16len(paragraph.text) + 1
-                items.append((length, owner, paragraph.bullet is not None, op))
+                items.append(_Item(length, owner, paragraph.bullet is not None, op))
 
     for p in state.paragraphs:
         add_inserts(before.get(p.start, []))
-        if not any(lo <= p.start < hi for lo, hi in removed):
+        if p.start not in removed:
             items.append(
-                (p.end - p.start, owner_of.get(p.start), p.bullet is not None, None)
+                _Item(
+                    p.end - p.start, owner_of.get(p.start), p.bullet is not None, None
+                )
             )
         add_inserts(after.get(p.start, []))
 
     extents: dict[str, tuple[int, int]] = {}
     next_bullet: dict[int, bool] = {}
     position = state.paragraphs[0].start if state.paragraphs else 1
-    for index, (length, owner, _, source) in enumerate(items):
-        if owner is not None:
-            lo, _hi = extents.get(owner, (position, position))
-            extents[owner] = (lo, position + length)
-        last_of_source = index + 1 == len(items) or items[index + 1][3] is not source
-        if source is not None and last_of_source:
-            follower = items[index + 1] if index + 1 < len(items) else None
+    for index, item in enumerate(items):
+        if item.owner is not None:
+            lo, _hi = extents.get(item.owner, (position, position))
+            extents[item.owner] = (lo, position + item.length)
+        follower = items[index + 1] if index + 1 < len(items) else None
+        source = item.source
+        if source is not None and (follower is None or follower.source is not source):
             # After an anchor, the new paragraphs split the anchor and take its
             # paragraph style; before one, they take the style of what follows.
             if source.after:
                 next_bullet[id(source)] = source.anchor.bullet is not None
             else:
-                next_bullet[id(source)] = follower is not None and follower[2]
-        position += length
+                next_bullet[id(source)] = follower is not None and follower.bullet
+        position += item.length
     return _Layout(extents, next_bullet)
 
 
