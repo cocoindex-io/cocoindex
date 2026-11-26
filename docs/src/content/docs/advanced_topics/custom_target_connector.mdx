@@ -864,7 +864,7 @@ The Valkey connector (`rust/sdk/cocoindex/src/connectors/valkey.rs`) implements 
 The user-facing contract is in [How CocoIndex syncs target states](../programming_guide/target_state#how-cocoindex-syncs-target-states).
 
 <RustNote>
-A connector outside the `cocoindex` crate registers its root provider on each run, so a container is deleted only by a run that still registers the provider and no longer declares the container. `App::drop_state` cannot reach such a handler and leaves its target states in place. Built-in connectors such as Valkey register their root provider with every environment when it is built, so `App::drop_state` and a run that no longer declares their targets reach the handler; that registration is internal to the crate.
+A connector outside the `cocoindex` crate registers its root provider on each run, so a container is deleted only by a run that still registers the provider and no longer declares the container. `App::drop_state` reaches such a handler only through the provider the app's latest run registered, so an app opened in a new process has to run once before its drop can revert the handler's target states. Built-in connectors such as Valkey register their root provider with every environment when it is built, so `App::drop_state` and a run that no longer declares their targets reach the handler; that registration is internal to the crate.
 </RustNote>
 
 ### Step 1: Define parent and child handlers
