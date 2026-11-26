@@ -30,8 +30,9 @@ class UserAccount(_oauth.UserAccountBase):
     CocoIndex creates, nothing else in the Drive. Run ``sign_in`` once, outside
     any CocoIndex run (``cocoindex auth sign-in google-docs`` does the same from
     the shell); its token file is separate from the Google Drive source's, so
-    neither sign-in changes the other. A run provides ``UserAccount()`` under a
-    ``ContextKey`` that ``declare_doc`` names.
+    signing in for one never changes the other. (Signing out revokes the OAuth
+    client's access for the account at Google, which ends both.) A run provides
+    ``UserAccount()`` under a ``ContextKey`` that ``declare_doc`` names.
     """
 
     _grant = DOCS_GRANT

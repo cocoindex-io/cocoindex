@@ -173,6 +173,9 @@ cocoindex auth sign-out [OPTIONS] COMMAND [ARGS]...
 
 Revoke the Google Docs sign-in at Google and delete its token file.
 
+Google revokes everything the OAuth client holds for the account, so an
+`auth sign-in google-drive` made with the same client ends too.
+
 
 **Usage:**
 

@@ -1533,7 +1533,11 @@ def google_docs_sign_in(client_secrets: str | None, token_path: str | None) -> N
     "writes by default.",
 )
 def google_docs_sign_out(token_path: str | None) -> None:
-    """Revoke the Google Docs sign-in at Google and delete its token file."""
+    """Revoke the Google Docs sign-in at Google and delete its token file.
+
+    Google revokes everything the OAuth client holds for the account, so an
+    `auth sign-in google-drive` made with the same client ends too.
+    """
     from cocoindex.connectors.google_docs import UserAccount
 
     _sign_out(UserAccount(token_path))

@@ -34,7 +34,7 @@ The connector writes as your personal Google account, signed in once through OAu
 
 It asks Google for one scope, `drive.file`: access to the files CocoIndex creates, and nothing else. CocoIndex creates Google Docs, and edits and trashes only the docs it created; it cannot see or change any other file in your Drive. Google classes `drive.file` as a non-sensitive scope. CocoIndex's use and transfer of information received from Google APIs adheres to the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy), including the Limited Use requirements; see [how CocoIndex handles Google user data](https://cocoindex.io/privacy-policy/#google-user-data).
 
-The sign-in is separate from the Google Drive connector's: its own command, its own token file. Signing in for one never widens, narrows or ends the other.
+The sign-in is separate from the Google Drive connector's: its own command, its own token file and its own scope. Signing in for one never widens or narrows the other. Signing out is different: Google revokes everything an OAuth client holds for an account at once, so signing out of one also ends the other when both used the same OAuth client, and the next run of the other asks you to sign in again.
 
 ### Setting up the OAuth client
 
