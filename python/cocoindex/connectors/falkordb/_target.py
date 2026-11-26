@@ -64,7 +64,7 @@ import numpy as np
 import msgspec
 
 import cocoindex as coco
-from cocoindex.connectorkits import _container, statediff, target
+from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits._graph_relationship_ids import (
     legacy_relation_id,
     relationship_id,
@@ -1120,7 +1120,7 @@ class _TableHandler(
         if main_action == "replace":
             # The table is rebuilt: its contents are deleted and re-declared.
             child_invalidation = "destructive"
-        elif any(_container.may_lose_data(a) for a in column_actions.values()):
+        elif any(a != "insert" for a in column_actions.values()):
             # FalkorDB has no per-field DDL so column changes don't actually
             # destroy data, but mark lossy so dependents re-upsert to be safe.
             child_invalidation = "lossy"

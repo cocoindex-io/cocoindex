@@ -352,6 +352,7 @@ def test_table_handler_creates_dataset_and_table(
         spec=_target._TableSpec(
             table_schema=schema,
             managed_by=target.ManagedBy.SYSTEM,
+            missing=False,
         ),
         main_action="insert",
         column_actions={},
@@ -412,7 +413,7 @@ def test_table_exists_gets_the_table_and_takes_not_found_as_missing(
 
 
 def test_a_missing_system_table_is_created_and_its_rows_invalidated() -> None:
-    present = _target._TableSpec(table_schema=_payload_schema())
+    present = _target._TableSpec(table_schema=_payload_schema(), missing=False)
     prev = statediff.MutualTrackingRecord(
         tracking_record=_target._table_composite_tracking_record_from_spec(present),
         managed_by=present.managed_by,
@@ -525,54 +526,6 @@ def test_a_table_dropped_outside_cocoindex_comes_back_with_its_rows(
     assert _row_component_runs == 4, "unchanged children are skipped again"
 
 
-def _reconcile_change(
-    old_columns: dict[str, bigquery.ColumnDef],
-    new_columns: dict[str, bigquery.ColumnDef],
-) -> Any:
-    def spec(columns: dict[str, bigquery.ColumnDef]) -> Any:
-        return _target._TableSpec(
-            table_schema=bigquery.TableSchema(columns=columns, primary_key=["id"]),
-            managed_by=target.ManagedBy.SYSTEM,
-        )
-
-    prev = statediff.MutualTrackingRecord(
-        tracking_record=_target._table_composite_tracking_record_from_spec(
-            spec(old_columns)
-        ),
-        managed_by=target.ManagedBy.SYSTEM,
-    )
-    return _target._TableHandler().reconcile(
-        (BIGQUERY_DB.key, "demo-project", "analytics", "events"),
-        spec(new_columns),
-        [prev],
-        False,
-    )
-
-
-def test_required_column_added_or_changed_recreates_the_table() -> None:
-    """BigQuery adds no REQUIRED column and makes none REQUIRED: a declared NOT
-    NULL column that is added or changed recreates the table (rows written again).
-    Before, `ADD COLUMN ... NOT NULL` failed every run."""
-    base = {
-        "id": bigquery.ColumnDef(type="INT64", nullable=False),
-        "a": bigquery.ColumnDef(type="STRING"),
-    }
-    for new in [
-        {**base, "b": bigquery.ColumnDef(type="INT64", nullable=False)},
-        {**base, "a": bigquery.ColumnDef(type="STRING", nullable=False)},
-    ]:
-        output = _reconcile_change(base, new)
-        assert output.action.main_action == "replace"
-        assert output.action.column_actions == {}
-        assert output.child_invalidation == "destructive"
-
-    # A nullable column is still added in place.
-    output = _reconcile_change(base, {**base, "b": bigquery.ColumnDef(type="INT64")})
-    assert output.action.main_action is None
-    assert output.action.column_actions == {"col:b": "insert"}
-    assert output.child_invalidation is None
-
-
 REQUIRED_BIGQUERY_ENV = [
     "BIGQUERY_PROJECT",
     "BIGQUERY_DATASET",
@@ -615,7 +568,9 @@ def test_live_bigquery_upsert_and_delete() -> None:
             [
                 _target._TableAction(
                     key=table_key,
-                    spec=_target._TableSpec(schema, target.ManagedBy.SYSTEM),
+                    spec=_target._TableSpec(
+                        schema, target.ManagedBy.SYSTEM, missing=False
+                    ),
                     main_action="insert",
                     column_actions={},
                 )

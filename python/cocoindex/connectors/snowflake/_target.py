@@ -483,8 +483,9 @@ class _TableSpec:
 
     table_schema: TableSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
-    # See `_container.ContainerSpec`.
-    missing: bool = False
+    # See `_container.ContainerSpec`. Required: every constructor says
+    # whether the table was found missing.
+    missing: bool = dataclasses.field(kw_only=True)
 
 
 class _PkColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
@@ -770,7 +771,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         child_invalidation: Literal["destructive", "lossy"] | None = None
         if recreated.dropped or main_action == "replace":
             child_invalidation = "destructive"
-        elif any(_container.may_lose_data(a) for a in column_actions.values()):
+        elif any(a != "insert" for a in column_actions.values()):
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -826,6 +827,25 @@ class TableTarget(
         return self._provider.memo_key
 
 
+def _table_target_state(
+    key: _TableKey,
+    table_schema: TableSchema[Any],
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> coco.TargetState[_RowHandler]:
+    """The table's target state; `table_target` and `mount_table_target` both
+    build it here, so a spec field reaches both."""
+    return _table_provider.target_state(
+        key,
+        _TableSpec(
+            table_schema=table_schema,
+            managed_by=managed_by,
+            missing=missing,
+        ),
+    )
+
+
 def table_target(
     db: ContextKey[ConnectionConfig],
     table_name: str,
@@ -841,11 +861,7 @@ def table_target(
     Use with ``coco.mount_target()`` or the convenience wrappers below.
     """
     key = _table_key(db, table_name, table_schema, database=database, schema=schema)
-    spec = _TableSpec(
-        table_schema=table_schema,
-        managed_by=managed_by,
-    )
-    return _table_provider.target_state(key, spec)
+    return _table_target_state(key, table_schema, managed_by=managed_by, missing=False)
 
 
 def _table_key(
@@ -953,12 +969,7 @@ async def mount_table_target(
         _table_exists, coco.use_context(db), key
     )
     provider = await coco.mount_target(
-        _table_provider.target_state(
-            key,
-            _TableSpec(
-                table_schema=table_schema, managed_by=managed_by, missing=missing
-            ),
-        )
+        _table_target_state(key, table_schema, managed_by=managed_by, missing=missing)
     )
     return TableTarget(provider, table_schema)
 

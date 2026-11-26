@@ -255,6 +255,12 @@ pub struct SnowflakeTableOptions {
 </Fragment>
 </LangTabs>
 
+<Lang only="python">
+
+`mount_table_target` checks that a system-managed table it created is still there each time it runs, and creates it again if it was dropped (see [What happens when a target is changed outside CocoIndex](../programming_guide/target_state#what-happens-when-a-target-is-changed-outside-cocoindex)). The check opens a Snowflake connection of its own, so an app that mounts many Snowflake tables pays one login per table per update. `declare_table_target` and `table_target` do not check.
+
+</Lang>
+
 **Parameters:**
 
 - <Lang only="python">`db` - A `ContextKey[ConnectionConfig]`</Lang><Lang only="rust">`conn` - A `&ContextKey<SnowflakeConnection>`</Lang> identifying the connection to use.

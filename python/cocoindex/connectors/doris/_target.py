@@ -1003,8 +1003,9 @@ class _TableSpec:
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
     vector_indexes: list[VectorIndexDef] | None = None
     inverted_indexes: list[InvertedIndexDef] | None = None
-    # See `_container.ContainerSpec`.
-    missing: bool = False
+    # See `_container.ContainerSpec`. Required: every constructor says
+    # whether the table was found missing.
+    missing: bool = field(kw_only=True)
 
 
 class _PkColumnInfo(msgspec.Struct, frozen=True, array_like=True):
@@ -1328,8 +1329,8 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         if recreated.dropped or main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
-        elif any(_container.may_lose_data(a) for a in column_actions.values()):
-            # A column retyped or dropped may lose data.
+        elif any(a != "insert" for a in column_actions.values()):
+            # Column schema changes (other than adding new columns) may lose data.
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -1355,6 +1356,29 @@ _table_provider = coco.register_root_target_states_provider(
 # ============================================================
 
 
+def _table_target_state(
+    key: _TableKey,
+    table_schema: TableSchema[Any],
+    *,
+    managed_by: target.ManagedBy,
+    vector_indexes: list[VectorIndexDef] | None,
+    inverted_indexes: list[InvertedIndexDef] | None,
+    missing: bool,
+) -> coco.TargetState[_RowHandler]:
+    """The table's target state; `table_target` and `mount_table_target` both
+    build it here, so a spec field reaches both."""
+    return _table_provider.target_state(
+        key,
+        _TableSpec(
+            table_schema=table_schema,
+            managed_by=managed_by,
+            vector_indexes=vector_indexes,
+            inverted_indexes=inverted_indexes,
+            missing=missing,
+        ),
+    )
+
+
 def table_target(
     db: ContextKey[ManagedConnection],
     table_name: str,
@@ -1365,13 +1389,14 @@ def table_target(
     inverted_indexes: list[InvertedIndexDef] | None = None,
 ) -> coco.TargetState[_RowHandler]:
     key = _TableKey(db_key=db.key, table_name=table_name)
-    spec = _TableSpec(
-        table_schema=table_schema,
+    return _table_target_state(
+        key,
+        table_schema,
         managed_by=managed_by,
         vector_indexes=vector_indexes,
         inverted_indexes=inverted_indexes,
+        missing=False,
     )
-    return _table_provider.target_state(key, spec)
 
 
 # Doris compares table names case-sensitively by default
@@ -1432,15 +1457,13 @@ async def mount_table_target(
         coco.use_context(db).config, table_name
     )
     provider = await coco.mount_target(
-        _table_provider.target_state(
+        _table_target_state(
             _TableKey(db_key=db.key, table_name=table_name),
-            _TableSpec(
-                table_schema=table_schema,
-                managed_by=managed_by,
-                vector_indexes=vector_indexes,
-                inverted_indexes=inverted_indexes,
-                missing=missing,
-            ),
+            table_schema,
+            managed_by=managed_by,
+            vector_indexes=vector_indexes,
+            inverted_indexes=inverted_indexes,
+            missing=missing,
         )
     )
     return DorisTableTarget(provider, table_schema)

@@ -283,7 +283,7 @@ def _simple_schema() -> "doris.TableSchema[Any]":
 
 
 def test_a_missing_system_table_is_created_and_its_rows_invalidated() -> None:
-    present = doris_target._TableSpec(table_schema=_simple_schema())
+    present = doris_target._TableSpec(table_schema=_simple_schema(), missing=False)
     prev = statediff.MutualTrackingRecord(
         tracking_record=doris_target._table_composite_tracking_record_from_spec(
             present

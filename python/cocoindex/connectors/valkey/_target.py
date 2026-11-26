@@ -747,7 +747,9 @@ async def mount_index_target(
 ) -> "IndexTarget[coco.ResolvedS]":
     """Mount an index target and return a ready-to-use IndexTarget.
 
-    Sugar over ``index_target()`` + ``coco.mount_target()`` + wrapping.
+    Unlike ``index_target()`` + ``coco.mount_target()``, it first checks that a
+    system-managed index CocoIndex created is still there, and creates it again
+    with all its rows when it was dropped outside CocoIndex.
 
     Args:
         db: ContextKey for the GlideClient connection.

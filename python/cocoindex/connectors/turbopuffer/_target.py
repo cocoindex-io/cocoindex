@@ -36,7 +36,7 @@ except ImportError as e:
     ) from e
 
 import cocoindex as coco
-from cocoindex.connectorkits import _container, statediff, target
+from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import TypeChecker
 from cocoindex.resources import schema as res_schema
@@ -361,12 +361,6 @@ _NAMESPACE_KEY_CHECKER = TypeChecker(tuple[str, str])
 class _NamespaceSpec:
     schema: NamespaceSchema
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
-    # See `_container.ContainerSpec`. Here `missing` means the namespace has
-    # no rows: a namespace exists only while it holds a document, so one
-    # deleted and one emptied outside CocoIndex read the same, and both are
-    # written again; one empty because no row is declared in it is missing
-    # harmlessly. The name is kept, as in every connector's spec.
-    missing: bool = False
 
 
 class _NamespaceTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
@@ -449,24 +443,17 @@ class _NamespaceHandler(
                 managed_by=desired_state.managed_by,
             )
 
-        # A namespace CocoIndex wrote to before that is gone now lost its rows
-        # outside CocoIndex: plan it as new (rows write it again), and
-        # invalidate its rows.
-        recreated = _container.recreate_if_dropped(
-            desired_state, prev_possible_records, prev_may_be_missing
-        )
-
         transition = statediff.TrackingRecordTransition(
             tracking_record,
-            recreated.prev_possible_records,
-            recreated.prev_may_be_missing,
+            prev_possible_records,
+            prev_may_be_missing,
         )
         resolved = statediff.resolve_system_transition(transition)
         main_action = statediff.diff(resolved)
 
         # Namespace replacement clears all rows.
         child_invalidation: Literal["destructive"] | None = (
-            "destructive" if recreated.dropped or main_action == "replace" else None
+            "destructive" if main_action == "replace" else None
         )
 
         return coco.TargetReconcileOutput(
@@ -548,22 +535,8 @@ def namespace_target(
         schema: NamespaceSchema defining vector fields and distance metric.
         managed_by: Whether the namespace is managed by the system or user.
     """
-    return _namespace_target_state(
-        db, namespace_name, schema, managed_by=managed_by, missing=False
-    )
-
-
-def _namespace_target_state(
-    db: ContextKey[AsyncTurbopuffer],
-    namespace_name: str,
-    schema: NamespaceSchema,
-    *,
-    managed_by: target.ManagedBy,
-    missing: bool,
-) -> "coco.TargetState[_RowHandler]":
-    """`namespace_target`, with `missing` as in `_NamespaceSpec.missing`."""
     key = _NamespaceKey(db_key=db.key, namespace_name=namespace_name)
-    spec = _NamespaceSpec(schema=schema, managed_by=managed_by, missing=missing)
+    spec = _NamespaceSpec(schema=schema, managed_by=managed_by)
     return _namespace_provider.target_state(key, spec)
 
 
@@ -598,20 +571,9 @@ async def mount_namespace_target(
     """Mount a namespace target and return a ready-to-use ``NamespaceTarget``.
 
     Sugar over ``namespace_target()`` + ``coco.mount_target()`` + wrapping.
-
-    A system-managed namespace deleted outside CocoIndex is written again with
-    all its rows (one existence check per mount).
     """
-    # A system-managed namespace that does not exist: if CocoIndex wrote rows
-    # to it on an earlier run, they were deleted outside CocoIndex.
-    missing = (
-        managed_by == target.ManagedBy.SYSTEM
-        and not await coco.use_context(db).namespace(namespace_name).exists()
-    )
     provider = await coco.mount_target(
-        _namespace_target_state(
-            db, namespace_name, schema, managed_by=managed_by, missing=missing
-        )
+        namespace_target(db, namespace_name, schema, managed_by=managed_by)
     )
     return NamespaceTarget(provider)
 

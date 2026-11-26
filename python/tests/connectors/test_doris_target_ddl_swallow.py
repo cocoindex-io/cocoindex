@@ -237,7 +237,9 @@ def test_end_to_end_genuine_ddl_failure_propagates_through_apply_table_actions(
     tracking record for a schema change that never actually happened.
     """
     spec = _TableSpec(
-        table_schema=_schema(), managed_by=connector_target.ManagedBy.SYSTEM
+        table_schema=_schema(),
+        managed_by=connector_target.ManagedBy.SYSTEM,
+        missing=False,
     )
     managed_conn = doris.ManagedConnection(config=_config())
 
@@ -282,7 +284,9 @@ def _table_action_ctx(
         coco.NON_EXISTENCE
         if delete
         else _TableSpec(
-            table_schema=_schema(), managed_by=connector_target.ManagedBy.SYSTEM
+            table_schema=_schema(),
+            managed_by=connector_target.ManagedBy.SYSTEM,
+            missing=False,
         )
     )
     action = _TableAction(

@@ -337,6 +337,7 @@ def test_table_handler_creates_database_schema_and_table(
         spec=_target._TableSpec(
             table_schema=schema,
             managed_by=target.ManagedBy.SYSTEM,
+            missing=False,
         ),
         main_action="insert",
         column_actions={},
@@ -421,7 +422,7 @@ def test_table_exists_compares_listed_names_exactly(
 
 
 def test_a_missing_system_table_is_created_and_its_rows_invalidated() -> None:
-    present = _target._TableSpec(table_schema=_payload_schema())
+    present = _target._TableSpec(table_schema=_payload_schema(), missing=False)
     prev = statediff.MutualTrackingRecord(
         tracking_record=_target._table_composite_tracking_record_from_spec(present),
         managed_by=present.managed_by,
@@ -586,7 +587,9 @@ def test_live_snowflake_upsert_and_delete() -> None:
             [
                 _target._TableAction(
                     key=table_key,
-                    spec=_target._TableSpec(schema, target.ManagedBy.SYSTEM),
+                    spec=_target._TableSpec(
+                        schema, target.ManagedBy.SYSTEM, missing=False
+                    ),
                     main_action="insert",
                     column_actions={},
                 )

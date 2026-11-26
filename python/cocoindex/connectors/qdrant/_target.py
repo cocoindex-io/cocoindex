@@ -664,7 +664,9 @@ async def mount_collection_target(
     """
     Mount a collection target and return a ready-to-use CollectionTarget.
 
-    Sugar over ``collection_target()`` + ``coco.mount_target()`` + wrapping.
+    Unlike ``collection_target()`` + ``coco.mount_target()``, it first checks that a
+    system-managed collection CocoIndex created is still there, and creates it again
+    with all its rows when it was dropped outside CocoIndex.
 
     Args:
         db: ContextKey for the QdrantClient connection.

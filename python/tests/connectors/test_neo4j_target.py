@@ -502,8 +502,7 @@ class TestTableReconcile:
         assert out_reproc.child_invalidation == "lossy"
 
     def test_column_addition_only_not_lossy_on_incremental(self) -> None:
-        """Adding a column is not lossy: incrementally it is inserted, and under a
-        full reprocess the unchanged columns re-upsert, which loses no data."""
+        """Adding a column on incremental update is not lossy, but under full reprocess re-upserts."""
         from cocoindex.connectorkits import statediff, target
         from cocoindex.connectors.neo4j import _target as neo_target
 
@@ -576,7 +575,7 @@ class TestTableReconcile:
             "field:a": "upsert",
             "field:b": "insert",
         }
-        assert out_reproc.child_invalidation is None
+        assert out_reproc.child_invalidation == "lossy"
 
     def test_only_identity_changes_rebuild_the_table(self) -> None:
         """A rebuild deletes every node of the label, so only changes the

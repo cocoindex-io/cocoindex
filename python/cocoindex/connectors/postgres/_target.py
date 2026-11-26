@@ -19,6 +19,7 @@ import re
 import uuid
 import warnings
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import (
     Any,
     Callable,
@@ -1107,8 +1108,9 @@ class _TableSpec:
 
     table_schema: TableSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
-    # See `_container.ContainerSpec`.
-    missing: bool = False
+    # See `_container.ContainerSpec`. Required: every constructor says
+    # whether the table was found missing.
+    missing: bool = dataclass_field(kw_only=True)
 
 
 class _PkColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
@@ -1452,8 +1454,8 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         if recreated.dropped or main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
-        elif any(_container.may_lose_data(a) for a in column_actions.values()):
-            # A column retyped or dropped may lose data.
+        elif any(a != "insert" for a in column_actions.values()):
+            # Column schema changes (other than adding new columns) may lose data.
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -1683,6 +1685,25 @@ class TableTarget(
         return self._provider.memo_key
 
 
+def _table_target_state(
+    key: _TableKey,
+    table_schema: TableSchema[Any],
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> coco.TargetState[_RowHandler]:
+    """The table's target state; `table_target` and `mount_table_target` both
+    build it here, so a spec field reaches both."""
+    return _table_provider.target_state(
+        key,
+        _TableSpec(
+            table_schema=table_schema,
+            managed_by=managed_by,
+            missing=missing,
+        ),
+    )
+
+
 def table_target(
     db: ContextKey[asyncpg.Pool],
     table_name: str,
@@ -1709,8 +1730,7 @@ def table_target(
         A TargetState that can be passed to ``mount_target()``.
     """
     key = _table_key(db, table_name, table_schema, pg_schema_name=pg_schema_name)
-    spec = _TableSpec(table_schema=table_schema, managed_by=managed_by)
-    return _table_provider.target_state(key, spec)
+    return _table_target_state(key, table_schema, managed_by=managed_by, missing=False)
 
 
 def _table_key(
@@ -1789,7 +1809,9 @@ async def mount_table_target(
     """
     Mount a table target and return a ready-to-use TableTarget.
 
-    Sugar over ``table_target()`` + ``coco.mount_target()`` + wrapping.
+    Unlike ``table_target()`` + ``coco.mount_target()``, it first checks that a
+    system-managed table CocoIndex created is still there, and creates it again
+    with all its rows when it was dropped outside CocoIndex.
 
     Args:
         db: ContextKey for the asyncpg.Pool connection.
@@ -1809,12 +1831,7 @@ async def mount_table_target(
         coco.use_context(db), key
     )
     provider = await coco.mount_target(
-        _table_provider.target_state(
-            key,
-            _TableSpec(
-                table_schema=table_schema, managed_by=managed_by, missing=missing
-            ),
-        )
+        _table_target_state(key, table_schema, managed_by=managed_by, missing=missing)
     )
     return TableTarget(provider, table_name, table_schema)
 

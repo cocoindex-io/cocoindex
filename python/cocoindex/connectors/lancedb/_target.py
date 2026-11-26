@@ -1588,7 +1588,9 @@ async def mount_table_target(
     """
     Mount a table target and return a ready-to-use TableTarget.
 
-    Sugar over ``table_target()`` + ``coco.mount_target()`` + wrapping.
+    Unlike ``table_target()`` + ``coco.mount_target()``, it first checks that a
+    system-managed table CocoIndex created is still there, and creates it again
+    with all its rows when it was dropped outside CocoIndex.
 
     Args:
         db: ContextKey for the LanceDB async connection.

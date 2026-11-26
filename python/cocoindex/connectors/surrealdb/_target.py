@@ -1165,7 +1165,7 @@ class _TableHandler(
         child_invalidation: Literal["destructive", "lossy"] | None = None
         if recreated.dropped or main_action == "replace":
             child_invalidation = "destructive"
-        elif any(_container.may_lose_data(a) for a in column_actions.values()):
+        elif any(a != "insert" for a in column_actions.values()):
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -1606,7 +1606,11 @@ async def _system_table_missing(
     conn = await coco.use_context(db).acquire()
     info = await conn.query("INFO FOR DB")
     tables = info.get("tables") if isinstance(info, dict) else None
-    return not (isinstance(tables, dict) and table_name in tables)
+    if not isinstance(tables, dict):
+        # Taking an unknown shape as "missing" would rewrite every record of
+        # every system-managed table on every run, with no error.
+        raise RuntimeError(f"Unexpected `INFO FOR DB` result from SurrealDB: {info!r}")
+    return table_name not in tables
 
 
 def declare_table_target(
