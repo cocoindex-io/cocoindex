@@ -355,9 +355,11 @@ harness = false
 
 # `deadline` builds its environment with `cocoindex::testing`, so it needs the
 # `testing` feature; without it Cargo skips the test instead of failing to
-# compile (`cargo check --all-targets` with no features). `tests/it/main.rs`
-# says why a self dev-dependency is not the way to enable the feature, and
-# gates its own modules that need it.
+# compile (`cargo check --all-targets` with no features). The modules of
+# `tests/it` that need the feature say so themselves, with `#![cfg(...)]`. A
+# self dev-dependency would enable the feature too, but it links the crate
+# twice into its own unit tests and breaks the `linkme` registry (duplicate
+# `COCO_FN_LOGIC`).
 [[test]]
 name = "deadline"
 required-features = ["testing"]

@@ -5,6 +5,7 @@
 //! `component_subpath` block semantics against the Rust SDK surface.
 //!
 //!   cargo test -p cocoindex --features testing --test it mount::
+#![cfg(feature = "testing")]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

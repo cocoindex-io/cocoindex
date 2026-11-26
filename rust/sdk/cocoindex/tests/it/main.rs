@@ -14,14 +14,19 @@
 //! [`OWN_PROCESS_TESTS`] lists those, each with what it needs one for.
 
 mod admission;
+// Shared with `tests/admission_env.rs`, which is a binary of its own.
+#[path = "../admission_common/mod.rs"]
 mod admission_common;
 mod amazon_s3_source;
 mod azure_blob_source;
+mod batching_edges;
+mod batching_runner;
 mod bigquery_target;
 mod code;
 mod code_fuzz;
 mod component_selector;
 mod component_selector_memo_key;
+mod detailed_stats;
 mod doris_target;
 mod drop_state;
 mod entity_resolution;
@@ -47,6 +52,7 @@ mod logic_tracking;
 mod memo_clone;
 mod memo_deps;
 mod model_based;
+mod mount;
 mod mount_each;
 mod oci_live;
 mod ops_api;
@@ -67,21 +73,6 @@ mod valkey_target;
 mod zvec_battle;
 mod zvec_target;
 
-// These build their environment with `cocoindex::testing`, so they need the
-// `testing` feature: without it they are left out instead of failing to
-// compile (`cargo check --all-targets` with no features). A self
-// dev-dependency would enable the feature too, but it links the crate twice
-// into its own unit tests and breaks the `linkme` registry (duplicate
-// `COCO_FN_LOGIC`).
-#[cfg(feature = "testing")]
-mod batching_edges;
-#[cfg(feature = "testing")]
-mod batching_runner;
-#[cfg(feature = "testing")]
-mod detailed_stats;
-#[cfg(feature = "testing")]
-mod mount;
-
 /// The test files that are binaries of their own, directly under `tests/`.
 /// Each one changes or reads something the whole process shares, so it cannot
 /// run beside the other tests.
@@ -92,9 +83,8 @@ const OWN_PROCESS_TESTS: &[&str] = &[
     "azure_blob_token",
     // Drives the engine's deadline test clock.
     "deadline",
-    // Stops its live run through the engine's cancellation of every run.
+    // Stop their live runs through the engine's cancellation of every run.
     "iggy_source",
-    // Stops its live run through the engine's cancellation of every run.
     "kafka_source",
     // Sets `HF_ENDPOINT` and `HF_HOME`.
     "ops_sentence_transformers",
@@ -116,38 +106,49 @@ const OWN_PROCESS_TESTS: &[&str] = &[
     "sqlite_target_edge",
 ];
 
-/// A file under `tests/it/` that no `mod` line names is never compiled, and a
-/// new file directly under `tests/` is one more binary to link; neither shows
+/// A module under `tests/it/` that no `mod` line names is never compiled, and a
+/// new test directly under `tests/` is one more binary to link; neither shows
 /// up as a failure by itself.
 #[test]
 fn every_test_file_is_a_module_here_or_a_listed_binary() {
-    let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let rust_files = |dir: &std::path::Path| -> Vec<String> {
-        let mut stems: Vec<String> = std::fs::read_dir(dir)
+    use std::path::{Path, PathBuf};
+
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let entries = |dir: &Path| -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
-            .map(|path| path.file_stem().unwrap().to_str().unwrap().to_owned())
             .collect();
-        stems.sort();
-        stems
+        paths.sort();
+        paths
     };
+    let is_rust_file = |path: &Path| path.extension().is_some_and(|ext| ext == "rs");
+    let name = |path: &Path| path.file_stem().unwrap().to_str().unwrap().to_owned();
 
+    // A module of this crate is `x.rs` or `x/mod.rs`.
     let main = include_str!("main.rs");
-    let unnamed: Vec<String> = rust_files(&tests.join("it"))
-        .into_iter()
-        .filter(|stem| stem != "main")
-        .filter(|stem| !main.lines().any(|line| line == format!("mod {stem};")))
+    let unnamed: Vec<String> = entries(&tests.join("it"))
+        .iter()
+        .filter(|path| is_rust_file(path) || path.join("mod.rs").exists())
+        .map(|path| name(path))
+        .filter(|module| module != "main")
+        .filter(|module| !main.lines().any(|line| line == format!("mod {module};")))
         .collect();
     assert!(
         unnamed.is_empty(),
         "tests/it/main.rs has no `mod` line for {unnamed:?}, so their tests never run"
     );
 
+    // A test binary is `x.rs` or `x/main.rs` directly under `tests/`.
+    let binaries: Vec<String> = entries(&tests)
+        .iter()
+        .filter(|path| is_rust_file(path) || path.join("main.rs").exists())
+        .map(|path| name(path))
+        .filter(|binary| binary != "it")
+        .collect();
     assert_eq!(
-        rust_files(&tests),
-        OWN_PROCESS_TESTS,
-        "a test file directly under tests/ is a binary of its own: move it to tests/it/ as a \
-         module, or list it in OWN_PROCESS_TESTS with what it needs its own process for"
+        binaries, OWN_PROCESS_TESTS,
+        "a test directly under tests/ is a binary of its own: move it to tests/it/ as a module, \
+         or list it in OWN_PROCESS_TESTS with what it needs its own process for"
     );
 }

@@ -4,9 +4,7 @@
 //!
 //!   cargo test -p cocoindex --test it admission::
 
-use crate::admission_common;
-
-use admission_common::assert_admits;
+use crate::admission_common::assert_admits;
 use cocoindex::Environment;
 
 #[tokio::test]

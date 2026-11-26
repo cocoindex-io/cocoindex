@@ -1,5 +1,6 @@
 //! Tests for the detailed per-component stats surface (`ComponentStats`,
 //! `UpdateStats`, `UpdateStatus`) — Python parity with `cocoindex.UpdateStats`.
+#![cfg(feature = "testing")]
 
 use cocoindex::testing::TestEnv;
 use cocoindex::{App, ComponentStats, UpdateStats, UpdateStatus};

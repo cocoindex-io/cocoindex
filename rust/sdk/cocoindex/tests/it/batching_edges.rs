@@ -2,6 +2,7 @@
 //! `max_batch_size`, bodies that break their contract (wrong output count,
 //! panics, errors), callers that go away while their item is queued, and
 //! memoization with the same item twice in one batch.
+#![cfg(feature = "testing")]
 
 use std::collections::BTreeSet;
 use std::sync::Mutex;

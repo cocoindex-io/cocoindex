@@ -1,5 +1,6 @@
 //! End-to-end tests for batch splitting (`Error::retry_with_smaller_batch`)
 //! and the GPU runner (`runner = ...`) in `#[cocoindex::function]`.
+#![cfg(feature = "testing")]
 
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
