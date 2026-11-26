@@ -1,0 +1,159 @@
+---
+title: "*Google Docs* connector"
+toc_max_heading_level: 4
+languages: [python]
+rust_counterpart: connectors
+description: >
+  Keep a Google Doc in step with Markdown your flow declares. The doc is
+  updated in place, block by block, so unchanged paragraphs and the comments
+  on them stay; a person's edits are kept and reported. Signs in with the
+  drive.file scope only.
+---
+The `google_docs` connector keeps a Google Doc in step with Markdown your flow declares: a report, a brief, a summary that people read and comment on in Google Docs. It creates the doc on the first run and, on each change, rewrites only the parts whose content changed.
+
+```python
+from cocoindex.connectors import google_docs
+```
+
+:::note[Dependencies]
+This connector requires additional dependencies. Install with:
+
+```bash
+pip install "cocoindex[google_docs]"
+```
+
+:::
+
+:::caution[Experimental]
+The Google Docs connector is experimental. Experimental APIs are outside CocoIndex's compatibility promise: a later release, including a minor one, may change their API or semantics, or remove them.
+:::
+
+## Signing in
+
+The connector writes as your personal Google account, signed in once through OAuth, the same way the [Google Drive connector](./google_drive#signing-in-with-a-personal-account) reads one: an authorization code with PKCE, redirected to a listener on this machine's loopback interface, from a Desktop app OAuth client.
+
+It asks Google for one scope, `drive.file`: access to the files CocoIndex creates, and nothing else. CocoIndex creates Google Docs, and edits and trashes only the docs it created; it cannot see or change any other file in your Drive. Google classes `drive.file` as a non-sensitive scope. CocoIndex's use and transfer of information received from Google APIs adheres to the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy), including the Limited Use requirements; see [how CocoIndex handles Google user data](https://cocoindex.io/privacy-policy/#google-user-data).
+
+The sign-in is separate from the Google Drive connector's: its own command, its own token file. Signing in for one never widens, narrows or ends the other.
+
+### Setting up the OAuth client
+
+CocoIndex's own OAuth client is not in a release yet. Until a release includes it, sign in with a Desktop app OAuth client you create in your own Google Cloud project, as for [the Google Drive connector](./google_drive#setting-up-the-oauth-client), with two differences:
+
+1. Enable both the **Google Docs API** and the **Google Drive API** under *APIs & Services > Library*. A run against a project without one of them fails with a message that names it.
+2. On the consent screen's *Data access* page, add the scope `.../auth/drive.file` (*See, edit, create, and delete only the specific Google Drive files you use with this app*).
+
+In **Testing** status, Google still expires the consent seven days after it was given; a run then fails with `SignInRequiredError` and you sign in again.
+
+### Signing in
+
+```bash
+cocoindex auth sign-in google-docs ~/Downloads/client_secret_XXXX.json
+```
+
+Without the file argument, the command uses CocoIndex's own OAuth client, and a release that doesn't include one says so. On a machine with no browser, the command prints the link and takes the address the browser lands on, pasted back, as [`sign-in google-drive`](./google_drive#signing-in) does.
+
+The tokens are stored at `~/.config/cocoindex/google_docs_token.json` on Linux and macOS (under `$XDG_CONFIG_HOME` when set) and under `%APPDATA%\cocoindex` on Windows; `--token-path` picks another location. CocoIndex creates the file readable by your user only and refuses one that other users can access. It holds a long-lived refresh token that can change the docs CocoIndex created: treat it like a password.
+
+```bash
+cocoindex auth sign-out google-docs      # revokes the sign-in at Google and deletes the token file
+```
+
+From Python, `google_docs.UserAccount().sign_in(client_secrets_path)` and `.sign_out()` do the same.
+
+### UserAccount
+
+```python
+class UserAccount(token_path: str | os.PathLike[str] | None = None)
+UserAccount.token_path -> Path
+UserAccount.sign_in(client_secrets_path: str | os.PathLike[str] | None = None) -> str
+UserAccount.sign_out() -> bool
+UserAccount.email -> str
+UserAccount.is_signed_in() -> bool
+```
+
+It has the same methods as the Google Drive connector's [`UserAccount`](./google_drive#useraccount), over its own token file. The two classes are distinct: a run that provides a Google Drive `UserAccount` where the Docs target expects this one fails before calling Google.
+
+The access token is refreshed with the stored refresh token as it expires, and the refreshed token is written back to the file. When no sign-in is stored, or Google refuses the stored one, the run raises `SignInRequiredError` (a `SignInError`), whose message says to sign in again.
+
+## As target
+
+### declare_doc
+
+```python
+def declare_doc(account: ContextKey[UserAccount], name: str, content: str) -> None
+```
+
+Declares a Google Doc whose content is `content`, in Markdown.
+
+- `account` is the [`ContextKey`](../programming_guide/context) under which the app's lifespan provides the signed-in `UserAccount`.
+- `name` is the doc's title when it is created, and, with the context key's name, its identity across runs.
+- `content` is Markdown; see [Markdown](#markdown).
+
+On the first run, the target creates the doc in your My Drive and tags it with an id it keeps in its own state. From then on it finds the doc by that tag, not by its name: rename the doc or move it to another folder, and the target keeps writing to it. Changing `name` in your code declares a different doc: the old one is trashed and a new one created.
+
+```python
+from typing import AsyncIterator
+
+import cocoindex as coco
+from cocoindex.connectors import google_docs
+
+GDOCS = coco.ContextKey[google_docs.UserAccount]("gdocs")
+
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    builder.provide(GDOCS, google_docs.UserAccount())
+    yield
+
+@coco.fn
+async def app_main() -> None:
+    report = await write_report()  # Markdown
+    google_docs.declare_doc(GDOCS, "Weekly brief", report)
+
+app = coco.App("WeeklyBrief", app_main)
+```
+
+### How a change is written
+
+An unchanged run makes no call to Google at all: the target compares the declared content with what it wrote last time.
+
+When the content changed, the target reads the doc and writes the difference through the Docs API's `batchUpdate`, in one request:
+
+- **Blocks.** The content is split into blocks: each heading with the paragraphs up to the next heading, and the paragraphs before the first heading. A block is known by its heading path (`Brief > Decisions`), so it keeps its identity while its text changes. Each block is tagged with a [named range](https://developers.google.com/docs/api/how-tos/named-ranges) that records what the target wrote there.
+- **Paragraphs.** Within a block that changed, only the paragraphs that changed are deleted and inserted. Unchanged paragraphs, in that block and in every other one, are never touched, so comments, suggestions and links anchored to them stay, and the doc's version history shows only the real changes.
+- **New, removed and moved blocks.** A new block is inserted after the block it follows. A block no longer declared is deleted. A block that moved is deleted where it was and written where it now belongs.
+- **Concurrent edits.** The write names the revision it was planned on (`requiredRevisionId`). If someone edits the doc between the target's read and its write, Google refuses the write, and the target reads the doc again and plans anew, up to three times.
+
+### A person's edits
+
+People can edit the doc. A block a person changed since the target last wrote it, which the target tells from its named range, **keeps the person's text**:
+
+- The target does not rewrite it, even when the flow's version of the block changed. It logs a warning that names the doc, its link, and each such block by its heading path, and says when the flow had a newer version it did not write. The warning repeats on every write until the edit is resolved.
+- When the flow's version becomes the same as the person's text (for example, because the flow took the person's fix in), the block is the target's again, and later changes to it are written.
+- A block a person deleted as a whole stays deleted, and is reported the same way.
+- A block the flow no longer declares, but that a person edited, is left in the doc with the person's text, and the target lets go of it.
+
+A change of formatting counts as an edit as well, since the target compares the text with its bold, italic, code and links. Text a person adds between blocks belongs to no block, and the target leaves it alone.
+
+### Deleting the declaration
+
+When the declaration goes away (the code no longer declares the doc, or the app is dropped), the target moves the doc to the **trash**. It never deletes a doc permanently: Google Drive keeps a trashed file for 30 days, and you can restore it from there. A doc restored from the trash is not the target's again; the next declaration with the same `name` creates a new doc.
+
+If a person moves the doc to the trash while it is still declared, the next change creates a new doc with the full content.
+
+### Markdown
+
+The target writes the subset of Markdown a report needs:
+
+| Markdown | In the doc |
+|----------|------------|
+| `#` to `######` headings | Heading 1 to Heading 6 |
+| Paragraphs; lines of one paragraph are joined | Normal text |
+| `-`, `*` or `+` list items, nested by indentation | Bulleted list, nested up to nine levels |
+| `**bold**`, `__bold__` | Bold |
+| `*italic*`, `_italic_` | Italic |
+| `` `code` `` | Roboto Mono |
+| `[text](url)`, `<url>`, bare `http://` and `https://` URLs | Link |
+| Fenced code blocks | One Roboto Mono paragraph per line |
+
+Anything else (a table, a numbered list, a block quote) is written as the text it is. A horizontal rule is dropped.
