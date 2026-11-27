@@ -1589,15 +1589,33 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// just these keys, and with an empty list it need not read at all. The
     /// run records that it leaves the other keys out, as
     /// [`Self::skips_mount`] records one skip.
+    ///
+    /// With keys to run, the run also declares `path` a directory, as listing
+    /// the source and skipping the other keys would, whether or not the source
+    /// still holds the keys it reads. A selected key that is gone is then
+    /// deleted even where a component used to be at `path`; that component
+    /// stays until a run covers it.
     pub fn mount_each_keys(
         &self,
         fn_ctx: &FnCallContext,
         path: &StablePath,
-    ) -> Option<Vec<StableKey>> {
-        let keys = self.component_selector()?.selected_child_keys(path)?;
+    ) -> Result<Option<Vec<StableKey>>> {
+        let Some(keys) = self
+            .component_selector()
+            .and_then(|selector| selector.selected_child_keys(path))
+        else {
+            return Ok(None);
+        };
         fn_ctx.update(|inner| inner.has_child_components = true);
         self.mark_left_out_children();
-        Some(keys)
+        if !keys.is_empty() {
+            let sub_path = path.as_ref().strip_parent(self.stable_path().as_ref())?;
+            self.update_building_state(|building_state| {
+                building_state.child_path_set.declare_directory(sub_path);
+                Ok(())
+            })?;
+        }
+        Ok(Some(keys))
     }
 
     pub fn live(&self) -> bool {
