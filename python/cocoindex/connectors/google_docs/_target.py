@@ -12,8 +12,11 @@ trash.
 
 After each write the target stamps the doc (another ``appProperties`` entry)
 with the revision it planned on, the revision its write produced, and a digest
-of the blocks as it left them, so that ``read_doc``'s record can tell the
-target's own write from a person's edit without a second read.
+of the blocks as it left them, so that ``read_doc_edits``'s record can tell the
+target's own write from a person's edit without a second read. Each change of
+the declaration also records the fingerprint of its content (a third entry),
+so a reader can tell whether the text it was given is the one the doc was
+last written from.
 """
 
 from __future__ import annotations
@@ -63,6 +66,8 @@ _DOC_MIME = "application/vnd.google-apps.document"
 _TAG_PROPERTY = "cocoindexDoc"
 # The Drive appProperties key of the stamp a write leaves (see the module docstring).
 _STAMP_PROPERTY = "cocoindexWrite"
+# The Drive appProperties key of the fingerprint of the content last declared.
+_DECLARED_PROPERTY = "cocoindexDeclared"
 # A stamp's base for a doc the target created in that write.
 NEW = "new"
 # Raised when what a declaration writes changes, so every doc is planned again.
@@ -119,10 +124,16 @@ class _DocAction:
     key: _DocKey
     blocks: tuple[_markdown.Block, ...] | None  # None: trash the doc
     written_blocks: frozenset[str] | None
+    declared: str = ""  # ``declared_fingerprint`` of the content; "" to trash
 
 
 def _content_fingerprint(content: str) -> bytes:
     return fingerprint_str(f"{_FORMAT_VERSION}\n{content}")
+
+
+def declared_fingerprint(content: str) -> str:
+    """The fingerprint of declared content, as the doc's appProperties keep it."""
+    return _content_fingerprint(content).hex()
 
 
 class _DocHandler(coco.TargetHandler[str, _DocRecord, None]):
@@ -155,7 +166,7 @@ class _DocHandler(coco.TargetHandler[str, _DocRecord, None]):
         if len(prev_possible_records) == 1 and not prev_may_be_missing:
             written = frozenset(next(iter(prev_possible_records)).block_ids)
         return coco.TargetReconcileOutput(
-            action=_DocAction(doc_key, blocks, written),
+            action=_DocAction(doc_key, blocks, written, content_fp.hex()),
             sink=_sink,
             tracking_record=_DocRecord(
                 content_fingerprint=content_fp,
@@ -224,6 +235,8 @@ class Stamp(NamedTuple):
 class Found(NamedTuple):
     doc_id: str
     stamp: Stamp | None
+    # ``declared_fingerprint`` of the content the doc was last written from.
+    declared: str | None
 
 
 class _Google:
@@ -257,7 +270,12 @@ class _Google:
             return None
         newest = files[-1]
         properties = newest.get("appProperties") or {}
-        return Found(str(newest["id"]), Stamp.decode(properties.get(_STAMP_PROPERTY)))
+        declared = properties.get(_DECLARED_PROPERTY)
+        return Found(
+            str(newest["id"]),
+            Stamp.decode(properties.get(_STAMP_PROPERTY)),
+            str(declared) if declared else None,
+        )
 
     def create(self, name: str, tag: str) -> str:
         body = {
@@ -281,12 +299,15 @@ class _Google:
             if exc.resp.status != 404:
                 raise
 
-    def stamp(self, doc_id: str, stamp: Stamp) -> None:
+    def stamp(self, doc_id: str, stamp: Stamp | None, declared: str) -> None:
+        """Record the target's last write (``stamp``, when it wrote) and the
+        fingerprint of the content it was declared with."""
+        properties = {_DECLARED_PROPERTY: declared}
+        if stamp is not None:
+            properties[_STAMP_PROPERTY] = stamp.encode()
         _execute(
             self._drive.files().update(
-                fileId=doc_id,
-                body={"appProperties": {_STAMP_PROPERTY: stamp.encode()}},
-                fields="id",
+                fileId=doc_id, body={"appProperties": properties}, fields="id"
             )
         )
 
@@ -369,7 +390,12 @@ def _apply_action(account: UserAccount, action: _DocAction) -> None:
             f"read it to write, {_WRITE_ATTEMPTS} times; run again once it is quiet."
         )
     if written is not None or created:
-        _stamp(google, doc_id, NEW if created else short(state.revision_id), written)
+        base = NEW if created else short(state.revision_id)
+        _stamp(google, doc_id, base, written, action.declared)
+    elif found is not None and found.declared != action.declared:
+        # Nothing to write (the doc already reads as declared), but the
+        # declaration changed: a reader compares its text with this one.
+        google.stamp(doc_id, None, action.declared)
     if plan.person_edits:
         _logger.warning(
             "Google Doc %r (%s) keeps a person's edits; CocoIndex left these blocks "
@@ -380,9 +406,12 @@ def _apply_action(account: UserAccount, action: _DocAction) -> None:
         )
 
 
-def _stamp(google: _Google, doc_id: str, base: str, written: _Written | None) -> None:
+def _stamp(
+    google: _Google, doc_id: str, base: str, written: _Written | None, declared: str
+) -> None:
     """Record that the doc's latest revision is the target's own write, planned
-    on ``base``: read it again, and stamp it only if no one edited it since."""
+    on ``base``, of the content ``declared`` fingerprints: read it again, and
+    vouch for it only if no one edited it since."""
     state = _docs.read_document(google.get(doc_id))
     after = written.after if written is not None else None
     if after is None or after == state.revision_id:
@@ -390,7 +419,7 @@ def _stamp(google: _Google, doc_id: str, base: str, written: _Written | None) ->
         after = state.revision_id
     else:
         observed = ""  # someone edited after the write; no stamp vouches for it
-    google.stamp(doc_id, Stamp(base, short(after), observed))
+    google.stamp(doc_id, Stamp(base, short(after), observed), declared)
 
 
 def _describe(edit: _docs.PersonEdit) -> str:

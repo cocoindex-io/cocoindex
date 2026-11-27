@@ -18,6 +18,11 @@ and plans requests that touch only what changed:
   computes, so nothing depends on how Docs grows a range at its boundary;
 - a block a person edited is left as it is and reported.
 
+A pending suggestion (an insertion made in suggestion mode, not yet accepted)
+is part of the text the writer sees, so a block that holds one is left as it
+is, as an edit would be. A reader of what people changed leaves it out
+(``DocState.settled``): it is no one's change until someone accepts it.
+
 Positions are UTF-16 code units, as the Docs API counts them.
 """
 
@@ -80,6 +85,7 @@ class _Element:
     end: int
     text: str
     style: Run  # the style of ``text``; its own ``text`` is unused
+    suggested: bool = False  # a pending suggested insertion
 
 
 @dataclass(frozen=True)
@@ -92,12 +98,13 @@ class DocParagraph:
     bullet: int | None
     elements: tuple[_Element, ...]
 
-    def clipped(self, start: int, end: int) -> Paragraph:
-        """The part of this paragraph inside ``[start, end)``, its newline left out."""
+    def clipped(self, start: int, end: int, *, settled: bool = False) -> Paragraph:
+        """The part of this paragraph inside ``[start, end)``, its newline left
+        out; ``settled`` leaves out pending suggested insertions too."""
         runs: list[Run] = []
         for element in self.elements:
             lo, hi = max(element.start, start), min(element.end, end)
-            if lo >= hi:
+            if lo >= hi or (settled and element.suggested):
                 continue
             text = _u16slice(element.text, lo - element.start, hi - element.start)
             style = element.style
@@ -159,8 +166,17 @@ class DocState:
         return found
 
     def content(self, rng: OurRange) -> list[Paragraph]:
+        """The block's text as the writer sees it, pending suggestions included."""
         return [
             p.clipped(rng.start, rng.end) for p in self.overlapping(rng.start, rng.end)
+        ]
+
+    def settled(self, rng: OurRange) -> list[Paragraph]:
+        """The block's text with pending suggested insertions left out: what
+        people changed, as a reader sees it."""
+        return [
+            p.clipped(rng.start, rng.end, settled=True)
+            for p in self.overlapping(rng.start, rng.end)
         ]
 
     def whole(self, rng: OurRange) -> bool:
@@ -208,9 +224,14 @@ def _paragraph(element: Mapping[str, Any]) -> DocParagraph:
         if text_run is not None:
             text = str(text_run.get("content", ""))
             style = _text_style(text_run.get("textStyle") or {})
+            suggested = bool(text_run.get("suggestedInsertionIds"))
         else:
             text, style = OBJECT * (p_end - p_start), Run("")
-        elements.append(_Element(p_start, p_end, text, style))
+            suggested = any(
+                isinstance(value, Mapping) and value.get("suggestedInsertionIds")
+                for value in part.values()
+            )
+        elements.append(_Element(p_start, p_end, text, style, suggested))
     paragraph_style = paragraph.get("paragraphStyle") or {}
     bullet = paragraph.get("bullet")
     return DocParagraph(
@@ -263,16 +284,17 @@ def read_document(document: Mapping[str, Any]) -> DocState:
 
 
 def classify(
-    state: DocState, rng: OurRange, declared_fp: str
+    state: DocState, rng: OurRange, declared_fp: str, *, settled: bool = False
 ) -> Literal["same", "update", "kept"]:
     """What the block in ``rng`` is, against the declared version ``declared_fp``.
 
     ``same``: the doc has the declared version (written by the target, or
     typed by a person). ``update``: it has what the target last wrote, and the
     declaration changed. ``kept``: a person changed it since the target wrote
-    it, to something other than the declared version.
+    it, to something other than the declared version. ``settled`` compares
+    the block's text without its pending suggestions, as a reader does.
     """
-    current = fingerprint(state.content(rng))
+    current = fingerprint(state.settled(rng) if settled else state.content(rng))
     whole = state.whole(rng)
     if whole and current == declared_fp:
         return "same"
@@ -284,10 +306,10 @@ def classify(
 def observe(state: DocState) -> str:
     """A digest of what a person can change in the target's blocks: which are
     there, and the text of each one edited since the target wrote it. Neither a
-    comment nor text outside every block changes it."""
+    comment, a pending suggestion nor text outside every block changes it."""
     seen = []
     for block_id, rng in sorted(state.ranges.items()):
-        current = fingerprint(state.content(rng))
+        current = fingerprint(state.settled(rng))
         edited = not state.whole(rng) or current != rng.written
         seen.append([block_id, current if edited else ""])
     payload = json.dumps(seen, separators=(",", ":"))
