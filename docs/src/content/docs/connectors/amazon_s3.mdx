@@ -94,6 +94,15 @@ async with session.create_client("s3") as client:
 async with session.create_client("s3", endpoint_url="http://localhost:9000") as client:
     ...
 
+# For regional endpoints (e.g. Backblaze B2, DigitalOcean Spaces, Wasabi),
+# pass the region that matches the endpoint.
+async with session.create_client(
+    "s3",
+    endpoint_url="https://s3.example-region.example.com",
+    region_name="example-region",
+) as client:
+    ...
+
 # For Tigris — single global endpoint, no region selection.
 # Pass region_name="auto"; boto3 requires a region for SigV4 signing
 # but Tigris ignores the value.
