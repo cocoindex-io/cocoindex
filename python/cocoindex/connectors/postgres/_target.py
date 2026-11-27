@@ -541,7 +541,9 @@ class _VectorIndexHandler:
     async def _apply_actions(
         self, context_provider: ContextProvider, actions: Sequence[_VectorIndexAction]
     ) -> None:
-        async with self._pool.acquire() as conn:
+        # A failed replacement must restore the old index, including any
+        # earlier deletions in this batch, before returning the connection.
+        async with self._pool.acquire() as conn, conn.transaction():
             # Drop deleted indexes first: a deleted index and a created one can
             # share a PostgreSQL name after truncation, and the later drop would
             # remove the new index.
