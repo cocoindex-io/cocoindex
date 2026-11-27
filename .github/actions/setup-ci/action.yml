@@ -32,6 +32,14 @@ inputs:
   clippy:
     description: Install the clippy component with the Rust toolchain.
     default: "false"
+  lld:
+    description: >-
+      Install lld on a Linux arm64 runner, whose image has none. Linux arm64
+      links through `dev/cc_with_lld.sh`, which uses lld where it is
+      installed and GNU ld otherwise. For a job that links enough to gain
+      from it: it cut the Rust SDK hooks from 533 s to 176 s, and left the
+      `build-test` hooks where they were (237 s without lld, 247 s with).
+    default: "false"
   min-free-disk-gib:
     description: >-
       Free space, in GiB, the job needs on `/`. On Linux, if less is free,
@@ -89,6 +97,20 @@ runs:
     - name: Install Rust toolchain
       shell: bash
       run: rustup toolchain install stable --profile minimal${{ inputs.clippy == 'true' && ' --component clippy' || '' }}
+
+    # The image's package lists are tried as they are first: refreshing
+    # them takes most of the time this step would otherwise take.
+    - name: Install lld
+      if: inputs.lld == 'true' && runner.os == 'Linux' && runner.arch == 'ARM64'
+      shell: bash
+      run: |
+        if ! command -v ld.lld > /dev/null; then
+          start=$SECONDS
+          install() { sudo apt-get install -y -qq --no-install-recommends lld; }
+          install || { sudo apt-get update -qq && install; }
+          echo "Installed lld in $((SECONDS - start)) s"
+        fi
+        ld.lld --version
 
     # Every job needs `protoc` on some leg: the SDK's Qdrant feature
     # (`qdrant-client`) and the Rust examples that enable it or LanceDB

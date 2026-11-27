@@ -13,6 +13,11 @@ This project uses [uv](https://docs.astral.sh/uv/) for Python project management
 uv run maturin develop   # Build Rust code and install Python package (required after Rust changes)
 ```
 
+On Linux arm64, Rust links through `dev/cc_with_lld.sh` (named in
+`.cargo/config.toml`), which uses `lld` when it is installed and GNU ld
+otherwise. Install `lld` there (`sudo apt install lld`): it links this
+workspace many times faster and in less memory.
+
 ### Testing
 
 ```bash
