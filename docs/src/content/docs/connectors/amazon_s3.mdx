@@ -94,10 +94,8 @@ async with session.create_client("s3") as client:
 async with session.create_client("s3", endpoint_url="http://localhost:9000") as client:
     ...
 
-# For S3-compatible services with regional endpoints (for example, Backblaze
-# B2, DigitalOcean Spaces, or Wasabi), pass the region that matches the
-# endpoint. Credentials come from the usual AWS environment
-# variables or config files, or from aws_access_key_id / aws_secret_access_key.
+# For regional endpoints (e.g. Backblaze B2, DigitalOcean Spaces, Wasabi),
+# pass the region that matches the endpoint.
 async with session.create_client(
     "s3",
     endpoint_url="https://s3.example-region.example.com",
