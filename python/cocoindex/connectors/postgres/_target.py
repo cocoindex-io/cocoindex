@@ -832,6 +832,17 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     # resolved means the table is upserted through multi-row VALUES.
     _unnest_upsert: _UnnestUpsert | None
     _unnest_upsert_resolved: bool
+    _qualified_name: str
+    # Declared NOT NULL columns of a system-managed table that the table holds
+    # as nullable, shared with the table's action (see `_TableAction`): the
+    # table handler fills it once per run, and the row batches that follow
+    # retry the constraint while any is left (see `_retry_not_null`).
+    _pending_not_null: set[str]
+    # Row batches applied while a column is pending, and the count at which the
+    # next retry runs: a retry scans the table, so the gap between two retries
+    # doubles. A column a retry misses gets its constraint on the next run.
+    _batches_while_pending: int
+    _next_not_null_retry: int
 
     def __init__(
         self,
@@ -839,11 +850,16 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         table_name: str,
         pg_schema_name: str | None,
         table_schema: TableSchema,
+        pending_not_null: set[str],
     ) -> None:
         self._pool = pool
         self._table_name = table_name
         self._schema_name = pg_schema_name
         self._table_schema = table_schema
+        self._qualified_name = _qualified_table_name(table_name, pg_schema_name)
+        self._pending_not_null = pending_not_null
+        self._batches_while_pending = 0
+        self._next_not_null_retry = 1
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
         pk_cols = table_schema.primary_key
@@ -889,6 +905,20 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         async with asyncio.TaskGroup() as tg:
             self._schedule_upserts(tg, upserts)
             self._schedule_deletes(tg, deletes)
+        await self._retry_not_null()
+
+    async def _retry_not_null(self) -> None:
+        """Retry the constraint of the pending NOT NULL columns, after the 1st,
+        2nd, 4th, 8th, ... row batch applied while any is pending."""
+        if not self._pending_not_null:
+            return
+        self._batches_while_pending += 1
+        if self._batches_while_pending < self._next_not_null_retry:
+            return
+        self._next_not_null_retry *= 2
+        await _restore_not_null(
+            self._pool, self._qualified_name, self._pending_not_null
+        )
 
     async def _resolve_unnest_upsert(self) -> _UnnestUpsert | None:
         """Build the `unnest` upsert statement, if every column's type allows it.
@@ -1179,6 +1209,106 @@ class _TableAction(NamedTuple):
     spec: _TableSpec | coco.NonExistenceType
     main_action: statediff.DiffAction | None
     column_actions: dict[str, statediff.DiffAction]
+    # Declared NOT NULL columns the table still holds as nullable after the
+    # action is applied: filled by `_TableHandler._apply_actions`, read by the
+    # row handler built for this action, which is built before it is applied.
+    pending_not_null: set[str]
+
+
+async def _try_set_not_null(
+    conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+    qualified_name: str,
+    col_name: str,
+) -> bool:
+    """Set NOT NULL on a column when it holds no NULL; whether it did."""
+    has_null = await conn.fetchval(
+        f'SELECT EXISTS (SELECT 1 FROM {qualified_name} WHERE "{col_name}" IS NULL)'
+    )
+    if has_null:
+        return False
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                f'ALTER TABLE {qualified_name} ALTER COLUMN "{col_name}" SET NOT NULL'
+            )
+    except asyncpg.NotNullViolationError:
+        # A NULL arrived after the check.
+        return False
+    return True
+
+
+def _declared_not_null_columns(schema: TableSchema[Any]) -> list[str]:
+    """The non-PK columns `schema` declares NOT NULL."""
+    return [
+        name
+        for name, col in schema.columns.items()
+        if not col.nullable and name not in schema.primary_key
+    ]
+
+
+async def _nullable_columns(
+    pool: asyncpg.Pool, qualified_name: str, columns: Sequence[str]
+) -> set[str]:
+    """Which of `columns` the table holds as nullable, read from the catalog.
+    The table resolves as in its DDL; a table that is not there has none."""
+    if not columns:
+        return set()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT attname FROM pg_attribute "
+            "WHERE attrelid = to_regclass($1) AND attnum > 0 "
+            "AND NOT attisdropped AND NOT attnotnull AND attname = ANY($2::text[])",
+            qualified_name,
+            list(columns),
+        )
+    return {row["attname"] for row in rows}
+
+
+async def _restore_not_null(
+    pool: asyncpg.Pool, qualified_name: str, columns: set[str]
+) -> None:
+    """Give `columns` (declared NOT NULL, held nullable) their constraint once
+    they hold no NULL, and drop them from `columns`.
+
+    A failure is logged as a warning, not raised: the rows and the DDL are
+    written, and the constraint is tried again by a later row batch and by the
+    table handler on every later run."""
+    for col_name in sorted(columns):
+        try:
+            async with pool.acquire() as conn:
+                restored = await _try_set_not_null(conn, qualified_name, col_name)
+        except asyncpg.PostgresError as e:
+            logger.warning(
+                f"Could not set NOT NULL on column {col_name!r} of {qualified_name}: {e}"
+            )
+            continue
+        if restored:
+            columns.discard(col_name)
+
+
+async def _add_column(
+    conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+    qualified_name: str,
+    col_name: str,
+    col: ColumnDef,
+    *,
+    if_not_exists: bool,
+) -> None:
+    """Add a column, NOT NULL when it is declared so and the table lets it be (no
+    row yet). A NOT NULL column added nullable gets its constraint later (see
+    `_TableHandler._restore_not_null`)."""
+    if_not_exists_sql = " IF NOT EXISTS" if if_not_exists else ""
+    add = f'ALTER TABLE {qualified_name} ADD COLUMN{if_not_exists_sql} "{col_name}" {col.type}'
+    if not col.nullable:
+        # Try NOT NULL and let the violation say the table has rows: a separate
+        # emptiness check could race with a concurrent insert.
+        try:
+            async with conn.transaction():
+                await conn.execute(f"{add} NOT NULL")
+            return
+        except asyncpg.NotNullViolationError:
+            pass
+    await conn.execute(add)
 
 
 class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
@@ -1203,6 +1333,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
             table_name=key.table_name,
             pg_schema_name=key.pg_schema_name,
             table_schema=action.spec.table_schema,
+            pending_not_null=action.pending_not_null,
         )
 
     async def _apply_actions(
@@ -1251,6 +1382,34 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                             await self._apply_column_actions(
                                 conn, key, spec.table_schema, action.column_actions
                             )
+            # After the DDL commits, so a failed restore leaves it applied.
+            for action in key_actions:
+                await self._restore_not_null(pool, action)
+
+    @staticmethod
+    async def _restore_not_null(pool: asyncpg.Pool, action: _TableAction) -> None:
+        """Give the declared NOT NULL columns of a system-managed table that it
+        holds as nullable their constraint, and leave the ones that still hold
+        a NULL in `action.pending_not_null` for the run's row batches.
+
+        A NOT NULL column added to a table with rows (or re-added after a failed
+        type change) is added nullable: PostgreSQL can't give it the constraint
+        until every row has a value, which the rows written again provide. The
+        columns are read from the catalog on every run, since the table action
+        is applied on every run: a run after one that failed, or stopped, before
+        its rows were all written restores them even if no row changes."""
+        spec = action.spec
+        if coco.is_non_existence(spec) or spec.managed_by != target.ManagedBy.SYSTEM:
+            return
+        qualified_name = _qualified_table_name(
+            action.key.table_name, action.key.pg_schema_name
+        )
+        pending = await _nullable_columns(
+            pool, qualified_name, _declared_not_null_columns(spec.table_schema)
+        )
+        await _restore_not_null(pool, qualified_name, pending)
+        action.pending_not_null.clear()
+        action.pending_not_null.update(pending)
 
     async def _drop_table(
         self,
@@ -1322,6 +1481,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         schema: TableSchema[Any],
         column_actions: dict[str, statediff.DiffAction],
     ) -> None:
+        """Apply column changes."""
         qualified_name = _qualified_table_name(key.table_name, key.pg_schema_name)
         pk_cols = set(schema.primary_key)
         non_pk_col_by_name = {
@@ -1355,18 +1515,13 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 # it as a no-op here; "delete" should have been emitted.
                 continue
 
-            if action == "insert":
-                async with conn.transaction():
-                    await conn.execute(
-                        f"ALTER TABLE {qualified_name} "
-                        f'ADD COLUMN "{col_name}" {desired_col.type}'
-                    )
-                continue
-
-            if action == "upsert":
-                await conn.execute(
-                    f"ALTER TABLE {qualified_name} "
-                    f'ADD COLUMN IF NOT EXISTS "{col_name}" {desired_col.type}'
+            if action in ("insert", "upsert"):
+                await _add_column(
+                    conn,
+                    qualified_name,
+                    col_name,
+                    desired_col,
+                    if_not_exists=(action == "upsert"),
                 )
                 continue
 
@@ -1392,9 +1547,12 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     await conn.execute(
                         f'ALTER TABLE {qualified_name} DROP COLUMN IF EXISTS "{col_name}"'
                     )
-                    await conn.execute(
-                        f"ALTER TABLE {qualified_name} "
-                        f'ADD COLUMN "{col_name}" {desired_col.type}'
+                    await _add_column(
+                        conn,
+                        qualified_name,
+                        col_name,
+                        desired_col,
+                        if_not_exists=False,
                     )
 
     def reconcile(
@@ -1464,6 +1622,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 spec=desired_state,
                 main_action=main_action,
                 column_actions=column_actions,
+                pending_not_null=set(),
             ),
             sink=self._sink,
             tracking_record=tracking_record,

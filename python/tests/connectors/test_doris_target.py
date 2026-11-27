@@ -61,6 +61,7 @@ pytestmark = [
 # Lazy import — only when tests actually run
 if DEPS_AVAILABLE:
     from cocoindex.connectors import doris
+    from cocoindex.connectors.doris import _target as doris_target
 
 
 # ============================================================
@@ -450,6 +451,67 @@ def test_dict_rows(
     )
     assert len(data) == 2
     assert data[0]["name"] == "Item1"
+
+
+def test_failed_load_keeps_the_old_row(
+    managed_conn: "doris.ManagedConnection",
+    config: "doris.DorisConnectionConfig",
+    table_name: str,
+) -> None:
+    """An update whose Stream Load fails keeps the old row: the load is staged
+    with two-phase commit before the old row is deleted, so a load Doris
+    rejects deletes nothing. The next run with a good value replaces the row,
+    once, and its rows are visible when the run returns."""
+    dict_rows: list[dict[str, Any]] = []
+    coco_env.context_provider.provide(DORIS_DB_KEY, managed_conn)
+
+    async def declare_strict_table() -> None:
+        table = await doris.mount_table_target(
+            DORIS_DB_KEY,
+            table_name,
+            doris.TableSchema(
+                {
+                    "id": doris.ColumnDef(type="VARCHAR(512)", nullable=False),
+                    "name": doris.ColumnDef(type="TEXT"),
+                    "value": doris.ColumnDef(type="BIGINT", nullable=False),
+                },
+                primary_key=["id"],
+            ),
+        )
+        for row in dict_rows:
+            table.declare_row(row=row)
+
+    app = coco.App(
+        coco.AppConfig(name="test_doris_failed_load", environment=coco_env),
+        declare_strict_table,
+    )
+
+    def rows() -> list[tuple[str, str, int]]:
+        return [
+            (r["id"], r["name"], r["value"])
+            for r in _query(
+                config,
+                f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id",
+            )
+        ]
+
+    dict_rows[:] = [
+        {"id": "1", "name": "Alice", "value": 10},
+        {"id": "2", "name": "Bob", "value": 20},
+    ]
+    app.update_blocking()
+    assert rows() == [("1", "Alice", 10), ("2", "Bob", 20)]
+
+    # Doris can't load "not a number" into the BIGINT NOT NULL column: it
+    # filters the row, and the load fails ("too many filtered rows").
+    dict_rows[0] = {"id": "1", "name": "Alice2", "value": "not a number"}
+    with pytest.raises(doris_target.DorisStreamLoadError, match="too many filtered"):
+        app.update_blocking()
+    assert rows() == [("1", "Alice", 10), ("2", "Bob", 20)]
+
+    dict_rows[0] = {"id": "1", "name": "Alice3", "value": 30}
+    app.update_blocking()
+    assert rows() == [("1", "Alice3", 30), ("2", "Bob", 20)]
 
 
 # ============================================================

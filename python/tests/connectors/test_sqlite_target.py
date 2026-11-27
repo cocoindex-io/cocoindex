@@ -2160,3 +2160,35 @@ def test_table_dropped_outside_cocoindex_comes_back_with_its_rows(
     app.update_blocking()
     assert rows() == expected
     assert _row_component_runs == 4, "unchanged children are skipped again"
+
+
+@requires_sqlite_vec
+@pytest.mark.parametrize("name", ["_e", "K", "distance"])
+def test_vec0_rejects_column_names_it_cannot_declare(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path], name: str
+) -> None:
+    """vec0 takes no column name starting with '_', and reserves 'k' and
+    'distance': such a name is a clear error, not a failed CREATE."""
+    managed_conn, _ = sqlite_db
+    test_env = make_test_env(managed_conn, f"test_vec0_bad_name_{name}")
+
+    async def declare_table() -> None:
+        sqlite.declare_table_target(
+            SQLITE_DB,
+            table_name="vec0_bad_name",
+            table_schema=sqlite.TableSchema(
+                {
+                    "id": sqlite.ColumnDef(type="INTEGER", nullable=False),
+                    name: sqlite.ColumnDef(type="float[2]", nullable=False),
+                },
+                primary_key=["id"],
+            ),
+            virtual_table_def=sqlite.Vec0TableDef(),
+        )
+
+    app = coco.App(
+        coco.AppConfig(name=f"Vec0BadName{name}", environment=test_env),
+        declare_table,
+    )
+    with pytest.raises(ValueError, match=f"cannot have a column named '{name}'"):
+        app.update_blocking()

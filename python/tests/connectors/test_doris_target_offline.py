@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
+import logging
+import threading
 from typing import Any
 
 import msgspec
@@ -20,7 +23,8 @@ from tests import common
 
 try:
     import pymysql  # type: ignore[import-untyped]  # noqa: F401
-    import aiohttp  # type: ignore[import-untyped]  # noqa: F401
+    import aiohttp
+    import aiohttp.web
 
     DEPS_AVAILABLE = True
 except ImportError:
@@ -64,11 +68,16 @@ def sql_log(monkeypatch: pytest.MonkeyPatch, dropped_tables: set[str]) -> list[s
     def fake_execute(config: "doris.DorisConnectionConfig", sql: str) -> None:
         log.append(sql)
 
-    async def fake_stream_load(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {}
+    async def fake_stream_load(*args: Any, **kwargs: Any) -> Any:
+        return doris_target._PrecommittedLoad(txn_id=1, label="l")
+
+    async def fake_finish(*args: Any, **kwargs: Any) -> None:
+        pass
 
     monkeypatch.setattr(doris_target, "_execute_ddl_sync", fake_execute)
     monkeypatch.setattr(doris_target, "_stream_load", fake_stream_load)
+    monkeypatch.setattr(doris_target, "_finish_two_phase", fake_finish)
+    monkeypatch.setattr(doris_target, "_wait_until_visible", fake_finish)
     return log
 
 
@@ -344,9 +353,9 @@ def test_a_table_dropped_outside_cocoindex_comes_back_with_its_rows(
 
     async def fake_stream_load(
         managed_conn: Any, table_name: str, rows: list[dict[str, Any]]
-    ) -> dict[str, Any]:
+    ) -> Any:
         loaded.extend(row["id"] for row in rows)
-        return {}
+        return doris_target._PrecommittedLoad(txn_id=1, label="l")
 
     monkeypatch.setattr(doris_target, "_stream_load", fake_stream_load)
     env = common.create_test_env(__file__, suffix=request.node.name)
@@ -391,3 +400,280 @@ def test_a_table_dropped_outside_cocoindex_comes_back_with_its_rows(
     loaded.clear()
     app.update_blocking()
     assert (sql_log, loaded, _row_component_runs) == ([], [], 4)
+
+
+# ============================================================
+# Two-phase upsert, against a fake FE over HTTP
+# ============================================================
+
+
+class _FakeDoris:
+    """A fake Doris FE serving Stream Load, `_stream_load_2pc` and
+    `get_load_state` over HTTP on 127.0.0.1, with the SQL the connector runs
+    stubbed. Every step lands in `events`, in order."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[Any, ...]] = []
+        self.fail_load = False
+        self.fail_delete = False
+        # The states `get_load_state` answers for a committed load, in order;
+        # the last one repeats.
+        self.states_after_commit = ["VISIBLE"]
+        self._next_txn_id = 100
+        self._txn_of_label: dict[str, int] = {}
+        self._polls: dict[int, int] = {}
+        self.port = 0
+
+    async def _stream_load(self, request: "aiohttp.web.Request") -> Any:
+        rows = json.loads(await request.text())
+        self.events.append(
+            (
+                "load",
+                request.headers.get("two_phase_commit"),
+                tuple(row["id"] for row in rows),
+            )
+        )
+        if self.fail_load:
+            return aiohttp.web.json_response(
+                {"Status": "Fail", "Message": "too many filtered rows"}
+            )
+        self._next_txn_id += 1
+        self._txn_of_label[request.headers["label"]] = self._next_txn_id
+        return aiohttp.web.json_response(
+            {"Status": "Success", "TxnId": self._next_txn_id}
+        )
+
+    async def _fe_two_phase(self, request: "aiohttp.web.Request") -> Any:
+        # The FE redirects `_stream_load_2pc` to a BE, as Doris does.
+        raise aiohttp.web.HTTPTemporaryRedirect(
+            f"http://127.0.0.1:{self.port}/be{request.path}"
+        )
+
+    async def _be_two_phase(self, request: "aiohttp.web.Request") -> Any:
+        txn_id = int(request.headers["txn_id"])
+        operation = request.headers["txn_operation"]
+        self.events.append((operation, txn_id))
+        return aiohttp.web.json_response(
+            {"status": "Success", "msg": f"transaction [{txn_id}] {operation}"}
+        )
+
+    def execute_sql(self, config: Any, sql: str) -> None:
+        if sql.startswith("DELETE"):
+            self.events.append(("delete", sql))
+            if self.fail_delete:
+                raise RuntimeError("delete failed")
+
+    async def _load_state(self, request: "aiohttp.web.Request") -> Any:
+        txn_id = self._txn_of_label[request.query["label"]]
+        poll = self._polls.get(txn_id, 0)
+        self._polls[txn_id] = poll + 1
+        state = self.states_after_commit[min(poll, len(self.states_after_commit) - 1)]
+        self.events.append(("state", txn_id, state))
+        return aiohttp.web.json_response(
+            {"msg": "success", "code": 0, "data": state, "count": 0}
+        )
+
+    def kinds(self) -> list[str]:
+        return [event[0] for event in self.events]
+
+    def serve(self) -> Any:
+        """Serve on a thread of its own until the returned callable stops it."""
+        started = threading.Event()
+        loop = asyncio.new_event_loop()
+        app = aiohttp.web.Application()
+        app.router.add_put("/api/testdb/{table}/_stream_load", self._stream_load)
+        app.router.add_put("/api/testdb/_stream_load_2pc", self._fe_two_phase)
+        app.router.add_put("/be/api/testdb/_stream_load_2pc", self._be_two_phase)
+        app.router.add_get("/api/testdb/get_load_state", self._load_state)
+        runner = aiohttp.web.AppRunner(app)
+
+        async def start() -> None:
+            await runner.setup()
+            site = aiohttp.web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            self.port = runner.addresses[0][1]
+            started.set()
+
+        def run() -> None:
+            loop.run_until_complete(start())
+            loop.run_forever()
+            loop.run_until_complete(runner.cleanup())
+            loop.close()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        started.wait()
+
+        def stop() -> None:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join()
+
+        return stop
+
+
+@pytest.fixture
+def fake_doris(monkeypatch: pytest.MonkeyPatch, dropped_tables: set[str]) -> Any:
+    fake = _FakeDoris()
+    stop = fake.serve()
+    monkeypatch.setattr(doris_target, "_execute_ddl_sync", fake.execute_sql)
+    yield fake
+    stop()
+
+
+_UPSERT_DB_KEY = coco.ContextKey["doris.ManagedConnection"]("test_doris_2pc_db")
+
+
+def _upsert_app(
+    fake: _FakeDoris,
+    request: pytest.FixtureRequest,
+    rows: list[dict[str, Any]],
+    *,
+    be_load_host: str | None = None,
+) -> coco.App[[], None]:
+    """An app that declares `rows` (read at each run) on table `docs`."""
+    env = common.create_test_env(__file__, suffix=request.node.name)
+    db_key = _UPSERT_DB_KEY
+    config = doris.DorisConnectionConfig(
+        fe_host="127.0.0.1",
+        database="testdb",
+        fe_http_port=fake.port,
+        be_load_host=be_load_host,
+    )
+    env.context_provider.provide(db_key, doris.connect(config))
+
+    @coco.fn
+    async def main() -> None:
+        table = await doris.mount_table_target(db_key, "docs", _simple_schema())
+        for row in rows:
+            table.declare_row(row=row)
+
+    return coco.App(coco.AppConfig(name="test_doris_2pc", environment=env), main)
+
+
+def _delete_of(*ids: str) -> tuple[str, str]:
+    conditions = " OR ".join(f"(`id` = '{i}')" for i in ids)
+    return ("delete", f"DELETE FROM `testdb`.`docs` WHERE {conditions}")
+
+
+@pytest.mark.parametrize("be_load_host", [None, "127.0.0.1"])
+def test_an_upsert_loads_then_deletes_then_commits(
+    fake_doris: _FakeDoris, request: pytest.FixtureRequest, be_load_host: str | None
+) -> None:
+    """Each chunk is Stream Loaded with two-phase commit, then the old rows of
+    its keys are deleted, then the load is committed through the FE (which
+    redirects to a BE, followed by hand to `be_load_host` when it is set), and
+    the run waits until the transaction is visible. The old code deleted first
+    and loaded in one phase."""
+    rows = [{"id": "1", "text": "one"}, {"id": "2", "text": "two"}]
+    app = _upsert_app(fake_doris, request, rows, be_load_host=be_load_host)
+    app.update_blocking()
+    assert fake_doris.events == [
+        ("load", "true", ("1", "2")),
+        _delete_of("1", "2"),
+        ("commit", 101),
+        ("state", 101, "VISIBLE"),
+    ]
+
+    fake_doris.events.clear()
+    rows[0] = {"id": "1", "text": "uno"}
+    app.update_blocking()
+    assert fake_doris.events == [
+        ("load", "true", ("1",)),
+        _delete_of("1"),
+        ("commit", 102),
+        ("state", 102, "VISIBLE"),
+    ]
+
+
+def test_a_failed_load_deletes_nothing(
+    fake_doris: _FakeDoris, request: pytest.FixtureRequest
+) -> None:
+    """A load Doris rejects leaves the old rows in place: nothing is deleted
+    and no transaction is committed. The old code deleted the old row before
+    the load, so it stayed gone until a later run."""
+    rows = [{"id": "1", "text": "one"}]
+    app = _upsert_app(fake_doris, request, rows)
+    app.update_blocking()
+
+    fake_doris.events.clear()
+    fake_doris.fail_load = True
+    rows[0] = {"id": "1", "text": "uno"}
+    with pytest.raises(
+        doris_target.DorisStreamLoadError, match="too many filtered rows"
+    ):
+        app.update_blocking()
+    assert fake_doris.kinds() == ["load"]
+
+    # The next run loads the row again, as an unchanged desired state that was
+    # never written.
+    fake_doris.events.clear()
+    fake_doris.fail_load = False
+    app.update_blocking()
+    assert fake_doris.kinds() == ["load", "delete", "commit", "state"]
+
+
+def test_a_failed_delete_aborts_the_load(
+    fake_doris: _FakeDoris, request: pytest.FixtureRequest
+) -> None:
+    """A delete that fails after the load is staged aborts that load, so the
+    new rows never land next to the old ones."""
+    rows = [{"id": "1", "text": "one"}]
+    app = _upsert_app(fake_doris, request, rows)
+    app.update_blocking()
+
+    fake_doris.events.clear()
+    fake_doris.fail_delete = True
+    rows[0] = {"id": "1", "text": "uno"}
+    with pytest.raises(RuntimeError, match="delete failed"):
+        app.update_blocking()
+    assert fake_doris.events == [
+        ("load", "true", ("1",)),
+        _delete_of("1"),
+        ("abort", 102),
+    ]
+
+
+def test_a_commit_waits_until_the_transaction_is_visible(
+    fake_doris: _FakeDoris, request: pytest.FixtureRequest
+) -> None:
+    """A commit returns before the transaction is published: the run polls
+    `get_load_state` until it is VISIBLE, as a one-phase load waits before
+    it answers."""
+    fake_doris.states_after_commit = ["COMMITTED", "COMMITTED", "VISIBLE"]
+    app = _upsert_app(fake_doris, request, [{"id": "1", "text": "one"}])
+    app.update_blocking()
+    assert fake_doris.events[2:] == [
+        ("commit", 101),
+        ("state", 101, "COMMITTED"),
+        ("state", 101, "COMMITTED"),
+        ("state", 101, "VISIBLE"),
+    ]
+
+
+def test_a_transaction_unpublished_past_the_load_timeout_warns(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A committed transaction still unpublished after `stream_load_timeout`
+    is left to publish later, with a warning, as a one-phase load's `Publish
+    Timeout` is; one Doris reports aborted fails the run."""
+    state = "COMMITTED"
+
+    async def fake_load_state(config: Any, label: str) -> str:
+        assert label == "l7"
+        return state
+
+    monkeypatch.setattr(doris_target, "_load_state", fake_load_state)
+    config = dataclasses.replace(_config(), stream_load_timeout=0)
+    load = doris_target._PrecommittedLoad(txn_id=7, label="l7")
+    with caplog.at_level(logging.WARNING, logger=doris_target._logger.name):
+        asyncio.run(doris_target._wait_until_visible(config, load))
+    assert any(
+        "transaction 7 is committed but not yet published" in r.getMessage()
+        for r in caplog.records
+    )
+
+    state = "ABORTED"
+    with pytest.raises(
+        doris_target.DorisStreamLoadError, match="aborted after its commit"
+    ):
+        asyncio.run(doris_target._wait_until_visible(config, load))
