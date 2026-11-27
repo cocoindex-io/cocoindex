@@ -12,7 +12,7 @@ import asyncio
 import uuid
 
 import msgspec
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import (
     Any,
     Collection,
@@ -28,6 +28,7 @@ from cocoindex._internal.extras import install_hint
 try:
     from qdrant_client import QdrantClient
     from qdrant_client.http import models as qdrant_models
+    from qdrant_client.http.exceptions import UnexpectedResponse
 except ImportError as e:
     raise ImportError(
         "qdrant-client is required to use the Qdrant connector. "
@@ -335,8 +336,9 @@ _COLLECTION_KEY_CHECKER = TypeChecker(tuple[str, str])
 class _CollectionSpec:
     schema: CollectionSchema
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
-    # See `_container.ContainerSpec`.
-    missing: bool = False
+    # See `_container.ContainerSpec`. Required: every constructor says
+    # whether the container was found missing.
+    missing: bool = field(kw_only=True)
 
 
 class _CollectionTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
@@ -666,7 +668,7 @@ async def mount_collection_target(
 
     Unlike ``collection_target()`` + ``coco.mount_target()``, it first checks that a
     system-managed collection CocoIndex created is still there, and creates it again
-    with all its rows when it was dropped outside CocoIndex.
+    with all its points when it was deleted outside CocoIndex.
 
     Args:
         db: ContextKey for the QdrantClient connection.
@@ -693,11 +695,17 @@ async def mount_collection_target(
 def _collection_exists(client: QdrantClient, collection_name: str) -> bool:
     if hasattr(client, "collection_exists"):
         return bool(client.collection_exists(collection_name))
+    # qdrant-client < 1.8: only "not found" means missing. A connection or
+    # auth error must not read as a collection dropped outside CocoIndex.
     try:
         client.get_collection(collection_name)
-        return True
-    except Exception:
+    except ValueError:  # the local client
         return False
+    except UnexpectedResponse as e:
+        if e.status_code == 404:
+            return False
+        raise
+    return True
 
 
 def _distance_from_spec(distance: str) -> qdrant_models.Distance:

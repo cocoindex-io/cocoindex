@@ -9,6 +9,8 @@ isn't set.
 from __future__ import annotations
 
 import os
+
+import httpx
 import uuid
 from typing import Any, cast
 
@@ -686,3 +688,33 @@ def test_collection_deleted_outside_cocoindex_comes_back(
             client.delete_collection(collection_name=collection_name)
         except Exception:
             pass
+
+
+@requires_qdrant
+def test_old_client_reads_only_not_found_as_a_missing_collection() -> None:
+    """A qdrant-client older than 1.8 has no `collection_exists`, so the check
+    falls back to `get_collection`. Only "not found" means missing there: a
+    connection or auth error raises, instead of reading as a collection
+    deleted outside CocoIndex, which would rewrite every point."""
+    from qdrant_client.http.exceptions import UnexpectedResponse
+
+    class _OldClient:
+        def __init__(self, error: Exception | None) -> None:
+            self._error = error
+
+        def get_collection(self, collection_name: str) -> object:
+            if self._error is not None:
+                raise self._error
+            return object()
+
+    def exists(error: Exception | None) -> bool:
+        return qdrant_target._collection_exists(cast(Any, _OldClient(error)), "c")
+
+    assert exists(None) is True
+    assert exists(ValueError("Collection c not found")) is False
+    not_found = UnexpectedResponse(404, "Not Found", b"", httpx.Headers())
+    assert exists(not_found) is False
+    with pytest.raises(UnexpectedResponse):
+        exists(UnexpectedResponse(401, "Unauthorized", b"", httpx.Headers()))
+    with pytest.raises(ConnectionError):
+        exists(ConnectionError("connection refused"))

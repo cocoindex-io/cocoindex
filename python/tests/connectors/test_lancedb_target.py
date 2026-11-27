@@ -609,7 +609,7 @@ def test_table_row_handler_null_backfilled_columns(
     action = _target._TableAction(
         key=_target._TableKey(db_key="test_db", table_name="test_table"),
         spec=_target._TableSpec(
-            table_schema=table_schema, managed_by=target.ManagedBy.SYSTEM
+            table_schema=table_schema, managed_by=target.ManagedBy.SYSTEM, missing=False
         ),
         main_action=main_action,
         column_actions={
@@ -971,6 +971,7 @@ async def test_table_handler_skips_optimize_for_existing_table() -> None:
         spec=_target._TableSpec(
             table_schema=_make_table_schema(),
             managed_by=target.ManagedBy.USER,
+            missing=False,
         ),
         main_action=None,
         column_actions={},
@@ -992,6 +993,7 @@ async def test_table_handler_does_not_optimize_new_table_before_row_mutations() 
         spec=_target._TableSpec(
             table_schema=_make_table_schema(),
             managed_by=target.ManagedBy.SYSTEM,
+            missing=False,
         ),
         main_action="insert",
         column_actions={},

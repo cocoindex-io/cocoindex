@@ -511,8 +511,12 @@ async def test_fts_config_change_differs_in_tracking(conn: Any) -> None:
     assert (tuned_col.tokenizer_name, tuned_col.filters) == ("whitespace", ())
 
     # The tracking record (used for change detection) must reflect the difference.
-    core_default = _zt._tracking_core_from_spec(_zt._CollectionSpec(schema=s_default))
-    core_tuned = _zt._tracking_core_from_spec(_zt._CollectionSpec(schema=s_tuned))
+    core_default = _zt._tracking_core_from_spec(
+        _zt._CollectionSpec(schema=s_default, missing=False)
+    )
+    core_tuned = _zt._tracking_core_from_spec(
+        _zt._CollectionSpec(schema=s_tuned, missing=False)
+    )
     assert core_default != core_tuned
 
 

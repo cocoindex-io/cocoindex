@@ -726,8 +726,9 @@ class _CollectionKey(NamedTuple):
 class _CollectionSpec:
     schema: CollectionSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
-    # See `_container.ContainerSpec`.
-    missing: bool = False
+    # See `_container.ContainerSpec`. Required: every constructor says
+    # whether the container was found missing.
+    missing: bool = field(kw_only=True)
 
 
 class _ColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):

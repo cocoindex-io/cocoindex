@@ -6,7 +6,7 @@ import asyncio
 import logging
 import re
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import (
     Any,
     Collection,
@@ -230,7 +230,7 @@ class _IndexSpec:
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
     # See `_container.ContainerSpec`. A dropped index is rebuilt: the documents
     # left under its prefix, if any, are purged.
-    missing: bool = False
+    missing: bool = field(kw_only=True)
 
 
 class _IndexTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
@@ -748,8 +748,9 @@ async def mount_index_target(
     """Mount an index target and return a ready-to-use IndexTarget.
 
     Unlike ``index_target()`` + ``coco.mount_target()``, it first checks that a
-    system-managed index CocoIndex created is still there, and creates it again
-    with all its rows when it was dropped outside CocoIndex.
+    system-managed index CocoIndex created is still there, and rebuilds it when
+    it was dropped outside CocoIndex: the documents left under its prefix are
+    deleted, and the declared ones written again.
 
     Args:
         db: ContextKey for the GlideClient connection.

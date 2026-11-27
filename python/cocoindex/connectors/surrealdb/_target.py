@@ -21,6 +21,7 @@ import random
 import re
 import uuid
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import (
     Any,
     Callable,
@@ -996,8 +997,9 @@ class _TableSpec:
     from_tables: tuple[str, ...] | None  # sorted table names for FROM clause
     to_tables: tuple[str, ...] | None  # sorted table names for TO clause
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
-    # See `_container.ContainerSpec`.
-    missing: bool = False
+    # See `_container.ContainerSpec`. Required: every constructor says
+    # whether the container was found missing.
+    missing: bool = dataclass_field(kw_only=True)
 
 
 class _TableMainRecord(msgspec.Struct, frozen=True):
