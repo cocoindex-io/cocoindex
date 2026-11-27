@@ -116,17 +116,6 @@ impl ComponentSelector {
         self.classify(path) == ComponentSelection::Selected
     }
 
-    /// The update covers `path`, wherever this view's run is. Unlike
-    /// [`Self::covers`], a view inside a selected subtree answers for paths
-    /// outside it too.
-    pub(crate) fn update_covers(&self, path: &StablePath) -> bool {
-        Self {
-            root: self.root.clone(),
-            within_selected: false,
-        }
-        .covers(path)
-    }
-
     /// The update runs the component at `path`, wherever this view's run is:
     /// it is selected or leads to a selected path. A `use_mount` child that
     /// runs anyway is not counted.
