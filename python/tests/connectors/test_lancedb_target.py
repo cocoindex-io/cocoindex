@@ -1244,6 +1244,41 @@ def test_vector_index_handler_reconcile_action_when_spec_changes() -> None:
 
 
 @requires_lancedb
+@pytest.mark.parametrize("table_name", ["", "bad name", "a/b", "t;drop"])
+def test_table_target_refuses_a_bad_table_name(table_name: str) -> None:
+    """A name LanceDB refuses fails when the table is declared."""
+    schema = lancedb.TableSchema(
+        columns={"id": lancedb.ColumnDef(type=pa.string(), nullable=False)},
+        primary_key=["id"],
+    )
+    with pytest.raises(ValueError, match="Invalid table name"):
+        lancedb.table_target(LANCEDB_DB, table_name, schema)
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_mount_table_target_refuses_a_bad_table_name(lancedb_dir: Path) -> None:
+    """Mounting a table whose name LanceDB refuses fails in the component that
+    mounts it, before anything is written."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+
+    async def main() -> None:
+        await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            lancedb.mount_table_target,
+            LANCEDB_DB,
+            "bad name",
+            await lancedb.TableSchema.from_class(SimpleRow, primary_key=["id"]),
+        )
+
+    env = _make_env(conn, "test_mount_table_target_refuses_a_bad_table_name")
+    app = coco.App(coco.AppConfig(name="test_lancedb_bad_name", environment=env), main)
+    with pytest.raises(Exception, match="Invalid table name"):
+        await app.update()
+    assert (await conn.list_tables()).tables == []
+
+
+@requires_lancedb
 def test_declare_vector_index_rejects_unknown_column() -> None:
     """declare_vector_index() raises ValueError for a column not in the schema."""
     schema = lancedb.TableSchema(

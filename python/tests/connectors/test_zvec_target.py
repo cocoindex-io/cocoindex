@@ -407,6 +407,32 @@ def test_undeclaring_a_document_removed_out_of_band(conn: Any) -> None:
     assert fetch_doc(conn, "test_gone", "2") is None
 
 
+@pytest.mark.parametrize(
+    "bad_id",
+    ["", "new\nline", "tab\tchar", "del\x7f", "k" * 1025],
+    ids=["empty", "newline", "tab", "del", "over_1024_bytes"],
+)
+def test_document_id_zvec_refuses_fails_when_declared(conn: Any, bad_id: str) -> None:
+    """An id zvec can't store fails its declaration, before anything is written."""
+    _reset(SimpleDoc, "test_bad_id")
+    app = _make_app(conn, "test_document_id_zvec_refuses_fails_when_declared")
+
+    _rows.extend(
+        [
+            SimpleDoc(id="good", title="A", year=1, embedding=_EMB),
+            SimpleDoc(id=bad_id, title="B", year=2, embedding=_EMB),
+        ]
+    )
+    with pytest.raises(Exception, match="zvec document id"):
+        app.update_blocking()
+    assert fetch_doc(conn, "test_bad_id", "good") is None
+
+    # The next run without it writes the rest.
+    _rows[:] = _rows[:1]
+    app.update_blocking()
+    assert fetch_doc(conn, "test_bad_id", "good") is not None
+
+
 def test_no_op_when_unchanged(conn: Any) -> None:
     _reset(SimpleDoc, "test_noop")
     app = _make_app(conn, "test_no_op_when_unchanged")

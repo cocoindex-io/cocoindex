@@ -283,7 +283,7 @@ target.declare_row(&ctx, &doc)?;
 
 <Lang only="python">
 
-The primary-key value becomes the document `id` (converted to `str`).
+The primary-key value becomes the document `id` (converted to `str`). `declare_row` raises a `ValueError` for an id that zvec can't store: an empty one, one over 1024 bytes, or one with a control character such as a newline or a tab. Older zvec versions, such as 0.6, refuse more ids (over 64 characters, or with characters such as spaces or non-ASCII letters); such an id still fails when it is written.
 
 ### Collection schema: from Python class
 
@@ -663,6 +663,8 @@ class Doc:
     id: str
     sparse: Annotated[dict[int, float], ZvecVectorDef(sparse=True)]
 ```
+
+A sparse field gets zvec's default sparse index, a flat inner-product index.
 
 </Lang>
 

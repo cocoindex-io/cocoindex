@@ -37,6 +37,11 @@ except ImportError as e:
 
 import cocoindex as coco
 from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits._request_size import (
+    MAX_JSON_NUMBER_BYTES,
+    json_size,
+    split_by_size,
+)
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import TypeChecker
 from cocoindex.resources import schema as res_schema
@@ -269,6 +274,37 @@ class _RowAction(NamedTuple):
     upsert: dict[str, Any] | None  # None means delete
 
 
+# The most bytes of rows and ids one write request carries (as `_action_size`
+# estimates them). Turbopuffer refuses an upsert request over 512 MB
+# (https://turbopuffer.com/docs/limits); a batch is split into requests of at
+# most 32 MiB, about the per-namespace write throughput it documents per
+# second, which keeps each request's memory bounded. A row larger than this
+# goes in a request of its own.
+_MAX_WRITE_REQUEST_BYTES = 32 * 1024 * 1024
+
+
+def _action_size(action: _RowAction, vector_fields: frozenset[str]) -> int:
+    """An estimate, from above, of the bytes of ``action`` in a write request:
+    its vectors from their length, the rest as JSON."""
+    if action.upsert is None:
+        return json_size(action.row_id) + 1
+    vectors = 0
+    rest: dict[str, Any] = {}
+    for name, value in action.upsert.items():
+        if name in vector_fields:
+            vectors += len(name) + 4 + len(value) * MAX_JSON_NUMBER_BYTES
+        else:
+            rest[name] = value
+    return vectors + json_size(rest) + 1
+
+
+def _vector_field_names(schema: NamespaceSchema) -> frozenset[str]:
+    """The fields of a row that hold its vectors (see `_row_to_upsert`)."""
+    if isinstance(schema.vectors, _ResolvedNamedVectorsDef):
+        return frozenset(schema.vectors.vectors)
+    return frozenset([_DEFAULT_VECTOR_FIELD])
+
+
 class _RowHandler(coco.TargetHandler[Row, _RowFingerprint]):
     _client: AsyncTurbopuffer
     _namespace_name: str
@@ -292,26 +328,25 @@ class _RowHandler(coco.TargetHandler[Row, _RowFingerprint]):
         if not actions:
             return
 
-        upserts: list[dict[str, Any]] = []
-        deletes: list[_RowId] = []
-
-        for action in actions:
-            if action.upsert is None:
-                deletes.append(action.row_id)
-            else:
-                upserts.append(action.upsert)
-
         ns = self._client.namespace(self._namespace_name)
-
-        kwargs: dict[str, Any] = {
-            "distance_metric": self._schema.distance,
-            "schema": _build_write_schema(self._schema),
-        }
-        if upserts:
-            kwargs["upsert_rows"] = upserts
-        if deletes:
-            kwargs["deletes"] = deletes
-        await ns.write(**kwargs)
+        write_schema = _build_write_schema(self._schema)
+        vector_fields = _vector_field_names(self._schema)
+        for group in split_by_size(
+            actions,
+            _MAX_WRITE_REQUEST_BYTES,
+            lambda a: _action_size(a, vector_fields),
+        ):
+            upserts = [a.upsert for a in group if a.upsert is not None]
+            deletes = [a.row_id for a in group if a.upsert is None]
+            kwargs: dict[str, Any] = {
+                "distance_metric": self._schema.distance,
+                "schema": write_schema,
+            }
+            if upserts:
+                kwargs["upsert_rows"] = upserts
+            if deletes:
+                kwargs["deletes"] = deletes
+            await ns.write(**kwargs)
 
     def reconcile(
         self,
