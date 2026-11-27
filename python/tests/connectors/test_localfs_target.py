@@ -8,12 +8,16 @@ Tests cover:
 - Entry name normalization and rejection
 - Switching between two keys that name one entry, within one update
 - Warnings for overlapping root directory targets
+- Removal of a root directory target that existed before it was declared
+- Atomic file writes through a temporary sibling file
 """
 
 from __future__ import annotations
 
 import os
 import pathlib
+import stat
+import sys
 from pathlib import Path
 
 from typing import Any, Awaitable, Callable, cast
@@ -458,6 +462,79 @@ def test_switch_from_flat_path_to_nested_dir_target_keeps_file(
     assert (outdir / "sub" / "a.txt").read_text() == "a"
 
 
+def test_file_and_directory_replace_each_other_at_one_path(tmp_path: Path) -> None:
+    """An entry declared as a file where a previous run declared a directory (and
+    the other way round) replaces what that run created, with what was under the
+    directory. Before, the write failed every run (IsADirectoryError /
+    FileExistsError)."""
+    outdir = tmp_path / "out"
+    app = _new_app("test_file_and_dir_replace", outdir)
+
+    async def as_dir(target: localfs.DirTarget[coco.ResolvedS]) -> None:
+        sub = await coco.use_mount(
+            coco.component_subpath("x"), _declare_named_sub_dir, target, "x"
+        )
+        sub.declare_file("a.txt", "a")
+
+    async def as_file(target: localfs.DirTarget[coco.ResolvedS]) -> None:
+        target.declare_file("x", "file")
+
+    _update(app, as_dir)
+    assert (outdir / "x" / "a.txt").read_text() == "a"
+    _update(app, as_file)
+    assert (outdir / "x").read_text() == "file"
+    _update(app, as_dir)
+    assert (outdir / "x" / "a.txt").read_text() == "a"
+
+
+def test_entry_of_the_other_kind_made_by_the_user_fails_the_write(
+    tmp_path: Path,
+) -> None:
+    """Only an entry CocoIndex declared is replaced: a directory the user made
+    where a file is declared still fails the update."""
+    outdir = tmp_path / "out"
+    app = _new_app("test_user_dir_not_replaced", outdir)
+    (outdir / "x").mkdir(parents=True)
+    (outdir / "x" / "mine.txt").write_text("mine")
+
+    async def as_file(target: localfs.DirTarget[coco.ResolvedS]) -> None:
+        target.declare_file("x", "file")
+
+    # Renaming a file over a directory: EISDIR on POSIX, access denied on Windows.
+    with pytest.raises(
+        PermissionError if sys.platform == "win32" else IsADirectoryError
+    ):
+        _update(app, as_file)
+    assert (outdir / "x" / "mine.txt").read_text() == "mine"
+
+
+def test_symlink_where_a_declared_dir_was_is_replaced_by_the_file(
+    tmp_path: Path,
+) -> None:
+    """A file declared where a previous run declared a directory replaces a
+    symlink found there, as a directory declared over a file does: the link is
+    removed, and the directory it names is left alone."""
+    outdir = tmp_path / "out"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "keep.txt").write_text("keep")
+    app = _new_app("test_symlink_replaced_by_file", outdir)
+
+    async def as_dir(target: localfs.DirTarget[coco.ResolvedS]) -> None:
+        target.declare_dir_target("x")
+
+    async def as_file(target: localfs.DirTarget[coco.ResolvedS]) -> None:
+        target.declare_file("x", "file")
+
+    _update(app, as_dir)
+    (outdir / "x").rmdir()
+    _symlink(outdir / "x", elsewhere, target_is_directory=True)
+    _update(app, as_file)
+    assert not (outdir / "x").is_symlink()
+    assert (outdir / "x").read_text() == "file"
+    assert (elsewhere / "keep.txt").read_text() == "keep"
+
+
 def test_delete_of_another_file_in_the_same_update_runs(tmp_path: Path) -> None:
     """The guard spares only the entry just written: a removed file is deleted in
     the same call that rewrites its sibling."""
@@ -639,3 +716,157 @@ def test_no_warning_for_disjoint_root_dir_targets(
     # Moving a root to another key over two updates (remove, then add) is fine.
     assert _run_root_dirs(app, roots[1:], caplog) == []
     assert _run_root_dirs(app, [*roots[1:], tmp_path / "foo"], caplog) == []
+
+
+# =============================================================================
+# Removing a root directory target
+# =============================================================================
+
+# Whether `_root_dir_app` declares its directory target; set before each update.
+_declares_root_dir: list[bool] = []
+
+
+async def _root_dir_app(outdir: Path) -> None:
+    if _declares_root_dir[-1]:
+        target = await localfs.mount_dir_target(outdir)
+        target.declare_file("a.txt", "a")
+
+
+def _update_root_dir(app: coco.App[[Path], None], *, declared: bool) -> None:
+    _declares_root_dir[:] = [declared]
+    app.update_blocking()
+
+
+def _new_root_dir_app(name: str, outdir: Path) -> coco.App[[Path], None]:
+    return coco.App(
+        coco.AppConfig(name=name, environment=coco_env),
+        _root_dir_app,
+        outdir=outdir,
+    )
+
+
+def test_removed_root_dir_target_that_existed_before_is_kept(
+    tmp_path: Path,
+) -> None:
+    """A root directory target that existed before CocoIndex declared it stays,
+    with what the user put in it, when it is no longer declared."""
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    (outdir / "mine.txt").write_text("mine")
+    app = _new_root_dir_app("test_root_dir_existed_before", outdir)
+
+    _update_root_dir(app, declared=True)
+    _update_root_dir(app, declared=True)
+    assert (outdir / "a.txt").read_text() == "a"
+    _update_root_dir(app, declared=False)
+    assert (outdir / "mine.txt").read_text() == "mine"
+
+
+def test_removed_root_dir_target_cocoindex_created_is_removed(
+    tmp_path: Path,
+) -> None:
+    """A root directory target CocoIndex created is removed with everything
+    under it, even after later runs found it already there."""
+    outdir = tmp_path / "out"
+    app = _new_root_dir_app("test_root_dir_created", outdir)
+
+    _update_root_dir(app, declared=True)
+    (outdir / "mine.txt").write_text("mine")
+    _update_root_dir(app, declared=True)
+    _update_root_dir(app, declared=False)
+    assert not outdir.exists()
+
+
+# =============================================================================
+# Atomic file writes
+# =============================================================================
+
+
+def _symlink(link: Path, target: Path, *, target_is_directory: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Symlinks unavailable: {exc}")
+
+
+def _declare_a(
+    content: str,
+) -> Callable[[localfs.DirTarget[coco.ResolvedS]], Awaitable[None]]:
+    async def declare(target: localfs.DirTarget[coco.ResolvedS]) -> None:
+        target.declare_file("a.txt", content)
+
+    return declare
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows can't replace a file that is open"
+)
+def test_changed_file_is_replaced_not_rewritten_in_place(tmp_path: Path) -> None:
+    """A changed file is written to a temporary file and renamed over the old
+    one: a reader that opened the old file reads the old content in full."""
+    outdir = tmp_path / "out"
+    app = _new_app("test_atomic_write_replaces", outdir)
+
+    _update(app, _declare_a("old content"))
+    with open(outdir / "a.txt", "rb") as reader:
+        _update(app, _declare_a("new"))
+        assert reader.read() == b"old content"
+    assert (outdir / "a.txt").read_text() == "new"
+    assert sorted(os.listdir(outdir)) == ["a.txt"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_changed_file_keeps_its_permissions(tmp_path: Path) -> None:
+    outdir = tmp_path / "out"
+    app = _new_app("test_atomic_write_keeps_mode", outdir)
+
+    _update(app, _declare_a("a"))
+    os.chmod(outdir / "a.txt", 0o640)
+    _update(app, _declare_a("a2"))
+    assert (outdir / "a.txt").read_text() == "a2"
+    assert stat.S_IMODE(os.stat(outdir / "a.txt").st_mode) == 0o640
+
+
+def test_stale_temporary_file_is_removed(tmp_path: Path) -> None:
+    """A temporary file left by a write that was cut short is removed by the
+    next write of its file."""
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    (outdir / ".a.txt.cocoindex-tmp").write_text("left behind")
+    app = _new_app("test_atomic_write_stale_tmp", outdir)
+
+    _update(app, _declare_a("a"))
+    assert (outdir / "a.txt").read_text() == "a"
+    assert sorted(os.listdir(outdir)) == ["a.txt"]
+
+
+def test_symlink_at_the_temporary_name_is_not_written_through(
+    tmp_path: Path,
+) -> None:
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    victim = tmp_path / "victim.txt"
+    victim.write_text("victim")
+    _symlink(outdir / ".a.txt.cocoindex-tmp", victim)
+    app = _new_app("test_atomic_write_tmp_symlink", outdir)
+
+    _update(app, _declare_a("a"))
+    assert (outdir / "a.txt").read_text() == "a"
+    assert victim.read_text() == "victim"
+    assert sorted(os.listdir(outdir)) == ["a.txt"]
+
+
+def test_symlink_at_the_file_is_written_through(tmp_path: Path) -> None:
+    """A symlink at a declared file is written through to the file it names,
+    as an in-place write would: the link stays."""
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    real = tmp_path / "real.txt"
+    real.write_text("old")
+    _symlink(outdir / "a.txt", real)
+    app = _new_app("test_atomic_write_through_symlink", outdir)
+
+    _update(app, _declare_a("a"))
+    assert (outdir / "a.txt").is_symlink()
+    assert real.read_text() == "a"
+    assert sorted(os.listdir(tmp_path)) == ["out", "real.txt"]

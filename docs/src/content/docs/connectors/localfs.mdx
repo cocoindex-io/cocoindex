@@ -446,6 +446,11 @@ ctx.mount_each_live(&"files", files, move |ctx, file: FileEntry| {
 </Fragment>
 </LangTabs>
 
+What the watch sees, and what it misses:
+
+- **The watched directory removed and made again.** When the directory itself is removed, the outputs of its files are removed. When it is made again, the watch follows the new directory and walks it, with or without the periodic rescan.
+- **Symlinks whose target is outside the directory.** The walk follows them, but the platform's file watcher can report an edit in the directory that really holds the file, not in the watched one. An edit to a file that a link points to from outside (made through the link or not) can then go unseen until the next periodic rescan, or for good with `rescan_interval` set to `None`. Watch the target's own directory, or keep the rescan on, when your files are linked in from elsewhere. Creating, replacing or removing the link itself is an event in the watched directory.
+
 See [Live Mode](../programming_guide/live_mode) for how this works and how to enable it on the app.
 
 ### Example
@@ -515,6 +520,8 @@ let stats = app
 ## As target
 
 The `localfs` connector provides target state APIs for writing files. CocoIndex tracks what files should exist and automatically handles creation, updates, and deletion.
+
+A changed file is written to a temporary file next to it and renamed over it: a reader sees the old content or the new, never part of a file, and a write that fails leaves the old file.
 
 ### declare_file
 
@@ -678,6 +685,8 @@ impl DirTarget {
 **Returns:** A `DirTarget`, ready at once: there is no pending state to resolve. A `DirTarget` is `Clone` and can be an argument of `mount_each!` or a memoized function, as in the [target example](#target-example).
 
 </Lang>
+
+The directory is a target state of its own. When no update declares it any more, CocoIndex removes it with everything under it, if CocoIndex created it. A directory that existed before it was first declared stays, with the files CocoIndex didn't write.
 
 ### DirTarget.declare_file
 
@@ -856,7 +865,7 @@ Two keys can reach one file in these ways:
 - **Overlapping roots.** Two root directory targets are the same directory, or one is inside the other: under two `ContextKey`s, a `ContextKey` and a plain path, or two paths that reach one directory through a symlink. CocoIndex logs a warning when it applies two such targets. Two `ContextKey`s that point at one base directory are fine if their roots are disjoint, such as <Lang only="python">`FilePath("foo", base_dir=A)` and `FilePath("bar", base_dir=B)`</Lang><Lang only="rust">`FilePath::under_context_dir(&ctx, &A, "foo")?` and `FilePath::under_context_dir(&ctx, &B, "bar")?`</Lang>.
 - **One file named two ways.** Names are normalized, so `./a.txt`, `x/../a.txt` and `a.txt` are one key. A flat path and a nested directory target are not: <Lang only="python">`target.declare_file("sub/a.txt")` and `target.declare_dir_target("sub")` with `declare_file("a.txt")`</Lang><Lang only="rust">`target.declare_file(&ctx, "sub/a.txt", ..)` and `target.declare_dir_target(&ctx, "sub", false)` with `declare_file(&ctx, "a.txt", ..)`</Lang> are two keys for one file.
 - **Names that differ only in case** on a case-insensitive file system (the default on macOS and Windows). There, `A.txt` and `a.txt` are one file.
-- **A file declared through a path into a directory target.** If `sub` is a directory target and its parent also declares `sub/a.txt`, removing the `sub` directory target removes `sub/a.txt` too. Removing a directory target removes the whole directory.
+- **A file declared through a path into a directory target.** If `sub` is a directory target and its parent also declares `sub/a.txt`, removing the `sub` directory target removes `sub/a.txt` too. Removing a directory target removes the whole directory. A root directory target that existed before CocoIndex first declared it is the exception: removing it removes only the entries CocoIndex wrote, and keeps the directory and anything else in it.
 
 You can switch a file from one key to another in one update if the processing component that declares the file stays the same. Examples are a case-only rename, or a flat path `sub/a.txt` moved to a nested `sub` directory target. CocoIndex writes the file under the new key and skips the delete under the old key. After a case-only rename on a case-insensitive file system, the file keeps its old spelling on disk.
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -270,6 +271,56 @@ async def test_localfs_live_permission_change_reprocesses(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_localfs_live_root_removed_and_recreated_without_rescan(
+    tmp_path: Path,
+) -> None:
+    """With rescan_interval=None, a watched root that is removed and made
+    again is watched again: its files' outputs go with it, and the files of
+    the new directory are processed."""
+    GlobalDictTarget.store.clear()
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "a.txt").write_text("aaa")
+
+    @coco.fn
+    async def app_main() -> None:
+        files = localfs.walk_dir(root, live=True, rescan_interval=None)
+        await coco.mount_each(process_file, files.items())
+
+    app = coco.App(
+        coco.AppConfig(name="test_localfs_live_root_gone", environment=coco_env),
+        app_main,
+    )
+
+    handle = app.update(live=True)
+    update_task = asyncio.create_task(handle.result())
+    await asyncio.sleep(0.5)
+
+    try:
+        await _wait_for_target_keys({"a.txt"})
+
+        shutil.rmtree(root)
+        await _wait_for_target_keys(set())
+        # Outlast the root poll interval, so the new directory is found by the
+        # poll, not by a stale event of the removal.
+        await asyncio.sleep(1.5)
+
+        root.mkdir()
+        (root / "b.txt").write_text("bbb")
+        await _wait_for_target_keys({"b.txt"})
+        # The new directory's watch delivers ordinary events.
+        (root / "c.txt").write_text("ccc")
+        await _wait_for_target_keys({"b.txt", "c.txt"})
+        assert not update_task.done()
+    finally:
+        update_task.cancel()
+        try:
+            await update_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
 async def test_localfs_live_single_watcher(tmp_path: Path) -> None:
     """A second concurrent watch() on one live view fails loudly."""
     items: Any = localfs.walk_dir(tmp_path, live=True).items()
@@ -294,3 +345,24 @@ async def test_localfs_live_single_watcher(tmp_path: Path) -> None:
             await first
         except asyncio.CancelledError:
             pass
+
+
+@pytest.mark.asyncio
+async def test_localfs_live_missing_root_at_start_fails(tmp_path: Path) -> None:
+    """A live watch whose root is missing when it starts fails, as a one-shot
+    walk does; only a root removed after the initial scan scans as empty."""
+    missing = tmp_path / "missing"
+
+    @coco.fn
+    async def app_main() -> None:
+        files = localfs.walk_dir(missing, live=True, rescan_interval=None)
+        await coco.mount_each(process_file, files.items())
+
+    app = coco.App(
+        coco.AppConfig(name="test_localfs_live_missing_root", environment=coco_env),
+        app_main,
+    )
+
+    handle = app.update(live=True)
+    with pytest.raises(ValueError, match="Path is not a directory"):
+        await asyncio.wait_for(handle.result(), timeout=30)
