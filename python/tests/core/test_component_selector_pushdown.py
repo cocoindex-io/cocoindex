@@ -127,6 +127,52 @@ def test_a_selected_key_the_source_no_longer_holds_is_deleted() -> None:
     assert _stored() == {"other:o": "o"}
 
 
+@pytest.mark.parametrize("items_factory", [_Items, _ListedOnly])
+def test_a_selected_key_gone_where_a_component_was_is_deleted(
+    items_factory: Any,
+) -> None:
+    """A component at the mount_each's path, now replaced by it: a selected key
+    the source no longer holds is deleted whether the source is read by key or
+    listed, and the old component, which the selector does not cover, stays
+    until a plain update. (Fuzz seed 377: read by key, it used to stay whole.)"""
+
+    @coco.fn
+    async def old_items() -> None:
+        for key, value in _source.items():
+            await coco.mount(coco.component_subpath(key), _item, value, "")
+
+    replaced = [False]
+
+    @coco.fn
+    async def main() -> None:
+        if replaced[0]:
+            await coco.mount_each(
+                coco.component_subpath("items"), _item, items_factory(), ""
+            )
+        else:
+            await coco.mount(coco.component_subpath("items"), old_items)
+
+    app = coco.App(
+        coco.AppConfig(
+            name=f"test_pushdown_replaced_{items_factory.__name__}",
+            environment=coco_env,
+        ),
+        main,
+    )
+    _source.update({"a": "a1", "b": "b1"})
+    app.update_blocking()
+
+    replaced[0] = True
+    del _source["a"]
+    _runs.clear()
+    app.update_blocking(component_selector=[_path("items", "a")])
+
+    assert _runs == []
+    assert _stored() == {"b1": "b1"}
+    app.update_blocking()
+    assert _stored() == {"b1": "b1"}
+
+
 def test_a_selected_path_below_an_item_reads_that_item() -> None:
     app = _app("deeper")
     _source.update({"a": "a1", "b": "b1"})

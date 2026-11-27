@@ -1740,7 +1740,7 @@ impl Ctx {
         let mount_each_keys = {
             let fn_ctx = Arc::new(FnCallContext::default());
             let _frame = parent.frame_guard(fn_ctx.clone());
-            comp_ctx.mount_each_keys(&fn_ctx, &parent.mount_base_path(comp_ctx))
+            comp_ctx.mount_each_keys(&fn_ctx, &parent.mount_base_path(comp_ctx))?
         };
         if mount_each_keys.is_some_and(|keys| keys.is_empty()) {
             return Ok(ComponentMountHandle {
