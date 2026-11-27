@@ -27,6 +27,7 @@ root:
 uv run maturin develop                                   # build CocoIndex from this checkout
 uv sync --extra litellm --inexact                        # the model client
 uv pip install --no-deps -e examples/cocoindex_agents    # this package, into the same environment
+uv pip install trafilatura                               # page extraction; the package imports it at start-up
 ```
 
 Keep `--inexact` on later syncs: a plain `uv sync` removes the last install.
@@ -63,9 +64,8 @@ Two more ways to run it:
 - **The web**: a prompt that names a topic to research makes the orchestrator
   search (Wikipedia with no key, Tavily with `TAVILY_API_KEY`), read the
   pages, follow the leads and write a cited report; a rerun fetches each page
-  conditionally and re-reads only what changed. Needs `trafilatura`
-  (`uv pip install trafilatura`). See *The `research` flow* in
-  [`flows/README.md`](flows/README.md).
+  conditionally and re-reads only what changed. See *The `research` flow*
+  in [`flows/README.md`](flows/README.md).
 
 ## Layout
 
@@ -82,11 +82,11 @@ Two more ways to run it:
 
 ## Running the tests
 
-From the repository root, after `uv run maturin develop`:
+From the repository root, after the one-time setup under [Running](#running)
+(`trafilatura` included: the tools import it, so every test needs it):
 
 ```sh
 uv run pytest examples/cocoindex_agents/tests
 ```
 
-The tests need no API key. They run on this repository's CocoIndex, in the
-same environment as the steps under [Running](#running).
+The tests need no API key, and no network.
