@@ -361,10 +361,11 @@ class PersonEdit:
     """A block a person changed since the target last wrote it; the target left it as it is."""
 
     label: str  # the block's heading path, or its first line when no longer declared
-    # "edited": the block is there, changed. "deleted": the person removed it
-    # all. "undeclared": the flow no longer declares it, so the target let go
-    # of it with the person's text in place.
-    kind: Literal["edited", "deleted", "undeclared"]
+    # "edited": the block is there, changed. "suggested": it differs only by a
+    # pending suggestion, which no one has accepted or rejected yet. "deleted":
+    # the person removed it all. "undeclared": the flow no longer declares it,
+    # so the target let go of it with the person's text in place.
+    kind: Literal["edited", "suggested", "deleted", "undeclared"]
     # The flow has a newer version of the block, which the target did not write.
     withheld: bool
 
@@ -495,8 +496,14 @@ def plan_write(
         # is the target's again.
         status[block.block_id] = classify(state, rng, new_fp)
         if status[block.block_id] == "kept":
+            # Kept for its pending suggestion alone, or for a person's edit.
+            only_suggested = classify(state, rng, new_fp, settled=True) != "kept"
             edits.append(
-                PersonEdit(block.label, "edited", withheld=new_fp != rng.written)
+                PersonEdit(
+                    block.label,
+                    "suggested" if only_suggested else "edited",
+                    withheld=new_fp != rng.written,
+                )
             )
 
     # Blocks that keep their place: the most already in the declared order. A
@@ -822,8 +829,10 @@ def _insert_requests(op: _Insert, inherits_bullet: bool) -> list[dict[str, Any]]
 
     New paragraphs take the paragraph style of the paragraph they split and the
     text style of the character before them, so every style is reset first and
-    then set. A list item's nesting level is spelled as leading tabs, which
-    ``createParagraphBullets`` reads and removes, so it comes last.
+    then set. Paragraph styles come before text styles: setting a paragraph's
+    named style clears the bold, italic and font of its text (links stay), as
+    the real API does. A list item's nesting level is spelled as leading tabs,
+    which ``createParagraphBullets`` reads and removes, so it comes last.
     """
     paragraphs = [p for _, p in op.paragraphs]
     texts = [
@@ -843,15 +852,36 @@ def _insert_requests(op: _Insert, inherits_bullet: bool) -> list[dict[str, Any]]
         cursor += u16len(t) + 1
     end = cursor
     requests: list[dict[str, Any]] = [
-        {"insertText": {"location": {"index": position}, "text": text}},
+        {"insertText": {"location": {"index": position}, "text": text}}
+    ]
+    index = 0
+    while index < len(paragraphs):
+        stop = index
+        while (
+            stop + 1 < len(paragraphs)
+            and paragraphs[stop + 1].style == paragraphs[index].style
+        ):
+            stop += 1
+        stop_end = starts[stop + 1] if stop + 1 < len(starts) else end
+        requests.append(
+            {
+                "updateParagraphStyle": {
+                    "range": {"startIndex": starts[index], "endIndex": stop_end},
+                    "paragraphStyle": {"namedStyleType": paragraphs[index].style},
+                    "fields": "*",
+                }
+            }
+        )
+        index = stop + 1
+    requests.append(
         {
             "updateTextStyle": {
                 "range": {"startIndex": first, "endIndex": end},
                 "textStyle": {},
                 "fields": "*",
             }
-        },
-    ]
+        }
+    )
     for paragraph, start in zip(paragraphs, starts):
         offset = start + (paragraph.bullet or 0)
         for run in paragraph.runs:
@@ -879,25 +909,6 @@ def _insert_requests(op: _Insert, inherits_bullet: bool) -> list[dict[str, Any]]
                 }
             }
         )
-    index = 0
-    while index < len(paragraphs):
-        stop = index
-        while (
-            stop + 1 < len(paragraphs)
-            and paragraphs[stop + 1].style == paragraphs[index].style
-        ):
-            stop += 1
-        stop_end = starts[stop + 1] if stop + 1 < len(starts) else end
-        requests.append(
-            {
-                "updateParagraphStyle": {
-                    "range": {"startIndex": starts[index], "endIndex": stop_end},
-                    "paragraphStyle": {"namedStyleType": paragraphs[index].style},
-                    "fields": "*",
-                }
-            }
-        )
-        index = stop + 1
     groups: list[tuple[int, int]] = []
     index = 0
     while index < len(paragraphs):

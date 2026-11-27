@@ -134,6 +134,7 @@ People can edit the doc. A block a person changed since the target last wrote it
 - When the flow's version becomes the same as the person's text (for example, because the flow took the person's fix in), the block is the target's again, and later changes to it are written.
 - A block a person deleted as a whole stays deleted, and is reported the same way.
 - A block the flow no longer declares, but that a person edited, is left in the doc with the person's text, and the target lets go of it.
+- A block that holds a pending suggestion (made in Suggesting mode, not yet accepted or rejected) is left as it is too, so the suggestion stays, and the warning says it holds one. The flow's newer version is written once the suggestion is accepted or rejected.
 
 A change of formatting counts as an edit as well, since the target compares the text with its bold, italic, code and links. Whitespace does not: an empty paragraph, a space at either end of a paragraph, or bold that takes in the space after a word. Text a person adds between blocks belongs to no block, and the target leaves it alone.
 

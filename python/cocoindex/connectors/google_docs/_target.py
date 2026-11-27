@@ -427,6 +427,8 @@ def _describe(edit: _docs.PersonEdit) -> str:
         what = "deleted; the flow still declares it, and it was not written back"
     elif edit.kind == "undeclared":
         what = "edited, then no longer declared: left with the person's text"
+    elif edit.kind == "suggested":
+        what = "holds a pending suggestion; written once it is accepted or rejected"
     elif edit.withheld:
         what = "edited; the flow's newer version was not written"
     else:
