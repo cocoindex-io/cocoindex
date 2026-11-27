@@ -252,6 +252,7 @@ pub fn mount_each_keys(
     comp_ctx
         .0
         .mount_each_keys(&fn_ctx.0, &stable_path.0)
+        .into_py_result()?
         .map(|keys| {
             keys.into_iter()
                 .map(|key| PyStableKey(key).into_pyobject(py).map(|b| b.unbind()))
