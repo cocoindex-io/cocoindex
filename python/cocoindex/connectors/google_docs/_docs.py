@@ -361,10 +361,11 @@ class PersonEdit:
     """A block a person changed since the target last wrote it; the target left it as it is."""
 
     label: str  # the block's heading path, or its first line when no longer declared
-    # "edited": the block is there, changed. "deleted": the person removed it
-    # all. "undeclared": the flow no longer declares it, so the target let go
-    # of it with the person's text in place.
-    kind: Literal["edited", "deleted", "undeclared"]
+    # "edited": the block is there, changed. "suggested": it differs only by a
+    # pending suggestion, which no one has accepted or rejected yet. "deleted":
+    # the person removed it all. "undeclared": the flow no longer declares it,
+    # so the target let go of it with the person's text in place.
+    kind: Literal["edited", "suggested", "deleted", "undeclared"]
     # The flow has a newer version of the block, which the target did not write.
     withheld: bool
 
@@ -495,8 +496,14 @@ def plan_write(
         # is the target's again.
         status[block.block_id] = classify(state, rng, new_fp)
         if status[block.block_id] == "kept":
+            # Kept for its pending suggestion alone, or for a person's edit.
+            only_suggested = classify(state, rng, new_fp, settled=True) != "kept"
             edits.append(
-                PersonEdit(block.label, "edited", withheld=new_fp != rng.written)
+                PersonEdit(
+                    block.label,
+                    "suggested" if only_suggested else "edited",
+                    withheld=new_fp != rng.written,
+                )
             )
 
     # Blocks that keep their place: the most already in the declared order. A
