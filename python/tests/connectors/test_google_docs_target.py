@@ -1570,7 +1570,7 @@ def test_a_pending_suggestion_is_no_edit_until_accepted(
     assert "Google may change eventually named range behavior." in [
         t for _, _, t in doc.lines()
     ]
-    assert "'Brief > Risks' (edited" in caplog.text
+    assert "'Brief > Risks' (holds a pending suggestion" in caplog.text
 
     doc.accept_suggestions()
     read = _read(setup, BRIEF.replace("behavior.", "behavior, soon."))
