@@ -82,6 +82,12 @@ class BadRequest(Exception):
     pass
 
 
+# The text properties setting a paragraph's named style clears, as measured on
+# the real API (2026-11-27): bold, italic and the font went, a link (with its
+# underline and color) stayed.
+_NAMED_STYLE_TEXT = ("bold", "italic", "weightedFontFamily", "fontSize")
+
+
 def _code_units(text: str) -> list[str]:
     raw = text.encode("utf-16-le", "surrogatepass")
     return [
@@ -199,6 +205,12 @@ class FakeDoc:
                 else:
                     for name in body["fields"].split(","):
                         para["style"][name] = body["paragraphStyle"][name]
+                if body["fields"] == "*" or "namedStyleType" in body["fields"]:
+                    # As Docs does: setting a named style clears the text
+                    # properties a named style defines; a link stays.
+                    for unit in self.units[s - 1 : e - 1]:
+                        for name in _NAMED_STYLE_TEXT:
+                            unit.style.pop(name, None)
         elif kind == "deleteParagraphBullets":
             self._check_range(start, end)
             for s, e in self._overlapping(start, end):
