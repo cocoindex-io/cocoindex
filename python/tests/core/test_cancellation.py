@@ -64,11 +64,9 @@ async def test_non_live_global_cancel_terminates_update() -> None:
         # CancelOnDropPy runs async — we need to wait for that propagation.
         await asyncio.wait_for(cancelled_in_python.wait(), timeout=5.0)
 
-        # And the update task itself should also terminate quickly.
-        try:
+        # And the update itself terminates quickly, as cancelled.
+        with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(result_task, timeout=5.0)
-        except Exception:
-            pass
     finally:
         if not result_task.done():
             result_task.cancel()
@@ -110,10 +108,9 @@ async def test_app_drop_interrupts_in_flight_update() -> None:
         # Run drop concurrently — it should complete after the update terminates.
         await asyncio.wait_for(app.drop(), timeout=5.0)
 
-        try:
+        # The interrupted update fails as cancelled.
+        with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(result_task, timeout=5.0)
-        except Exception:
-            pass
 
         assert cancelled_in_python.is_set(), (
             "process coroutine never received CancelledError — "

@@ -5,8 +5,10 @@ use crate::{
     state_store::{AppStore, Storage, StorageSettings},
 };
 
+use crate::engine::app_lock::AppOpLockSlot;
 use cocoindex_utils::fingerprint::Fingerprint;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::RwLock;
 
 /// User-facing environment settings. Currently just storage configuration;
@@ -15,6 +17,9 @@ pub type EnvironmentSettings = StorageSettings;
 
 struct EnvironmentInner<Prof: EngineProfile> {
     storage: Storage,
+    /// The `db_path` the environment was opened with; holds the per-app
+    /// update locks (see [`crate::engine::app_lock`]).
+    db_path: PathBuf,
     app_names: Mutex<BTreeSet<String>>,
     target_states_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
     host_runtime_ctx: Prof::HostRuntimeCtx,
@@ -47,6 +52,7 @@ impl<Prof: EngineProfile> Environment<Prof> {
         let storage = Storage::new(&settings).await?;
         let state = Arc::new(EnvironmentInner {
             storage,
+            db_path: settings.db_path.clone(),
             app_names: Mutex::new(BTreeSet::new()),
             target_states_providers,
             host_runtime_ctx,
@@ -64,6 +70,14 @@ impl<Prof: EngineProfile> Environment<Prof> {
 
     pub fn storage(&self) -> &Storage {
         &self.inner.storage
+    }
+
+    /// The cross-process lock of the app `app_name` of this environment's
+    /// database (see [`crate::engine::app_lock`]): the process's one slot for
+    /// it, so every `App` of that name shares one hold. Public for an SDK that
+    /// clears an app's database without going through `App`.
+    pub fn app_op_lock(&self, app_name: &str) -> Arc<AppOpLockSlot> {
+        AppOpLockSlot::for_app(&self.inner.db_path, app_name)
     }
 
     /// Close the environment's storage. See [`Storage::close`].

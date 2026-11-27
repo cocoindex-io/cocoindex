@@ -899,7 +899,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
             let component = self.component_ctx.component().get_child(stable_path);
             let delete_ctx = component.new_processor_context_for_delete(
                 self.target_states_providers.clone(),
-                Some(&self.component_ctx),
+                &self.component_ctx,
                 self.component_ctx.processing_stats().clone(),
                 self.component_ctx.host_ctx().clone(),
                 cascaded_on_error.clone(),

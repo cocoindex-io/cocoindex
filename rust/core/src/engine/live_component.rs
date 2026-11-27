@@ -1,4 +1,3 @@
-use crate::engine::context::UpdateRefusal;
 use std::collections::HashMap;
 use std::future::Future;
 
@@ -8,7 +7,8 @@ use crate::engine::component::{
     OnError, RunCompleteness,
 };
 use crate::engine::context::{
-    ComponentProcessingAction, ComponentProcessorContext, FnCallContext, PreviewActionCollector,
+    ComponentProcessingAction, ComponentProcessorContext, FnCallContext, Operation, OperationWork,
+    PreviewActionCollector,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -205,18 +205,18 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         // (no bit, no open children): live re-runs report nothing upward.
         let readiness_guard = parent_ctx.components_readiness().clone().add_child(None);
 
-        // 4. Create cancellation token as child of app's root token.
-        let cancellation_token = parent_ctx.app_ctx().cancellation_token().child_token();
-
         // 5. Create LiveComponentState.
         let beside = if leaves_existing && existing_runs_live {
             existing_state.clone()
         } else {
             None
         };
+        // The live component belongs to the operation that mounts it:
+        // cancelling that operation (or the app, or every operation) cancels
+        // it.
         let state = Arc::new(LiveComponentState::<Prof>::new(
             readiness_guard,
-            cancellation_token,
+            parent_ctx.operation().clone(),
             live,
             beside,
         ));
@@ -252,7 +252,6 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
             live,
             parent_ctx.preview_collector().cloned(),
             component_selector,
-            parent_ctx.update_refusal().clone(),
             parent_ctx.app_store().clone(),
             providers,
             parent_ctx.admission().lender().clone(),
@@ -385,8 +384,16 @@ pub struct LiveComponentState<Prof: EngineProfile> {
     ready_notify: tokio::sync::Notify,
 
     /// Cancellation token — triggered on re-mount, app shutdown, or
-    /// catch-up `mark_ready`.
+    /// catch-up `mark_ready`. A child of `operation`'s token: cancelling the
+    /// operation cancels it.
     cancellation_token: tokio_util::sync::CancellationToken,
+
+    /// The operation that mounted this incarnation. The runs of its cycles
+    /// belong to that operation: cancelling the operation cancels them, but
+    /// cancelling this incarnation alone (`cancellation_token`) only stops
+    /// new cycles. Its work holds the operation's lock on the app (see
+    /// [`LiveComponentController::work`]).
+    operation: Arc<Operation>,
 
     /// JoinHandle of the tokio task running `process_live`. Set by `start()`.
     live_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -405,12 +412,13 @@ pub struct LiveComponentState<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> LiveComponentState<Prof> {
-    pub fn new(
+    pub(crate) fn new(
         readiness_guard: ComponentBgChildReadinessChildGuard,
-        cancellation_token: tokio_util::sync::CancellationToken,
+        operation: Arc<Operation>,
         live: bool,
         beside: Option<Arc<LiveComponentState<Prof>>>,
     ) -> Self {
+        let cancellation_token = operation.cancellation_token().child_token();
         Self {
             update_full_lock: tokio::sync::Mutex::new(()),
             pending: parking_lot::Mutex::new(PendingState::new()),
@@ -421,6 +429,7 @@ impl<Prof: EngineProfile> LiveComponentState<Prof> {
             }),
             ready_notify: tokio::sync::Notify::new(),
             cancellation_token,
+            operation,
             live_task: Mutex::new(None),
             live,
             beside,
@@ -583,9 +592,6 @@ pub struct LiveComponentController<Prof: EngineProfile> {
     /// [`ComponentProcessorContext::component_selector`]. It holds for the whole
     /// update, live events included.
     component_selector: Option<ComponentSelector>,
-    /// The mounting update's refusal slot (see [`UpdateRefusal`]), shared by
-    /// this component's runs.
-    update_refusal: UpdateRefusal,
     /// What a run under a selector wrote through
     /// [`Self::write_committed_state`]: it keeps it for its own reads, and does
     /// not persist it. Such a value says something about the whole component
@@ -624,7 +630,6 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         live: bool,
         preview_collector: Option<PreviewActionCollector<Prof>>,
         component_selector: Option<ComponentSelector>,
-        update_refusal: UpdateRefusal,
         app_store: AppStore,
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         lender: Lender,
@@ -639,7 +644,6 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             live,
             preview_collector,
             component_selector,
-            update_refusal,
             selective_committed_state: Default::default(),
             app_store,
             providers,
@@ -660,6 +664,16 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         self.live
     }
 
+    /// A part in the work of the operation that mounted this live component,
+    /// for work the controller does itself (a write, a drain task). Refused
+    /// as cancelled once the operation's work is over: a host may keep the
+    /// controller after that, and the work would run without the operation's
+    /// lock on the app. While `process_live` runs, its task holds a part (see
+    /// [`Self::start`]), so the work is not over.
+    fn work(&self) -> Result<OperationWork> {
+        self.state.operation.work().ok_or_else(Error::cancelled)
+    }
+
     /// Read the value this live component committed under `key` via
     /// [`Self::write_committed_state`] on a prior run. Callable from
     /// `process_live` — before the first `update_full` — to decide whether a
@@ -667,7 +681,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// persisted a bootstrap flag + logic version).
     ///
     /// Returns `None` if `key` has no committed value (e.g. the component
-    /// never bootstrapped). Reads the [`StateKind::Live`] keyspace via a
+    /// never bootstrapped). Reads the [`StateKind::Live`](db_schema::StateKind::Live) keyspace via a
     /// single point-get on a fresh standalone snapshot — isolated from the
     /// `Regular` keyspace that `coco.use_state` in `process()` writes and
     /// set-reduces, and not participating in any commit, so it is safe in the
@@ -685,7 +699,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             .await
     }
 
-    /// Commit `value` under `key` in this live component's [`StateKind::Live`]
+    /// Commit `value` under `key` in this live component's [`StateKind::Live`](db_schema::StateKind::Live)
     /// persistent user state, read back by [`Self::read_committed_state`] on a
     /// later run. Written via the single-writer batcher in its own txn —
     /// independent of any component build's flush — so the live machinery can
@@ -697,6 +711,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// value for the run instead, so a later [`Self::read_committed_state`]
     /// reads it back.
     pub async fn write_committed_state(&self, key: &StableKey, value: Vec<u8>) -> Result<()> {
+        let _work = self.work()?;
         if self
             .component_selector
             .as_ref()
@@ -740,7 +755,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // Step-1 cancellation gate (mirrors design.md Section "update_full
         // body, step 1"). Avoids paying drain cost on a cancelled controller.
         if self.state.cancellation_token.is_cancelled() {
-            return Err(make_cancelled_error());
+            return Err(Error::cancelled());
         }
 
         // Set update_full_active under the pending lock so any drain tasks
@@ -781,7 +796,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.component_selector.clone(),
             ),
             self.app_store.clone(),
-            self.update_refusal.clone(),
+            self.state.operation.clone(),
         );
 
         let run = self
@@ -857,6 +872,9 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         {
             return Ok(ComponentExecutionHandle::finished());
         }
+        let Ok(_work) = self.work() else {
+            return Ok(cancelled_handle());
+        };
         // Synchronously remove the existence entry and write a tombstone,
         // matching the prior implementation's contract. The drain task does
         // it again when the op runs (see `run_op`).
@@ -880,14 +898,15 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         subpath: StablePath,
         op: Op<Prof>,
     ) -> Result<ComponentExecutionHandle> {
-        let (handle_tx, handle_rx) = oneshot::channel::<HandleOutcome>();
-
         // Pre-check cancellation: a controller that's already cancelled
-        // (shutdown path) should not accept new work.
+        // (shutdown path), or whose operation is over, accepts no new work.
         if self.state.cancellation_token.is_cancelled() {
-            let _ = handle_tx.send(HandleOutcome::Cancelled);
-            return Ok(make_handle(handle_rx));
+            return Ok(cancelled_handle());
         }
+        let Ok(work) = self.work() else {
+            return Ok(cancelled_handle());
+        };
+        let (handle_tx, handle_rx) = oneshot::channel::<HandleOutcome>();
 
         let new_op = QueuedOp { op, handle_tx };
 
@@ -907,7 +926,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         };
 
         if need_spawn {
-            self.spawn_drain_task(subpath);
+            self.spawn_drain_task(subpath, work);
         }
 
         Ok(make_handle(handle_rx))
@@ -920,7 +939,10 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     ///      send outcome on the queued op's handle_tx.
     ///   3. Under pending lock: clear `processing`; notify pending_changed;
     ///      loop to step 1.
-    fn spawn_drain_task(&self, subpath: StablePath) {
+    ///
+    /// The drain task holds `work` until it exits: its ops are the
+    /// operation's work.
+    fn spawn_drain_task(&self, subpath: StablePath, work: OperationWork) {
         let state = self.state.clone();
         let component = self.component.clone();
         let processing_stats = self.processing_stats.clone();
@@ -930,7 +952,6 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let live = self.live;
         let preview_collector = self.preview_collector.clone();
         let component_selector = self.component_selector.clone();
-        let update_refusal = self.update_refusal.clone();
         let app_store = self.app_store.clone();
         let lender = self.lender.clone();
         let share = self.share.clone();
@@ -940,6 +961,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let activity = ActivityGuard::new(component.clone());
         let handle = crate::engine::runtime::get_runtime().spawn(async move {
             let _activity = activity;
+            let _work = work;
             drain_task_body(
                 state,
                 component,
@@ -951,7 +973,6 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 live,
                 preview_collector,
                 component_selector,
-                update_refusal,
                 app_store,
                 lender,
                 share,
@@ -1007,11 +1028,22 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     {
         let token = self.state.cancellation_token.clone();
         let state = self.state.clone();
+        // `process_live` is the operation's work: its task holds a part in
+        // it, so the runs and writes it starts can take theirs. An operation
+        // whose work is over starts none.
+        let Some(work) = self.state.operation.work() else {
+            // Nothing will run: the incarnation is not "about to run", so a
+            // later mount at this path replaces it instead of running beside it.
+            self.state.cancellation_token.cancel();
+            self.state.resolve_ready_with_error(Error::cancelled());
+            return;
+        };
         // The live component is active while `process_live` runs; its
         // subpath drain tasks account for themselves.
         let activity = ActivityGuard::new(self.component.clone());
         let handle = crate::engine::runtime::get_runtime().spawn(async move {
             let _activity = activity;
+            let _work = work;
             let result = tokio::select! {
                 biased;
                 _ = token.cancelled() => Ok(()),
@@ -1076,15 +1108,17 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // Cancellable lock acquisition: shutdown breaks out within one poll.
         let _full_guard = tokio::select! {
             biased;
-            _ = self.state.cancellation_token.cancelled() => return Err(make_cancelled_error()),
+            _ = self.state.cancellation_token.cancelled() => return Err(Error::cancelled()),
             guard = self.state.update_full_lock.lock() => guard,
         };
 
         // Post-acquire re-check: the token may have fired *while we were
         // waiting* but after the cancelled-arm was last polled.
         if self.state.cancellation_token.is_cancelled() {
-            return Err(make_cancelled_error());
+            return Err(Error::cancelled());
         }
+        // Mounting writes the inner component's existence row.
+        let _work = self.work()?;
 
         // Build a fresh parent processor context anchored at our component
         // (mirroring `update_full`'s ctx construction). The building state
@@ -1110,7 +1144,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.component_selector.clone(),
             ),
             self.app_store.clone(),
-            self.update_refusal.clone(),
+            self.state.operation.clone(),
         );
         let fn_ctx = FnCallContext::default();
 
@@ -1249,7 +1283,6 @@ async fn drain_task_body<Prof: EngineProfile>(
     live: bool,
     preview_collector: Option<PreviewActionCollector<Prof>>,
     component_selector: Option<ComponentSelector>,
-    update_refusal: UpdateRefusal,
     app_store: AppStore,
     lender: Lender,
     share: LiveShare,
@@ -1321,7 +1354,6 @@ async fn drain_task_body<Prof: EngineProfile>(
             live,
             &preview_collector,
             component_selector.as_ref(),
-            &update_refusal,
             &app_store,
             &lender,
             &share,
@@ -1424,12 +1456,10 @@ async fn run_op<Prof: EngineProfile>(
     live: bool,
     preview_collector: &Option<PreviewActionCollector<Prof>>,
     component_selector: Option<&ComponentSelector>,
-    update_refusal: &UpdateRefusal,
     app_store: &AppStore,
     lender: &Lender,
     share: &LiveShare,
 ) -> Result<()> {
-    let _ = state; // kept for symmetry / future use
     let child = component.get_child(subpath.clone());
     match op {
         Op::Update {
@@ -1455,7 +1485,7 @@ async fn run_op<Prof: EngineProfile>(
                     ComponentSelector::scoped_to(component_selector, subpath),
                 ),
                 app_store.clone(),
-                update_refusal.clone(),
+                state.operation.clone(),
             );
             let inner_handle = child
                 .run_in_background(processor, context, on_error)
@@ -1484,7 +1514,7 @@ async fn run_op<Prof: EngineProfile>(
                     preview_collector.clone(),
                 ),
                 app_store.clone(),
-                update_refusal.clone(),
+                state.operation.clone(),
             );
             let inner_handle = child.delete(context)?;
             inner_handle.ready().await
@@ -1539,19 +1569,16 @@ fn make_handle(rx: oneshot::Receiver<HandleOutcome>) -> ComponentExecutionHandle
             Ok(HandleOutcome::Executed(Ok(()))) => cocoindex_utils::error::shared_ok(()),
             Ok(HandleOutcome::Executed(Err(e))) => Err(e),
             Ok(HandleOutcome::Superseded) => cocoindex_utils::error::shared_ok(()),
-            Ok(HandleOutcome::Cancelled) => Err(SharedError::from(make_cancelled_error())),
-            Err(_closed) => Err(SharedError::from(make_cancelled_error())),
+            Ok(HandleOutcome::Cancelled) => Err(SharedError::from(Error::cancelled())),
+            Err(_closed) => Err(SharedError::from(Error::cancelled())),
         }
     })
 }
 
-/// Construct a cancellation-flavored error.
-///
-/// Uses the typed `Error::cancelled()` constructor: at the PyO3 boundary,
-/// this maps to Python's `asyncio.CancelledError`, so callers can `except`
-/// it idiomatically. `Error::is_cancelled()` returns `true` from any layer,
-/// so the drain task's reclassification logic can detect it via the typed
-/// API rather than string-matching.
-fn make_cancelled_error() -> Error {
-    Error::cancelled()
+/// A handle that resolves as cancelled at once: for an op the controller
+/// accepts no more.
+fn cancelled_handle() -> ComponentExecutionHandle {
+    let (handle_tx, handle_rx) = oneshot::channel::<HandleOutcome>();
+    let _ = handle_tx.send(HandleOutcome::Cancelled);
+    make_handle(handle_rx)
 }
