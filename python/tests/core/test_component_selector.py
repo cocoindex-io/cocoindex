@@ -959,6 +959,54 @@ def test_selected_component_takes_over_a_target_state_of_an_unselected_one() -> 
     assert _stored() == {"x": 2, "c1_own": 1}
 
 
+def test_takeover_from_a_selected_owner_below_a_gone_ancestor_drops_its_memo() -> None:
+    """The old owner is selected but does not run: its ancestor component is no
+    longer mounted, so it stays whole. Its memo must go with the target state,
+    or a later memo hit declares nothing and the state is deleted with the
+    component that took it. (Fuzz seed 487.)"""
+
+    @coco.fn(memo=True)
+    async def leaf(value: int) -> None:
+        _runs.append("leaf")
+        _declare("k", value)
+
+    @coco.fn(memo=True)
+    async def parent(value: int) -> None:
+        await coco.mount(coco.component_subpath("x"), leaf, value)
+
+    where = ["old"]
+
+    @coco.fn
+    async def main() -> None:
+        await coco.mount(coco.component_subpath(where[0]), parent, 1)
+
+    app = _app("takeover_below_gone", main)
+    _run_all_then_clear_log(app)
+
+    where[0] = "new"
+    app.update_blocking(
+        component_selector=[
+            coco.ROOT_PATH / "new" / "x",
+            coco.ROOT_PATH / "old" / "x",
+        ]
+    )
+    assert _runs == ["leaf"]
+    assert common.list_target_state_owners_sync(app)[
+        '/@test_target_state/global_dict/"k"'
+    ] == (coco.ROOT_PATH / "new" / "x")
+
+    # Back where it was: the plain update deletes "new" and must run the old
+    # owner again, not reuse its memo.
+    where[0] = "old"
+    _runs.clear()
+    app.update_blocking()
+    assert _runs == ["leaf"]
+    assert _stored() == {"k": 1}
+    assert common.list_target_state_owners_sync(app)[
+        '/@test_target_state/global_dict/"k"'
+    ] == (coco.ROOT_PATH / "old" / "x")
+
+
 # ---------------------------------------------------------------------------
 # Live components
 # ---------------------------------------------------------------------------

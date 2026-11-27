@@ -1928,16 +1928,17 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
     // An old owner this update does not run keeps a memo that says it declares
     // the target state: a later update would reuse it, declare nothing, and
     // leave the state to whoever took it. Its memo, and each ancestor's, must
-    // go. An owner the update runs settles it itself, as in a plain update.
-    let preempted_owners_left_out: Vec<StablePath> = selector
-        .map(|selector| {
-            preempted_owner_updates
-                .keys()
-                .filter(|owner| !selector.update_covers(owner))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
+    // go. Under a selector, being covered does not mean being run: a selected
+    // owner below an ancestor component that is no longer mounted stays whole,
+    // unrun, and this commit cannot tell. So every preempted owner loses its
+    // memo; one that does run writes a new one when it commits, and a plain
+    // update runs every owner, which settles it as usual.
+    let preempted_owner_memos_to_drop: Vec<StablePath> = match selector {
+        Some(selector) if !selector.selects_everything() => {
+            preempted_owner_updates.keys().cloned().collect()
+        }
+        _ => Vec::new(),
+    };
 
     // Provider-generation updates: buffered into the output, applied
     // by `submit()` after the precommit txn commits — so a re-run of this
@@ -1955,7 +1956,7 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             self_path: stable_path.clone(),
             new_tracking_info: new_tracking_info_bytes,
             preempted_owner_updates,
-            preempted_owners_left_out,
+            preempted_owner_memos_to_drop,
             segment_names,
         },
     })
