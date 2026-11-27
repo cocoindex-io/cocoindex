@@ -178,6 +178,8 @@ The `neo4j` connector provides target state APIs for writing nodes to node table
 
 The record writes of all tables of one database are applied together, in batches. Within a batch, writes are ordered as **node upserts → relation upserts → relation deletes → node deletes** so dependent edges always see their endpoints. A batch is applied in Neo4j transactions of at most 1,000 record writes each, one after the other. A transaction that fails rolls back, and the components of the batch are retried; earlier transactions of the batch stay committed, which is safe because the writes are idempotent (`MERGE`). A transaction that fails with a transient error (typically a deadlock between concurrent writers merging edges onto the same nodes) is retried with backoff, up to 8 attempts, before the failure is reported. A transaction that goes over the server's transaction memory limit is split in two instead.
 
+A node that is no longer declared is deleted only when no relationship touches it. A node that a relationship still touches (one still declared, or one CocoIndex doesn't manage) stays, reduced to its primary key: its other properties are removed. That is the node a relationship upsert MERGEs for an endpoint no node declaration covers, so the graph stays what a fresh build of the current declarations would write. Declared again, the node gets its properties back, its relationships intact. As relation deletes run before node deletes, a node that goes together with the relationships touching it, in one processing component, is deleted outright. When a relationship goes in a later update than its endpoint, or in another processing component whose changes apply after the node's, the endpoint stays behind, holding only its primary key.
+
 <Lang only="rust">
 
 Within a transaction, the records of one statement shape (the node upserts of one label, the edge upserts of one relationship type and endpoint labels, and so on) are written by one `UNWIND $rows AS row …` statement.
@@ -1072,7 +1074,7 @@ An edge with properties of its own is declared with `declare_relation_record`; o
 </Fragment>
 </LangTabs>
 
-<Lang only="python">The `Entity` table is declared up-front (via `mount_node_target`) so its uniqueness constraint is reconciled before any `RELATIONSHIP` edge MERGEs entity endpoints.</Lang><Lang only="rust">The `Person` and `Task` tables are declared up-front (via `mount_table_target`) so their uniqueness constraints are reconciled before any edge MERGEs their endpoints.</Lang> The relationship's three-MERGE pattern (source endpoint → target endpoint → edge) means missing endpoints are auto-created — but it's good practice to declare them explicitly so deletion-cascade behavior stays predictable.
+<Lang only="python">The `Entity` table is declared up-front (via `mount_node_target`) so its uniqueness constraint is reconciled before any `RELATIONSHIP` edge MERGEs entity endpoints.</Lang><Lang only="rust">The `Person` and `Task` tables are declared up-front (via `mount_table_target`) so their uniqueness constraints are reconciled before any edge MERGEs their endpoints.</Lang> The relationship's three-MERGE pattern (source endpoint → target endpoint → edge) means missing endpoints are auto-created, holding only their primary key; declare them to give them properties.
 
 <Lang only="python">
 

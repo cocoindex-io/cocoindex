@@ -194,11 +194,9 @@ Array record IDs (`person:['sap', '0001']`) are not supported: `IntoRecordId` ha
 Python writes a record with `UPSERT ... MERGE`, which merges nested objects. Rust writes `SET`, one assignment per field, so a nested key a row stops declaring is removed with the rest of the old value.
 </RustNote>
 
-<Lang only="rust">
+**Edges and their endpoints.** A relation record does not need its endpoint records to exist: an edge declared to a record no one declares is related without creating the record. SurrealDB deletes a record's edges with it, so when CocoIndex deletes a record it relates its edges again, as they were: a record that goes away while edges to it stay declared leaves those edges, as a run from scratch would, and when the record is declared again, its edges are still there.
 
-**Server version.** A relation record whose fields change is replaced in place. A relation record whose endpoints change (one with an explicit `id`) is replaced with `DELETE` and then `RELATE` in one transaction. SurrealDB 3.2 rejects that with "already exists"; use SurrealDB 3.3.5 or later to move such a relation.
-
-</Lang>
+**Server version.** A relation record whose fields change is replaced in place. A relation record whose endpoints change (one with an explicit `id`) is replaced with `DELETE` and then `RELATE`. On SurrealDB 3.3 and later this happens in the chunk's transaction, as does relating again the edges of a deleted record. SurrealDB 3.2 cannot create a record deleted earlier in the same transaction, so there those edges are related in a second transaction, right after the chunk's. Between the two, the edges are missing. If the second transaction does not land, a moved relation is written on the next run, but an edge of a deleted record stays missing until its declaration changes or a full reprocess.
 
 **DDL.** Table and field definitions use `OVERWRITE`, so they are idempotent. <Lang only="python">With `managed_by="user"`</Lang><Lang only="rust">For a user-managed table (`ManagedTargetOptions::user_managed()`)</Lang> CocoIndex never runs DDL on tables (indexes declared with `declare_vector_index` are still created).
 
@@ -354,7 +352,9 @@ players.declare_fields(ctx, "ann", "stats", &json!({ "score": 7, "rank": 1 }))?;
 </Fragment>
 </LangTabs>
 
-Declares the fields one owner (`group`) contributes to a record. It runs <Lang only="python">`UPDATE $id MERGE {fields}`</Lang><Lang only="rust">`UPDATE $id SET …` with only these fields</Lang> and touches nothing else. When the declaration goes away, or a field is dropped from it, those fields are unset. If the record does not exist, the write raises and is retried on the next run, so declare the base record in the same or another pipeline.
+Declares the fields one owner (`group`) contributes to a record. It runs <Lang only="python">`UPSERT $id MERGE {fields}`</Lang><Lang only="rust">`UPSERT $id SET …` with only these fields</Lang> and touches nothing else. When the declaration goes away, or a field is dropped from it, those fields are unset. If the record does not exist yet, the write creates it with these fields, and the record's own declaration adds its fields when it lands: a parent component commits after the children it mounts, so groups declared in children of the component that declares the record land in the same run.<Lang only="python"> When the record's own declaration goes away while a group still declares fields of it, only the fields the record declared are unset; the record is deleted only when nothing but its `id` is left.</Lang>
+
+A field has one owner. Declaring a field that the record itself, or another group, declares through the same <Lang only="python">table target</Lang><Lang only="rust">table target (or a clone of it)</Lang> in the same run <Lang only="python">raises `ValueError`</Lang><Lang only="rust">returns an error</Lang>: the field would be unset when either owner stopped declaring it. Declared in another component, the error fails that component, which is logged.
 
 #### Relation tables (parent state)
 
@@ -582,6 +582,8 @@ docs.declare_vector_index(
 - `method` — Index method: `"hnsw"` (SurrealDB 3 removed `MTREE`).
 - `dimension` — Vector dimension (required).
 - `vector_type` — Vector element type: `"f32"`, `"f64"`, `"i16"`, `"i32"`, or `"i64"`.
+
+A changed option redefines the index. Index changes are applied around the table's records: a changed index is removed before the records of the batch are written, and defined after them, so that a new dimension or element type lands with the vectors that have it.
 
 <Lang only="python">
 

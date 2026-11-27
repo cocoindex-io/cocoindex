@@ -161,13 +161,14 @@ def test_record_sinks_shared_per_connection_factory() -> None:
     factory = surrealdb.ConnectionFactory(
         url=_SURREALDB_URL, namespace="ns", database="db"
     )
-    node = _target._RecordHandler("A", False, None, factory)
-    relation = _target._RecordHandler("R", True, None, factory)
+    node = _target._RecordHandler("A", False, None, factory, "db")
+    relation = _target._RecordHandler("R", True, None, factory, "db")
     other = _target._RecordHandler(
         "A",
         False,
         None,
         surrealdb.ConnectionFactory(url=_SURREALDB_URL, namespace="ns", database="db"),
+        "db",
     )
 
     assert node._sink._core == relation._sink._core
@@ -945,8 +946,9 @@ def _planned(actions: list[Any]) -> tuple[dict[str, Any], dict[tuple[str, Any], 
 async def test_preview_plans_tables_and_records(
     surreal_conn: tuple[Any, str, str],
 ) -> None:
-    """Preview plans the tables and their records without touching the
-    database; a real update then applies them."""
+    """Preview plans the tables and their records without writing to the
+    database (mounting a table reads whether it exists); a real update then
+    applies them."""
     conn, ns, db = surreal_conn
 
     factory = surrealdb.ConnectionFactory(
@@ -992,8 +994,6 @@ async def test_preview_plans_tables_and_records(
     person_rows = [Person(id="alice", name="Alice"), Person(id="bob", name="Bob")]
     likes_rows = [("alice", "bob", Likes(id="like1", rating=5))]
     tables, records = _planned(await app.update(preview=True))
-    # Building the record handlers opened no connection.
-    assert not factory._connections._entries
     assert {name: a.main_action for name, a in tables.items()} == {
         "person": "insert",
         "likes": "insert",
@@ -2494,21 +2494,655 @@ async def test_fields_mode(
 
 @requires_surrealdb
 @pytest.mark.asyncio
-async def test_fields_mode_missing_record_raises_then_retries(
+async def test_fields_mode_creates_a_missing_record(
     surreal_conn: tuple[Any, str, str],
 ) -> None:
-    """T6: zero affected rows raises, and the write is retried next run."""
+    """A group whose record does not exist yet creates it with its fields; the
+    record's own fields, written later, join them."""
     conn, ns, db = surreal_conn
     await _query(conn, "DEFINE TABLE o2 SCHEMALESS")
     app = _hardened_app(
         ns, db, "o2", lambda t: t.declare_fields(id="1", group="g", fields={"x": 1})
     )
-    with pytest.raises(Exception, match="missing"):
-        await app.update()
-    await _query(conn, "CREATE o2:`1` SET t = 'base'")
     await app.update()
+    assert await _query(conn, "SELECT * OMIT id FROM o2") == [{"x": 1}]
+    await _query(conn, "UPDATE o2:`1` SET t = 'base'")
     got = (await _query_table(conn, "o2"))[0]
     assert (got["t"], got["x"]) == ("base", 1)
+
+
+async def _players_app(
+    ns: str,
+    db: str,
+    record: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+) -> Any:
+    """``player:ann`` declared in the root component, and each field group of
+    ``groups`` in a child component of its own (children commit first)."""
+    coco_env.context_provider.provide(
+        SURREAL_DB_KEY,
+        surrealdb.ConnectionFactory(
+            url=_SURREALDB_URL, namespace=ns, database=db, credentials=None
+        ),
+    )
+
+    async def declare_group(table: Any, group: str) -> None:
+        table.declare_fields(id="ann", group=group, fields=groups[group])
+
+    async def main() -> None:
+        players = await coco.use_mount(  # type: ignore[call-overload,var-annotated,arg-type]
+            coco.component_subpath("setup", "player"),
+            surrealdb.mount_table_target,  # type: ignore[arg-type]
+            SURREAL_DB_KEY,
+            "player",
+            None,
+            managed_by=ManagedBy.USER,
+        )
+        players.declare_record(row={"id": "ann", **record})
+        for group in groups:
+            await coco.mount(
+                coco.component_subpath("group", group), declare_group, players, group
+            )
+
+    return coco.App(coco.AppConfig(name=f"players_{ns}", environment=coco_env), main)
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_field_groups_land_in_the_run_of_their_record(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """Groups in child components commit before the record's own declaration in
+    their parent: they create the record, so they land in the same run (they
+    used to fail, logged only, and land on the next run)."""
+    conn, ns, db = surreal_conn
+    await _query(conn, "DEFINE TABLE player SCHEMALESS")
+    app = await _players_app(
+        ns, db, {"name": "Ann"}, {"a": {"a_only": True}, "b": {"score": 2}}
+    )
+    await app.update()
+    assert await _query(conn, "SELECT * OMIT id FROM player") == [
+        {"name": "Ann", "a_only": True, "score": 2}
+    ]
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_a_field_declared_by_two_owners_is_refused(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """A field declared by the record and by a group is refused where it is
+    declared: it would be unset when the group goes away, while the record still
+    declares it."""
+    conn, ns, db = surreal_conn
+    await _query(conn, "DEFINE TABLE player SCHEMALESS")
+    groups: dict[str, dict[str, Any]] = {
+        "a": {"score": 2},
+        "b": {"city": "Oslo"},
+    }
+    app = await _players_app(ns, db, {"name": "Ann", "score": 1}, groups)
+    await app.update()  # group `a` fails in its own component, and logs
+    assert await _query(conn, "SELECT * OMIT id FROM player") == [
+        {"name": "Ann", "score": 1, "city": "Oslo"}
+    ]
+    del groups["a"]
+    await app.update()
+    assert await _query(conn, "SELECT * OMIT id FROM player") == [
+        {"name": "Ann", "score": 1, "city": "Oslo"}
+    ]
+
+
+@requires_surrealdb
+def test_field_owners_refuse_a_second_owner() -> None:
+    from cocoindex.connectors.surrealdb._target import (  # type: ignore[import-untyped]
+        _FieldOwners,
+    )
+
+    owners = _FieldOwners("player")
+    owners.claim("ann", None, {"id": "ann", "name": "Ann"})
+    owners.claim("ann", "a", {"score": 1})
+    owners.claim("ann", "a", {"score": 2})  # the same owner again
+    owners.claim("bob", "c", {"name": "B"})  # another record
+    with pytest.raises(ValueError, match="'score'.*group 'a' and field group 'c'"):
+        owners.claim("ann", "c", {"score": 3})
+    with pytest.raises(ValueError, match="'name'.*own declaration and field group"):
+        owners.claim("ann", "c", {"name": "A"})
+    with pytest.raises(ValueError, match="'name'.*group 'c' and the record's own"):
+        owners.claim("bob", None, {"id": "bob", "name": "Bob"})
+    owners.claim("ann", "a", {})  # `a` gives `score` up
+    owners.claim("ann", "c", {"score": 3})
+    # The records `1` and `"1"` are two records.
+    owners.claim(1, None, {"id": 1, "name": "One"})
+    owners.claim("1", "a", {"name": "one"})
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_undeclared_record_keeps_the_fields_of_its_groups(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """A record's existence has two owners: its own declaration and its field
+    groups. Undeclaring the record unsets its own fields and keeps the record
+    while a group still declares fields of it; once neither declares anything,
+    the record goes with the last owner that deletes it."""
+    conn, ns, db = surreal_conn
+    await _query(conn, "DEFINE TABLE o3 SCHEMALESS")
+    base: list[dict[str, Any]] = [{"id": "1", "title": "T"}, {"id": "2", "title": "U"}]
+    derived: list[str] = ["1"]
+
+    def declare(t: Any) -> None:
+        for r in base:
+            t.declare_record(row=r)
+        for record_id in derived:
+            t.declare_fields(id=record_id, group="rules", fields={"risk": 5})
+
+    app = _hardened_app(ns, db, "o3", declare)
+    await app.update()
+    assert await _query(conn, "SELECT * OMIT id FROM o3 ORDER BY id") == [
+        {"title": "T", "risk": 5},
+        {"title": "U"},
+    ]
+
+    # The record goes, its group stays: only the record's own field is unset.
+    # The record without a group is deleted.
+    base[:] = []
+    await app.update()
+    assert await _query(conn, "SELECT VALUE [meta::id(id), risk] FROM o3") == [["1", 5]]
+    assert "title" not in (await _query_table(conn, "o3"))[0]
+
+    # Declared again, the record's own field joins the group's.
+    base[:] = [{"id": "1", "title": "T2"}]
+    await app.update()
+    assert await _query(conn, "SELECT * OMIT id FROM o3") == [
+        {"title": "T2", "risk": 5}
+    ]
+
+    # Both go in one run: nothing is left.
+    base[:] = []
+    derived[:] = []
+    await app.update()
+    assert await _query_table(conn, "o3") == []
+
+
+@requires_surrealdb
+def test_undeclared_record_unsets_its_fields_and_deletes_only_if_empty() -> None:
+    """The record's own undeclaration unsets the fields it declared, then deletes
+    the record only if nothing but its ``id`` is left; a field group's leaves the
+    record; a relation, a record tracked without its field names, or one that
+    declared a required field of the schema, is deleted whole."""
+    from cocoindex.connectors.surrealdb import _target
+
+    factory = surrealdb.ConnectionFactory(
+        url=_SURREALDB_URL, namespace="ns", database="db"
+    )
+    node = _target._RecordHandler("t", False, None, factory, "db")
+    relation = _target._RecordHandler("r", True, None, factory, "db")
+    tracked = _target._FieldsTracking(b"fp", ("id", "title"))
+
+    own = node.reconcile(("1",), coco.NON_EXISTENCE, [tracked], False)
+    assert own is not None
+    assert own.action.value == {"id": None, "title": None}
+    assert own.action.unset and own.action.delete_if_empty
+
+    group = node.reconcile(
+        ("1", "g"),
+        coco.NON_EXISTENCE,
+        [_target._FieldsTracking(b"fp", ("risk",))],
+        False,
+    )
+    assert group is not None
+    assert group.action.value == {"risk": None}
+    assert group.action.unset and not group.action.delete_if_empty
+
+    # A required field of the schema: the record cannot stay without it.
+    schemafull = _target._RecordHandler(
+        "t",
+        False,
+        surrealdb.TableSchema(
+            {
+                "id": surrealdb.ColumnDef("string", nullable=False),
+                "title": surrealdb.ColumnDef("string", nullable=False),
+            }
+        ),
+        factory,
+        "db",
+    )
+    cases: list[tuple[Any, Any]] = [
+        (relation, b"fp"),
+        (node, b"fp"),
+        (schemafull, tracked),
+    ]
+    for handler, prev in cases:
+        whole = handler.reconcile(("1",), coco.NON_EXISTENCE, [prev], False)
+        assert whole is not None
+        assert whole.action.value is None and not whole.action.unset
+    optional = _target._RecordHandler(
+        "t",
+        False,
+        surrealdb.TableSchema(
+            {
+                "id": surrealdb.ColumnDef("string", nullable=False),
+                "title": surrealdb.ColumnDef("string"),
+            }
+        ),
+        factory,
+        "db",
+    )
+    own = optional.reconcile(("1",), coco.NON_EXISTENCE, [tracked], False)
+    assert own is not None and own.action.delete_if_empty
+
+
+class _RecordingConnection:
+    """A connection that answers every query with ``answer`` and keeps what it got."""
+
+    def __init__(self, answer: Any) -> None:
+        self.answer = answer
+        self.queries: list[tuple[str, dict[str, Any]]] = []
+
+    async def query_raw(self, surql: str, params: dict[str, Any]) -> Any:
+        self.queries.append((surql, params))
+        return self.answer
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recreates", [True, False])
+async def test_undeclared_record_is_deleted_after_every_write(recreates: bool) -> None:
+    """The record's undeclaration unsets its fields first, with the other field
+    unsets, and its delete-if-empty runs after the upserts: a group upserted in
+    the same batch keeps the record (and SurrealDB 3.2 never re-creates a record
+    deleted earlier in the transaction)."""
+    from cocoindex.connectors.surrealdb import _target
+
+    factory = surrealdb.ConnectionFactory(
+        url=_SURREALDB_URL, namespace="ns", database="db"
+    )
+    node = _target._RecordHandler("t", False, None, factory, "db")
+    undeclared = node.reconcile(
+        ("1",), coco.NON_EXISTENCE, [_target._FieldsTracking(b"fp", ("id", "a"))], False
+    )
+    group = node.reconcile(("1", "g"), {"b": 1}, [], True)
+    assert undeclared is not None and group is not None
+    answer = {
+        "result": [
+            {"status": "OK", "result": None},
+            {"status": "OK", "result": [[], []]},
+        ]
+    }
+    fake = _RecordingConnection(answer)
+    applier = _target._SharedRecordApplier(factory)
+    await applier._apply_chunk(
+        _target._Connection(fake, recreates),
+        sorted([group.action, undeclared.action], key=applier._rank),
+    )
+
+    [(surql, params)] = fake.queries
+    rid = RecordID("t", "1")
+    assert params["unf"] == [{"id": rid, "c": {"a": None}}]
+    assert params["ups"] == [{"id": rid, "c": {"b": 1}}]
+    assert params["del_if_empty"] == [rid] and params["dels"] == []
+    assert (
+        surql.index("FOR $r IN $unf")
+        < surql.index("FOR $r IN $ups")
+        < surql.index("LET $gone")
+        < surql.index("FOR $d IN $gone")
+    )
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_server_version_is_read_when_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connection carries whether its server re-creates a record deleted in the
+    same transaction, read once when it connects."""
+    from cocoindex.connectors.surrealdb import _target
+
+    versions: list[str] = []
+
+    class _FakeSurreal:
+        def __init__(self, url: str) -> None:
+            pass
+
+        async def connect(self) -> None:
+            pass
+
+        async def use(self, namespace: str, database: str) -> None:
+            pass
+
+        async def version(self) -> str:
+            versions.append("surrealdb-3.2.4")
+            return versions[-1]
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(_target, "AsyncSurreal", _FakeSurreal)
+    factory = surrealdb.ConnectionFactory(
+        url="ws://unused", namespace="ns", database="db"
+    )
+    try:
+        first = await factory._connection()
+        assert first.recreates_in_transaction is False
+        assert await factory._connection() is first
+        assert await factory.acquire() is first.conn
+        assert versions == ["surrealdb-3.2.4"]
+    finally:
+        await factory.close()
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_query_retries_conflicts_and_raises_the_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cocoindex.connectors.surrealdb import _target
+
+    monkeypatch.setattr(_target, "_MAX_ATTEMPTS", 2)
+    conflict = {
+        "result": [{"status": "ERR", "result": "This transaction can be retried"}]
+    }
+    ok = {"result": [{"status": "OK", "result": None}]}
+
+    class _Answers:
+        def __init__(self, *answers: Any) -> None:
+            self.answers = list(answers)
+
+        async def query_raw(self, surql: str, params: dict[str, Any]) -> Any:
+            return self.answers.pop(0)
+
+    assert await _target._query_with_retry(_Answers(conflict, ok), "", {}) == ok
+    with pytest.raises(_target._RetryableError):
+        await _target._query_with_retry(_Answers(conflict, conflict), "", {})
+
+
+@requires_surrealdb
+def test_field_claim_is_released_when_its_owner_is_undeclared() -> None:
+    """A field an owner stopped declaring is free for another owner: the record
+    handler releases the claim when it reconciles the owner's removal, as in
+    live mode, where one target outlives cycles."""
+    from cocoindex.connectors.surrealdb import _target
+
+    factory = surrealdb.ConnectionFactory(
+        url=_SURREALDB_URL, namespace="ns", database="db"
+    )
+    provider: Any = None
+    players = _target._registered_table_target(
+        coco.ContextKey("claims_db"), provider, None, "player"
+    )
+    handler = _target._RecordHandler("player", False, None, factory, "claims_db")
+    tracked = [_target._FieldsTracking(b"fp", ("score",))]
+
+    players._field_owners.claim("ann", "a", {"score": 1})
+    with pytest.raises(ValueError, match="'score'"):
+        players._field_owners.claim("ann", "b", {"score": 2})
+    handler.reconcile(("ann", "a"), coco.NON_EXISTENCE, tracked, False)
+    players._field_owners.claim("ann", "b", {"score": 2})
+
+    players._field_owners.claim("bob", None, {"id": "bob", "score": 1})
+    handler.reconcile(("bob",), coco.NON_EXISTENCE, tracked, False)
+    players._field_owners.claim("bob", "b", {"score": 2})
+
+    # Another table's removals leave this table's claims.
+    other = _target._RecordHandler("team", False, None, factory, "claims_db")
+    other.reconcile(("ann", "b"), coco.NON_EXISTENCE, tracked, False)
+    with pytest.raises(ValueError, match="'score'"):
+        players._field_owners.claim("ann", "c", {"score": 3})
+
+
+@requires_surrealdb
+def test_batch_response_of_an_unexpected_shape_is_refused() -> None:
+    from cocoindex.connectors.surrealdb._target import (  # type: ignore[import-untyped]
+        _moved_and_restore,
+    )
+
+    value = {"result": [["m"], []]}
+    for statements in [
+        # An entry for every statement, `BEGIN` and `COMMIT` included.
+        [{"result": None}, {"result": None}, value, {"result": None}],
+        # No entry for `COMMIT`, as SurrealDB 3.2 may answer.
+        [{"result": None}, {"result": None}, value],
+        # No entry for `BEGIN` either.
+        [{"result": None}, value],
+    ]:
+        assert _moved_and_restore({"result": statements}) == (["m"], [])
+    for res in [
+        {"result": [{"result": None}]},
+        {"result": [{"result": [["m"]]}, {"result": None}]},
+        {"result": [{"result": None}, {"result": None}]},
+        {"result": []},
+        {"error": "boom"},
+    ]:
+        with pytest.raises(RuntimeError, match=r"unexpected shape"):
+            _moved_and_restore(res)
+
+
+# =============================================================================
+# Relations whose endpoints go away or change
+# =============================================================================
+
+
+async def _knows_app(
+    ns: str,
+    db: str,
+    people: list[str],
+    edges: list[tuple[str, str, dict[str, Any]]],
+) -> Any:
+    """``person`` records and ``knows`` relations; ``people`` and ``edges`` are
+    read on each run."""
+    # A key of its own, so that a from-scratch build beside it on another
+    # database does not take its connection.
+    key: coco.ContextKey[Any] = coco.ContextKey(f"test_surrealdb_knows_{ns}")
+    coco_env.context_provider.provide(
+        key,
+        surrealdb.ConnectionFactory(
+            url=_SURREALDB_URL, namespace=ns, database=db, credentials=None
+        ),
+    )
+
+    async def main() -> None:
+        person = await coco.use_mount(  # type: ignore[call-overload,var-annotated,arg-type]
+            coco.component_subpath("setup", "person"),
+            surrealdb.mount_table_target,  # type: ignore[arg-type]
+            key,
+            "person",
+        )
+        knows = await coco.use_mount(  # type: ignore[call-overload,var-annotated,arg-type]
+            coco.component_subpath("setup", "knows"),
+            surrealdb.mount_relation_target,  # type: ignore[arg-type]
+            key,
+            "knows",
+            person,
+            person,
+        )
+        for name in people:
+            person.declare_record(row={"id": name, "name": name})
+        for from_id, to_id, fields in edges:
+            knows.declare_relation(from_id=from_id, to_id=to_id, record=fields)
+
+    return coco.App(coco.AppConfig(name=f"knows_{ns}", environment=coco_env), main)
+
+
+async def _graph_state(conn: Any) -> tuple[list[Any], list[Any]]:
+    """The people and the ``knows`` edges, comparable across databases."""
+    people = await _query(
+        conn,
+        "SELECT VALUE [meta::id(id), name] FROM person ORDER BY id",
+    )
+    edges = await _query(
+        conn,
+        "SELECT VALUE [meta::id(id), meta::id(in), meta::id(out), "
+        "(SELECT * OMIT id, in, out FROM ONLY $this.id)] FROM knows ORDER BY id",
+    )
+    return people, edges
+
+
+async def _from_scratch(
+    people: list[str], edges: list[tuple[str, str, dict[str, Any]]]
+) -> tuple[list[Any], list[Any]]:
+    """What a from-scratch build of ``people`` and ``edges`` gives."""
+    tag = uuid_mod.uuid4().hex[:8]
+    ns, db = f"test_ns_{tag}", f"test_db_{tag}"
+    conn = await _create_conn(ns, db)
+    try:
+        await (await _knows_app(ns, db, people, edges)).update()
+        return await _graph_state(conn)
+    finally:
+        await _cleanup_conn(conn, ns, db)
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_edge_stays_when_only_its_endpoint_is_undeclared(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """SurrealDB deletes a record's edges with it, and an edge needs no endpoint
+    record. A record that goes away while edges to it stay declared keeps them, as
+    a from-scratch build does; they used to be deleted behind their unchanged
+    declarations, and never written again."""
+    conn, ns, db = surreal_conn
+    people = ["alice", "bob", "carol"]
+    edges = [
+        ("alice", "bob", {"w": 1}),
+        ("bob", "carol", {"w": 2}),
+        ("bob", "bob", {"w": 3}),
+    ]
+    app = await _knows_app(ns, db, people, edges)
+    await app.update()
+    people[:] = ["alice", "carol"]
+    await app.update()
+    state = await _graph_state(conn)
+    assert len(state[1]) == 3
+    assert state == await _from_scratch(people, edges)
+    assert await _query(
+        conn,
+        "SELECT VALUE (->knows->person).map(|$p| meta::id($p)) FROM ONLY person:alice",
+    ) == ["bob"]
+
+    # Both endpoints of an edge go away in one run.
+    people[:] = []
+    await app.update()
+    assert await _graph_state(conn) == await _from_scratch(people, edges)
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_record_and_edge_undeclared_together_leave_nothing(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    conn, ns, db = surreal_conn
+    people = ["alice", "bob"]
+    edges: list[tuple[str, str, dict[str, Any]]] = [
+        ("alice", "bob", {"w": 1}),
+        ("bob", "bob", {"w": 2}),
+    ]
+    app = await _knows_app(ns, db, people, edges)
+    await app.update()
+    people[:] = ["alice"]
+    edges[:] = []
+    await app.update()
+    assert await _graph_state(conn) == ([["alice", "alice"]], [])
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_endpoint_declared_again_keeps_its_edge(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    conn, ns, db = surreal_conn
+    people = ["alice", "bob"]
+    edges = [("alice", "bob", {"w": 1})]
+    app = await _knows_app(ns, db, people, edges)
+    await app.update()
+    people[:] = ["alice"]
+    await app.update()
+    people[:] = ["alice", "bob"]
+    await app.update()
+    state = await _graph_state(conn)
+    assert len(state[1]) == 1
+    assert state == await _from_scratch(people, edges)
+    assert await _query(
+        conn, "SELECT VALUE (<-knows<-person).name FROM ONLY person:bob"
+    ) == ["alice"]
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_relation_changes_in_place_and_moves(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """An edge's fields change in place, and an edge with an explicit id moves to
+    new endpoints. On SurrealDB 3.2, which cannot create a record deleted earlier
+    in the same transaction, both failed with "already exists"."""
+    conn, ns, db = surreal_conn
+    people = ["alice", "bob", "carol"]
+    edges: list[tuple[str, str, dict[str, Any]]] = [
+        ("alice", "bob", {"since": 2020}),
+        ("alice", "carol", {"id": "e1", "w": 1}),
+    ]
+    app = await _knows_app(ns, db, people, edges)
+    await app.update()
+    edges[:] = [
+        ("alice", "bob", {"since": 2021}),
+        ("bob", "carol", {"id": "e1", "w": 2}),
+    ]
+    await app.update()
+    state = await _graph_state(conn)
+    assert state == await _from_scratch(people, edges)
+    assert [edge[3] for edge in state[1]] == [{"since": 2021}, {"w": 2}] or [
+        edge[3] for edge in state[1]
+    ] == [{"w": 2}, {"since": 2021}]
+    assert await _query(
+        conn, "SELECT VALUE [meta::id(in), meta::id(out)] FROM knows:e1"
+    ) == [["bob", "carol"]]
+    assert await _query(
+        conn,
+        "SELECT VALUE (->knows->person).map(|$p| meta::id($p)) FROM ONLY person:bob",
+    ) == ["carol"]
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_vector_dimension_change_between_runs(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """A vector index whose dimension changes, with the vectors it indexes: the old
+    index is removed before the new vectors are written, and the new one defined
+    after them (the index sink used to run after the record sink, so the new
+    vectors were written under the old index)."""
+    conn, ns, db = surreal_conn
+    dim = 2
+
+    def declare(t: Any) -> None:
+        t.declare_vector_index(field="embedding", dimension=dim)
+        for i in range(3):
+            t.declare_record(
+                row={"id": i, "embedding": [float(i + d) for d in range(dim)]}
+            )
+
+    await _query(conn, "DEFINE TABLE emb SCHEMALESS")
+    app = _hardened_app(ns, db, "emb", declare)
+    await app.update()
+    dim = 3
+    await app.update()
+    assert await _query(
+        conn,
+        "SELECT VALUE meta::id(id) FROM emb WHERE embedding <|1,40|> [2.0, 3.0, 4.0]",
+    ) == [2]
+    info = await _query(conn, "INFO FOR TABLE emb")
+    assert "DIMENSION 3" in info["indexes"]["idx_emb__embedding"]
+
+
+@requires_surrealdb
+def test_server_versions_that_recreate_in_one_transaction() -> None:
+    from cocoindex.connectors.surrealdb._target import (  # type: ignore[import-untyped]
+        _recreates_in_transaction,
+    )
+
+    assert not _recreates_in_transaction("surrealdb-3.2.4")
+    assert _recreates_in_transaction("surrealdb-3.3.0")
+    assert _recreates_in_transaction("surrealdb-4.0.1")
+    assert _recreates_in_transaction("unknown")
 
 
 @requires_surrealdb
