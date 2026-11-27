@@ -13,9 +13,9 @@ use crate::engine::context::{
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
     ChildDeletes, OpenDescendantsVerdict, RestoredComponentMemo, cleanup_tombstone,
-    delete_component_memo, eager_existence_upsert, post_submit_for_build, submit,
-    update_component_memo_states, use_or_invalidate_component_memoization,
-    validate_open_descendants,
+    delete_component_memo, eager_existence_upsert, live_cycle_component_is_mounted,
+    post_submit_for_build, submit, update_component_memo_states,
+    use_or_invalidate_component_memoization, validate_open_descendants,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -760,6 +760,9 @@ enum GuardedRun<Prof: EngineProfile> {
     /// The body did not run: a run with the same memo key completed under the
     /// permit while this one waited for it, and its memo was reused.
     Reused(ComponentRunOutcome, ComponentBuildOutput<Prof>),
+    /// The body did not run: the run is a cycle of a live component that was
+    /// deleted (see `ComponentProcessorContext::is_live_cycle`).
+    Deleted,
     /// The body ran (build mode), or the component was deleted (delete mode).
     Executed {
         children_outcome: ComponentRunOutcome,
@@ -1089,6 +1092,24 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self,
     ) -> Option<Arc<crate::engine::live_component::LiveComponentState<Prof>>> {
         self.inner.live_state.lock().clone()
+    }
+
+    /// Uninstall `state` if it is still this component's live state; whether
+    /// it was.
+    pub(crate) fn clear_live_state_if(
+        &self,
+        state: &Arc<crate::engine::live_component::LiveComponentState<Prof>>,
+    ) -> bool {
+        let mut live_state = self.inner.live_state.lock();
+        if live_state
+            .as_ref()
+            .is_some_and(|installed| Arc::ptr_eq(installed, state))
+        {
+            *live_state = None;
+            true
+        } else {
+            false
+        }
     }
 
     /// True while a processing task is in flight on this component or any
@@ -1495,8 +1516,15 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // that existence ⊇ tracked state and eliminates the
                 // dual-writer conflict with the parent's commit-time
                 // existence reconciliation. See `internal_states.md` §3.1.
+                // A live component's cycle checks the bit instead: written at
+                // mount, it is gone once the component is deleted, and the
+                // cycle stops rather than bring it back.
                 if processor_context.mode() == ComponentProcessingMode::Build {
-                    eager_existence_upsert(processor_context).await?;
+                    if !processor_context.is_live_cycle() {
+                        eager_existence_upsert(processor_context).await?;
+                    } else if !live_cycle_component_is_mounted(processor_context).await? {
+                        return Ok(GuardedRun::Deleted);
+                    }
                 }
 
                 // Eagerly load all function-memo and user-state entries for
@@ -1753,6 +1781,17 @@ impl<Prof: EngineProfile> Component<Prof> {
                 });
                 Ok((outcome, Some(output)))
             }
+            Ok(GuardedRun::Deleted) => {
+                // Counted as a run that changed nothing, not as a failure, and
+                // returned as cancelled: an incomplete run that reports no error.
+                processing_stats.update(final_processor_name, |stats| {
+                    if reported_processor_name.is_none() {
+                        stats.num_execution_starts += 1;
+                    }
+                    stats.num_unchanged += 1;
+                });
+                Err(Error::cancelled())
+            }
             Ok(GuardedRun::Executed {
                 children_outcome,
                 build_output,
@@ -1872,7 +1911,7 @@ impl<Prof: EngineProfile> Component<Prof> {
 mod tests {
     use super::{
         ActivityGuard, Component, ComponentBgChildReadiness, ComponentProcessor,
-        ComponentProcessorInfo, ComponentRunOutcome, StatsGroup,
+        ComponentProcessorInfo, ComponentRunOutcome, RunCompleteness, StatsGroup,
     };
     use crate::engine::app::{App, AppUpdateOptions};
     use crate::engine::context::{
@@ -1888,7 +1927,9 @@ mod tests {
         declare_target_state, declare_target_state_with_child, register_root_target_state_provider,
         submit,
     };
-    use crate::engine::live_component::{MountLiveResult, mount_live_prepare};
+    use crate::engine::live_component::{
+        LiveComponentController, MountLiveResult, mount_live_prepare,
+    };
     use crate::engine::profile::{DataDepsValidation, EngineProfile, Persist};
     use crate::engine::stats::ProcessingStats;
     use crate::engine::target_state::{
@@ -3596,6 +3637,232 @@ mod tests {
         assert!(
             app_store_contents(&app).await == contents_before,
             "preview must not write to the state store"
+        );
+    }
+
+    /// A live component `p` under the app's root, mounted by an update that
+    /// counts its runs in the returned stats. The context is the mounting run's.
+    async fn mount_live_parent(
+        app: &App<TestProfile>,
+    ) -> (
+        ComponentProcessorContext<TestProfile>,
+        LiveComponentController<TestProfile>,
+        ProcessingStats,
+    ) {
+        let stats = ProcessingStats::new();
+        let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
+            .new_processor_context_for_build(
+                None,
+                stats.clone(),
+                false,
+                true,
+                None,
+                Arc::new(()),
+                None,
+                None,
+            )
+            .unwrap();
+        let path = key_path(ctx.component(), "p");
+        let MountLiveResult { controller, .. } =
+            mount_live_prepare(&ctx, &FnCallContext::default(), path, true)
+                .unwrap()
+                .unwrap()
+                .complete()
+                .await
+                .unwrap();
+        (ctx, controller, stats)
+    }
+
+    async fn node_type(app: &App<TestProfile>, path: &StablePath) -> Option<StablePathNodeType> {
+        let (parent, key) = path.as_ref().split_parent().unwrap();
+        app.app_ctx()
+            .persisting_app_store()
+            .read_path_node_type(parent, key)
+            .await
+            .unwrap()
+    }
+
+    /// A live component deleted through its parent's `delete` stops: its
+    /// `process_live` is dropped, and it is no longer the component's live
+    /// state.
+    #[tokio::test]
+    async fn a_deleted_live_component_stops() {
+        let (app, _dir) = test_app("deleted_live_component_stops").await;
+        let (_ctx, parent, _stats) = mount_live_parent(&app).await;
+        let child_path = key_path(parent.component(), "c");
+        let child = parent
+            .mount_inner_live(child_path.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .controller;
+        let (alive_tx, mut alive_rx) = tokio::sync::oneshot::channel::<()>();
+        child.start(async move {
+            let _alive = alive_tx;
+            std::future::pending::<crate::prelude::Result<()>>().await
+        });
+
+        parent
+            .delete(child_path.clone(), None)
+            .await
+            .unwrap()
+            .ready()
+            .await
+            .unwrap();
+
+        assert!(child.state().cancellation_token().is_cancelled());
+        assert!(
+            matches!(
+                alive_rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+            ),
+            "the delete must drop the component's `process_live`"
+        );
+        assert!(child.component().live_state().is_none());
+        assert_eq!(node_type(&app, &child_path).await, None);
+    }
+
+    /// A cycle of a live component that finds its existence entry gone, as a
+    /// delete leaves it before it runs, runs nothing: the body does not run,
+    /// the entry is not written back, and the run counts as unchanged, not as
+    /// an error.
+    #[tokio::test]
+    async fn a_cycle_of_a_deleted_live_component_runs_nothing() {
+        let (app, _dir) = test_app("cycle_of_deleted_live_component").await;
+        let (_ctx, parent, stats) = mount_live_parent(&app).await;
+        let child_path = key_path(parent.component(), "c");
+        let child = parent
+            .mount_inner_live(child_path.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .controller;
+        let processor = |body_started: &Arc<AtomicBool>| {
+            TestProcessor::new(
+                "cycle",
+                Fingerprint::from(&"cycle_of_deleted_live_component").unwrap(),
+                body_started.clone(),
+                false,
+            )
+            .without_memo()
+        };
+        let first_body_started = Arc::new(AtomicBool::new(false));
+        child
+            .update_full(processor(&first_body_started), None)
+            .await
+            .unwrap();
+        assert!(first_body_started.load(Ordering::SeqCst));
+
+        let app_store = app.app_ctx().persisting_app_store().clone();
+        let (parent_path, key) = child_path.as_ref().split_parent().unwrap();
+        let (parent_path, key): (StablePath, StableKey) = (parent_path.into(), key.clone());
+        let store = app_store.clone();
+        app_store
+            .run_txn(move |wtxn| {
+                let store = store.clone();
+                let parent_path = parent_path.clone();
+                let key = key.clone();
+                Box::pin(
+                    async move { store.delete_child_existence(wtxn, &parent_path, &key).await },
+                )
+            })
+            .await
+            .unwrap();
+
+        let second_body_started = Arc::new(AtomicBool::new(false));
+        assert_eq!(
+            child
+                .update_full(processor(&second_body_started), None)
+                .await
+                .unwrap(),
+            RunCompleteness::Incomplete
+        );
+        assert!(!second_body_started.load(Ordering::SeqCst));
+        assert_eq!(
+            node_type(&app, &child_path).await,
+            None,
+            "the cycle must not write the entry back"
+        );
+        let counts = stats.snapshot().stats.get("cycle").cloned().unwrap();
+        assert_eq!(counts.num_execution_starts, 2);
+        assert_eq!(counts.num_unchanged, 1);
+        assert_eq!(counts.num_errors, 0);
+    }
+
+    /// A live component that `mount_inner_live` mounts at a subpath takes the
+    /// place of the subpath's earlier ops: it waits for the running one, and a
+    /// delete queued before it does not run after it, which would delete the
+    /// component it mounted.
+    #[tokio::test]
+    async fn a_live_mount_supersedes_the_delete_queued_before_it() {
+        let (app, _dir) = test_app("live_mount_supersedes_queued_delete").await;
+        let (_ctx, parent, _stats) = mount_live_parent(&app).await;
+        let child_path = key_path(parent.component(), "c");
+        parent
+            .mount_inner_live(child_path.clone())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // A running update of the subpath keeps the delete after it queued.
+        let release = Arc::new(tokio::sync::Notify::new());
+        let body_started = Arc::new(AtomicBool::new(false));
+        let blocking = TestProcessor::new(
+            "blocking",
+            Fingerprint::from(&"live_mount_supersedes_queued_delete").unwrap(),
+            body_started.clone(),
+            false,
+        )
+        .without_memo()
+        .with_on_process({
+            let release = release.clone();
+            Arc::new(move |_ctx| {
+                let release = release.clone();
+                Box::pin(async move {
+                    release.notified().await;
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            })
+        });
+        let update = parent
+            .update(child_path.clone(), blocking, None)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !body_started.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let delete = parent.delete(child_path.clone(), None).await.unwrap();
+
+        let mut mount = tokio::spawn({
+            let parent = parent.clone();
+            let child_path = child_path.clone();
+            async move { parent.mount_inner_live(child_path).await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut mount)
+                .await
+                .is_err(),
+            "the mount must wait for the subpath's running update"
+        );
+        release.notify_one();
+        update.ready().await.unwrap();
+        delete.ready().await.unwrap();
+        let child = mount.await.unwrap().unwrap().unwrap().controller;
+
+        assert!(!child.state().cancellation_token().is_cancelled());
+        assert!(
+            child
+                .component()
+                .live_state()
+                .is_some_and(|state| Arc::ptr_eq(&state, child.state()))
+        );
+        assert_eq!(
+            node_type(&app, &child_path).await,
+            Some(StablePathNodeType::Component)
         );
     }
 

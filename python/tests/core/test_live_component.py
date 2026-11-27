@@ -1984,6 +1984,330 @@ async def test_live_update_during_catch_up_is_not_reconciled_away() -> None:
 
 
 # ============================================================================
+# Deleting a live component
+#
+# A deleted live component stops: its `process_live` is cancelled, so nothing
+# it would do afterwards declares the deleted target states again. A cycle of
+# it that had already started either commits before the delete or finds the
+# component gone. `process_live` runs on the environment's loop, not the
+# test's, so the tests signal across them with thread-safe events, polled.
+# ============================================================================
+
+
+async def _wait_until(event: threading.Event) -> None:
+    for _ in range(1000):
+        if event.is_set():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("timed out")
+
+
+async def _wait_for_stored(expected: dict[str, int]) -> None:
+    for _ in range(1000):
+        if _stored() == expected:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"timed out: {_stored()} != {expected}")
+
+
+class _Signals:
+    def __init__(self) -> None:
+        self.go = threading.Event()
+        self.cancelled = threading.Event()
+
+
+_signals: dict[str, _Signals] = {}
+
+
+class _LiveWithLateItem:
+    """Declares its key; mounts one more item through an op once `go` is set."""
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+
+    async def process(self) -> None:
+        _declare_item(self.key, 1)
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        await operator.mark_ready()
+        try:
+            await _wait_until(_signals[self.key].go)
+            handle = await operator.update(
+                coco.component_subpath("late"), _declare_item, f"{self.key}.late", 2
+            )
+            await handle.ready()
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            _signals[self.key].cancelled.set()
+            raise
+
+
+async def _mount_live_with_late_item(key: str) -> None:
+    await coco.mount(coco.component_subpath("live"), _LiveWithLateItem, key)
+
+
+async def _stop_live_update(
+    app: coco.App[Any, Any], live_task: asyncio.Task[Any]
+) -> None:
+    try:
+        await app.drop()
+    finally:
+        live_task.cancel()
+        try:
+            await live_task
+        except BaseException:
+            pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("under_plain_component", [False, True])
+async def test_live_component_no_longer_mounted_stops(
+    under_plain_component: bool,
+) -> None:
+    """A live component that its parent's next cycle no longer mounts (or that
+    is under a component it no longer mounts) is deleted, and stops: its
+    `process_live` is cancelled, and nothing it would do next comes back."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _source_data.update(a=1, b=2)
+    _signals.clear()
+    _signals.update(a=_Signals(), b=_Signals())
+    rerun = threading.Event()
+    reran = threading.Event()
+
+    class _Parent:
+        async def process(self) -> None:
+            for key in _source_data:
+                if under_plain_component:
+                    await coco.mount(
+                        coco.component_subpath(key), _mount_live_with_late_item, key
+                    )
+                else:
+                    await coco.mount(
+                        coco.component_subpath(key), _LiveWithLateItem, key
+                    )
+
+        async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+            await operator.update_full()
+            await operator.mark_ready()
+            await _wait_until(rerun)
+            await operator.update_full()
+            reran.set()
+            await asyncio.Event().wait()
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("parent"), _Parent)
+
+    app = coco.App(
+        coco.AppConfig(
+            name=f"test_live_no_longer_mounted_stops_{under_plain_component}",
+            environment=coco_env,
+        ),
+        _main,
+    )
+    live_task = asyncio.create_task(app.update(live=True).result())
+    try:
+        await _wait_for_stored({"a": 1, "b": 1})
+        del _source_data["b"]
+        rerun.set()
+        await _wait_until(reran)
+        assert _stored() == {"a": 1}
+        await _wait_until(_signals["b"].cancelled)
+
+        # The re-mounted "a" (a new incarnation) still acts; the deleted "b" not.
+        _signals["b"].go.set()
+        _signals["a"].go.set()
+        await _wait_for_stored({"a": 1, "a.late": 2})
+    finally:
+        await _stop_live_update(app, live_task)
+
+
+@pytest.mark.asyncio
+async def test_live_item_a_feed_deletes_stops() -> None:
+    """A live item that its live feed deletes stops: its `process_live` is
+    cancelled, and nothing it would do next comes back."""
+    GlobalDictTarget.store.clear()
+    _signals.clear()
+    _signals.update(a=_Signals(), b=_Signals())
+    delete_b = threading.Event()
+    deleted_b = threading.Event()
+
+    class _Feed:
+        def __aiter__(self) -> AsyncIterator[tuple[str, str]]:
+            async def _items() -> AsyncIterator[tuple[str, str]]:
+                for key in ("a", "b"):
+                    yield key, key
+
+            return _items()
+
+        async def watch(self, subscriber: coco.LiveMapSubscriber[str, str]) -> None:
+            await subscriber.update_all()
+            await subscriber.mark_ready()
+            await _wait_until(delete_b)
+            await (await subscriber.delete("b")).ready()
+            deleted_b.set()
+            await asyncio.Event().wait()
+
+    async def _main() -> None:
+        await coco.mount_each(
+            coco.component_subpath("items"), _LiveWithLateItem, _Feed()
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_live_item_a_feed_deletes_stops", environment=coco_env
+        ),
+        _main,
+    )
+    live_task = asyncio.create_task(app.update(live=True).result())
+    try:
+        await _wait_for_stored({"a": 1, "b": 1})
+        delete_b.set()
+        await _wait_until(deleted_b)
+        assert _stored() == {"a": 1}
+        await _wait_until(_signals["b"].cancelled)
+
+        _signals["b"].go.set()
+        _signals["a"].go.set()
+        await _wait_for_stored({"a": 1, "a.late": 2})
+    finally:
+        await _stop_live_update(app, live_task)
+
+
+@pytest.mark.asyncio
+async def test_live_item_deleted_then_updated_keeps_running() -> None:
+    """A live item that its feed deletes and then updates again runs on: the
+    update comes after the delete, so the delete removes nothing it mounts."""
+    GlobalDictTarget.store.clear()
+    _signals.clear()
+    _signals.update(a=_Signals(), b=_Signals())
+    replace_b = threading.Event()
+    replaced_b = threading.Event()
+
+    class _Feed:
+        def __aiter__(self) -> AsyncIterator[tuple[str, str]]:
+            async def _items() -> AsyncIterator[tuple[str, str]]:
+                for key in ("a", "b"):
+                    yield key, key
+
+            return _items()
+
+        async def watch(self, subscriber: coco.LiveMapSubscriber[str, str]) -> None:
+            await subscriber.update_all()
+            await subscriber.mark_ready()
+            await _wait_until(replace_b)
+            # The second delete queues behind the first.
+            await subscriber.delete("b")
+            await subscriber.delete("b")
+            await (await subscriber.update("b", "b")).ready()
+            replaced_b.set()
+            await asyncio.Event().wait()
+
+    async def _main() -> None:
+        await coco.mount_each(
+            coco.component_subpath("items"), _LiveWithLateItem, _Feed()
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_live_item_deleted_then_updated", environment=coco_env
+        ),
+        _main,
+    )
+    live_task = asyncio.create_task(app.update(live=True).result())
+    try:
+        await _wait_for_stored({"a": 1, "b": 1})
+        replace_b.set()
+        await _wait_until(replaced_b)
+
+        _signals["b"].go.set()
+        await _wait_for_stored({"a": 1, "b": 1, "b.late": 2})
+    finally:
+        await _stop_live_update(app, live_task)
+
+
+@pytest.mark.asyncio
+async def test_live_cycle_started_before_its_delete_restores_nothing() -> None:
+    """Cycles that had started when their live component was deleted do not
+    bring the deleted target state back: the delete waits for the cycle that
+    holds the component, and the one after it gives up."""
+    GlobalDictTarget.store.clear()
+    in_first_cycle = threading.Event()
+    release_first_cycle = threading.Event()
+    second_cycle_started = threading.Event()
+    delete_b = threading.Event()
+    deleted_b = threading.Event()
+
+    class _Item:
+        def __init__(self, key: str) -> None:
+            self.key = key
+            self.cycles = 0
+
+        async def process(self) -> None:
+            _declare_item(self.key, 1)
+            self.cycles += 1
+            if self.key == "b" and self.cycles == 2:
+                in_first_cycle.set()
+                await _wait_until(release_first_cycle)
+
+        async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+            await operator.update_full()
+            await operator.mark_ready()
+            if self.key != "b":
+                await asyncio.Event().wait()
+            # The first cycle holds the component; the second waits behind it.
+            first = asyncio.ensure_future(operator.update_full())
+            await _wait_until(in_first_cycle)
+            second = asyncio.ensure_future(operator.update_full())
+            second_cycle_started.set()
+            await asyncio.gather(first, second, return_exceptions=True)
+            await asyncio.Event().wait()
+
+    class _Feed:
+        def __aiter__(self) -> AsyncIterator[tuple[str, str]]:
+            async def _items() -> AsyncIterator[tuple[str, str]]:
+                for key in ("a", "b"):
+                    yield key, key
+
+            return _items()
+
+        async def watch(self, subscriber: coco.LiveMapSubscriber[str, str]) -> None:
+            await subscriber.update_all()
+            await subscriber.mark_ready()
+            await _wait_until(delete_b)
+            handle = await subscriber.delete("b")
+            # Let the delete queue behind the first cycle before it ends.
+            await asyncio.sleep(0.3)
+            release_first_cycle.set()
+            await handle.ready()
+            deleted_b.set()
+            await asyncio.Event().wait()
+
+    async def _main() -> None:
+        await coco.mount_each(coco.component_subpath("items"), _Item, _Feed())
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_live_cycle_started_before_its_delete", environment=coco_env
+        ),
+        _main,
+    )
+    live_task = asyncio.create_task(app.update(live=True).result())
+    try:
+        await _wait_until(second_cycle_started)
+        await asyncio.sleep(0.2)
+        delete_b.set()
+        await _wait_until(deleted_b)
+        # The second cycle runs, or gives up, once the delete releases the
+        # component.
+        await asyncio.sleep(0.5)
+        assert _stored() == {"a": 1}
+    finally:
+        await _stop_live_update(app, live_task)
+
+
+# ============================================================================
 # LiveStream primitives
 # ============================================================================
 

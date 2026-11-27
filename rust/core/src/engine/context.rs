@@ -885,6 +885,8 @@ pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     /// [`ComponentSelector::scoped_to`]. See
     /// [`ComponentProcessorContext::component_selector`].
     pub component_selector: Option<ComponentSelector>,
+    /// See [`ComponentProcessorContext::is_live_cycle`].
+    pub live_cycle: bool,
 }
 
 /// A change a run refused because the update's selector leaves out components
@@ -963,7 +965,17 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
             on_error,
             preview_collector,
             component_selector,
+            live_cycle: false,
         })
+    }
+
+    /// Mark a build as a cycle of a live component (see
+    /// [`ComponentProcessorContext::is_live_cycle`]).
+    pub(crate) fn for_live_cycle(mut self) -> Self {
+        if let Self::Build(build_ctx) = &mut self {
+            build_ctx.live_cycle = true;
+        }
+        self
     }
 
     pub fn new_delete(
@@ -1621,6 +1633,17 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     pub fn live(&self) -> bool {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.live,
+            ComponentProcessingAction::Delete { .. } => false,
+        }
+    }
+
+    /// A cycle of a live component (`update_full`). The component's existence
+    /// entry was written when it was mounted, so the run checks the entry
+    /// instead of writing it: once the component is deleted, a cycle still
+    /// running or queued must not write it back.
+    pub(crate) fn is_live_cycle(&self) -> bool {
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Build(build_ctx) => build_ctx.live_cycle,
             ComponentProcessingAction::Delete { .. } => false,
         }
     }
