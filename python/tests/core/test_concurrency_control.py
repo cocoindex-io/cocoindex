@@ -741,6 +741,10 @@ async def _main_two_live_components() -> None:
     await coco.mount(coco.component_subpath("small"), _SmallRefresh)
 
 
+# Its 440 leaves' commits run nearly one after another, so this test pays a
+# long chain of commit latencies: ~1 s locally, but over the suite's 30 s
+# default on a slow Windows runner.
+@pytest.mark.timeout(120)
 def test_a_small_update_does_not_wait_for_another_live_components_backlog() -> None:
     """A freed slot goes to the live component holding the fewest, so the
     small refresh runs with a share of the pool and finishes while most of
