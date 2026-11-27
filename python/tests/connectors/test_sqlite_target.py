@@ -2092,3 +2092,71 @@ def test_replace_rebuilds_a_column_to_drop_its_constraint(
 
     assert "COLLATE" not in get_table_sql(managed_conn, table_name)
     assert get_table_columns(managed_conn, table_name)["name"] == "TEXT"
+
+
+_row_component_runs = 0
+
+
+@coco.fn(memo=True)
+async def _declare_row_in_component(
+    row: SimpleRow, table: sqlite.TableTarget[SimpleRow]
+) -> None:
+    global _row_component_runs
+    _row_component_runs += 1
+    table.declare_row(row=row)
+
+
+async def _declare_table_and_rows_in_components() -> None:
+    table = await sqlite.mount_table_target(
+        SQLITE_DB,
+        "dropped_outside",
+        await sqlite.TableSchema.from_class(SimpleRow, primary_key=["id"]),
+    )
+    rows = [
+        SimpleRow(id="1", name="Alice", value=100),
+        SimpleRow(id="2", name="Bob", value=200),
+    ]
+    await coco.mount_each(
+        _declare_row_in_component, [(row.id, row) for row in rows], table
+    )
+
+
+def test_table_dropped_outside_cocoindex_comes_back_with_its_rows(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """A table dropped outside CocoIndex is created again on the next run, with
+    all its rows: the rows of child components that would otherwise be skipped
+    as unchanged too."""
+    managed_conn, _ = sqlite_db
+    app = coco.App(
+        coco.AppConfig(
+            name="test_dropped_outside",
+            environment=make_test_env(managed_conn, "test_dropped_outside"),
+        ),
+        _declare_table_and_rows_in_components,
+    )
+    expected = [
+        {"id": "1", "name": "Alice", "value": 100},
+        {"id": "2", "name": "Bob", "value": 200},
+    ]
+
+    def rows() -> list[dict[str, Any]]:
+        return sorted(
+            read_table_data(managed_conn, "dropped_outside"), key=lambda r: r["id"]
+        )
+
+    app.update_blocking()
+    assert rows() == expected
+    assert _row_component_runs == 2
+    app.update_blocking()
+    assert _row_component_runs == 2, "unchanged children are skipped"
+
+    with managed_conn.transaction() as conn:
+        conn.execute('DROP TABLE "dropped_outside"')
+    app.update_blocking()
+    assert rows() == expected
+    assert _row_component_runs == 4, "the children run again to write their rows"
+
+    app.update_blocking()
+    assert rows() == expected
+    assert _row_component_runs == 4, "unchanged children are skipped again"

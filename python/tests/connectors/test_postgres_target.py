@@ -1761,3 +1761,69 @@ async def test_schema_evolution_under_full_reprocess(pg_env: _PgEnv) -> None:
         assert val == "data1"
     finally:
         await _drop_table(pool, table_name)
+
+
+_dropped_row_component_runs = 0
+
+
+@coco.fn(memo=True)
+async def _declare_text_row_in_component(
+    row: TextRow, table: postgres.TableTarget[TextRow]
+) -> None:
+    global _dropped_row_component_runs
+    _dropped_row_component_runs += 1
+    table.declare_row(row=row)
+
+
+@pytest.mark.asyncio
+async def test_postgres_table_dropped_outside_cocoindex_comes_back(
+    pg_env: _PgEnv,
+) -> None:
+    """A table dropped outside CocoIndex is created again on the next run, with
+    all its rows: the rows of child components that would otherwise be skipped
+    as unchanged too."""
+    pool = pg_env.pool
+    table_name = _unique_name("test_dropped_outside")
+    rows = [TextRow(id="1", content="one"), TextRow(id="2", content="two")]
+
+    async def declare_fn() -> None:
+        table = await postgres.mount_table_target(
+            _PG_DB_KEY,
+            table_name,
+            await postgres.TableSchema.from_class(TextRow, primary_key=["id"]),
+        )
+        await coco.mount_each(
+            _declare_text_row_in_component, [(row.id, row) for row in rows], table
+        )
+
+    async def fetch() -> list[tuple[str, str]]:
+        async with pool.acquire() as conn:
+            records = await conn.fetch(
+                f'SELECT id, content FROM "{table_name}" ORDER BY id'
+            )
+        return [(r["id"], r["content"]) for r in records]
+
+    app = coco.App(
+        coco.AppConfig(name=f"test_dropped_{table_name}", environment=pg_env.coco_env),
+        declare_fn,
+    )
+    expected = [("1", "one"), ("2", "two")]
+    try:
+        await app.update()
+        assert await fetch() == expected
+        assert _dropped_row_component_runs == 2
+        await app.update()
+        assert _dropped_row_component_runs == 2, "unchanged children are skipped"
+
+        await _drop_table(pool, table_name)
+        await app.update()
+        assert await fetch() == expected
+        assert _dropped_row_component_runs == 4, (
+            "the children run again to write their rows"
+        )
+
+        await app.update()
+        assert await fetch() == expected
+        assert _dropped_row_component_runs == 4
+    finally:
+        await _drop_table(pool, table_name)

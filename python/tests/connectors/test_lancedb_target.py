@@ -139,8 +139,9 @@ if HAS_LANCEDB:
             self.create_table_count = 0
             self.drop_table_count = 0
 
-        async def table_names(self) -> list[str]:
-            return ["test_table"] if self.table_exists else []
+        async def table_names(self, *, start_after: str | None = None) -> list[str]:
+            names = ["test_table"] if self.table_exists else []
+            return [n for n in names if start_after is None or n > start_after]
 
         async def open_table(self, table_name: str) -> _FakeAsyncTable:
             assert table_name == "test_table"
@@ -608,7 +609,7 @@ def test_table_row_handler_null_backfilled_columns(
     action = _target._TableAction(
         key=_target._TableKey(db_key="test_db", table_name="test_table"),
         spec=_target._TableSpec(
-            table_schema=table_schema, managed_by=target.ManagedBy.SYSTEM
+            table_schema=table_schema, managed_by=target.ManagedBy.SYSTEM, missing=False
         ),
         main_action=main_action,
         column_actions={
@@ -970,6 +971,7 @@ async def test_table_handler_skips_optimize_for_existing_table() -> None:
         spec=_target._TableSpec(
             table_schema=_make_table_schema(),
             managed_by=target.ManagedBy.USER,
+            missing=False,
         ),
         main_action=None,
         column_actions={},
@@ -991,6 +993,7 @@ async def test_table_handler_does_not_optimize_new_table_before_row_mutations() 
         spec=_target._TableSpec(
             table_schema=_make_table_schema(),
             managed_by=target.ManagedBy.SYSTEM,
+            missing=False,
         ),
         main_action="insert",
         column_actions={},
@@ -1629,3 +1632,84 @@ def test_table_schema_rejects_primary_key_without_delete_filter(
             columns={column: lancedb.ColumnDef(type=make_pa_type(), nullable=False)},
             primary_key=[column],
         )
+
+
+_row_component_runs = 0
+
+if HAS_LANCEDB:
+
+    @coco.fn(memo=True)
+    async def _declare_row_in_component(
+        row: dict[str, Any], table: lancedb.TableTarget[dict[str, Any]]
+    ) -> None:
+        global _row_component_runs
+        _row_component_runs += 1
+        table.declare_row(row=row)
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_table_dropped_outside_cocoindex_comes_back_with_its_rows(
+    lancedb_dir: Path,
+) -> None:
+    """A table dropped outside CocoIndex is created again on the next run, with
+    all its rows (the rows of child components that would otherwise be skipped
+    as unchanged too) and its index."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "dropped_outside"
+    rows = [{"id": "1", "name": "Alice"}, {"id": "2", "name": "Bob"}]
+
+    async def declare_table_and_rows() -> None:
+        table = await lancedb.mount_table_target(
+            LANCEDB_DB, table_name, _make_table_schema()
+        )
+        table.declare_fts_index(column="name")
+        await coco.mount_each(
+            _declare_row_in_component, [(row["id"], row) for row in rows], table
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_lancedb_dropped_outside",
+            environment=_make_env(conn, "test_table_dropped_outside_cocoindex"),
+        ),
+        declare_table_and_rows,
+    )
+
+    async def table_rows() -> list[dict[str, Any]]:
+        return sorted(await _read_rows(conn, table_name), key=lambda r: r["id"])
+
+    async def index_names() -> set[str]:
+        return {idx.name for idx in await _list_indices(conn, table_name)}
+
+    await app.update()
+    assert await table_rows() == rows
+    assert await index_names() == {"name"}
+    assert _row_component_runs == 2
+    await app.update()
+    assert _row_component_runs == 2, "unchanged children are skipped"
+
+    await conn.drop_table(table_name)
+    await app.update()
+    assert await table_rows() == rows
+    assert await index_names() == {"name"}, "the index is created again"
+    assert _row_component_runs == 4, "the children run again to write their rows"
+
+    await app.update()
+    assert await table_rows() == rows
+    assert _row_component_runs == 4, "unchanged children are skipped again"
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_table_exists_reads_every_page(lancedb_dir: Path) -> None:
+    """LanceDB lists table names a page (100) at a time: a table past the first
+    page is there too, and is not taken for one dropped outside CocoIndex."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    schema = pa.schema([pa.field("id", pa.int64())])
+    for i in range(105):
+        await conn.create_table(f"t{i:03d}", schema=schema)
+
+    assert await _target._table_exists(conn, "t000")
+    assert await _target._table_exists(conn, "t104")
+    assert not await _target._table_exists(conn, "t105")

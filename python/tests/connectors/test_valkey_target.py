@@ -1263,3 +1263,87 @@ async def test_mount_index_target(valkey_env: _ValkeyEnv) -> None:
     await app.update()
 
     assert await valkey_env.client.hget(f"{index_name}:m1", "k") in (b"v", "v")
+
+
+_dropped_doc_component_runs = 0
+
+
+if HAS_GLIDE:
+
+    @coco.fn(memo=True)
+    async def _declare_doc_in_component(
+        doc_id: str, index: "valkey.IndexTarget[coco.ResolvedS]"
+    ) -> None:
+        global _dropped_doc_component_runs
+        _dropped_doc_component_runs += 1
+        index.declare_document(
+            valkey.Document(id=doc_id, vector=_make_vector(_DIM, 1.0))
+        )
+
+
+@requires_glide
+@requires_server
+@pytest.mark.asyncio
+async def test_index_dropped_outside_cocoindex_comes_back(
+    valkey_env: _ValkeyEnv,
+) -> None:
+    """An index dropped outside CocoIndex is created again on the next run, and
+    its documents written again: those of child components that would
+    otherwise be skipped as unchanged too. Both when the documents went with it
+    (``FT.DROPINDEX … DD``) and when they stayed; a hash left under the prefix
+    that no component declares is purged."""
+    global _dropped_doc_component_runs
+    _dropped_doc_component_runs = 0
+    index_name = _unique_name("test_dropped_outside")
+    client = valkey_env.client
+    hash_keys = [f"{index_name}:a", f"{index_name}:b"]
+
+    async def declare_fn() -> None:
+        index = await valkey.mount_index_target(
+            _VALKEY_DB_KEY,
+            index_name,
+            await valkey.IndexSchema.create(
+                vectors=valkey.VectorDef(schema=_VECTOR_SCHEMA, distance="cosine"),
+            ),
+        )
+        await coco.mount_each(
+            _declare_doc_in_component, [(i, i) for i in ("a", "b")], index
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name=f"test_dropped_{index_name}", environment=valkey_env.coco_env
+        ),
+        declare_fn,
+    )
+    try:
+        await app.update()
+        assert _dropped_doc_component_runs == 2
+        await app.update()
+        assert _dropped_doc_component_runs == 2, "unchanged children are skipped"
+
+        # Dropped with its documents.
+        await client.custom_command(["FT.DROPINDEX", index_name, "DD"])
+        assert await client.exists(hash_keys) == 0
+        await app.update()
+        assert _dropped_doc_component_runs == 4, (
+            "the children run again to write their documents"
+        )
+        assert index_name in await _index_names(client)
+        assert await client.exists(hash_keys) == 2
+        await app.update()
+        assert _dropped_doc_component_runs == 4
+
+        # Dropped alone, beside a hash no component declares.
+        await client.custom_command(["FT.DROPINDEX", index_name])
+        stray = f"{index_name}:stray"
+        await client.hset(stray, {"text": "written out of band"})
+        await app.update()
+        assert _dropped_doc_component_runs == 6
+        assert index_name in await _index_names(client)
+        assert await client.exists([stray]) == 0, "the stray hash is purged"
+        assert await client.exists(hash_keys) == 2
+        await app.update()
+        assert _dropped_doc_component_runs == 6
+    finally:
+        await app.drop()

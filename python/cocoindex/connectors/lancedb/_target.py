@@ -12,6 +12,7 @@ import datetime as _datetime
 import json
 import logging
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import (
     Any,
     Callable,
@@ -42,7 +43,7 @@ from lancedb.db import AsyncConnection as LanceAsyncConnection  # type: ignore
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
@@ -1002,6 +1003,9 @@ class _TableSpec:
 
     table_schema: TableSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # See `_container.ContainerSpec`. Required: every constructor says
+    # whether the container was found missing.
+    missing: bool = dataclass_field(kw_only=True)
 
 
 class _ColumnState(msgspec.Struct, frozen=True, array_like=True):
@@ -1049,6 +1053,29 @@ def _table_composite_tracking_record_from_spec(
 _TableTrackingRecord = statediff.MutualTrackingRecord[
     statediff.CompositeTrackingRecord[tuple[str, ...], str, _TableSubTrackingRecord]
 ]
+
+
+async def _table_exists(conn: LanceAsyncConnection, table_name: str) -> bool:
+    """Whether the table is in the database, across LanceDB API variants. Both
+    list one page of names at a time, so every page is read: a table past the
+    first page is there too."""
+    if hasattr(conn, "list_tables"):
+        page_token: str | None = None
+        while True:
+            response = await conn.list_tables(page_token=page_token)
+            if table_name in response.tables:
+                return True
+            page_token = response.page_token
+            if not page_token:
+                return False
+    start_after: str | None = None
+    while True:
+        names = list(await conn.table_names(start_after=start_after))
+        if table_name in names:
+            return True
+        if not names:
+            return False
+        start_after = names[-1]
 
 
 class _TableAction(NamedTuple):
@@ -1170,9 +1197,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         if_not_exists: bool,
     ) -> None:
         """Create a table."""
-        # Check if table exists
-        table_names = await self._list_table_names(conn)
-        table_exists = table_name in table_names
+        table_exists = await _table_exists(conn, table_name)
 
         if table_exists and if_not_exists:
             return
@@ -1198,13 +1223,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
         # Create table with empty data
         await conn.create_table(table_name, empty_batch, mode="overwrite")
-
-    async def _list_table_names(self, conn: LanceAsyncConnection) -> set[str]:
-        """List existing table names across LanceDB API variants."""
-        if hasattr(conn, "list_tables"):
-            response = await conn.list_tables()
-            return set(response.tables)
-        return set(await conn.table_names())
 
     def _build_pyarrow_schema(self, schema: TableSchema[Any]) -> pa.Schema:
         """Build PyArrow schema from table schema."""
@@ -1282,11 +1300,18 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 managed_by=desired_state.managed_by,
             )
 
+        # A table CocoIndex created before that is gone now was dropped outside
+        # CocoIndex: create it as if new, and invalidate its rows and indexes,
+        # which went with it.
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_possible_records, prev_may_be_missing
+        )
+
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
                 tracking_record,
-                prev_possible_records,
-                prev_may_be_missing,
+                recreated.prev_possible_records,
+                recreated.prev_may_be_missing,
             )
         )
         main_action, sub_transitions = statediff.diff_composite(resolved)
@@ -1304,7 +1329,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
         # Determine child invalidation for row-level targets.
         child_invalidation: Literal["destructive", "lossy"] | None = None
-        if main_action == "replace":
+        if recreated.dropped or main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
 
@@ -1501,10 +1526,25 @@ def table_target(
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    return _table_target_state(
+        db, table_name, table_schema, managed_by=managed_by, missing=False
+    )
+
+
+def _table_target_state(
+    db: ContextKey[LanceAsyncConnection],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> coco.TargetState[_RowHandler]:
+    """`table_target`, with `missing` as in `_TableSpec.missing`."""
     key = _TableKey(db_key=db.key, table_name=table_name)
     spec = _TableSpec(
         table_schema=table_schema,
         managed_by=managed_by,
+        missing=missing,
     )
     return _table_provider.target_state(key, spec)
 
@@ -1550,7 +1590,9 @@ async def mount_table_target(
     """
     Mount a table target and return a ready-to-use TableTarget.
 
-    Sugar over ``table_target()`` + ``coco.mount_target()`` + wrapping.
+    Unlike ``table_target()`` + ``coco.mount_target()``, it first checks that a
+    system-managed table CocoIndex created is still there, and creates it again
+    with all its rows when it was dropped outside CocoIndex.
 
     Args:
         db: ContextKey for the LanceDB async connection.
@@ -1561,12 +1603,18 @@ async def mount_table_target(
     Returns:
         A TableTarget that can be used to declare rows.
     """
+    # A system-managed table that is not in the database: if CocoIndex created
+    # it on an earlier run, it was dropped outside CocoIndex.
+    missing = managed_by == target.ManagedBy.SYSTEM and not await _table_exists(
+        coco.use_context(db), table_name
+    )
     provider = await coco.mount_target(
-        table_target(
+        _table_target_state(
             db,
             table_name,
             table_schema,
             managed_by=managed_by,
+            missing=missing,
         )
     )
     return TableTarget(provider, table_schema)

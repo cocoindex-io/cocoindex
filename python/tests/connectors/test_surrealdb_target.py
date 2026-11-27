@@ -945,8 +945,9 @@ def _planned(actions: list[Any]) -> tuple[dict[str, Any], dict[tuple[str, Any], 
 async def test_preview_plans_tables_and_records(
     surreal_conn: tuple[Any, str, str],
 ) -> None:
-    """Preview plans the tables and their records without touching the
-    database; a real update then applies them."""
+    """Preview plans the tables and their records without writing to the
+    database (mounting a table reads whether it exists); a real update then
+    applies them."""
     conn, ns, db = surreal_conn
 
     factory = surrealdb.ConnectionFactory(
@@ -992,8 +993,6 @@ async def test_preview_plans_tables_and_records(
     person_rows = [Person(id="alice", name="Alice"), Person(id="bob", name="Bob")]
     likes_rows = [("alice", "bob", Likes(id="like1", rating=5))]
     tables, records = _planned(await app.update(preview=True))
-    # Building the record handlers opened no connection.
-    assert not factory._connections._entries
     assert {name: a.main_action for name, a in tables.items()} == {
         "person": "insert",
         "likes": "insert",
@@ -2560,3 +2559,97 @@ async def test_connection_is_reused() -> None:
         assert await f.acquire() is await f.acquire()
     finally:
         await f.close()
+
+
+# =============================================================================
+# A table removed outside CocoIndex
+# =============================================================================
+
+_removed_table_component_runs = 0
+
+
+if HAS_SURREALDB:
+
+    @coco.fn(memo=True)
+    async def _declare_record_in_component(
+        row_id: str,
+        table: "surrealdb.TableTarget[VecRow]",
+        links: "surrealdb.RelationTarget[Any]",
+    ) -> None:
+        global _removed_table_component_runs
+        _removed_table_component_runs += 1
+        table.declare_record(
+            row=VecRow(
+                id=row_id,
+                content=row_id,
+                embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            )
+        )
+        links.declare_relation(from_id=row_id, to_id=row_id)
+
+
+@requires_surrealdb
+@pytest.mark.asyncio
+async def test_table_removed_outside_cocoindex_comes_back(
+    surreal_conn: tuple[Any, str, str],
+) -> None:
+    """A table or relation removed outside CocoIndex is defined again on the
+    next run, with its fields, its vector index and all its records: those of
+    child components that would otherwise be skipped as unchanged too."""
+    global _removed_table_component_runs
+    _removed_table_component_runs = 0
+    conn, ns, db = surreal_conn
+    db_key: coco.ContextKey[Any] = coco.ContextKey(
+        f"test_surrealdb_removed_{uuid_mod.uuid4().hex}"
+    )
+    env = common.create_test_env(__file__, suffix=f"removed_{ns}")
+    env.context_provider.provide(
+        db_key,
+        surrealdb.ConnectionFactory(
+            url=_SURREALDB_URL,
+            namespace=ns,
+            database=db,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
+        ),
+    )
+
+    async def declare_fn() -> None:
+        table = await surrealdb.mount_table_target(
+            db_key, "gone", await surrealdb.TableSchema.from_class(VecRow)
+        )
+        table.declare_vector_index(field="embedding", dimension=4)
+        links = await surrealdb.mount_relation_target(db_key, "gone_link", table, table)
+        await coco.mount_each(
+            _declare_record_in_component, [(i, i) for i in ("a", "b")], table, links
+        )
+
+    app = coco.App(
+        coco.AppConfig(name=f"test_removed_{ns}", environment=env), declare_fn
+    )
+
+    async def assert_complete() -> None:
+        assert {r["content"] for r in await _query_table(conn, "gone")} == {"a", "b"}
+        assert len(await _query_table(conn, "gone_link")) == 2
+        info = await conn.query("INFO FOR TABLE gone")
+        assert "content" in info["fields"]
+        assert "idx_gone__embedding" in info["indexes"], "the index is back"
+
+    await app.update()
+    assert _removed_table_component_runs == 2
+    await assert_complete()
+    await app.update()
+    assert _removed_table_component_runs == 2, "unchanged children are skipped"
+
+    await conn.query("REMOVE TABLE gone; REMOVE TABLE gone_link;")
+    assert not await _table_exists(conn, "gone")
+    await app.update()
+    assert _removed_table_component_runs == 4, (
+        "the children run again to write their records"
+    )
+    await assert_complete()
+
+    await app.update()
+    assert _removed_table_component_runs == 4
+    await assert_complete()

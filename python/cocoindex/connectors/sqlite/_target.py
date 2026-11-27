@@ -10,6 +10,8 @@ Vector support is provided via the sqlite-vec extension.
 
 from __future__ import annotations
 
+import asyncio
+
 import datetime
 import decimal
 import json
@@ -36,7 +38,7 @@ from typing_extensions import TypeVar
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.rwlock import RWLock
 import msgspec
@@ -609,6 +611,9 @@ class _TableSpec:
     table_schema: TableSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
     virtual_table_def: Vec0TableDef | None = None
+    # See `_container.ContainerSpec`. Required: every constructor says
+    # whether the table was found missing.
+    missing: bool = field(kw_only=True)
 
 
 class _PkColumnInfo(msgspec.Struct, frozen=True, array_like=True):
@@ -1042,11 +1047,18 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 managed_by=desired_state.managed_by,
             )
 
+        # A table CocoIndex created before that is gone now was dropped outside
+        # CocoIndex: create it as if new, and invalidate its rows, which went
+        # with it.
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_possible_records, prev_may_be_missing
+        )
+
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
                 tracking_record,
-                prev_possible_records,
-                prev_may_be_missing,
+                recreated.prev_possible_records,
+                recreated.prev_may_be_missing,
             )
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
@@ -1064,7 +1076,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
         # Determine child invalidation for row-level targets.
         child_invalidation: Literal["destructive", "lossy"] | None = None
-        if main_action == "replace":
+        if recreated.dropped or main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
         elif any(a != "insert" for a in column_actions.values()):
@@ -1196,6 +1208,27 @@ def _validate_vec0_config(
         )
 
 
+def _table_target_state(
+    key: _TableKey,
+    table_schema: TableSchema[Any],
+    *,
+    managed_by: target.ManagedBy,
+    virtual_table_def: Vec0TableDef | None,
+    missing: bool,
+) -> coco.TargetState[_RowHandler]:
+    """The table's target state; `table_target` and `mount_table_target` both
+    build it here, so a spec field reaches both."""
+    return _table_provider.target_state(
+        key,
+        _TableSpec(
+            table_schema=table_schema,
+            managed_by=managed_by,
+            virtual_table_def=virtual_table_def,
+            missing=missing,
+        ),
+    )
+
+
 def table_target(
     db: ContextKey[ManagedConnection],
     table_name: str,
@@ -1220,21 +1253,41 @@ def table_target(
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    key = _table_key(db, table_name, table_schema, virtual_table_def=virtual_table_def)
+    return _table_target_state(
+        key,
+        table_schema,
+        managed_by=managed_by,
+        virtual_table_def=virtual_table_def,
+        missing=False,
+    )
+
+
+def _table_key(
+    db: ContextKey[ManagedConnection],
+    table_name: str,
+    table_schema: TableSchema[Any],
+    *,
+    virtual_table_def: Vec0TableDef | None,
+) -> _TableKey:
+    """The table's key, with its names (and vec0 configuration) validated."""
     _validate_identifier(table_name, "table name")
     for col_name in table_schema.columns:
         _validate_identifier(col_name, "column name")
 
     if isinstance(virtual_table_def, Vec0TableDef):
-        managed_conn = coco.use_context(db)
-        _validate_vec0_config(table_schema, virtual_table_def, managed_conn)
+        _validate_vec0_config(table_schema, virtual_table_def, coco.use_context(db))
 
-    key = _TableKey(db_key=db.key, table_name=table_name)
-    spec = _TableSpec(
-        table_schema=table_schema,
-        managed_by=managed_by,
-        virtual_table_def=virtual_table_def,
-    )
-    return _table_provider.target_state(key, spec)
+    return _TableKey(db_key=db.key, table_name=table_name)
+
+
+def _table_exists(managed_conn: ManagedConnection, key: _TableKey) -> bool:
+    with managed_conn.readonly() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (key.table_name,),
+        ).fetchone()
+    return row is not None
 
 
 def declare_table_target(
@@ -1295,7 +1348,9 @@ async def mount_table_target(
     """
     Mount a table target and return a ready-to-use TableTarget.
 
-    Sugar over ``table_target()`` + ``coco.mount_target()`` + wrapping.
+    Unlike ``table_target()`` + ``coco.mount_target()``, it first checks that a
+    system-managed table CocoIndex created is still there, and creates it again
+    with all its rows when it was dropped outside CocoIndex.
 
     Args:
         db: A ContextKey for the ManagedConnection (provided via lifespan).
@@ -1307,13 +1362,20 @@ async def mount_table_target(
     Returns:
         A TableTarget that can be used to declare rows.
     """
+    key = _table_key(db, table_name, table_schema, virtual_table_def=virtual_table_def)
+    # A system-managed table that is not in the database: if CocoIndex created
+    # it on an earlier run, it was dropped outside CocoIndex.
+    # Off the event loop: a sync sink may hold the write lock for a large batch.
+    missing = managed_by == target.ManagedBy.SYSTEM and not await asyncio.to_thread(
+        _table_exists, coco.use_context(db), key
+    )
     provider = await coco.mount_target(
-        table_target(
-            db,
-            table_name,
+        _table_target_state(
+            key,
             table_schema,
             managed_by=managed_by,
             virtual_table_def=virtual_table_def,
+            missing=missing,
         )
     )
     return TableTarget(provider, table_schema)

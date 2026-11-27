@@ -8,6 +8,7 @@ This module provides a two-level target state system for BigQuery:
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import datetime
 import decimal
@@ -42,7 +43,7 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex._internal.extras import install_hint
-from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits import _container, statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 
 _RowKey = tuple[Any, ...]
@@ -582,6 +583,9 @@ class _TableSpec:
 
     table_schema: TableSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    # See `_container.ContainerSpec`. Required: every constructor says
+    # whether the table was found missing.
+    missing: bool = dataclasses.field(kw_only=True)
 
 
 class _PkColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
@@ -833,11 +837,18 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 managed_by=desired_state.managed_by,
             )
 
+        # A table CocoIndex created before that is gone now was dropped outside
+        # CocoIndex: create it as if new, and invalidate its rows, which went
+        # with it.
+        recreated = _container.recreate_if_dropped(
+            desired_state, prev_possible_records, prev_may_be_missing
+        )
+
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
                 tracking_record,
-                prev_possible_records,
-                prev_may_be_missing,
+                recreated.prev_possible_records,
+                recreated.prev_may_be_missing,
             )
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
@@ -854,7 +865,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     column_actions[sub_key] = action
 
         child_invalidation: Literal["destructive", "lossy"] | None = None
-        if main_action == "replace":
+        if recreated.dropped or main_action == "replace":
             child_invalidation = "destructive"
         elif any(a != "insert" for a in column_actions.values()):
             child_invalidation = "lossy"
@@ -912,6 +923,25 @@ class TableTarget(
         return self._provider.memo_key
 
 
+def _table_target_state(
+    key: _TableKey,
+    table_schema: TableSchema[Any],
+    *,
+    managed_by: target.ManagedBy,
+    missing: bool,
+) -> coco.TargetState[_RowHandler]:
+    """The table's target state; `table_target` and `mount_table_target` both
+    build it here, so a spec field reaches both."""
+    return _table_provider.target_state(
+        key,
+        _TableSpec(
+            table_schema=table_schema,
+            managed_by=managed_by,
+            missing=missing,
+        ),
+    )
+
+
 def table_target(
     db: ContextKey[ConnectionConfig],
     table_name: str,
@@ -926,24 +956,49 @@ def table_target(
 
     Use with ``coco.mount_target()`` or the convenience wrappers below.
     """
+    key = _table_key(db, table_name, table_schema, dataset=dataset, project=project)
+    return _table_target_state(key, table_schema, managed_by=managed_by, missing=False)
+
+
+def _table_key(
+    db: ContextKey[ConnectionConfig],
+    table_name: str,
+    table_schema: TableSchema[Any],
+    *,
+    dataset: str,
+    project: str | None,
+) -> _TableKey:
+    """The table's key, with its names validated."""
     _validate_identifier(table_name, "table name")
     _validate_identifier(dataset, "dataset name")
     if project is not None:
         _validate_project_id(project)
     for col_name in table_schema.columns:
         _validate_identifier(col_name, "column name")
-
-    key = _TableKey(
+    return _TableKey(
         db_key=db.key,
         project=project,
         dataset=dataset,
         table_name=table_name,
     )
-    spec = _TableSpec(
-        table_schema=table_schema,
-        managed_by=managed_by,
-    )
-    return _table_provider.target_state(key, spec)
+
+
+def _table_exists(config: ConnectionConfig, key: _TableKey) -> bool:
+    """Whether the table exists, by the `tables.get` API call: names match
+    exactly, as in the table's DDL, and a missing dataset is not found either."""
+    from google.api_core.exceptions import NotFound  # type: ignore[import-not-found]
+
+    # Without a project, the client takes the table from its own project, as
+    # the table's statements do.
+    parts = [key.dataset, key.table_name]
+    if key.project is not None:
+        parts.insert(0, key.project)
+    with _connect(config) as client:
+        try:
+            client.get_table(".".join(parts))
+        except NotFound:
+            return False
+    return True
 
 
 def declare_table_target(
@@ -979,15 +1034,14 @@ async def mount_table_target(
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> TableTarget[RowT]:
     """Mount a BigQuery table target and return a ready-to-use TableTarget."""
+    key = _table_key(db, table_name, table_schema, dataset=dataset, project=project)
+    # A system-managed table that is not in BigQuery: if CocoIndex created it
+    # on an earlier run, it was dropped outside CocoIndex.
+    missing = managed_by == target.ManagedBy.SYSTEM and not await asyncio.to_thread(
+        _table_exists, coco.use_context(db), key
+    )
     provider = await coco.mount_target(
-        table_target(
-            db,
-            table_name,
-            table_schema,
-            dataset=dataset,
-            project=project,
-            managed_by=managed_by,
-        )
+        _table_target_state(key, table_schema, managed_by=managed_by, missing=missing)
     )
     return TableTarget(provider, table_schema)
 
