@@ -9,7 +9,9 @@ ranges grow when text is inserted at either of their boundaries, the least
 helpful reading of Docs' behavior, so the target must not depend on it.
 
 A *comment* in the fake is anchored to the code units of a quoted text, as a
-Docs comment is: it survives only if those units were never deleted.
+Docs comment is: it survives only if those units were never deleted. A
+*suggestion* is text inserted in suggestion mode: it is in the body, marked
+with ``suggestedInsertionIds`` as Docs reports it to an editor, until accepted.
 """
 
 from __future__ import annotations
@@ -37,7 +39,13 @@ try:
     import httpx
 
     from cocoindex.connectors import google_docs, google_drive
-    from cocoindex.connectors.google_docs import _auth, _docs, _markdown, _target
+    from cocoindex.connectors.google_docs import (
+        _auth,
+        _docs,
+        _markdown,
+        _reader,
+        _target,
+    )
     from cocoindex.connectors.google_drive import _oauth
 
     HAS_GOOGLE = True
@@ -67,6 +75,7 @@ class _Unit:
     ch: str
     style: dict[str, Any]
     para: dict[str, Any] | None = None
+    suggested: bool = False  # a pending suggested insertion
 
 
 class BadRequest(Exception):
@@ -264,19 +273,22 @@ class FakeDoc:
             i = 0
             while i < len(units):
                 j = i
-                while j + 1 < len(units) and units[j + 1].style == units[i].style:
+                while (
+                    j + 1 < len(units)
+                    and units[j + 1].style == units[i].style
+                    and units[j + 1].suggested == units[i].suggested
+                ):
                     j += 1
                 text = "".join(u.ch for u in units[i : j + 1])
                 text = text.encode("utf-16-le", "surrogatepass").decode("utf-16-le")
+                text_run: dict[str, Any] = {
+                    "content": text,
+                    "textStyle": copy.deepcopy(units[i].style),
+                }
+                if units[i].suggested:
+                    text_run["suggestedInsertionIds"] = ["suggest.1"]
                 elements.append(
-                    {
-                        "startIndex": s + i,
-                        "endIndex": s + j + 1,
-                        "textRun": {
-                            "content": text,
-                            "textStyle": copy.deepcopy(units[i].style),
-                        },
-                    }
+                    {"startIndex": s + i, "endIndex": s + j + 1, "textRun": text_run}
                 )
                 i = j + 1
             para = units[-1].para
@@ -345,6 +357,19 @@ class FakeDoc:
         index = self.find(old)
         self.insert(index + len(_code_units(old)), new)
         self.delete(index, index + len(_code_units(old)))
+        self.revision += 1
+
+    def person_suggest(self, after: str, text: str) -> None:
+        """Insert ``text`` after ``after`` in suggestion mode."""
+        index = self.find(after) + len(_code_units(after))
+        self.insert(index, text)
+        for unit in self.units[index - 1 : index - 1 + len(_code_units(text))]:
+            unit.suggested = True
+        self.revision += 1
+
+    def accept_suggestions(self) -> None:
+        for unit in self.units:
+            unit.suggested = False
         self.revision += 1
 
     def person_delete_paragraph(self, text: str) -> None:
@@ -677,8 +702,15 @@ def test_the_first_run_creates_the_doc_with_a_named_range_per_block(
     (file,) = google.files.values()
     assert file["name"] == "Weekly brief"
     assert file["mimeType"] == "application/vnd.google-apps.document"
-    # The tag the doc is found by, and the stamp of the target's last write.
-    assert set(file["appProperties"]) == {"cocoindexDoc", "cocoindexWrite"}
+    # The tag the doc is found by, the stamp of the target's last write, and
+    # the fingerprint of the content it was written from; each within the 124
+    # bytes Drive allows a property's key and value.
+    assert set(file["appProperties"]) == {
+        "cocoindexDoc",
+        "cocoindexWrite",
+        "cocoindexDeclared",
+    }
+    assert all(len(k) + len(v) <= 124 for k, v in file["appProperties"].items())
     doc = google.only_doc()
     assert doc.lines() == [
         ("NORMAL_TEXT", None, "Kept current from the sources."),
@@ -1321,13 +1353,15 @@ def test_random_successive_versions_leave_exactly_the_declared_doc(
 # --- reading back a person's edits --------------------------------------------------
 
 
-def _read(setup: Setup, declared: str) -> google_docs.DocRead | None:
-    """``read_doc`` run in a component of its own app, as a flow would."""
-    out: dict[str, google_docs.DocRead | None] = {}
+def _read(setup: Setup, last_declared: str) -> google_docs.DocEdits | None:
+    """``read_doc_edits`` run in a component of its own app, as a flow would."""
+    out: dict[str, google_docs.DocEdits | None] = {}
 
     @coco.fn
     async def main() -> None:
-        out["read"] = await google_docs.read_doc(GDOCS, "Weekly brief", declared)
+        out["read"] = await google_docs.read_doc_edits(
+            GDOCS, "Weekly brief", last_declared=last_declared
+        )
 
     setup.google.calls.clear()
     coco.App(
@@ -1345,7 +1379,7 @@ def _person_deletes_block(doc: FakeDoc, block: _markdown.Block) -> None:
     doc.revision += 1
 
 
-def test_read_doc_hands_back_a_persons_edits_in_the_declared_markdown(
+def test_read_doc_edits_hands_back_a_persons_edits_against_the_declared_markdown(
     setup: Setup,
 ) -> None:
     setup.run(setup.app("read_back_doc"), BRIEF)
@@ -1354,11 +1388,10 @@ def test_read_doc_hands_back_a_persons_edits_in_the_declared_markdown(
 
     # Nothing changed by a person: the declared text exactly, and two reads.
     read = _read(setup, BRIEF)
-    assert read == google_docs.DocRead(
+    assert read == google_docs.DocEdits(
         url=f"https://docs.google.com/document/d/{doc_id}/edit",
+        edits=(),
         content=BRIEF,
-        edited=(),
-        deleted=(),
     )
     assert [m for m, _ in setup.google.calls] == ["GET", "GET"]  # find, read
     assert setup.google.writes() == []
@@ -1373,8 +1406,18 @@ def test_read_doc_hands_back_a_persons_edits_in_the_declared_markdown(
 
     read = _read(setup, BRIEF)
     assert read is not None
-    assert read.edited == (("Brief", "Risks"),)
-    assert read.deleted == (("Brief", "Sources"),)
+    assert read.edits == (
+        google_docs.BlockEdit(
+            heading_path=("Brief", "Risks"),
+            declared="## Risks\n\nGoogle may change *named range* behavior.",
+            current="## Risks\n\nGoogle could change _named range_ behavior.",
+        ),
+        google_docs.BlockEdit(
+            heading_path=("Brief", "Sources"),
+            declared="## Sources\n\nhttps://example.com/a and https://example.com/b.",
+            current=None,
+        ),
+    )
     assert read.content == BRIEF.replace(
         "## Risks\n\nGoogle may change *named range* behavior.\n\n",
         "## Risks\n\nGoogle could change _named range_ behavior.\n\n",
@@ -1397,14 +1440,15 @@ def test_declaring_the_content_read_back_makes_the_blocks_the_targets_again(
     doc.person_replace("Google may change", "Google could change")
     on_edit = doc.comment("could change")
     read = _read(setup, BRIEF)
-    assert read is not None and read.edited == (("Brief", "Risks"),)
+    assert read is not None
+    assert [e.heading_path for e in read.edits] == [("Brief", "Risks")]
 
     with caplog.at_level(logging.WARNING, logger=_target.__name__):
         setup.run(app, read.content)
     assert not _warnings(caplog)  # nothing kept from the flow any more
     assert doc.comment_survives(on_edit)  # the person's text is not rewritten
-    assert _read(setup, read.content) == google_docs.DocRead(
-        read.url, read.content, (), ()
+    assert _read(setup, read.content) == google_docs.DocEdits(
+        read.url, (), read.content
     )
     # The block is the flow's again: its next change is written.
     setup.run(app, read.content.replace("could change", "will change"))
@@ -1425,7 +1469,8 @@ def test_a_heading_a_person_renamed_is_taken_in_without_a_second_copy(
     on_c1 = doc.comment("c1")
     doc.person_replace("Plan", "The plan")  # renames the blocks under it too
     read = _read(setup, markdown)
-    assert read is not None and read.edited == (("Plan",),)
+    assert read is not None
+    assert read.edits == (google_docs.BlockEdit(("Plan",), "## Plan", "## The plan"),)
     assert read.content == markdown.replace("## Plan", "## The plan")
 
     setup.run(app, read.content)
@@ -1444,12 +1489,95 @@ def test_a_heading_a_person_renamed_is_taken_in_without_a_second_copy(
     assert _docs.plan_write(state, _blocks(read.content), None).requests == []
 
 
+def test_deletions_are_reported_only_against_what_was_written(
+    setup: Setup, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A deleted block leaves no trace in the doc: against Markdown the doc
+    was not written from, a block it lacks may never have been there."""
+    setup.run(setup.app("base_check"), BRIEF)
+    doc = setup.google.only_doc()
+    _person_deletes_block(doc, _blocks(BRIEF)[4])  # Sources
+    doc.person_replace("Google may change", "Google could change")
+
+    # The next version, never written: its new block is not "deleted".
+    newer = BRIEF + "\n## Next steps\n\nWrite the docs.\n"
+    with caplog.at_level(logging.WARNING, logger=_reader.__name__):
+        read = _read(setup, newer)
+    assert read is not None
+    assert [(e.heading_path, e.current is None) for e in read.edits] == [
+        (("Brief", "Risks"), False)
+    ]
+    assert "## Sources" in read.content and "## Next steps" in read.content
+    (record,) = [r for r in caplog.records if r.name == _reader.__name__]
+    assert "'Brief > Sources'" in record.getMessage()
+    assert "'Brief > Next steps'" in record.getMessage()
+
+    # Against what was written, the deletion is reported, with no warning.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=_reader.__name__):
+        read = _read(setup, BRIEF)
+    assert read is not None
+    assert [(e.heading_path, e.current is None) for e in read.edits] == [
+        (("Brief", "Risks"), False),
+        (("Brief", "Sources"), True),
+    ]
+    assert not caplog.records
+
+
+def test_a_respelled_declaration_is_what_the_doc_was_written_from(
+    setup: Setup,
+) -> None:
+    """Markdown spelled otherwise writes nothing, and still becomes the text
+    deletions are reported against."""
+    app = setup.app("respelled")
+    setup.run(app, BRIEF)
+    respelled = BRIEF.replace("*named range*", "_named range_")
+    setup.run(app, respelled)
+    assert [m for m, _ in setup.google.writes()] == ["PATCH"]  # the fingerprint only
+    _person_deletes_block(setup.google.only_doc(), _blocks(BRIEF)[4])
+    read = _read(setup, respelled)
+    assert read is not None
+    assert [(e.heading_path, e.current) for e in read.edits] == [
+        (("Brief", "Sources"), None)
+    ]
+
+
+def test_a_pending_suggestion_is_no_edit_until_accepted(
+    setup: Setup, caplog: pytest.LogCaptureFixture
+) -> None:
+    app = setup.app("suggest")
+    setup.run(app, BRIEF)
+    doc = setup.google.only_doc()
+    doc.person_suggest("Google may change", " eventually")
+    read = _read(setup, BRIEF)
+    assert read is not None and read.edits == () and read.content == BRIEF
+
+    # The writer leaves the block as it is, suggestion and all.
+    with caplog.at_level(logging.WARNING, logger=_target.__name__):
+        setup.run(app, BRIEF.replace("behavior.", "behavior, soon."))
+    assert "Google may change eventually named range behavior." in [
+        t for _, _, t in doc.lines()
+    ]
+    assert "'Brief > Risks' (edited" in caplog.text
+
+    doc.accept_suggestions()
+    read = _read(setup, BRIEF.replace("behavior.", "behavior, soon."))
+    assert read is not None
+    (edit,) = read.edits
+    assert (
+        edit.current
+        == "## Risks\n\nGoogle may change eventually _named range_ behavior."
+    )
+
+
 _watch_runs: list[str | None] = []
 
 
 @coco.fn(memo=True)
-async def _watch(declared: str) -> None:
-    read = await google_docs.read_doc(GDOCS, "Weekly brief", declared)
+async def _watch(last_declared: str) -> None:
+    read = await google_docs.read_doc_edits(
+        GDOCS, "Weekly brief", last_declared=last_declared
+    )
     _watch_runs.append(None if read is None else read.content)
 
 
@@ -1481,12 +1609,16 @@ def test_a_read_reruns_its_reader_on_a_persons_edit_only(setup: Setup) -> None:
     doc.comment("Google may")
     doc.revision += 1  # a comment may move the revision
     assert run() == 0
+    doc.person_suggest("Ship the", " shiny")  # a pending suggestion: no change yet
+    assert run() == 0
+    doc.accept_suggestions()  # ... until someone accepts it
+    assert run() == 1 and "Ship the shiny new" in str(_watch_runs[-1])
     doc.person_replace("Google may change", "Google could change")
     assert run() == 1 and "Google could change" in str(_watch_runs[-1])
     assert run() == 0
-    # The flow takes the person's text in: the target's write, planned on the
+    # The flow takes the people's text in: the target's write, planned on the
     # revision the reader read, makes the blocks the target's again.
-    edited = BRIEF.replace("Ship the", "Ship the new").replace(
+    edited = BRIEF.replace("Ship the", "Ship the shiny new").replace(
         "Google may change *named range*", "Google could change _named range_"
     )
     assert run(edited) == 0

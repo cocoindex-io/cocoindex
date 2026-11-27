@@ -6,19 +6,22 @@ Run it once you have signed in with ``cocoindex auth sign-in google-docs``
     uv run python dev/google_docs_real_account_check.py
 
 It writes one doc in your My Drive and, at the end, moves it to the trash. On
-the way it asks you, in the browser, to comment on one section and edit
-another; then it changes a third section and checks:
+the way it asks you, in the browser, to comment on one section, edit another
+and suggest an edit to a third; then it changes a fourth section and checks:
 
 1. the doc it created reads back as exactly what was declared (nothing left
    to write), which is what makes "a person's edit" detectable at all;
 2. a rerun with unchanged content makes no request to Google;
-3. ``read_doc`` hands back your edit of Gamma, and a memoized reader runs
-   again for it but not for the target's own writes;
+3. ``read_doc_edits`` hands back your edit of Gamma, not your pending
+   suggestion in Delta, and a memoized reader runs again for the edit but not
+   for the target's own writes;
 4. a change to one section rewrites that section only: the commented section
    keeps its text, and the comment is still there, quoting the same text;
 5. the section you edited keeps your text, and the run warns about it;
-6. declaring what ``read_doc`` returned takes your edit in, without rewriting it;
-7. dropping the declaration moves the doc to the trash (not deleted for good).
+6. declaring what ``read_doc_edits`` returned takes your edit in, without
+   rewriting it, and leaves Delta, with its suggestion, as it is;
+7. once you accept the suggestion, it is an edit like any other;
+8. dropping the declaration moves the doc to the trash (not deleted for good).
 
 It also reports whether stamping the doc's Drive appProperties leaves its
 Docs revision where the write left it, which keeps a reader's validation to
@@ -60,6 +63,10 @@ Comment on this sentence in Beta.
 ## Gamma
 
 Edit a word in this Gamma sentence.
+
+## Delta
+
+Suggest a word for this Delta sentence.
 """
 
 V2 = V1.replace("version one.", "version two.").replace(
@@ -85,12 +92,14 @@ class _Counting:
         return getattr(self._inner, name)
 
 
-_watch_runs: list[google_docs.DocRead | None] = []
+_watch_runs: list[google_docs.DocEdits | None] = []
 
 
 @coco.fn(memo=True)
-async def _watch(name: str, declared: str) -> None:
-    _watch_runs.append(await google_docs.read_doc(GDOCS, name, declared))
+async def _watch(name: str, last_declared: str) -> None:
+    _watch_runs.append(
+        await google_docs.read_doc_edits(GDOCS, name, last_declared=last_declared)
+    )
 
 
 def _pause(prompt: str) -> None:
@@ -163,12 +172,16 @@ def main() -> int:
             watcher.update_blocking()
             return len(_watch_runs) - before
 
-        def read_back(declared: str) -> google_docs.DocRead | None:
-            out: list[google_docs.DocRead | None] = []
+        def read_back(last_declared: str) -> google_docs.DocEdits | None:
+            out: list[google_docs.DocEdits | None] = []
 
             @coco.fn
             async def read_main() -> None:
-                out.append(await google_docs.read_doc(GDOCS, name, declared))
+                out.append(
+                    await google_docs.read_doc_edits(
+                        GDOCS, name, last_declared=last_declared
+                    )
+                )
 
             coco.App(
                 coco.AppConfig(name="GoogleDocsRealAccountRead", environment=env),
@@ -206,7 +219,9 @@ def main() -> int:
 
         _pause(
             f"In the doc, add a comment on the sentence {COMMENTED!r} (section "
-            "Beta), and change one word in the Gamma sentence. Leave Alpha alone."
+            "Beta), and change one word in the Gamma sentence. Then switch to "
+            "Suggesting mode and suggest adding a word to the Delta sentence; "
+            "leave the suggestion pending. Leave Alpha alone."
         )
         before = _docs.read_document(google.get(doc_id))
         beta_id = blocks[2].block_id
@@ -224,15 +239,23 @@ def main() -> int:
             return 1
 
         gamma = ("CocoIndex real-account check", "Gamma")
+        delta = ("CocoIndex real-account check", "Delta")
         check("your edit runs the reader again", watch() == 1)
         seen = _watch_runs[-1]
         check(
-            "read_doc names Gamma as edited, and nothing as deleted",
-            seen is not None and seen.edited == (gamma,) and seen.deleted == (),
+            "read_doc_edits names Gamma as edited, not Delta's pending "
+            "suggestion, and nothing as deleted",
+            seen is not None
+            and [(e.heading_path, e.current is None) for e in seen.edits]
+            == [(gamma, False)],
         )
         if seen is not None:
-            print("  read back:", [ln for ln in seen.content.splitlines() if ln][-1])
-            check("read_doc gives the doc's link", seen.url == _target.doc_url(doc_id))
+            for edit in seen.edits:
+                print("  read back:", edit.current)
+            check(
+                "read_doc_edits gives the doc's link",
+                seen.url == _target.doc_url(doc_id),
+            )
 
         content["content"] = V2
         app.update_blocking()
@@ -291,7 +314,7 @@ def main() -> int:
             app.update_blocking()
         adopted = _docs.read_document(google.get(doc_id))
         check(
-            "declaring what read_doc returned takes your edit in, unchanged",
+            "declaring what read_doc_edits returned takes your edit in, unchanged",
             taken is not None
             and not any("Gamma" in w for w in warnings)
             and adopted.content(adopted.ranges[blocks[3].block_id]) == gamma_before
@@ -299,6 +322,26 @@ def main() -> int:
             == _markdown.fingerprint(gamma_before),
         )
         check("taking your edit in does not run the reader again", watch() == 0)
+        delta_id = blocks[4].block_id
+        check(
+            "Delta, with your pending suggestion, was left as it is",
+            any("Delta" in w for w in warnings)
+            and _docs.classify(
+                adopted,
+                adopted.ranges[delta_id],
+                _markdown.fingerprint(blocks[4].paragraphs),
+                settled=True,
+            )
+            != "kept",
+        )
+
+        _pause("Now accept the suggestion in Delta.")
+        check("the accepted suggestion runs the reader again", watch() == 1)
+        seen = _watch_runs[-1]
+        check(
+            "read_doc_edits names Delta as edited once accepted",
+            seen is not None and delta in [e.heading_path for e in seen.edits],
+        )
 
         content["content"] = None
         app.update_blocking()

@@ -145,28 +145,37 @@ When the declaration goes away (the code no longer declares the doc, or the app 
 
 If a person moves the doc to the trash while it is still declared, the next change creates a new doc with the full content.
 
-### Reading back a person's edits
+### Reading back what people changed
 
 ```python
-async def read_doc(
-    account: ContextKey[UserAccount], name: str, declared: str
-) -> DocRead | None
+async def read_doc_edits(
+    account: ContextKey[UserAccount], name: str, *, last_declared: str
+) -> DocEdits | None
 
 @dataclass(frozen=True)
-class DocRead:
+class DocEdits:
     url: str
+    edits: tuple[BlockEdit, ...]
     content: str
-    edited: tuple[tuple[str, ...], ...]
-    deleted: tuple[tuple[str, ...], ...]
+
+@dataclass(frozen=True)
+class BlockEdit:
+    heading_path: tuple[str, ...]
+    declared: str
+    current: str | None
 ```
 
-`read_doc` reads back the doc that `declare_doc(account, name, ...)` keeps, and returns `None` when there is none (not created yet, or in the trash). `declared` is the Markdown the doc was last declared with: the content of the run that last wrote it.
+`read_doc_edits` returns what people changed in the doc that `declare_doc(account, name, ...)` keeps, since the target last wrote it, and `None` when there is no such doc (not created yet, or in the trash). It writes nothing.
 
+`last_declared` is the Markdown the doc was last declared with: the content of the run that last wrote it. Your code keeps it, for example in `coco.use_state`. The changes are reported against it:
+
+- `edits` lists the [blocks](#how-a-change-is-written) people changed, in the order of `last_declared`. Each has its `heading_path` as declared (`("Brief", "Risks")` for the block under `## Risks` under `# Brief`, `()` for the text before the first heading), its `declared` text, and its `current` text in the doc, in [Markdown](#markdown), or `None` when people deleted it.
+- `content` is `last_declared` with those changes applied: each changed block's text replaced by its `current` text, each deleted one left out, the rest exactly as declared. Declaring `content` takes the changes in: those blocks are the target's again, and their text is not rewritten, so comments on them stay.
 - `url` is the doc's link.
-- `content` is `declared`, with each block a person edited in the doc replaced by the person's text, in Markdown, and each block a person deleted left out. The rest is `declared` exactly, so `content == declared` when no one changed a block. Declaring `content` takes the person's edits in: those blocks are the target's again, and their text is not rewritten.
-- `edited` and `deleted` are the heading paths of those blocks, as declared, in order: `("Brief", "Risks")` for the block under `## Risks` under `# Brief`, and `()` for the text before the first heading.
 
-It tells a person's edit from the target's own writes the same way the target does, by the [named ranges](#how-a-change-is-written).
+A change is told from the target's own writes the way the target tells it, by the [named ranges](#how-a-change-is-written), and the same things are not counted: whitespace, text between blocks, comments, and formatting other than the [Markdown](#markdown) subset's. A pending suggestion counts once someone accepts it (the target leaves a block that holds one as it is, as it does an edit).
+
+A deleted block leaves no trace in the doc: it is a block of `last_declared` that the doc no longer has. The target records in the doc which content it was last written from, and when `last_declared` is not that content (it is newer, or a write failed), no deletion is reported, since a block the doc lacks may never have been written, and a warning names the blocks it lacks. Other edits are reported either way.
 
 ```python
 @coco.fn
@@ -174,14 +183,16 @@ async def app_main() -> None:
     report = await write_report()  # Markdown
     last = coco.use_state("brief", initial_value=None)  # what the doc was declared with
     if last.value is not None:
-        doc = await google_docs.read_doc(GDOCS, "Weekly brief", last.value)
-        if doc is not None and doc.content != last.value:
-            print(f"People edited {doc.edited} and deleted {doc.deleted} in {doc.url}")
+        doc = await google_docs.read_doc_edits(GDOCS, "Weekly brief", last_declared=last.value)
+        if doc is not None and doc.edits:
+            for edit in doc.edits:
+                print(edit.heading_path, "deleted" if edit.current is None else "edited")
+            report = keep_people_edits(report, doc)  # your own policy
     google_docs.declare_doc(GDOCS, "Weekly brief", report)
     last.value = report
 ```
 
-A read is a data dependency of the function that made it, as a read of a file is. A memoized function that called `read_doc` runs again when a person edits or deletes a block of the doc, or the doc goes to the trash or is replaced, and is reused otherwise. The target's own writes do not make it run again: after each write the target stamps the doc with the revision it wrote, so that the next run can tell its write from a person's. Neither does a comment. Checking the record costs one Drive and one Docs request per run, and one more read of the doc when the doc's revision moved for another reason than the target's write. In a [preview](../programming_guide/app#previewing-an-update), `read_doc` reads the doc too.
+A read is a data dependency of the function that made it, as a read of a file is. A memoized function that called `read_doc_edits` runs again when people edit or delete a block of the doc, or the doc goes to the trash or is replaced, and is reused otherwise. The target's own writes do not make it run again: after each write the target stamps the doc with the revision it wrote, so that the next run can tell its write from a person's. Neither does a comment or a pending suggestion. Checking the record costs one Drive and one Docs request per run, and one more read of the doc when the doc's revision moved for another reason than the target's write. In a [preview](../programming_guide/app#previewing-an-update), `read_doc_edits` reads the doc too.
 
 A person's text comes back in the [Markdown](#markdown) below, which parses back to what the doc holds. What the subset cannot spell (a style other than a heading, such as Title; a list item two levels deeper than the one above it) reads back otherwise, and the block stays the person's after `content` is declared.
 
