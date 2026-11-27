@@ -209,6 +209,23 @@ def main() -> int:
         )
         if leftover:
             print("  left to write:", leftover[:5])
+        # Nothing left to write also holds for a block that reads back as a
+        # person's edit (the target never rewrites one), so check each block.
+        not_same = [
+            b.label
+            for b in blocks
+            if b.block_id not in state.ranges
+            or _docs.classify(
+                state, state.ranges[b.block_id], _markdown.fingerprint(b.paragraphs)
+            )
+            != "same"
+        ]
+        check(
+            "no block reads back as edited (styles and links round-trip)",
+            not not_same,
+        )
+        if not_same:
+            print("  read back as edited:", not_same)
 
         _Counting.count = 0
         app.update_blocking()
