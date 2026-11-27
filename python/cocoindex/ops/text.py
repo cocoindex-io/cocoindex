@@ -94,7 +94,10 @@ class CustomLanguageConfig:
     Args:
         language_name: The name of the language.
         separators_regex: Regex patterns for separators, in order of priority.
-            Earlier patterns are preferred for splitting.
+            Earlier patterns are preferred for splitting. The text a separator
+            matches is dropped at a split, punctuation included (the built-in
+            separators instead keep sentence and clause punctuation with the
+            chunk before).
         aliases: Aliases for the language name (e.g., file extensions).
 
     Examples:
@@ -124,6 +127,13 @@ class RecursiveSplitter:
     This splitter uses a sophisticated algorithm to split text into chunks
     that respect syntax boundaries (like paragraph breaks, sentences, etc.)
     and optionally use tree-sitter for programming language awareness.
+
+    A split drops only whitespace: sentence and clause punctuation (``.``,
+    ``?``, ``;``, ``,``, ``。`` and the like) stays at the end of the chunk
+    before it. No chunk is longer than ``chunk_size`` unless one character is:
+    a run of text that no separator splits, such as a long minified line, is
+    cut at character boundaries, and a chunk starts after the indentation of
+    its first line where that indentation would take it over ``chunk_size``.
 
     This splitter can be instantiated once and reused to split multiple texts
     efficiently.

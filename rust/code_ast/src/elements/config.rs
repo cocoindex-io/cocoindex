@@ -159,8 +159,8 @@ impl ExtractorConfig {
     /// Returns a config with built-in defaults for all supported languages.
     ///
     /// Language keys match the names returned by [`crate::prog_langs::detect_language`]
-    /// (e.g. `"javascript"`, `"cpp"`, `"csharp"`), so a language detected from a filename can
-    /// be passed straight to [`CodeElementsExtractor::extract`].
+    /// (e.g. `"javascript"`, `"cpp"`, `"csharp"`), so a language detected from a filename is
+    /// a key of [`Self::languages`] as it is.
     pub fn with_defaults() -> Self {
         let mut languages = HashMap::new();
         languages.insert("c".to_string(), lang::cfamily::default_c_config());

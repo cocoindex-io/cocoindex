@@ -145,6 +145,9 @@ Advanced text chunking with language awareness and syntax-aware splitting for co
 - Supports many programming languages
 - Preserves code structure: a function, class or block that fits in `chunk_size` stays in one chunk, and a header, such as a `def` or `if` line or a Markdown heading, stays with the start of its body
 - Customizable chunk sizes and overlap
+- Drops only whitespace at a split: sentence and clause punctuation (`.`, `?`, `;`, `,`, `。` and the like) stays at the end of the chunk before it
+- Cuts a run of text that no separator splits, such as a long minified line, at character boundaries, so no chunk is longer than `chunk_size` unless one character is; a chunk starts after the indentation of its first line where that indentation would take it over `chunk_size`
+- Falls back to text splitting when a grammar's parse runs away: a few grammars (Svelte, Scala, Dart, Lua, Julia) rescan the whole text from every token of input that is not their language, and such a parse is abandoned once it has read the text a fixed number of times over. The fallback is logged at warn level, with the language and the text's length
 - Returns [`Chunk`](../common_resources/data_types#chunk) objects with start/end positions (line, column, byte/char offsets)
 
 **Usage:**
@@ -349,7 +352,7 @@ Note that `.h` maps to C++, not C — the C++ grammar also parses C headers. Pas
 
 ### `CustomLanguageConfig`
 
-Define custom language splitting rules.
+Define custom language splitting rules. The text a custom separator matches is dropped at a split, punctuation included: unlike the built-in separators, a custom one keeps nothing with the chunk before.
 
 **Usage:**
 

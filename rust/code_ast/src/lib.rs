@@ -1,5 +1,10 @@
 //! Shared tree-sitter foundation for CocoIndex code/text operations.
 //!
+//! This crate is an internal part of [CocoIndex](https://cocoindex.io), published
+//! only so the [`cocoindex`](https://docs.rs/cocoindex) crate can depend on it. It
+//! makes no API stability promise: any release may change it. Depend on
+//! `cocoindex` instead.
+//!
 //! This crate owns:
 //! - the **language registry** ([`prog_langs`]): language names, aliases, file
 //!   extensions, and tree-sitter grammars — the single place in the workspace

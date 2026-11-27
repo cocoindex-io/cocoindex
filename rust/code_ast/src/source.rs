@@ -18,11 +18,88 @@ pub enum ParseOutcome<'s> {
     /// No grammar to parse with: the language is unknown to the registry, or
     /// known but without tree-sitter support.
     NoGrammar,
-    /// The parser returned no tree. Rare (cancellation/timeout-class failures);
-    /// memoized, so repeated consumers don't retry the parse.
+    /// The parser returned no tree, or its lexer read the text so many times
+    /// over that the parse was abandoned (a grammar whose lexer rescans to the
+    /// end of the text, on input that is not its language). Rare; memoized,
+    /// so repeated consumers don't retry the parse.
     ParseFailed,
     /// The parse produced a tree (possibly containing `ERROR` nodes).
     Parsed(&'s tree_sitter::Tree),
+}
+
+/// The parser reads its input in pieces of at most this many bytes, so the
+/// bytes it reads count how far its lexer scans.
+const PARSE_READ_CHUNK: usize = 1024;
+
+/// A parse may read each byte of the text at most this many times, plus
+/// [`PARSE_READ_BUDGET_BASE`] bytes, before it is abandoned as
+/// [`ParseOutcome::ParseFailed`].
+///
+/// Some grammars' lexers scan to the end of the text from every token on
+/// input that is not their language, such as Svelte, Scala or Dart on
+/// unbalanced brackets, or Lua and Julia on another language's code: the
+/// parse takes time quadratic in the text's length, seconds for tens of
+/// kilobytes. A parse of source in its own language reads each byte about
+/// twice. The budget counts bytes, not time, so whether a text parses is the
+/// same on every run and machine, and in debug and release builds.
+const PARSE_READ_BUDGET_PER_BYTE: usize = 256;
+
+/// The read budget every parse has whatever the text's length, so a short
+/// text never runs out of it.
+const PARSE_READ_BUDGET_BASE: usize = 1 << 20;
+
+/// Parses `text`, in `language`, or returns `None` if the parser returns no
+/// tree or reads more than its budget (see [`PARSE_READ_BUDGET_PER_BYTE`]).
+fn parse_within_read_budget(
+    parser: &mut tree_sitter::Parser,
+    language: &str,
+    text: &str,
+) -> Option<tree_sitter::Tree> {
+    let budget = text
+        .len()
+        .saturating_mul(PARSE_READ_BUDGET_PER_BYTE)
+        .saturating_add(PARSE_READ_BUDGET_BASE);
+    let read = std::cell::Cell::new(0usize);
+    let over_budget = || read.get() > budget;
+    let bytes = text.as_bytes();
+    let mut read_chunk = |offset: usize, _: tree_sitter::Point| -> &[u8] {
+        if offset >= bytes.len() || over_budget() {
+            return &[];
+        }
+        // End on a char boundary, so no chunk splits a UTF-8 sequence; a
+        // chunk shorter than one char takes that whole char.
+        let mut end = text.floor_char_boundary(offset + PARSE_READ_CHUNK);
+        if end <= offset {
+            end = text.ceil_char_boundary(offset + 1);
+        }
+        read.set(read.get() + (end - offset));
+        if over_budget() {
+            // Reading nothing more ends the parse at the next token; the
+            // progress callback cancels it sooner where it can.
+            tracing::warn!(
+                language,
+                text_len = text.len(),
+                read_budget = budget,
+                "tree-sitter parse abandoned over its read budget; \
+                 the text is processed without a syntax tree"
+            );
+            return &[];
+        }
+        &bytes[offset..end]
+    };
+    let mut cancel_over_budget = |_: &tree_sitter::ParseState| {
+        if over_budget() {
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(())
+        }
+    };
+    let tree = parser.parse_with_options(
+        &mut read_chunk,
+        None,
+        Some(tree_sitter::ParseOptions::new().progress_callback(&mut cancel_over_budget)),
+    );
+    if over_budget() { None } else { tree }
 }
 
 /// Source text with an optional, lazily parsed tree-sitter AST.
@@ -129,7 +206,10 @@ impl<'a> CodeSource<'a> {
     /// Get-or-parse the AST, memoized (including failure). Thread-safe; safe
     /// to call with the Python GIL released.
     pub fn tree(&self) -> ParseOutcome<'_> {
-        let Some(ts) = self.treesitter_info() else {
+        let Some((info, ts)) = self
+            .info
+            .and_then(|info| Some((info, info.treesitter_info.as_ref()?)))
+        else {
             return ParseOutcome::NoGrammar;
         };
         let cached = self.tree.get_or_init(|| {
@@ -137,7 +217,7 @@ impl<'a> CodeSource<'a> {
             if parser.set_language(&ts.tree_sitter_lang).is_err() {
                 return None;
             }
-            parser.parse(self.text.as_ref(), None)
+            parse_within_read_budget(&mut parser, &info.name, &self.text)
         });
         match cached {
             Some(tree) => ParseOutcome::Parsed(tree),
@@ -230,6 +310,81 @@ mod tests {
         let src = CodeSource::with_info("fn main() {}", info);
         assert!(std::ptr::eq(src.info().unwrap(), info));
         assert_eq!(src.requested_language(), Some("rust"));
+        assert!(matches!(src.tree(), ParseOutcome::Parsed(_)));
+    }
+
+    /// Log output, shared between a test and its subscriber's writer.
+    #[derive(Clone, Default)]
+    struct LogBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_parse_whose_lexer_rescans_the_text_is_abandoned() {
+        // Svelte's lexer scans to the end of the text from every token of
+        // unbalanced brackets: reading the text thousands of times over,
+        // seconds for these 24 KB. The read budget stops it, the same way on
+        // every run.
+        let text = "({[".repeat(8_000);
+        let src = CodeSource::with_language(text.as_str(), "svelte");
+        let log = LogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer({
+                let log = log.clone();
+                move || log.clone()
+            })
+            .with_ansi(false)
+            .finish();
+        let outcome = tracing::subscriber::with_default(subscriber, || src.tree());
+        assert!(matches!(outcome, ParseOutcome::ParseFailed));
+        // The fallback is logged once, with the language and the text's length.
+        let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(log.lines().count(), 1, "{log}");
+        assert!(
+            log.contains("WARN") && log.contains("svelte") && log.contains("text_len=24000"),
+            "{log}"
+        );
+
+        // Source in the grammar's own language, and multi-byte text cut into
+        // read chunks, parse as they would in one piece.
+        for (language, text) in [
+            (
+                "svelte",
+                "<script>\n  let n = 0;\n</script>\n\n<button on:click={() => n++}>{n}</button>\n"
+                    .repeat(500),
+            ),
+            ("rust", "fn 日本() { let s = \"🦀é\"; }\n".repeat(2_000)),
+        ] {
+            let src = CodeSource::with_language(text.as_str(), language);
+            let ParseOutcome::Parsed(tree) = src.tree() else {
+                panic!("{language} parses within its budget");
+            };
+            let mut parser = tree_sitter::Parser::new();
+            parser
+                .set_language(&src.treesitter_info().unwrap().tree_sitter_lang)
+                .unwrap();
+            let whole = parser.parse(text.as_str(), None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), whole.root_node().to_sexp());
+        }
+    }
+
+    #[test]
+    fn error_recovery_over_a_long_unparsable_run_is_not_quadratic() {
+        // tree-sitter before 0.26 copied every child of the error so far on
+        // each recovery: these 160 KB took over 15 s in a release build. A
+        // parse that finishes within the read budget, which is linear in the
+        // text, is not quadratic; one that ran over it would fall back.
+        let text = "a🦀".repeat(32_000);
+        let src = CodeSource::with_language(text.as_str(), "rust");
         assert!(matches!(src.tree(), ParseOutcome::Parsed(_)));
     }
 

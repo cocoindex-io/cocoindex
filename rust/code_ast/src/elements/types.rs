@@ -10,8 +10,8 @@ use crate::positions::OutputPosition;
 ///
 /// Unlike `ast_node_kind` (the raw TreeSitter node type, which differs per grammar), `kind`
 /// is a stable vocabulary shared across all languages. It is computed in three layers:
-/// a per-node-type default ([`CodeElementsDeclarationConfig::kind`]); an optional language
-/// refinement ([`LanguageHooks::refine_declaration_kind`], for grammars where one node type
+/// a per-node-type default ([`CodeElementsDeclarationConfig::kind`](crate::elements::CodeElementsDeclarationConfig::kind)); an optional language
+/// refinement ([`LanguageHooks::refine_declaration_kind`](crate::elements::LanguageHooks::refine_declaration_kind), for grammars where one node type
 /// covers several kinds, e.g. Go `type_spec` or Swift `class_declaration`); and engine-level
 /// promotion of a free kind to its member form inside a type scope (`function` → `method`,
 /// `variable` → `field`).
