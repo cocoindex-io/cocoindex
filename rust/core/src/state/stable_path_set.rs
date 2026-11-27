@@ -47,6 +47,23 @@ impl ChildStablePathSet {
             }
         }
     }
+
+    /// Declare `path` a directory, with whatever it holds so far, as a mount
+    /// of children under it does. A component at or above `path` already
+    /// declared stays as it is: a child mounted under it reports the clash.
+    pub fn declare_directory(&mut self, path: StablePathRef) {
+        let mut current = self;
+        for key in path.iter() {
+            match current
+                .children
+                .entry(key.clone())
+                .or_insert_with(StablePathSet::directory)
+            {
+                StablePathSet::Directory(dir) => current = dir,
+                StablePathSet::Component | StablePathSet::Skipped => return,
+            }
+        }
+    }
 }
 
 pub enum StablePathSet {
