@@ -106,11 +106,8 @@ pub async fn iter_stable_path_details_by_name(
     ))
 }
 
-/// The details of one stable path.
-///
-/// A path the app never stored reads as a directory node with version 0 and
-/// no target states. `None` means the app has no stored state at all, which
-/// only the `_by_name` form can meet.
+/// The details of one stable path, or `None` if the app never stored it.
+/// The `_by_name` form also returns `None` when the app has no stored state.
 pub async fn get_stable_path_detail(
     app: &App,
     path: &StablePath,
@@ -128,7 +125,8 @@ pub async fn get_stable_path_detail_by_name(
 }
 
 /// The details of one stable path and, as `query` asks, of its children and
-/// parents. Parents come first, then the path, then the children.
+/// parents. Parents come first, then the path, then the children. Empty if
+/// the app never stored the path.
 pub async fn query_stable_path_details(
     app: &App,
     path: &StablePath,

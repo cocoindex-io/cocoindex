@@ -829,6 +829,57 @@ class TestPreview:
         assert "cannot be used together" in result.stderr.lower()
 
 
+class TestShowStablePath:
+    """Tests for the `STABLE_PATH` argument of the show command."""
+
+    def test_show_accepts_its_own_output(self) -> None:
+        """Every path `show` prints must parse when passed back as an argument."""
+        run_cli("update", "./symbol_path_app.py")
+        listed = run_cli("show", "./symbol_path_app.py")
+
+        paths = [
+            line.strip()
+            for line in listed.stdout.splitlines()
+            if line.startswith("  /")
+        ]
+        # Symbol parts (from mount_each) and a string part holding a "/".
+        assert '/@process_files/"rfc8259.md"' in paths
+        assert '/@process_files/"with/slash.md"' in paths
+
+        for path in paths:
+            result = run_cli("show", "./symbol_path_app.py", path)
+            assert path in result.stdout, f"{path} not echoed back"
+
+    def test_show_distinguishes_symbols_from_strings(self) -> None:
+        """`@name` is a symbol; `"@name"` is a string that doesn't exist."""
+        run_cli("update", "./symbol_path_app.py")
+
+        found = run_cli("show", "./symbol_path_app.py", '/@process_files/"rfc8259.md"')
+        assert "processor:process_files" in found.stdout
+
+        missing = run_cli(
+            "show",
+            "./symbol_path_app.py",
+            '/"@process_files"/"rfc8259.md"',
+            check=False,
+        )
+        assert missing.returncode != 0
+        assert "not found" in missing.stderr.lower()
+
+    def test_show_reports_missing_path(self) -> None:
+        """An untracked path is an error, not an empty synthesized entry."""
+        run_cli("update", "./symbol_path_app.py")
+
+        for args in (
+            ['/@process_files/"nope.md"'],
+            ["-r", "-p", "/@nope"],
+        ):
+            result = run_cli("show", "./symbol_path_app.py", *args, check=False)
+            assert result.returncode != 0
+            assert "not found" in result.stderr.lower()
+            assert "type:directory" not in result.stdout
+
+
 class TestShowTree:
     """Tests for the show command with --tree flag."""
 
@@ -989,6 +1040,24 @@ class TestShowFromDatabase:
         # persisted at update time.
         assert '@test_cli/flat_preview/"x"' in result.stdout
         assert "states:1:Existing" in result.stdout
+
+    def test_show_db_reports_unknown_app_name(self) -> None:
+        """A typo'd app name is named as such, not reported as a missing path."""
+        run_cli("update", "./flat_target_app.py")
+
+        for extra in ([], ["--target-states"], ["", '/"x"']):
+            result = run_cli(
+                "show",
+                "--db",
+                "./cocoindex.db",
+                "--app-name",
+                "NoSuchApp",
+                *extra,
+                check=False,
+            )
+            assert result.returncode != 0
+            assert "No app named 'NoSuchApp'" in result.stderr
+            assert "FlatPreviewApp" in result.stderr
 
     def test_show_db_tree_displays_components(self) -> None:
         """show --db/--app-name --tree should render the tree without the module."""
