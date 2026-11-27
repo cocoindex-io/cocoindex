@@ -8,7 +8,7 @@
 //! directory through a `DirTarget`, so a test checks the end state on disk:
 //! what the pipeline wrote, updated and removed.
 //!
-//!   cargo test -p cocoindex --features fs_live --test it fs_live_battle::
+//!   cargo test -p cocoindex --features fs_live --test fs_live_battle
 #![cfg(feature = "fs_live")]
 
 use std::collections::BTreeMap;

@@ -5,7 +5,7 @@
 //! Python calls directly; here we stand up a mock HTTP server (wiremock) and
 //! point the client at it, exercising the real request/response path.
 //!
-//! Run with: `cargo test -p cocoindex --features embed_api --test it ops_api::`.
+//! Run with: `cargo test -p cocoindex --features embed_api --test ops_api`.
 #![cfg(feature = "embed_api")]
 
 use std::future::Future;
