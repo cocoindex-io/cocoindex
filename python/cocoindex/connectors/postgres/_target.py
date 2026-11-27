@@ -1454,8 +1454,8 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         if recreated.dropped or main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
-            # Column schema changes (other than adding new columns) may lose data.
+        elif any(_container.may_lose_data(a) for a in column_actions.values()):
+            # A column retyped or dropped may lose data.
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(

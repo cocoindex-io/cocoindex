@@ -1073,14 +1073,29 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 action = statediff.diff(t)
                 if action is not None:
                     column_actions[sub_key] = action
+            # SQLite can't add a NOT NULL column to a table with rows: rebuild
+            # it (see `_container.adds_not_null_column`). A user-managed table
+            # resolves to no transition (`resolve_system_transition`).
+            if (
+                resolved is not None
+                and not coco.is_non_existence(desired_state)
+                and _container.adds_not_null_column(
+                    column_transitions,
+                    len(resolved.prev),
+                    desired_state.table_schema.columns,
+                    _COL_SUBKEY_PREFIX,
+                )
+            ):
+                main_action = "replace"
+                column_actions = {}
 
         # Determine child invalidation for row-level targets.
         child_invalidation: Literal["destructive", "lossy"] | None = None
         if recreated.dropped or main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
-        elif any(a != "insert" for a in column_actions.values()):
-            # Column schema changes (other than adding new columns) may lose data.
+        elif any(_container.may_lose_data(a) for a in column_actions.values()):
+            # A column retyped or dropped may lose data.
             child_invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
