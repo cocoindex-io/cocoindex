@@ -16,6 +16,7 @@ import os
 import pathlib
 import socket
 import stat
+import sys
 import threading
 import urllib.parse
 from dataclasses import dataclass, field
@@ -198,6 +199,18 @@ class Flow:
         kwargs.update(overrides)
         return _oauth.run_sign_in(client, self.token_path, **kwargs)  # type: ignore[arg-type]
 
+    def sign_in_reading_stdin(self) -> str:
+        """The interactive sign-in, reading pasted lines from stdin as by default."""
+        return _oauth.run_sign_in(
+            self.client_secrets,
+            self.token_path,
+            http_client=self.http,
+            open_browser=self.browser,
+            say=self.said.append,
+            browser_available=True,
+            timeout=10,
+        )
+
     def account(self) -> UserAccount:
         return UserAccount(self.token_path)
 
@@ -373,6 +386,51 @@ def test_the_sign_in_discloses_its_use_of_google_data_before_the_consent(
     )
     assert result.exit_code == 0, result.output
     _assert_notice(result.output, flow.token_path)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="select() can't wait on stdin on Windows"
+)
+def test_the_stdin_reader_ends_with_the_sign_in(
+    flow: Flow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sign-in that the redirect ends leaves no thread reading stdin: the next
+    line typed (an answer to a later prompt) goes to whatever reads stdin next.
+    Before, a thread blocked in a stdin read outlived the sign-in and took it."""
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(read_fd, "r") as stdin, os.fdopen(write_fd, "w") as typed:
+        monkeypatch.setattr(sys, "stdin", stdin)
+
+        assert flow.sign_in_reading_stdin() == EMAIL
+
+        for thread in threading.enumerate():
+            if thread.name == _oauth._PASTED_LINE_READER_THREAD:
+                thread.join(timeout=5)
+                assert not thread.is_alive(), "the stdin reader outlived the sign-in"
+        typed.write("yes\n")
+        typed.close()
+        assert stdin.readline() == "yes\n"
+
+
+def test_the_stdin_reader_reads_one_line_at_a_time() -> None:
+    """The stdin reader takes no input past its line, and gives up at the end
+    of input or once the sign-in ended."""
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"first\nsecond\n")
+        running = threading.Event()
+        assert _oauth._read_line_until_ended(read_fd, running) == "first\n"
+        assert _oauth._read_line_until_ended(read_fd, running) == "second\n"
+        ended = threading.Event()
+        ended.set()
+        assert _oauth._read_line_until_ended(read_fd, ended) is None
+        os.close(write_fd)
+        write_fd = -1
+        assert _oauth._read_line_until_ended(read_fd, running) is None
+    finally:
+        os.close(read_fd)
+        if write_fd != -1:
+            os.close(write_fd)
 
 
 # --- the no-browser path -----------------------------------------------------

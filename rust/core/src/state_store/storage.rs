@@ -379,10 +379,9 @@ impl Storage {
         let db_env = match db_env {
             Ok(env) => env,
             Err(heed::Error::EnvAlreadyOpened) => internal_bail!(
-                "the database at '{}' is already open in this process; close that \
-                 Environment with Environment.close(), or drop it along with every \
-                 App, AppConfig and ContextProvider bound to it (and let in-flight \
-                 operations finish), before opening it again",
+                "the database at '{}' is already open in this process; close the \
+                 environment that holds it, or drop it along with everything bound \
+                 to it and let in-flight operations finish, before opening it again",
                 settings.db_path.display()
             ),
             Err(e) => return Err(e.into()),
@@ -937,7 +936,10 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("already open"), "{message}");
-        assert!(message.contains("Environment.close()"), "{message}");
+        assert!(
+            message.contains("close the environment that holds it"),
+            "{message}"
+        );
 
         storage.close().await;
     }

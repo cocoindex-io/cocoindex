@@ -1001,6 +1001,128 @@ class TestShowFromDatabase:
         assert "Stable paths" in result.stdout
         assert "[component]" in result.stdout
 
+    def test_show_db_of_a_database_with_no_apps_is_an_error(self) -> None:
+        """show --db --app-name on a database that holds no app says so."""
+        run_cli("update", "./flat_target_app.py")
+        run_cli("drop", "./flat_target_app.py", "-f")
+
+        result = run_cli(
+            "show", "--db", "./cocoindex.db", "--app-name", "Nope", check=False
+        )
+
+        assert result.returncode == 1, result
+        assert (
+            "No app named 'Nope' in the database at ./cocoindex.db; it has no apps."
+        ) in result.stderr
+        assert "Traceback" not in result.stderr
+
+    @pytest.mark.parametrize("extra", [[], ["-l"], ["--tree"], ["--target-states"]])
+    def test_show_db_unknown_app_is_an_error(self, extra: list[str]) -> None:
+        """show --db --app-name of an app the database lacks fails (exit 1)
+        with a message naming the apps it has, instead of an empty listing."""
+        run_cli("update", "./flat_target_app.py")
+
+        result = run_cli(
+            "show",
+            "--db",
+            "./cocoindex.db",
+            "--app-name",
+            "Nope",
+            *extra,
+            check=False,
+        )
+
+        assert result.returncode == 1, result
+        assert (
+            "No app named 'Nope' in the database at ./cocoindex.db. "
+            "Apps in it: FlatPreviewApp"
+        ) in result.stderr
+        assert "Traceback" not in result.stderr
+        assert result.stdout == ""
+
+
+class TestDatabaseErrors:
+    """A database that can't be opened or read is a clean error (exit 1) of the
+    same shape for every command, not a traceback."""
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["ls", "--db"],
+            ["show", "--app-name", "X", "--db"],
+            ["show", "--app-name", "X", "--target-states", "--db"],
+        ],
+    )
+    def test_db_that_cannot_be_opened(self, tmp_path: Path, args: list[str]) -> None:
+        not_a_db = tmp_path / "not_a_db"
+        not_a_db.write_text("not an LMDB directory")
+
+        result = run_cli(*args, str(not_a_db), check=False)
+
+        assert result.returncode == 1, result
+        assert f"Error: Failed to read the database at {not_a_db}: " in result.stderr
+        assert "Traceback" not in result.stderr
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["ls", "./flat_target_app.py"],
+            ["update", "./flat_target_app.py", "--reset", "-f"],
+            ["drop", "./flat_target_app.py", "-f"],
+        ],
+    )
+    def test_db_that_cannot_be_read(self, args: list[str]) -> None:
+        # The database opens; listing its apps fails.
+        script = (
+            "import sys\n"
+            "import cocoindex._internal.core as core\n"
+            "def _fail(env):\n"
+            "    raise RuntimeError('listing failed')\n"
+            "core.list_app_names = _fail\n"
+            "from cocoindex.cli import cli\n"
+            "cli(sys.argv[1:])\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script, *args],
+            cwd=TEST_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+        )
+
+        assert result.returncode == 1, result
+        assert (
+            "Error: Failed to read the database at ./cocoindex.db: listing failed"
+            in result.stderr
+        ), result.stderr
+        assert "Traceback" not in result.stderr
+
+
+class TestMissingAppTarget:
+    """An APP_TARGET file that does not exist is a clean error (exit 1)."""
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["ls", "./definitely_missing.py"],
+            ["show", "./definitely_missing.py"],
+            ["update", "./definitely_missing.py"],
+            ["drop", "./definitely_missing.py", "-f"],
+        ],
+    )
+    def test_missing_app_target_exits_1_without_traceback(
+        self, args: list[str]
+    ) -> None:
+        result = run_cli(*args, check=False)
+
+        assert result.returncode == 1, result
+        assert (
+            "Error: Application file path not found: ./definitely_missing.py"
+            in result.stderr
+        )
+        assert "Traceback" not in result.stderr
+
 
 class TestShowLong:
     """Tests for target-state rendering in show -l."""

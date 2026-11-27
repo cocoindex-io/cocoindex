@@ -33,6 +33,7 @@ import logging
 import os
 import queue
 import secrets
+import select
 import socketserver
 import stat
 import sys
@@ -438,6 +439,69 @@ def _read_stdin_line() -> str | None:
     return line or None
 
 
+# Reads the lines pasted during a sign-in, on a thread of its own: given the
+# event the sign-in sets when it ends, one line, or ``None`` once nothing more
+# will be read.
+_LineReader = Callable[[threading.Event], "str | None"]
+
+# How long the stdin reader waits for input before it looks again whether the
+# sign-in ended.
+_STDIN_POLL_INTERVAL_SECONDS = 0.1
+
+
+def _read_line_until_ended(fd: int, ended: threading.Event) -> str | None:
+    """One line from ``fd``, read a byte at a time once ``select`` says input
+    is there, so the read never blocks and never takes input past the line:
+    ``None`` at end of input, on an error, or once ``ended`` is set, leaving
+    what it has not read to the next reader."""
+    line = bytearray()
+    while not ended.is_set():
+        try:
+            readable, _, _ = select.select([fd], [], [], _STDIN_POLL_INTERVAL_SECONDS)
+        except (OSError, ValueError):
+            return None
+        if not readable:
+            continue
+        try:
+            byte = os.read(fd, 1)
+        except BlockingIOError:
+            continue
+        except OSError:
+            return None
+        if not byte:
+            return line.decode("utf-8", errors="replace") if line else None
+        line += byte
+        if byte == b"\n":
+            return line.decode("utf-8", errors="replace")
+    return None
+
+
+def _stdin_fd() -> int | None:
+    """stdin's file descriptor when ``select`` can wait on it: not on Windows,
+    where it takes sockets only, nor for a stdin that has none."""
+    if sys.platform == "win32" or sys.stdin is None:
+        return None
+    try:
+        return sys.stdin.fileno()
+    except (OSError, ValueError):
+        return None
+
+
+def _line_reader(read_line: Callable[[], str | None] | None) -> _LineReader:
+    """The reader of ``run_sign_in``'s ``read_line``: the caller's callback, or
+    stdin. Where ``select`` can wait on stdin, it is read with
+    ``_read_line_until_ended``, so the reader stops with the sign-in;
+    elsewhere a stdin read cannot be cancelled, so the thread waits in it
+    until the next line, which it drops."""
+    if read_line is not None:
+        callback = read_line
+        return lambda _ended: callback()
+    fd = _stdin_fd()
+    if fd is None:
+        return lambda _ended: _read_stdin_line()
+    return lambda ended: _read_line_until_ended(fd, ended)
+
+
 def has_browser(
     environ: Mapping[str, str] | None = None, platform: str = sys.platform
 ) -> bool:
@@ -514,10 +578,14 @@ def _parse_pasted_redirect(text: str) -> dict[str, list[str]] | None:
     return params if "code" in params or "error" in params else None
 
 
+# The name of the thread that reads pasted lines.
+_PASTED_LINE_READER_THREAD = "cocoindex-google-drive-sign-in-reader"
+
+
 def _pump_lines(
-    read_line: Callable[[], str | None], lines: queue.SimpleQueue[str]
+    read_line: _LineReader, ended: threading.Event, lines: queue.SimpleQueue[str]
 ) -> None:
-    while (line := read_line()) is not None:
+    while (line := read_line(ended)) is not None:
         lines.put(line)
 
 
@@ -526,16 +594,37 @@ def _await_redirect(
     redirect: _Redirect,
     *,
     timeout: float,
-    read_line: Callable[[], str | None],
+    read_line: _LineReader,
     say: Callable[[str], None],
 ) -> dict[str, list[str]]:
     """Serve until the redirect arrives at the listener or is pasted, or time out.
 
-    stdin is read on a daemon thread because the read cannot be cancelled; a
-    pasted line that is not the redirect gets a hint and the wait goes on.
+    Pasted lines are read on a daemon thread (see ``_line_reader``), which
+    stops once the wait ends; a pasted line that is not the redirect gets a
+    hint and the wait goes on.
     """
     pasted: queue.SimpleQueue[str] = queue.SimpleQueue()
-    threading.Thread(target=_pump_lines, args=(read_line, pasted), daemon=True).start()
+    ended = threading.Event()
+    threading.Thread(
+        target=_pump_lines,
+        args=(read_line, ended, pasted),
+        name=_PASTED_LINE_READER_THREAD,
+        daemon=True,
+    ).start()
+    try:
+        return _serve_until_redirect(server, redirect, pasted, timeout=timeout, say=say)
+    finally:
+        ended.set()
+
+
+def _serve_until_redirect(
+    server: _LoopbackServer,
+    redirect: _Redirect,
+    pasted: queue.SimpleQueue[str],
+    *,
+    timeout: float,
+    say: Callable[[str], None],
+) -> dict[str, list[str]]:
     deadline = time.monotonic() + timeout
     server.timeout = 0.5
     while time.monotonic() < deadline:
@@ -607,7 +696,7 @@ def _run_consent(
     scope: str,
     http_client: httpx.Client,
     open_browser: Callable[[str], object],
-    read_line: Callable[[], str | None],
+    read_line: _LineReader,
     say: Callable[[str], None],
     browser_available: bool,
     timeout: float,
@@ -704,7 +793,7 @@ def run_sign_in(
     grant: Grant = DRIVE_READONLY_GRANT,
     http_client: httpx.Client | None = None,
     open_browser: Callable[[str], object] = webbrowser.open,
-    read_line: Callable[[], str | None] = _read_stdin_line,
+    read_line: Callable[[], str | None] | None = None,
     say: Callable[[str], None] = _say,
     browser_available: bool | None = None,
     timeout: float = SIGN_IN_TIMEOUT_SECONDS,
@@ -717,8 +806,10 @@ def run_sign_in(
 
     Everything the flow touches outside this process is a parameter, so a
     test can drive it against fake endpoints: ``http_client`` for Google, ``open_browser``
-    for the browser, ``read_line`` for the pasted redirect, ``say`` for what
-    the person reads, and ``browser_available`` to force the no-browser path.
+    for the browser, ``read_line`` for the pasted redirect (``None`` reads
+    stdin; a callback runs on a thread the sign-in does not wait for), ``say``
+    for what the person reads, and ``browser_available`` to force the
+    no-browser path.
     """
     client_cfg = _resolve_client(client_secrets_path)
     # Said before the browser opens or the link prints: Google's verification
@@ -735,7 +826,7 @@ def run_sign_in(
             scope=grant.scope,
             http_client=http_client,
             open_browser=open_browser,
-            read_line=read_line,
+            read_line=_line_reader(read_line),
             say=say,
             browser_available=browser_available,
             timeout=timeout,

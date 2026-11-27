@@ -230,6 +230,14 @@ A consumer with a `consumer_group` commits the offsets of the records a live run
 
 </Lang>
 
+<Lang only="python">
+
+### Fetch errors
+
+A live feed keeps running through a failed fetch, such as an unreachable broker or a partition without a leader: the `confluent_kafka` consumer retries on its own and reports each error, which the feed logs.
+
+</Lang>
+
 ### Readiness
 
 The feed signals readiness after catching up to the high watermark offsets that existed when consumption started. After that, it continues consuming indefinitely until the app is stopped.

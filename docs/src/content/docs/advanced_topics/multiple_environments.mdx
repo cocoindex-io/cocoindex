@@ -116,11 +116,7 @@ There is no implicit default environment: an `App` always comes from an `Environ
 
 <Lang only="python">
 
-An environment holds its database open, and LMDB allows one environment per `db_path` per process. An explicit environment's store is released when the last reference to it is gone: the environment itself, the Apps and `AppConfig`s bound to it, its `ContextProvider`, and any operations still finishing. Until then, opening the same `db_path` again fails:
-
-```text
-RuntimeError: the database at 'my_db.db' is already open in this process; close that Environment with Environment.close(), or drop it along with every App, AppConfig and ContextProvider bound to it (and let in-flight operations finish), before opening it again
-```
+An environment holds its database open, and LMDB allows one environment per `db_path` per process. An explicit environment's store is released when the last reference to it is gone: the environment itself, the Apps and `AppConfig`s bound to it, its `ContextProvider`, and any operations still finishing. Until then, opening the same `db_path` again fails with a `RuntimeError` that says the database "is already open in this process".
 
 Call `env.close()` once you're done with it to release the database without waiting for those references:
 

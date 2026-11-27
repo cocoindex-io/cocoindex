@@ -26,7 +26,7 @@ from cocoindex._internal.environment import (
     default_env_lazy,
     get_registered_environment_infos,
 )
-from cocoindex._internal.setting import get_default_db_path
+from cocoindex._internal.setting import Settings, get_default_db_path
 from cocoindex.inspect import (
     iter_stable_paths,
     iter_stable_paths_by_name,
@@ -232,13 +232,50 @@ def _parse_app_target(specifier: str) -> AppSpecifier:
     return AppSpecifier(module_ref=module_ref, app_name=app_name, env_name=env_name)
 
 
-def _get_persisted_app_names(env: Environment) -> set[str]:
-    """Get the set of app names persisted in the given environment's database."""
+def _database_error(where: str, e: Exception) -> click.ClickException:
+    """The error every command reports when it can't open or read a database."""
+    return click.ClickException(f"Failed to read the database at {where}: {e}")
+
+
+def _open_database(db_path: pathlib.Path) -> Environment:
+    """Open the database at `db_path` (`--db`), which must exist."""
+    if not db_path.exists():
+        raise click.ClickException(f"Database path does not exist: {db_path}")
     try:
-        names = _core.list_app_names(env._core_env)
-        return set(names) if names else set()
-    except Exception:
-        return set()
+        return Environment(
+            Settings(db_path=db_path), event_loop=asyncio.get_running_loop()
+        )
+    except (RuntimeError, ValueError) as e:
+        raise _database_error(str(db_path), e) from e
+
+
+def _get_persisted_app_names(env: Environment) -> set[str]:
+    """Get the set of app names persisted in the given environment's database.
+
+    An open environment always has its database (opening one creates it), so
+    a failure here is a real database error: it is reported, not read as "no
+    apps"."""
+    try:
+        return set(_core.list_app_names(env._core_env))
+    except (RuntimeError, ValueError) as e:
+        raise _database_error(_format_db_path(env), e) from e
+
+
+def _require_persisted_app(env: Environment, app_name: str) -> None:
+    """Fail unless the environment's database has persisted state for `app_name`:
+    `show --db … --app-name …` of an app it lacks (a typo, the wrong database)
+    is an error, not an empty listing."""
+    names = sorted(_get_persisted_app_names(env))
+    if app_name in names:
+        return
+    where = f"the database at {_format_db_path(env)}"
+    if not names:
+        raise click.ClickException(
+            f"No app named '{app_name}' in {where}; it has no apps."
+        )
+    raise click.ClickException(
+        f"No app named '{app_name}' in {where}. Apps in it: {', '.join(names)}"
+    )
 
 
 def _format_db_path(env: Environment) -> str:
@@ -323,7 +360,7 @@ async def _ls_from_module_async(module_ref: str) -> None:
     try:
         load_user_app(module_ref)
     except UserAppLoaderError as e:
-        raise RuntimeError(f"Failed to load module '{module_ref}'") from e
+        raise click.ClickException(str(e)) from e
 
     try:
         env_infos = get_registered_environment_infos()
@@ -381,20 +418,8 @@ async def _ls_from_module_async(module_ref: str) -> None:
 
 async def _ls_from_database_async(db_path: str) -> None:
     """List all persisted apps from a specific database. Passes the running loop explicitly so the CLI never starts the background loop."""
-    db_path_obj = pathlib.Path(db_path)
-    if not db_path_obj.exists():
-        raise click.ClickException(f"Database path does not exist: {db_path}")
-
-    try:
-        from cocoindex._internal.setting import Settings
-
-        env = Environment(
-            Settings(db_path=db_path_obj),
-            event_loop=asyncio.get_running_loop(),
-        )
-        persisted_names = _get_persisted_app_names(env)
-    except Exception as e:
-        raise click.ClickException(f"Failed to open database: {e}") from e
+    env = _open_database(pathlib.Path(db_path))
+    persisted_names = _get_persisted_app_names(env)
 
     if not persisted_names:
         click.echo("No persisted apps found in the database.")
@@ -420,7 +445,7 @@ def _load_app(app_target: str) -> App[Any, Any]:
     try:
         load_user_app(spec.module_ref)
     except UserAppLoaderError as e:
-        raise RuntimeError(f"Failed to load module '{spec.module_ref}'") from e
+        raise click.ClickException(str(e)) from e
 
     # Get target environments (filter by env_name if specified)
     env_infos = get_registered_environment_infos()
@@ -921,16 +946,8 @@ async def _show_from_database(
     parents: bool = False,
     fingerprints: bool = False,
 ) -> None:
-    db_path_obj = pathlib.Path(db_path)
-    if not db_path_obj.exists():
-        raise click.ClickException(f"Database path does not exist: {db_path}")
-
-    from cocoindex._internal.setting import Settings
-
-    env = Environment(
-        Settings(db_path=db_path_obj),
-        event_loop=asyncio.get_running_loop(),
-    )
+    env = _open_database(pathlib.Path(db_path))
+    _require_persisted_app(env, app_name)
 
     if stable_path is not None:
         path_obj = _parse_stable_path(stable_path)
@@ -979,16 +996,8 @@ async def _show_target_states_from_database(
     tree: bool = False,
     fingerprints: bool = False,
 ) -> None:
-    db_path_obj = pathlib.Path(db_path)
-    if not db_path_obj.exists():
-        raise click.ClickException(f"Database path does not exist: {db_path}")
-
-    from cocoindex._internal.setting import Settings
-
-    env = Environment(
-        Settings(db_path=db_path_obj),
-        event_loop=asyncio.get_running_loop(),
-    )
+    env = _open_database(pathlib.Path(db_path))
+    _require_persisted_app(env, app_name)
     await _print_target_states(
         iter_target_states_by_name(env, app_name), fingerprints, tree
     )
