@@ -1,0 +1,58 @@
+# docs
+https://docs.python.org/3/library/asyncio.html
+https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/ETag
+https://docs.astral.sh/uv/
+https://www.postgresql.org/docs/current/mvcc-intro.html
+https://kubernetes.io/docs/concepts/overview/
+https://react.dev/learn
+https://docs.rs/tokio/latest/tokio/
+https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool
+https://platform.openai.com/docs/guides/tools-web-search
+https://www.rfc-editor.org/rfc/rfc9111.html
+https://docs.github.com/en/rest
+# blogs
+https://simonwillison.net/
+https://www.joelonsoftware.com/2000/08/09/the-joel-test-12-steps-to-better-code/
+https://martinfowler.com/articles/microservices.html
+https://blog.cloudflare.com/
+https://engineering.fb.com/
+https://cocoindex.io/blogs/
+https://huggingface.co/blog
+https://openai.com/index/introducing-deep-research/
+https://www.lesswrong.com/
+https://medium.com/@trafilatura
+https://trafilatura.readthedocs.io/en/latest/evaluation.html
+# news
+https://www.bbc.com/news
+https://www.reuters.com/technology/
+https://techcrunch.com/
+https://www.theverge.com/
+https://arstechnica.com/
+https://news.ycombinator.com/
+https://apnews.com/
+https://www.theguardian.com/technology
+https://www.nytimes.com/section/technology
+# wikipedia
+https://en.wikipedia.org/wiki/HTTP_ETag
+https://en.wikipedia.org/wiki/Web_scraping
+https://en.wikipedia.org/wiki/Incremental_computing
+https://en.wikipedia.org/wiki/Large_language_model
+# github
+https://github.com/cocoindex-io/cocoindex
+https://github.com/adbar/trafilatura
+https://github.com/mendableai/firecrawl
+https://github.com/assafelovic/gpt-researcher
+https://raw.githubusercontent.com/cocoindex-io/cocoindex/main/README.md
+# pdfs
+https://arxiv.org/pdf/2402.14207
+https://arxiv.org/pdf/1706.03762
+https://www.rfc-editor.org/rfc/rfc9111.pdf
+https://www.w3.org/TR/2008/REC-xml-20081126/REC-xml-20081126.pdf
+# papers, forums, vendors
+https://arxiv.org/abs/2402.14207
+https://pypi.org/project/trafilatura/
+https://stackoverflow.com/questions/11177548/what-is-the-difference-between-etag-and-last-modified
+https://jina.ai/reader/
+https://www.firecrawl.dev/pricing
+https://tavily.com/
+https://exa.ai/

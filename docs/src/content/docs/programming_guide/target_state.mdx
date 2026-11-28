@@ -71,7 +71,7 @@ Connectors provide convenience methods that mount the container and return a rea
 
 For simple cases where each processing component writes a single file, you can declare the file directly:
 
-{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/fs_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -272,7 +272,7 @@ The state database records every tracked target state with the component that ow
 
 From code, `cocoindex::inspect` reads the same records from an `App`, or from an `Environment` and an app name with the `_by_name` functions:
 
-{/* Rust: rust/sdk/SHOWCASE.md "Inspect stored state", verified against rust/sdk/cocoindex/tests/inspect.rs */}
+{/* Rust: rust/sdk/SHOWCASE.md "Inspect stored state", verified against rust/sdk/cocoindex/tests/it/inspect.rs */}
 ```rust
 use cocoindex::inspect;
 use futures::TryStreamExt;
@@ -301,4 +301,4 @@ For cases where connector-specific APIs don't cover your needs, CocoIndex provid
 - `declare_target_state()` — declare a leaf target state
 - `declare_target_state_with_child()` — declare a target state that provides child target states
 
-These are exported from `cocoindex` and used internally by connectors.<Lang only="rust"> A leaf declaration reads `declare_target_state(ctx, provider.target_state(key, value))`. `register_root_target_states_provider(ctx, name, handler)` registers a `TargetHandler` and returns the provider; the tests in `rust/sdk/cocoindex/tests/mount.rs` show a minimal handler.</Lang> For defining custom targets, see [Custom Target States Connector](../advanced_topics/custom_target_connector).
+These are exported from `cocoindex` and used internally by connectors.<Lang only="rust"> A leaf declaration reads `declare_target_state(ctx, provider.target_state(key, value))`. `register_root_target_states_provider(ctx, name, handler)` registers a `TargetHandler` and returns the provider; the tests in `rust/sdk/cocoindex/tests/it/mount.rs` show a minimal handler.</Lang> For defining custom targets, see [Custom Target States Connector](../advanced_topics/custom_target_connector).

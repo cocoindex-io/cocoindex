@@ -429,9 +429,13 @@ def _data_deps_decode_failed() -> DataDepValidation:
 
 
 def _probe_data_deps_sync(
-    guard: core.FnCallMemoGuard, *, where: str
+    guard: core.FnCallMemoGuard,
+    processor_ctx: core.ComponentProcessorContext,
+    *,
+    where: str,
 ) -> DataDepValidation | None:
-    """Decode and validate a hit entry's stored data dependencies.
+    """Decode and validate a hit entry's stored data dependencies, against the
+    verdicts of ``processor_ctx``'s operation.
 
     ``None`` when the entry recorded none. A decode failure (kind gone, stored
     key or state no longer deserializes) is a logged miss and calls no
@@ -444,12 +448,17 @@ def _probe_data_deps_sync(
     if decoded is None:
         return _data_deps_decode_failed()
     return validate_data_deps_sync(
-        decoded, running_loop_error_msg=_SYNC_RUNNING_LOOP_ERROR_MSG
+        decoded,
+        processor_ctx.data_dep_verdicts,
+        running_loop_error_msg=_SYNC_RUNNING_LOOP_ERROR_MSG,
     )
 
 
 async def _probe_data_deps_async(
-    guard: core.FnCallMemoGuard, *, where: str
+    guard: core.FnCallMemoGuard,
+    processor_ctx: core.ComponentProcessorContext,
+    *,
+    where: str,
 ) -> DataDepValidation | None:
     """Async variant of :func:`_probe_data_deps_sync`."""
     stored = guard.cached_data_deps
@@ -458,23 +467,25 @@ async def _probe_data_deps_async(
     decoded = decode_stored_data_deps(stored, where=where)
     if decoded is None:
         return _data_deps_decode_failed()
-    return await validate_data_deps_async(decoded)
+    return await validate_data_deps_async(decoded, processor_ctx.data_dep_verdicts)
 
 
 async def _validate_component_data_deps(
     validated: StateMethodsResult,
     data_deps_stored: list[StoredDataDep] | None,
+    comp_ctx: core.ComponentProcessorContext,
     *,
     where: str,
 ) -> StateMethodsResult:
     """Fold a component entry's stored data dependencies into the state
-    validation result: decode phase, then validators (see ``data_dep``)."""
+    validation result: decode phase, then validators, against the verdicts of
+    ``comp_ctx``'s operation (see ``data_dep``)."""
     if not data_deps_stored:
         return validated
     decoded = decode_stored_data_deps(data_deps_stored, where=where)
     if decoded is None:
         return validated._replace(can_reuse=False)
-    dd = await validate_data_deps_async(decoded)
+    dd = await validate_data_deps_async(decoded, comp_ctx.data_dep_verdicts)
     return validated._replace(
         can_reuse=validated.can_reuse and dd.can_reuse,
         states_changed=validated.states_changed or dd.states_changed,
@@ -564,6 +575,7 @@ def _make_component_state_handling(
                 return await _validate_component_data_deps(
                     validated,
                     data_deps_stored,
+                    comp_ctx,
                     where=f"component {path.to_string()}",
                 )
             # Cache miss: look up the eager initial states for the context fps
@@ -1074,7 +1086,9 @@ class SyncFunction(Function[P, R_co]):
                         # validated only when the states still allow a reuse.
                         data_deps = (
                             _probe_data_deps_sync(
-                                guard, where=_data_dep_where(self._fn)
+                                guard,
+                                parent_ctx._core_processor_ctx,
+                                where=_data_dep_where(self._fn),
                             )
                             if use_cache
                             else None
@@ -1623,7 +1637,9 @@ class AsyncFunction(Function[P, R_co]):
                     # validated only when the states still allow a reuse.
                     data_deps = (
                         await _probe_data_deps_async(
-                            guard, where=_data_dep_where(self._any_fn)
+                            guard,
+                            parent_ctx._core_processor_ctx,
+                            where=_data_dep_where(self._any_fn),
                         )
                         if use_cache
                         else None
@@ -2245,7 +2261,8 @@ class _FunctionDecorator:
                 string or model identifier. The value is canonicalized via the
                 memoization-key pipeline (see
                 :doc:`/advanced_topics/memoization_keys` for the full contract,
-                including ``__coco_memo_key__()`` and registered key functions)
+                including ``__coco_memo_key__()``, registered memo key functions,
+                stable type IDs, and built-in handling)
                 and folded into the function's logic fingerprint; when the
                 canonical form changes, memoized results are invalidated and
                 the change propagates to callers according to ``logic_tracking``

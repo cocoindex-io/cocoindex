@@ -6,6 +6,7 @@ use crate::{
     stable_path::{PyStableKey, PyStablePath},
 };
 
+use cocoindex_core::engine::component::RunCompleteness;
 use cocoindex_core::engine::live_component::LiveComponentController;
 use cocoindex_py_utils::from_py_future;
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -16,6 +17,10 @@ pub struct PyLiveComponentController(pub Arc<LiveComponentController<PyEnginePro
 
 #[pymethods]
 impl PyLiveComponentController {
+    pub fn skips_subpath(&self, stable_path: PyStablePath) -> bool {
+        self.0.skips_subpath(&stable_path.0)
+    }
+
     pub fn update_full_async<'py>(
         &self,
         py: Python<'py>,
@@ -26,10 +31,11 @@ impl PyLiveComponentController {
         let host_runtime_ctx = ctrl.component().app_ctx().env().host_runtime_ctx().clone();
         let on_error = build_on_error(host_runtime_ctx, handler_callback);
         future_into_py(py, async move {
-            ctrl.update_full(processor, on_error)
+            let completeness = ctrl
+                .update_full(processor, on_error)
                 .await
                 .into_py_result()?;
-            Ok(())
+            Ok(completeness == RunCompleteness::Complete)
         })
     }
 
@@ -96,6 +102,7 @@ impl PyLiveComponentController {
     /// branch). Returns `(inner_controller, readiness_handle)` — caller
     /// constructs a Python `LiveComponentOperator` for the inner instance,
     /// then calls `inner_controller.start(instance.process_live(operator))`.
+    /// Returns `None` when the update's selector leaves the child out.
     pub fn mount_inner_live_async<'py>(
         &self,
         py: Python<'py>,
@@ -107,9 +114,11 @@ impl PyLiveComponentController {
                 .mount_inner_live(stable_path.0)
                 .await
                 .into_py_result()?;
-            let py_controller = PyLiveComponentController(Arc::new(result.controller));
-            let py_handle = PyComponentMountHandle::from_handle(result.readiness_handle);
-            Ok((py_controller, py_handle))
+            Ok(result.map(|result| {
+                let py_controller = PyLiveComponentController(Arc::new(result.controller));
+                let py_handle = PyComponentMountHandle::from_handle(result.readiness_handle);
+                (py_controller, py_handle)
+            }))
         })
     }
 
@@ -173,9 +182,13 @@ pub fn mount_live_async<'py>(
 
     // Async phase: no borrows needed, all data is owned.
     future_into_py(py, async move {
+        // `None`: the update's selector leaves the component out.
+        let Some(pending) = pending else {
+            return Ok(None);
+        };
         let result = pending.complete().await.into_py_result()?;
         let py_controller = PyLiveComponentController(Arc::new(result.controller));
         let py_handle = PyComponentMountHandle::from_handle(result.readiness_handle);
-        Ok((py_controller, py_handle))
+        Ok(Some((py_controller, py_handle)))
     })
 }

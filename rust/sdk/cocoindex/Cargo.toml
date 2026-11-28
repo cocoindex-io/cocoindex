@@ -353,28 +353,13 @@ required-features = ["bench-support"]
 name = "entity_resolution"
 harness = false
 
-# These tests build their environment with `cocoindex::testing`, so they need
-# the `testing` feature; without it Cargo skips them instead of failing to
-# compile (`cargo check --all-targets` with no features). A self
-# dev-dependency would enable the feature too, but it links the crate twice
-# into its own unit tests and breaks the `linkme` registry (duplicate
+# `deadline` builds its environment with `cocoindex::testing`, so it needs the
+# `testing` feature; without it Cargo skips the test instead of failing to
+# compile (`cargo check --all-targets` with no features). The modules of
+# `tests/it` that need the feature say so themselves, with `#![cfg(...)]`. A
+# self dev-dependency would enable the feature too, but it links the crate
+# twice into its own unit tests and breaks the `linkme` registry (duplicate
 # `COCO_FN_LOGIC`).
 [[test]]
-name = "batching_runner"
-required-features = ["testing"]
-
-[[test]]
-name = "batching_edges"
-required-features = ["testing"]
-
-[[test]]
 name = "deadline"
-required-features = ["testing"]
-
-[[test]]
-name = "detailed_stats"
-required-features = ["testing"]
-
-[[test]]
-name = "mount"
 required-features = ["testing"]

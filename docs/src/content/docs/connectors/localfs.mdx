@@ -14,7 +14,7 @@ import LangTabs from '../../../components/LangTabs.astro';
 
 The <Lang only="python">`localfs`</Lang><Lang only="rust">local filesystem</Lang> connector provides utilities for reading files from and writing files to the local file system.
 
-{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/fs_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -52,7 +52,7 @@ Declare a `ContextKey<PathBuf>` with `context_key!`; its name is the stable iden
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/fs_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -338,6 +338,8 @@ The key is `FileEntry::key()`: the relative path with forward slashes.
 </Fragment>
 </LangTabs>
 
+<Lang only="python">In an update that runs only some components (see [Updating part of an app](../programming_guide/app#updating-part-of-an-app)), `mount_each()` reads only the selected keys from `items()`: it checks those files instead of walking the directory, and applies the same `recursive` and `path_matcher` rules as the walk.</Lang>
+
 ### Filtering files
 
 Use `PatternFilePathMatcher` to filter which files and directories are included:
@@ -573,7 +575,7 @@ pub struct FileOptions {
 
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/fs_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -726,7 +728,7 @@ target.declare_file_with_options(
 
 Declares a subdirectory target within the directory.
 
-{/* Rust: rust/sdk/cocoindex/tests/fs_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/fs_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 

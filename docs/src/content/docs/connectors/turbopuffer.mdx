@@ -36,7 +36,7 @@ use cocoindex::connectors::turbopuffer::{
 This connector requires additional dependencies. Install with:
 
 ```bash
-pip install cocoindex[turbopuffer]
+pip install "cocoindex[turbopuffer]"
 ```
 
 :::
@@ -109,7 +109,7 @@ Create a <Lang only="python">`ContextKey[AsyncTurbopuffer]`</Lang><Lang only="ru
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed namespaces. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
 
-{/* Rust: examples/rust/text_embedding_turbopuffer/src/main.rs, rust/sdk/cocoindex/tests/turbopuffer_target.rs */}
+{/* Rust: examples/rust/text_embedding_turbopuffer/src/main.rs, rust/sdk/cocoindex/tests/it/turbopuffer_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -421,7 +421,7 @@ The `schema` field is an explicit `VectorSchema`. Its dtype controls turbopuffer
 
 For namespaces with a single unnamed vector:
 
-{/* Rust: rust/sdk/cocoindex/tests/turbopuffer_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/turbopuffer_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -713,7 +713,7 @@ Reserved attribute names depend on the schema; putting any reserved name in <Lan
 
 The connector focuses on writing rows. For vector search, use the turbopuffer client directly<Lang only="rust"> or the connector's search helpers</Lang>:
 
-{/* Rust: rust/sdk/cocoindex/tests/turbopuffer_target.rs, examples/rust/text_embedding_turbopuffer/src/main.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/turbopuffer_target.rs, examples/rust/text_embedding_turbopuffer/src/main.rs */}
 <LangTabs>
 <Fragment slot="python">
 

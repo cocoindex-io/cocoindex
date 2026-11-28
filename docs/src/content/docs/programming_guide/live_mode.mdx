@@ -24,7 +24,7 @@ Two things are needed for live mode to work: the app must be **enabled** to stay
 
 <Lang only="python">Pass `live=True` when updating the app:</Lang><Lang only="rust">Set `live: true` in the `UpdateOptions` of the update:</Lang>
 
-{/* Rust: examples/rust/kafka_consume/src/main.rs, rust/sdk/cocoindex/tests/fs_live.rs */}
+{/* Rust: examples/rust/kafka_consume/src/main.rs, rust/sdk/cocoindex/tests/it/fs_live.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -81,6 +81,8 @@ cocoindex update -L
 </LangTabs>
 
 <Lang only="python">
+
+Ctrl+C stops a live update run by `cocoindex update -L` or `app.update_blocking(live=True)`; the latter then raises `KeyboardInterrupt`.
 
 The `live` flag propagates top-down through the component tree — both `coco.mount()` and `coco.use_mount()` inherit `live` from the parent, so children are live when the app is live.
 
@@ -167,7 +169,7 @@ When the source isn't change-aware but you still want fresh data (say, polling a
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/live_component.rs (`ctx.auto_refresh`), verified against rust/sdk/cocoindex/src/ctx.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/live_component.rs (`ctx.auto_refresh`), verified against rust/sdk/cocoindex/src/ctx.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -231,7 +233,7 @@ When one part of your pipeline produces keyed data and another consumes it (with
 
 `LiveMap<K, V>` takes any `LiveMapKey` as `K` (`String`, `i64`, `u64` or a `StableKey`):
 
-{/* Rust: rust/sdk/SHOWCASE.md "In-memory `LiveMap`", verified against rust/sdk/cocoindex/tests/live_map.rs */}
+{/* Rust: rust/sdk/SHOWCASE.md "In-memory `LiveMap`", verified against rust/sdk/cocoindex/tests/it/live_map.rs */}
 ```rust
 let lm: LiveMap<i64, String> = LiveMap::create(&ctx).await?;
 lm.declare_entry(&ctx, 7, "seven".to_string())?;           // producer side

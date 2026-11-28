@@ -13,6 +13,7 @@ pub mod protocol;
 use std::future::Future;
 use std::io::Write;
 use std::process::ExitCode;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -21,6 +22,7 @@ use cocoindex_core::engine::stats::TERMINATED_VERSION;
 use crate::app::{Environment, Progress, UpdateOptions};
 use crate::error::{Error, Result};
 use crate::registry::{self, AppEntry};
+use crate::{ComponentSelector, StablePath};
 use protocol::{
     AppInfo, ConfirmAction, Event, MARKER, Outcome, PROTOCOL_VERSION, PreviewKind, RunStatsWire,
     encode,
@@ -120,6 +122,8 @@ struct ChildArgs {
     full_reprocess: bool,
     preview: bool,
     reset: bool,
+    /// The paths `--select` names: run only these components and those below.
+    select: Vec<StablePath>,
     db_only: bool,
     /// Ask the CLI (`confirm` record, answer on stdin) before destroying state.
     confirm: bool,
@@ -143,6 +147,7 @@ impl ChildArgs {
             full_reprocess: false,
             preview: false,
             reset: false,
+            select: Vec::new(),
             db_only: false,
             confirm: false,
         };
@@ -162,6 +167,13 @@ impl ChildArgs {
                         .ok_or_else(|| "--app needs a value".to_string())?;
                     parsed.app = Some(value.clone());
                 }
+                "--select" => {
+                    let value = iter
+                        .next()
+                        .ok_or_else(|| "--select needs a value".to_string())?;
+                    let path = StablePath::from_str(value).map_err(|err| err.to_string())?;
+                    parsed.select.push(path);
+                }
                 "--live" => parsed.live = true,
                 "--full-reprocess" => parsed.full_reprocess = true,
                 "--preview" => parsed.preview = true,
@@ -173,6 +185,9 @@ impl ChildArgs {
         }
         if parsed.preview && (parsed.reset || parsed.live) {
             return Err("--preview cannot be combined with --reset or --live".to_string());
+        }
+        if !parsed.select.is_empty() && parsed.reset {
+            return Err("--select and --reset cannot be used together.".to_string());
         }
         let flag_allowed = |flag: &str, ok: bool| {
             if ok {
@@ -186,6 +201,7 @@ impl ChildArgs {
         flag_allowed("--full-reprocess", !parsed.full_reprocess || is_update)?;
         flag_allowed("--preview", !parsed.preview || is_update)?;
         flag_allowed("--reset", !parsed.reset || is_update)?;
+        flag_allowed("--select", parsed.select.is_empty() || is_update)?;
         flag_allowed("--db-only", !parsed.db_only || verb == Verb::Drop)?;
         flag_allowed("--app", parsed.app.is_none() || verb != Verb::Ls)?;
         flag_allowed(
@@ -438,6 +454,8 @@ async fn update_app(
         full_reprocess: args.full_reprocess,
         live: args.live,
         preview: args.preview,
+        component_selector: (!args.select.is_empty())
+            .then(|| ComponentSelector::new(args.select.iter().cloned())),
         ..UpdateOptions::default()
     };
     let mut handle = app.start_update_with_options(options, entry.run)?;
@@ -556,6 +574,38 @@ mod tests {
         assert_eq!(parsed.app.as_deref(), Some("A"));
         assert!(parsed.live && parsed.full_reprocess);
         assert!(!parsed.preview && !parsed.reset && !parsed.db_only);
+    }
+
+    #[test]
+    fn parses_repeated_select_paths() {
+        let parsed = ChildArgs::parse(&args(&[
+            "update",
+            "--select",
+            r#"/@process/"docs/a.md""#,
+            "--select",
+            r#"/"each"/3"#,
+            "--preview",
+        ]))
+        .unwrap();
+        let shown: Vec<String> = parsed.select.iter().map(ToString::to_string).collect();
+        assert_eq!(shown, [r#"/@process/"docs/a.md""#, r#"/"each"/3"#]);
+        assert!(parsed.preview);
+    }
+
+    #[test]
+    fn rejects_bad_or_misplaced_select() {
+        let err = ChildArgs::parse(&args(&["update", "--select", "process"])).unwrap_err();
+        assert!(err.contains("cannot parse component path"), "{err}");
+        let err = ChildArgs::parse(&args(&["update", "--select"])).unwrap_err();
+        assert!(err.contains("--select needs a value"), "{err}");
+        let err =
+            ChildArgs::parse(&args(&["update", "--select", r#"/"a""#, "--reset"])).unwrap_err();
+        assert!(
+            err.contains("--select and --reset cannot be used together"),
+            "{err}"
+        );
+        let err = ChildArgs::parse(&args(&["drop", "--select", r#"/"a""#])).unwrap_err();
+        assert!(err.contains("not valid for `drop`"));
     }
 
     #[test]

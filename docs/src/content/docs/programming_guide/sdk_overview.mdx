@@ -228,7 +228,7 @@ app.update_blocking(report_to_stdout=True)
 
 The Rust API is async and runs on Tokio. There are no sync variants of the orchestration APIs: `ctx.mount`, `ctx.scope`, `ctx.mount_each`, `ctx.map` and the mount macros are all `async`, and a `#[cocoindex::function]` body is an `async fn`. The entry points have `_blocking` forms for code that owns no runtime: `App::open_blocking`, `app.update_blocking`, `app.drop_state_blocking`, `EnvironmentBuilder::build_blocking`. They build a runtime of their own and panic inside one, so use the async forms inside `#[tokio::main]` or `#[cocoindex::main]`:
 
-{/* Rust: rust/sdk/SHOWCASE.md "Open and run an app" (verified against rust/sdk/cocoindex/src/app.rs), rust/sdk/cocoindex/tests/pipeline.rs */}
+{/* Rust: rust/sdk/SHOWCASE.md "Open and run an app" (verified against rust/sdk/cocoindex/src/app.rs), rust/sdk/cocoindex/tests/it/pipeline.rs */}
 ```rust
 use cocoindex::prelude::*;
 

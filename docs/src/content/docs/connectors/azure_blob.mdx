@@ -35,7 +35,7 @@ use cocoindex::connectors::azure_blob::{
 This connector uses the Azure async SDK. Install with:
 
 ```bash
-pip install cocoindex[azure_blob]
+pip install "cocoindex[azure_blob]"
 ```
 :::
 
@@ -125,7 +125,7 @@ let client = ContainerClient::new(
 
 To use a SAS token:
 
-{/* Rust: rust/sdk/cocoindex/tests/azure_blob_source.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/azure_blob_source.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -246,7 +246,7 @@ pub async fn AzureBlobWalker::items(&self) -> Result<Vec<(String, AzureBlobFile)
 
 `list_blobs()` <Lang only="python">yields</Lang><Lang only="rust">lists</Lang> `AzureBlobFile` objects implementing [`FileLike`](../common_resources/data_types#filelike):
 
-{/* Rust: rust/sdk/cocoindex/tests/azure_blob_source.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/azure_blob_source.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -359,7 +359,7 @@ let files = azure_blob::list_blobs(
 
 Use `max_file_size` to skip blobs above a size threshold:
 
-{/* Rust: rust/sdk/cocoindex/tests/azure_blob_source.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/azure_blob_source.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -420,7 +420,7 @@ pub async fn get_blob(client: &ContainerClient, blob_name: &str) -> Result<Azure
 
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/azure_blob_source.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/azure_blob_source.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -482,7 +482,7 @@ pub async fn read(
 
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/azure_blob_source.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/azure_blob_source.rs */}
 <LangTabs>
 <Fragment slot="python">
 

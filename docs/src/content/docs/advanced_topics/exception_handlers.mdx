@@ -29,6 +29,7 @@ For a quick overview of failure isolation and the two-phase model, see [What hap
 | `await LiveComponentOperator.update_full()` | reaches *ready state* of the full cycle | **No by default** — same shape as `handle.ready()` |
 | `await coco.use_mount(...)` | the inner component's *value* is produced | **Yes** — component success is on the critical path |
 | `await app.drop()` (and `cocoindex drop`) | GC succeeds at *every* level | **Yes**, at any depth — leaking target state would otherwise go silent |
+| `cocoindex update` | every component of the run has finished, failed or not | **Exit status, not an exception**: exits 1 only when a failure nobody handled happened — a handler that returns normally keeps the exit status at 0 |
 
 </Lang>
 
@@ -107,7 +108,7 @@ For details on how target handlers deal with multiple possible previous states a
 
 <Lang only="python">`app.update()`</Lang><Lang only="rust">`app.start_update(...)`</Lang> returns an `UpdateHandle` that exposes processing stats, including error counts:
 
-{/* Rust: rust/sdk/cocoindex/tests/detailed_stats.rs, rust/sdk/cocoindex/src/app.rs (UpdateHandle), src/stats.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/detailed_stats.rs, rust/sdk/cocoindex/src/app.rs (UpdateHandle), src/stats.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -190,7 +191,7 @@ Exception handlers only apply to background mounts. `ctx.scope` / `use_mount!` a
 
 Register a handler inside your <Lang only="python">`@coco.lifespan` function using `builder.set_exception_handler()`</Lang><Lang only="rust">`#[cocoindex::lifespan]` function using `builder.exception_handler(...)`</Lang>:
 
-{/* Rust: rust/sdk/cocoindex/tests/mount.rs (temp_app_with_handler), rust/sdk/cocoindex/src/app.rs (EnvironmentBuilder::exception_handler) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/mount.rs (temp_app_with_handler), rust/sdk/cocoindex/src/app.rs (EnvironmentBuilder::exception_handler) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -230,7 +231,7 @@ This replaces the default "log error" behavior for all background mounts in the 
 
 <Lang only="python">Use `coco.exception_handler()` as an async context manager to apply a handler to a specific dynamic scope:</Lang><Lang only="rust">Use `ctx.with_exception_handler(handler)` to get a `Ctx` whose background mounts go through the handler first:</Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/mount.rs (scoped_handler_applies_only_to_mounts_from_the_scoped_ctx) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/mount.rs (scoped_handler_applies_only_to_mounts_from_the_scoped_ctx) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -361,7 +362,7 @@ Handlers receive the same `Error` that a foreground call such as `ctx.scope(...)
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/mount.rs (handler_error_propagates_through_ready_with_its_type) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/mount.rs (handler_error_propagates_through_ready_with_its_type) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -465,7 +466,7 @@ If the innermost handler returns `Err`, the next outer handler is called with th
 
 This continues up the stack. If every handler <Lang only="python">raises, the last handler's exception</Lang><Lang only="rust">returns `Err`, the last handler's error</Lang> propagates through `handle.ready()` (see [How to opt into propagation](#how-to-opt-into-propagation)). If no handler is registered, CocoIndex falls back to the built-in behavior: logging the error at `ERROR` level, with no crash.
 
-{/* Rust: rust/sdk/cocoindex/tests/mount.rs (scoped handler then global handler with source == Handler) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/mount.rs (scoped handler then global handler with source == Handler) */}
 <LangTabs>
 <Fragment slot="python">
 

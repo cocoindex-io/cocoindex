@@ -40,7 +40,7 @@ use cocoindex::connectors::qdrant::{
 This connector requires additional dependencies. Install with:
 
 ```bash
-pip install cocoindex[qdrant]
+pip install "cocoindex[qdrant]"
 ```
 
 :::
@@ -112,7 +112,7 @@ impl QdrantConnection {
 
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/qdrant_target.rs, rust/sdk/cocoindex/src/connectors/qdrant.rs (from_client doctest) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/qdrant_target.rs, rust/sdk/cocoindex/src/connectors/qdrant.rs (from_client doctest) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -151,7 +151,7 @@ Create a <Lang only="python">`ContextKey[QdrantClient]`</Lang><Lang only="rust">
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed collections. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
 
-{/* Rust: examples/rust/text_embedding_qdrant/src/main.rs, rust/sdk/cocoindex/tests/qdrant_target.rs */}
+{/* Rust: examples/rust/text_embedding_qdrant/src/main.rs, rust/sdk/cocoindex/tests/it/qdrant_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -519,7 +519,7 @@ Sparse vectors use Qdrant's native sparse-vector storage and dot-product scoring
 
 For collections with a single unnamed vector:
 
-{/* Rust: rust/sdk/cocoindex/tests/qdrant_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/qdrant_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -698,7 +698,7 @@ Points put both vectors in the named-vector list. The sparse vector is a native 
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/qdrant_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/qdrant_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -1162,7 +1162,7 @@ let payload = json!({
 
 The connector focuses on writing points to Qdrant. For vector search, use the Qdrant client directly<Lang only="rust"> or the connector's search helpers</Lang>:
 
-{/* Rust: examples/rust/text_embedding_qdrant/src/main.rs, rust/sdk/cocoindex/tests/qdrant_target.rs */}
+{/* Rust: examples/rust/text_embedding_qdrant/src/main.rs, rust/sdk/cocoindex/tests/it/qdrant_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 

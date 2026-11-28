@@ -395,6 +395,13 @@ fn usage_errors() {
     assert_eq!(both.status.code(), Some(2));
     assert!(stderr(&both).contains("Error: --preview and --reset cannot be used together."));
 
+    let select_reset = sb.cli(&["update", "--select", "/1", "--reset", FIXTURE]);
+    assert_eq!(select_reset.status.code(), Some(2));
+    assert!(stderr(&select_reset).contains("Error: --select and --reset cannot be used together."));
+    let bad_select = sb.cli(&["update", "--select", "process", FIXTURE]);
+    assert_eq!(bad_select.status.code(), Some(2));
+    assert!(stderr(&bad_select).contains("cannot parse component path"));
+
     let missing = sb.cli(&["update", "/definitely/not/here"]);
     assert_eq!(missing.status.code(), Some(2));
     assert!(stderr(&missing).contains("does not exist"));

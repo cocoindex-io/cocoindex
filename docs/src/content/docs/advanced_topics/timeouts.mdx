@@ -216,7 +216,7 @@ If the deadline passes while `parse_file` is inside an `.await`, CocoIndex does 
 
 Use <Lang only="python">`mount()` or `mount_each()`</Lang><Lang only="rust">`ctx.mount(..)` or `ctx.mount_each(..)`</Lang> when the child is independent background work. The parent's timeout can stop the parent from waiting forever, but it does not become the child's timeout:
 
-{/* Rust: rust/sdk/cocoindex/src/ctx.rs (Ctx::mount, ComponentMountHandle::ready), rust/sdk/cocoindex/tests/mount.rs */}
+{/* Rust: rust/sdk/cocoindex/src/ctx.rs (Ctx::mount, ComponentMountHandle::ready), rust/sdk/cocoindex/tests/it/mount.rs */}
 <LangTabs>
 <Fragment slot="python">
 

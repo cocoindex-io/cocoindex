@@ -134,7 +134,7 @@ let results = ctx.map(tasks, |task| async move {
 
 A batched function with <Lang only="python">`max_batch_size=N`</Lang><Lang only="rust">`max_batch_size = N`</Lang> receives up to `N` items at once; concurrent single-item calls are grouped into physical batches of at most that size. See [Batching](../programming_guide/function#batching) for the <Lang only="python">decorator options</Lang><Lang only="rust">attribute, and `Error::retry_with_smaller_batch` for a batch the backend rejects</Lang>.
 
-{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (function macro docs), rust/sdk/cocoindex/tests/batching_runner.rs */}
+{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (function macro docs), rust/sdk/cocoindex/tests/it/batching_runner.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -164,7 +164,7 @@ let embedding: Vec<f32> = embed(ctx, text).await?;
 
 The pool size is detected from `COCOINDEX_NUM_GPUS`, then `CUDA_VISIBLE_DEVICES`, then `nvidia-smi`, and falls back to one. <Lang only="python">`coco.configure_gpu_pool(n)`</Lang><Lang only="rust">`configure_gpu_pool(n)`</Lang> overrides it; call it before any GPU function runs.
 
-{/* Rust: rust/sdk/cocoindex/tests/batching_runner.rs (whole_gpu, half_gpu, gpu_batch), rust/sdk/cocoindex/src/runner.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/batching_runner.rs (whole_gpu, half_gpu, gpu_batch), rust/sdk/cocoindex/src/runner.rs */}
 <LangTabs>
 <Fragment slot="python">
 

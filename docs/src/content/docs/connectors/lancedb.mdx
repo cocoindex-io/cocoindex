@@ -38,7 +38,7 @@ use cocoindex::connectors::lancedb::{self, LanceDatabase, TableSchema};
 This connector requires additional dependencies. Install with:
 
 ```bash
-pip install cocoindex[lancedb]
+pip install "cocoindex[lancedb]"
 ```
 
 :::
@@ -124,7 +124,7 @@ pub struct ConnectOptions {
 
 **Example:**
 
-{/* Rust: examples/rust/code_embedding_lancedb/src/main.rs; rust/sdk/cocoindex/tests/lancedb_target.rs (lancedb_connect_with_options) */}
+{/* Rust: examples/rust/code_embedding_lancedb/src/main.rs; rust/sdk/cocoindex/tests/it/lancedb_target.rs (lancedb_connect_with_options) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -315,7 +315,7 @@ def table_target(
 
 A `LanceTableTarget` is `Clone` and `Serialize`. It can be an argument of `mount!`, `use_mount!`, `mount_each!` or a memoized function: it fingerprints by its stable key, the context key name and the table name. The schema and `managed_by` are not part of that identity.
 
-{/* Rust: rust/sdk/cocoindex/tests/lancedb_target.rs (lancedb_table_target_is_a_mount_argument_keyed_by_its_table) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/lancedb_target.rs (lancedb_table_target_is_a_mount_argument_keyed_by_its_table) */}
 
 ```rust
 #[cocoindex::function]
@@ -570,7 +570,7 @@ The default FTS index name is `<column>_fts_idx`, not the column name.
 
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/lancedb_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/lancedb_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -895,7 +895,7 @@ impl ColumnDef {
 
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/lancedb_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/lancedb_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 

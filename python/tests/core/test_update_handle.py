@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import pytest
 
@@ -147,3 +148,40 @@ async def test_show_progress_with_watch() -> None:
 
     assert len(snapshots) >= 1
     assert snapshots[-1].status == coco.UpdateStatus.READY
+
+
+@pytest.mark.asyncio
+async def test_show_progress_runs_after_a_cancelled_one() -> None:
+    """A progress display dropped before it ends, its awaiter cancelled, lets
+    the next one run."""
+    running = threading.Event()
+
+    async def _main_until_cancelled() -> None:
+        running.set()
+        await asyncio.Event().wait()
+
+    blocked = coco.App(
+        coco.AppConfig(name="test_show_progress_cancelled", environment=coco_env),
+        _main_until_cancelled,
+    )
+    showing = asyncio.create_task(coco.show_progress(blocked.update()))
+    for _ in range(1000):
+        if running.is_set():
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("the update did not start")
+    showing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await showing
+
+    try:
+        app = coco.App(
+            coco.AppConfig(name="test_show_progress_next", environment=coco_env),
+            _trivial_fn,
+            "next",
+        )
+        assert await coco.show_progress(app.update()) == "next"
+    finally:
+        # Stop the update whose display was cancelled: it runs on without it.
+        await blocked.drop()

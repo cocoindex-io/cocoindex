@@ -113,7 +113,7 @@ CocoIndex detects three kinds of changes:
 
 With <Lang only="python">`memo=True`</Lang><Lang only="rust">`memo`</Lang>, the function's result is cached. On subsequent calls, if no logic, input, or read context values have changed, the cached result is reused without executing the function body — it carries over [target states](./target_state) declared during the function's previous invocation and returns its previous return value.
 
-{/* Rust: rust/sdk/SHOWCASE.md "Define functions", verified against rust/sdk/cocoindex/tests/memo_deps.rs */}
+{/* Rust: rust/sdk/SHOWCASE.md "Define functions", verified against rust/sdk/cocoindex/tests/it/memo_deps.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -170,9 +170,11 @@ A memoized function:
 
 When a memoized function's cache hits, its **body does not run** — and neither do any nested <Lang only="python">`@coco.fn`</Lang><Lang only="rust">`#[cocoindex::function]`</Lang> calls inside it. The cached output is replayed directly: the previous return value is returned, and any target states the function declared on its previous run are carried over.
 
-{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (`read_version`, `outer_read_version`) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/pipeline.rs (`read_version`, `outer_read_version`) */}
 <LangTabs>
 <Fragment slot="python">
+
+The fragment below omits the enclosing `App` and processing component. Treat the calls as invocations of the same processing component across successive application updates.
 
 ```python
 @coco.fn(memo=True)
@@ -185,11 +187,11 @@ async def outer(text: str) -> str:
     print("outer ran")
     return await inner(text) + "!"
 
-# First call: both print, both bodies execute
+# First component update: both print, both bodies execute.
 result = await outer("hello")
 
-# Second call with same inputs: nothing prints — outer's cached value is returned
-# directly, and inner is not invoked at all.
+# Later component update with the same input: nothing prints. The cached value
+# from outer is returned directly, and inner is not invoked at all.
 result = await outer("hello")
 ```
 
@@ -289,7 +291,7 @@ A memo entry records only the logic fingerprints its writer offered when it was 
 
 The `version` <Lang only="python">parameter</Lang><Lang only="rust">argument</Lang> lets you explicitly invalidate dependent memos by bumping an integer:
 
-{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (`#[cocoindex::function]` doc), rust/sdk/cocoindex/tests/memo_deps.rs */}
+{/* Rust: rust/sdk/cocoindex_macros/src/lib.rs (`#[cocoindex::function]` doc), rust/sdk/cocoindex/tests/it/memo_deps.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -319,7 +321,7 @@ Setting `version` makes the integer the function's logic **instead of** its sour
 
 The `deps` <Lang only="python">parameter</Lang><Lang only="rust">argument</Lang> declares external value(s) the function logic depends on but that aren't visible in its body — for example a prompt string or a model identifier defined at <Lang only="python">module scope</Lang><Lang only="rust">item level</Lang>. When the value changes, the function's logic fingerprint changes and dependent memos are invalidated, exactly as if the function body had been edited.
 
-{/* Rust: rust/sdk/SHOWCASE.md "Declare dependencies beyond the arguments", verified against rust/sdk/cocoindex/tests/memo_deps.rs */}
+{/* Rust: rust/sdk/SHOWCASE.md "Declare dependencies beyond the arguments", verified against rust/sdk/cocoindex/tests/it/memo_deps.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -350,7 +352,7 @@ async fn summarize(_ctx: &Ctx, text: &str) -> Result<String> {
 
 For multiple dependencies, pass a <Lang only="python">tuple or dict</Lang><Lang only="rust">tuple</Lang>:
 
-{/* Rust: rust/sdk/cocoindex/tests/memo_deps.rs (`deps = (PROMPT, ...)`) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/memo_deps.rs (`deps = (PROMPT, ...)`) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -378,7 +380,7 @@ async fn summarize(_ctx: &Ctx, text: &str) -> Result<String> { /* ... */ }
 
 <Lang only="python">
 
-The value is canonicalized through the [memoization-key pipeline](../advanced_topics/memoization_keys), which honors `__coco_memo_key__()`, registered memo key functions, and the standard handling for primitives, dataclasses, and Pydantic models.
+The value is canonicalized through the [memoization-key pipeline](../advanced_topics/memoization_keys), including custom memo keys, registered memo key functions, stable type IDs, and built-in handling for primitives, containers, dataclasses, Pydantic models, and class objects.
 
 :::caution[Snapshotted at decoration time]
 `deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call. For per-call or per-instance values (instance attributes in a bound method, request-scoped config, anything that changes at runtime) pass them as regular function arguments instead, so the memoization layer observes each new value.
@@ -414,7 +416,7 @@ The value is fingerprinted through its [`MemoInput`](../advanced_topics/memoizat
 
 </Lang>
 
-{/* Rust: rust/sdk/SHOWCASE.md "Declare dependencies beyond the arguments", verified against rust/sdk/cocoindex/tests/memo_deps.rs (`LogicDep::new`, `ctx.use_logic_dep`) */}
+{/* Rust: rust/sdk/SHOWCASE.md "Declare dependencies beyond the arguments", verified against rust/sdk/cocoindex/tests/it/memo_deps.rs (`LogicDep::new`, `ctx.use_logic_dep`) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -495,7 +497,7 @@ Logic, arguments and context values are all known before a body runs. Some bodie
 
 </Lang>
 
-{/* Rust: rust/sdk/SHOWCASE.md "Declare dependencies beyond the arguments", verified against rust/sdk/cocoindex/tests/memo_deps.rs (`DataDep::new`, `MemoStateDecision::new`, `ctx.use_data_dep`) */}
+{/* Rust: rust/sdk/SHOWCASE.md "Declare dependencies beyond the arguments", verified against rust/sdk/cocoindex/tests/it/memo_deps.rs (`DataDep::new`, `MemoStateDecision::new`, `ctx.use_data_dep`) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -577,6 +579,7 @@ The rules for an entry that recorded data dependencies:
 - The entry is reused only when its arguments, logic and context match **and** every record validates. A record whose kind is no longer registered, or whose stored key or state no longer deserializes, is a logged miss; a validator's <Lang only="python">exception propagates</Lang><Lang only="rust">error propagates</Lang>. A changed-but-valid state is refreshed without a run. On a miss the body's new records replace the stored set.
 - A record rides up through every enclosing function frame regardless of `logic_tracking`, into every enclosing memoized function's entry and the component's entry, where it stops. Records are **not** copied into ancestor components' entries. A component reports one bit upward instead, and its parent's entry lists the children that reported it: **a component is skipped only if its own entry validates and every descendant that recorded data dependencies validates too**, which the parent's probe checks from those descendants' own stored entries, by path, without mounting them. A changed-but-valid descendant record is refreshed in place. The probe stops, and the body re-runs, at a listed descendant with no entry (a non-memoized one, whose records are dropped, or one whose last run observed a key in two states), a record that no longer decodes, a kind no longer registered, or a validator answering invalid. Closed descendants are carried over by the reuse unvalidated, as they always were. A component that records nothing is unaffected.
 - Because a parent's probe may validate a record while the component that recorded it is not mounted, a validator runs with no component context and must depend on its key and stored state alone.
+- A record is validated at most once per update. Every later probe in the same update that holds the same stored record (a memoized function beneath a component whose body re-runs, each level above an open component, a sibling that read the same file) takes the first answer without calling the validator. A source that changes after that answer is seen by the next update. A preview validates on its own.
 - <Lang only="python">`use_data_dep` raises outside a component context, and when the current frame has already closed. The check covers the current frame only: a `@coco.fn` reader started as a task that outlives the decorated function which started it keeps its own open frame, so its records merge into an already-joined frame and are lost, as its logic deps are today. Await readers inside the function that started them.</Lang><Lang only="rust">`ctx.use_data_dep` returns an error outside a pipeline context, and when the function that owns the current frame has already returned (a spawned task recording after it). Await readers inside the function that started them.</Lang>
 
 #### Callbacks: `logic_propagated_to_callers`
@@ -599,7 +602,7 @@ The rules for an entry that recorded data dependencies:
 
 Call it at the entry point that hands a callback down. The function that calls `logic_propagated_to_callers` is the callback's **owner**. The returned wrapper runs <Lang only="python">`fn`</Lang><Lang only="rust">`f`</Lang> as usual; afterwards the logic <Lang only="python">`fn`</Lang><Lang only="rust">`f`</Lang> offered (by its own `logic_tracking`) is recorded in **every** memo entry between the call site and the owner's frame (the owner's own entry included) whatever their `logic_tracking`. The owner's mode only decides what goes further up: with `"full"` (the default) the owner offers the callback's logic to its callers like any other dependency; with `"self"` or <Lang only="python">`None`</Lang><Lang only="rust">`"none"`</Lang> it stops there.
 
-{/* Rust: rust/sdk/cocoindex/tests/memo_deps.rs (`traverse`, `logic_propagated_to_callers`) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/memo_deps.rs (`traverse`, `logic_propagated_to_callers`) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -726,7 +729,7 @@ These arguments can be set on any `#[cocoindex::function]` — not just memoized
 
 **Fully automatic (default)** — use <Lang only="python">`logic_tracking="full"`</Lang><Lang only="rust">`logic_tracking = "full"`</Lang> (or omit it) without setting `version`. Any logic change in the function or its callees invalidates dependent memos.
 
-{/* Rust: rust/sdk/cocoindex/tests/logic_tracking.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/logic_tracking.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -754,7 +757,7 @@ async fn full_explicit(_ctx: &Ctx, x: &i64) -> Result<i64> { /* ... */ }
 
 **Manual, precise control** — use <Lang only="python">`logic_tracking="self"`</Lang><Lang only="rust">`logic_tracking = "self"`</Lang> with `version`. You decide what counts as a behavior change by bumping `version`, without being affected by implementation detail changes (performance optimizations, logging tweaks, refactoring, etc.).
 
-{/* Rust: rust/sdk/cocoindex/tests/memo_deps.rs (`caller_self`) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/memo_deps.rs (`caller_self`) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -781,7 +784,7 @@ async fn caller_self(ctx: &Ctx, test: &str, value: &str) -> Result<String> {
 
 **Opt out of tracking** — use <Lang only="python">`logic_tracking=None`</Lang><Lang only="rust">`logic_tracking = "none"`</Lang> for functions with a stable contract (where logic changes don't affect output), or functions whose changes don't affect behavior (e.g., logging, performance hints). This prevents unnecessary reprocessing when only internals change.
 
-{/* Rust: rust/sdk/cocoindex/tests/logic_tracking.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/logic_tracking.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -936,7 +939,7 @@ When batching is enabled:
 
 </Lang>
 
-{/* Rust: rust/sdk/SHOWCASE.md "Batch item-shaped calls", verified against rust/sdk/cocoindex_macros/src/lib.rs and rust/sdk/cocoindex/tests/batching_runner.rs */}
+{/* Rust: rust/sdk/SHOWCASE.md "Batch item-shaped calls", verified against rust/sdk/cocoindex_macros/src/lib.rs and rust/sdk/cocoindex/tests/it/batching_runner.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -1082,7 +1085,7 @@ The parameter after the `&Ctx` is the batched one. Every other parameter is pass
 
 Some batch failures depend on the batch's composition rather than any single input — e.g. a provider's per-request token or payload limit, or one input the provider rejects. No fixed `max_batch_size` can rule these out. <Lang only="python">When the function body hits such a failure, raise `coco.RetryWithSmallerBatch` from it: CocoIndex halves the batch and retries each half, recursing down to single items. At size 1, the wrapped original error is raised as that item's own failure — so one bad input fails only its own caller, while the rest of the batch still succeeds. There is no need to check the batch size before raising: at size 1 the engine simply unwraps the signal and raises the original error.</Lang><Lang only="rust">When the function body hits such a failure, return `Error::retry_with_smaller_batch(cause)` from it: CocoIndex halves the batch and retries each half, recursing down to single items. At size 1, `cause` becomes that item's own failure — so one bad input fails only its own caller, while the rest of the batch still succeeds. There is no need to check the batch size before returning it: at size 1 the engine simply unwraps the signal and fails that caller with `cause`.</Lang>
 
-{/* Rust: rust/sdk/SHOWCASE.md "Batch item-shaped calls", verified against rust/sdk/cocoindex/tests/batching_runner.rs (`Error::retry_with_smaller_batch`) */}
+{/* Rust: rust/sdk/SHOWCASE.md "Batch item-shaped calls", verified against rust/sdk/cocoindex/tests/it/batching_runner.rs (`Error::retry_with_smaller_batch`) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -1134,7 +1137,7 @@ Common use cases:
 
 ### Runner
 
-The `runner` <Lang only="python">parameter</Lang><Lang only="rust">argument</Lang> allows functions to execute in a specific context, such as a dedicated GPU runner that serializes GPU workloads.
+The `runner` <Lang only="python">parameter</Lang><Lang only="rust">argument</Lang> allows functions to execute in a specific context, such as the GPU runner, which limits how many calls share each GPU.
 
 <Lang only="python">
 
@@ -1142,14 +1145,14 @@ Like batching, a runner requires an async interface, so it is always set with `@
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/batching_runner.rs (`runner = GPU`, `GPURunner::fraction`) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/batching_runner.rs (`runner = GPU`, `GPURunner::fraction`) */}
 <LangTabs>
 <Fragment slot="python">
 
 ```python
 @coco.fn.as_async(runner=coco.GPU)
 def gpu_inference(data: bytes) -> bytes:
-    # Runs with GPU serialization
+    # Runs on the GPU runner
     return model.predict(data)
 
 # External usage: async
@@ -1184,9 +1187,22 @@ let result = whole_gpu(&ctx, item).await?;
 
 The `coco.GPU` runner:
 
-- By default, runs in-process with all functions sharing a queue for serial execution
-- Sync functions run on a dedicated GPU thread to avoid blocking the event loop
+- Takes a whole GPU per call by default; `coco.GPU(0.5)` asks for half of one, so two such calls can share a card. Inside the function, `coco.current_gpu()` returns the id of the GPU the call was given
+- Runs in-process by default. The GPU pool decides how many calls run at once: one at a time on a single GPU at the default fraction, more with several GPUs or a smaller fraction. Batched functions on the same runner also share one batch queue, so their batches follow the [`max_in_flight`](#batching) rule as well
+- Sync functions run on a dedicated GPU thread to avoid blocking the event loop. The thread cannot be interrupted, so a cancelled call keeps its GPU until the thread finishes
 - Set the environment variable `COCOINDEX_RUN_GPU_IN_SUBPROCESS=1` to run in a subprocess for GPU memory isolation
+
+:::caution[Subprocess mode]
+`coco.current_gpu()` reports the same assignment inside the subprocess as it does in-process.
+
+Each GPU gets its own workers. A call runs on an idle worker of its GPU, and a new worker starts only when all of that GPU's workers are busy, up to a cap; workers stay resident for the life of the process. Each is a separate interpreter with its own CUDA context, costing hundreds of MB of device memory before your model allocates anything, and with its own copy of any model your function caches and its own allocator cache. A fractional runner like `coco.GPU(0.25)`, which lets four calls share a card, can therefore end up with four of each on that card.
+
+`CUDA_VISIBLE_DEVICES` is not set per worker, so `cuda:{coco.current_gpu()}` names the same device as it does in-process, and a function that ignores `coco.current_gpu()` can still reach a GPU it was not assigned.
+
+Cancelling a call returns right away, but its GPU is not released until the worker finishes. A worker that has already started cannot be interrupted, so the capacity stays held; otherwise the next call would be admitted onto a card that is still busy. A worker that is still running also keeps the process from exiting until it finishes.
+
+A call whose worker dies fails with `BrokenProcessPool` and is not retried: the component fails, nothing is written or memoized for it, and the next `app.update()` retries it cleanly. Calls on other workers keep running. If a worker dies while idle, the next call on that GPU goes to another worker, unless it reaches the dead one in the moment before the death is noticed, in which case that call fails too.
+:::
 
 </Lang>
 
@@ -1225,14 +1241,14 @@ Python's GPU subprocess mode (`COCOINDEX_RUN_GPU_IN_SUBPROCESS`) and its dedicat
 
 You can combine batching with a runner:
 
-{/* Rust: rust/sdk/cocoindex/tests/batching_runner.rs (`gpu_batch`) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/batching_runner.rs (`gpu_batch`) */}
 <LangTabs>
 <Fragment slot="python">
 
 ```python
 @coco.fn.as_async(batching=True, max_batch_size=16, runner=coco.GPU)
 def batch_gpu_embed(texts: list[str]) -> list[list[float]]:
-    # Batched execution with GPU serialization
+    # Batched execution on the GPU runner
     return gpu_model.encode(texts)
 
 # External usage: async

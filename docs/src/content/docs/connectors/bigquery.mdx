@@ -36,7 +36,7 @@ use cocoindex::connectors::bigquery::{self, BigQueryConfig, BigQueryConnection, 
 Install the optional BigQuery dependency before using this connector:
 
 ```bash
-pip install cocoindex[bigquery]
+pip install "cocoindex[bigquery]"
 ```
 :::
 
@@ -414,7 +414,7 @@ Use `#[coco(type = "…")]` on a field to specify a custom BigQuery type:
 
 </Lang>
 
-{/* Rust: rust/sdk/cocoindex/tests/bigquery_target.rs; #[coco(type)] from rust/sdk/cocoindex_macros/src/lib.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/bigquery_target.rs; #[coco(type)] from rust/sdk/cocoindex_macros/src/lib.rs */}
 <LangTabs>
 <Fragment slot="python">
 

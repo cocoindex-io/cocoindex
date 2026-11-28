@@ -34,7 +34,7 @@ use cocoindex::connectors::amazon_s3::{self, ListOptions, S3Client, S3File};
 This connector requires the `aiobotocore` library. Install with:
 
 ```bash
-pip install cocoindex[amazon_s3]
+pip install "cocoindex[amazon_s3]"
 ```
 :::
 
@@ -208,7 +208,7 @@ The prefix is passed to S3 as given, not read as a folder: `"data"` also matches
 
 `list_objects()` returns an `S3Walker` that <Lang only="python">yields</Lang><Lang only="rust">lists</Lang> `S3File` objects (implementing the [`FileLike`](../common_resources/data_types#filelike) base class):
 
-{/* Rust: rust/sdk/cocoindex/tests/amazon_s3_source.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/amazon_s3_source.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -254,7 +254,7 @@ See [`FileLike`](../common_resources/data_types#filelike) for details on the fil
 
 <Lang only="python">`S3Walker.items()` yields `(str, S3File)` pairs</Lang><Lang only="rust">`S3Walker::items()` returns `(String, S3File)` pairs</Lang>, useful for associating each file with a stable string key: the object key relative to the prefix, exactly as stored. Keys are not normalized, so `a//b.txt` and `a/b.txt` are two items:
 
-{/* Rust: rust/sdk/cocoindex/tests/amazon_s3_source.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/amazon_s3_source.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -325,7 +325,7 @@ let files = amazon_s3::list_objects(
 
 Use `max_file_size` to skip objects that exceed a size threshold:
 
-{/* Rust: rust/sdk/cocoindex/tests/amazon_s3_source.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/amazon_s3_source.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -405,7 +405,7 @@ pub async fn S3Client::get_object_uri(&self, uri: &str) -> Result<S3File>
 
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/amazon_s3_source.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/amazon_s3_source.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -488,7 +488,7 @@ The client reads an `S3File`, not a URI: get the file with `get_object_uri` firs
 
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/amazon_s3_source.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/amazon_s3_source.rs */}
 <LangTabs>
 <Fragment slot="python">
 

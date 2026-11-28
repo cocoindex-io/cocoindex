@@ -11,6 +11,10 @@ import pytest
 
 from cocoindex.connectors import azure_blob
 from cocoindex.resources.file import PatternFilePathMatcher
+from tests.common.object_store_exclusions import (
+    EXCLUDED_DIRECTORY_CASES,
+    EXCLUSION_TEST_KEYS,
+)
 
 
 _NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
@@ -188,6 +192,22 @@ class TestAsyncListBlobs:
         assert items[0][0] == "deep/file.txt"
         assert items[1][0] == "nested.json"
         assert isinstance(items[0][1], azure_blob.AzureBlobFile)
+
+    @pytest.mark.parametrize(
+        ("prefix", "excluded_patterns", "expected"), EXCLUDED_DIRECTORY_CASES
+    )
+    async def test_excluded_directory_excludes_the_blobs_under_it(
+        self, prefix: str, excluded_patterns: list[str], expected: list[str]
+    ) -> None:
+        container_client = _FakeContainerClient(
+            dict.fromkeys(EXCLUSION_TEST_KEYS, b"x")
+        )
+        walker = azure_blob.list_blobs(
+            container_client,
+            prefix=prefix,
+            path_matcher=PatternFilePathMatcher(excluded_patterns=excluded_patterns),
+        )
+        assert sorted([key async for key, _ in walker.items()]) == expected
 
 
 @pytest.mark.asyncio

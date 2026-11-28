@@ -6,7 +6,14 @@ requires-python = ">=3.11"
 # use_state, memo_key on components and the APIs this example builds on: v1.1.0 and
 # later; `coco.DataDep` and the Google Drive source's `google_drive.UserAccount`
 # sign-in: v1.2.0 and later.
-dependencies = ["cocoindex[google_drive]>=1.2.0"]
+dependencies = [
+    "cocoindex[google_drive]>=1.2.0",
+    # The web source (tools/web.py): one HTTP client, and the main-content
+    # extractor whose output is the memo state of a page (DESIGN.md §3).
+    "httpx>=0.27.0",
+    "lxml>=5",
+    "trafilatura>=2.0",
+]
 
 [project.optional-dependencies]
 llm = ["litellm!=1.107.0"]

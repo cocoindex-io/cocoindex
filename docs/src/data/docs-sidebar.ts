@@ -73,6 +73,7 @@ export const sidebar: SidebarItem[] = [
       { type: 'doc', slug: 'connectors/discord', label: 'Discord' },
       { type: 'doc', slug: 'connectors/doris', label: 'Apache Doris' },
       { type: 'doc', slug: 'connectors/falkordb', label: 'FalkorDB' },
+      { type: 'doc', slug: 'connectors/google_docs', label: 'Google Docs' },
       { type: 'doc', slug: 'connectors/google_drive', label: 'Google Drive' },
       { type: 'doc', slug: 'connectors/iggy', label: 'Iggy' },
       { type: 'doc', slug: 'connectors/kafka', label: 'Kafka' },

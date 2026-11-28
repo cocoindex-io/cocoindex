@@ -300,6 +300,8 @@ async def _session_loop(
         )
 
         if output.answer is not None:
+            for finish in ctx.on_finish:
+                finish()
             steps.append(Step(output, ()))
             step_traces.append(
                 answer_step(served, from_step, calls, _notes_since(state, notes_before))
@@ -346,6 +348,7 @@ async def _session_loop(
                         task=task_of(c),
                         child=a.child,
                         declared=a.declared,
+                        details=tuple(a.details),
                     )
                     for c, r, d, a in zip(
                         output.calls, executed.results, differs, executed.actions

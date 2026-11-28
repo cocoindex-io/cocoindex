@@ -95,6 +95,34 @@ cocoindex auth sign-in [OPTIONS] COMMAND [ARGS]...
 
 ---
 
+### `auth sign-in google-docs`
+
+Sign in with a Google account to keep Google Docs in its Drive.
+
+Asks only for access to the files CocoIndex creates (drive.file): the docs
+it creates and edits, nothing else in the Drive. The sign-in is kept apart
+from `auth sign-in google-drive`'s.
+
+Uses CocoIndex's own OAuth client when this release includes one. To use a
+Desktop-app OAuth client of your own, pass CLIENT_SECRETS, the JSON file you
+downloaded for it.
+
+
+**Usage:**
+
+```bash
+cocoindex auth sign-in google-docs [OPTIONS] [CLIENT_SECRETS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--token-path FILE` | Where to keep the sign-in; default: cocoindex/google_docs_token.json under the user's config directory. |
+| `--help` | Show this message and exit. |
+
+---
+
 ### `auth sign-in google-drive`
 
 Sign in with a Google account to read its Google Drive.
@@ -137,6 +165,29 @@ cocoindex auth sign-out [OPTIONS] COMMAND [ARGS]...
 
 | Option | Description |
 |--------|-------------|
+| `--help` | Show this message and exit. |
+
+---
+
+### `auth sign-out google-docs`
+
+Revoke the Google Docs sign-in at Google and delete its token file.
+
+Google revokes everything the OAuth client holds for the account, so an
+`auth sign-in google-drive` made with the same client ends too.
+
+
+**Usage:**
+
+```bash
+cocoindex auth sign-out google-docs [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--token-path FILE` | The sign-in to end; default: the one `auth sign-in google-docs` writes by default. |
 | `--help` | Show this message and exit. |
 
 ---
@@ -278,6 +329,9 @@ cocoindex show [OPTIONS] [APP_TARGET] [STABLE_PATH]
 
 Run an app in catch-up mode. With --live, run in live mode.
 
+Exits with status 1 if a component failure goes unhandled: no exception
+handler is registered for it, or every handler re-raised. Not with --live.
+
 `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or
 `module:app_name`.
 
@@ -298,6 +352,7 @@ cocoindex update [OPTIONS] APP_TARGET
 | `--full-reprocess` | Reprocess everything, bypassing all memoization caches: every component and memoized function executes again (external calls such as embeddings included). To force just one function's work to run again, bump its version= instead. |
 | `-L, --live` | Run in live mode (live components continue processing after initial update). |
 | `--preview` | Compute target actions without applying them. Prints planned actions. |
+| `--select PATH` | Run only the component at PATH and the components below it; repeat to run several. Write PATH as `cocoindex show` prints it, such as '/@process_file/"docs/a.md"'. Other components are not run and not treated as gone. |
 | `--help` | Show this message and exit. |
 
 ---

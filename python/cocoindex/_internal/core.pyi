@@ -55,6 +55,8 @@ R_co = TypeVar("R_co", covariant=True)
 class StablePath:
     def __new__(cls) -> StablePath: ...
     def concat(self, part: StableKey) -> StablePath: ...
+    @staticmethod
+    def parse(text: str) -> StablePath: ...
     def to_string(self) -> str: ...
     def parts(self) -> list[StableKey]: ...
     def __eq__(self, other: object) -> bool: ...
@@ -104,6 +106,8 @@ class ComponentProcessorContext:
     def stable_path(self) -> StablePath: ...
     @property
     def live(self) -> bool: ...
+    @property
+    def data_dep_verdicts(self) -> DataDepVerdicts: ...
     def join_fn_call(self, child_fn_ctx: FnCallContext) -> None: ...
     def initial_context_memo_states(
         self,
@@ -118,6 +122,7 @@ class ComponentProcessorContext:
         refresh_interval_secs: float | None = None,
     ) -> tuple[ComponentProcessorContext, StatsGroupHandle]: ...
     def end_stats_group(self) -> None: ...
+    def record_unhandled_failure(self) -> None: ...
     def use_state(self, key: StableKey, initial_value: Any) -> StoredValue: ...
     def update_user_state(self, key: StableKey, value: Any) -> StoredValue: ...
 
@@ -142,6 +147,33 @@ class FnCallContext:
 class StoredValue:
     def get(self, deserialize_fn: Callable[[bytes], T], /) -> T: ...
 
+class DataDepVerdict:
+    """What a validator answered for one record identity."""
+
+    @property
+    def memo_valid(self) -> bool: ...
+    @property
+    def new_state(self) -> StoredValue | None:
+        """The validator's changed state; `None` when it equals the stored one."""
+        ...
+
+class DataDepVerdicts:
+    """The data-dependency verdicts of one operation, by record identity."""
+
+    def get(
+        self, kind_fp: Fingerprint, key_fp: Fingerprint, state_fp: Fingerprint, /
+    ) -> DataDepVerdict | None: ...
+    def record(
+        self,
+        kind_fp: Fingerprint,
+        key_fp: Fingerprint,
+        state_fp: Fingerprint,
+        memo_valid: bool,
+        state_changed: bool,
+        state: Any,
+        /,
+    ) -> DataDepVerdict: ...
+
 # --- FnCallMemoGuard ---
 class FnCallMemoGuard:
     @property
@@ -157,7 +189,10 @@ class FnCallMemoGuard:
     @property
     def cached_data_deps(
         self,
-    ) -> list[tuple[Fingerprint, Fingerprint, StoredValue, StoredValue]] | None: ...
+    ) -> (
+        list[tuple[Fingerprint, Fingerprint, Fingerprint, StoredValue, StoredValue]]
+        | None
+    ): ...
     def update_memo_states(
         self,
         memo_states: list[Any] | None = None,
@@ -308,6 +343,7 @@ def iter_target_states_by_name(
 # --- UpdateHandle ---
 class UpdateHandle:
     def stats_snapshot(self) -> tuple[int, bool, dict[str, dict[str, int]]]: ...
+    def unhandled_failures(self) -> int: ...
     def changed(self) -> Coroutine[Any, Any, int]: ...
     def result(self) -> Coroutine[Any, Any, StoredValue]: ...
     def take_preview_actions(self) -> list[Any]: ...
@@ -343,6 +379,7 @@ class App:
         preview: bool = False,
         *,
         deadline: DeadlineContext,
+        component_selector: list[StablePath] | None = None,
     ) -> StoredValue | list[Any]: ...
     def update_async(
         self,
@@ -353,6 +390,7 @@ class App:
         host_ctx: Any = None,
         *,
         deadline: DeadlineContext,
+        component_selector: list[StablePath] | None = None,
     ) -> UpdateHandle: ...
     def drop(
         self,
@@ -368,7 +406,7 @@ class LiveComponentController:
         self,
         processor: ComponentProcessor[Any],
         handler_callback: Callable[[BaseException], Awaitable[None]] | None = None,
-    ) -> Coroutine[Any, Any, None]: ...
+    ) -> Coroutine[Any, Any, bool]: ...
     def update_async(
         self,
         stable_path: StablePath,
@@ -388,18 +426,33 @@ class LiveComponentController:
         self, key: StableKey, value: bytes
     ) -> Coroutine[Any, Any, None]: ...
     def start(self, process_live_fut: Any) -> None: ...
+    def skips_subpath(self, stable_path: StablePath) -> bool: ...
     def mount_inner_live_async(
         self, stable_path: StablePath
-    ) -> Coroutine[Any, Any, tuple[LiveComponentController, ComponentMountHandle]]: ...
+    ) -> Coroutine[
+        Any, Any, tuple[LiveComponentController, ComponentMountHandle] | None
+    ]: ...
     @property
     def is_live(self) -> bool: ...
 
+def skips_mount(
+    stable_path: StablePath,
+    comp_ctx: ComponentProcessorContext,
+    fn_ctx: FnCallContext,
+) -> bool: ...
+def mount_each_keys(
+    stable_path: StablePath,
+    comp_ctx: ComponentProcessorContext,
+    fn_ctx: FnCallContext,
+) -> list[StableKey] | None: ...
 def mount_live_async(
     stable_path: StablePath,
     comp_ctx: ComponentProcessorContext,
     fn_ctx: FnCallContext,
     live: bool,
-) -> Coroutine[Any, Any, tuple[LiveComponentController, ComponentMountHandle]]: ...
+) -> Coroutine[
+    Any, Any, tuple[LiveComponentController, ComponentMountHandle] | None
+]: ...
 
 # --- TargetActionSink ---
 class TargetActionSink:
@@ -445,7 +498,13 @@ def init_runtime(
     non_existence: Any,
     target_state_codec: ModuleType,
     validate_data_deps_fn: Callable[
-        [str, list[tuple[Fingerprint, Fingerprint, StoredValue, StoredValue]]],
+        [
+            DataDepVerdicts,
+            str,
+            list[
+                tuple[Fingerprint, Fingerprint, Fingerprint, StoredValue, StoredValue]
+            ],
+        ],
         Awaitable[tuple[list[tuple[Fingerprint, Fingerprint, Any, Any]], bool, bool]],
     ],
 ) -> None: ...

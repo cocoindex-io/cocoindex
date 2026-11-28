@@ -22,7 +22,7 @@ import LangTabs from '../../../components/LangTabs.astro';
 
 Create an explicit environment <Lang only="python">by providing `Settings` with a `db_path`</Lang><Lang only="rust">with `Environment::builder()` and a `db_path`</Lang>:
 
-{/* Rust: rust/sdk/cocoindex/tests/pipeline.rs (Environment::builder), rust/sdk/cocoindex/src/app.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/pipeline.rs (Environment::builder), rust/sdk/cocoindex/src/app.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -289,7 +289,7 @@ The `cocoindex` CLI for Rust drives the one environment that `Environment::from_
 
 For tests, create isolated environments to avoid interference between test runs:
 
-{/* Rust: rust/sdk/cocoindex/tests/mount.rs (temp_app), rust/sdk/cocoindex/tests/memo_deps.rs (app_at) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/mount.rs (temp_app), rust/sdk/cocoindex/tests/it/memo_deps.rs (app_at) */}
 <LangTabs>
 <Fragment slot="python">
 

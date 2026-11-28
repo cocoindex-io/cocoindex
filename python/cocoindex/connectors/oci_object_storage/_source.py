@@ -52,6 +52,7 @@ from cocoindex.connectorkits import SingleWatcherGuard
 from cocoindex.connectorkits._object_store import (
     ObjectStoreFilePath,
     folder_prefix,
+    is_key_included,
     relative_key,
 )
 from cocoindex.resources import file
@@ -306,9 +307,7 @@ class OCIWalker:
         Shared by the scan and live events, so both key an object the same way.
         """
         rel_key = relative_key(object_name, self._folder)
-        if rel_key is None or not self._path_matcher.is_file_included(
-            PurePath(rel_key)
-        ):
+        if rel_key is None or not is_key_included(self._path_matcher, rel_key):
             return None
         return rel_key
 
@@ -393,8 +392,8 @@ class _LiveOCIItems:
     run committed the same ``logic_version``, steps 1+3 are replaced — the scan
     is skipped and ``cutoff`` is ``None`` so the durable stream's replayed
     backlog (resumed from its committed cursor) is processed rather than
-    dropped. The committed version is (re)written after step 4 on any run that
-    actually scans.
+    dropped. The committed version is (re)written after step 4 on any run whose
+    scan completed (no failure in the listing or in any object's processing).
     """
 
     __slots__ = ("_walker", "_live_stream", "_watch_guard")
@@ -431,12 +430,15 @@ class _LiveOCIItems:
         adapter = _OCIStreamSubscriber(self._walker, subscriber, cutoff)
         stream_task = asyncio.create_task(self._live_stream.watch(adapter))
         try:
+            scan_completed = False
             if not skip_scan:
-                await subscriber.update_all()
+                scan_completed = await subscriber._update_all()
             await subscriber.mark_ready()
             # Record the version only after mark_ready (the scan has committed),
-            # so a later run skips only when the bootstrap durably landed.
-            if not skip_scan and logic_version is not None:
+            # and only after a scan that completed: a failure the exception
+            # handler absorbed leaves an object unprocessed (or unlisted), so a
+            # later run must scan again.
+            if scan_completed and logic_version is not None:
                 await subscriber.write_committed_state(_SCAN_VERSION_KEY, logic_version)
             adapter.mark_ready_complete()
             await stream_task
@@ -675,8 +677,10 @@ def list_objects(
         max_file_size: Skip objects larger than this size in bytes.
         live_stream: Optional ``LiveStream[bytes]`` of OCI Object Storage events.
         logic_version: Opt into skipping the startup full scan on reruns. When
-            set, the live view records this version after a successful scan and,
-            on a later run, skips the scan if the recorded version matches —
+            set, the live view records this version after a scan in which
+            nothing failed (neither the listing nor any object's processing,
+            even when an exception handler absorbed the failure) and, on a
+            later run, skips the scan if the recorded version matches —
             relying on the durable stream to replay the downtime backlog from
             its committed cursor. You MUST bump this whenever your processing
             logic changes (otherwise stale state is silently kept), and the

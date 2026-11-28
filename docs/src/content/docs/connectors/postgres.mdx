@@ -41,7 +41,7 @@ The module is compiled with the `postgres` Cargo feature of the `cocoindex` crat
 This connector requires additional dependencies. Install with:
 
 ```bash
-pip install cocoindex[postgres]
+pip install "cocoindex[postgres]"
 ```
 
 :::
@@ -214,7 +214,7 @@ Name the row type on the result, or as `read_table::<T>`. Select fewer columns w
 
 </Lang>
 
-{/* Rust: examples/rust/postgres_source/src/main.rs, rust/sdk/cocoindex/tests/postgres_source.rs */}
+{/* Rust: examples/rust/postgres_source/src/main.rs, rust/sdk/cocoindex/tests/it/postgres_source.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -1061,7 +1061,7 @@ postgres::TableSchema::from_row::<DocEmbedding>(["id"])?
 
 Define columns directly using `ColumnDef`:
 
-{/* Rust: rust/sdk/cocoindex/tests/postgres_source.rs, tests/schema_from_row.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/postgres_source.rs, tests/schema_from_row.rs */}
 <LangTabs>
 <Fragment slot="python">
 

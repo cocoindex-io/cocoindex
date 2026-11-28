@@ -50,7 +50,7 @@ Compile errors (via `syn::Error`): `batching` with no non-ctx param; first non-c
 `Vec<_>`; return type not `Result<Vec<_>>`; `max_batch_size` without `batching`.
 
 **Acceptance.** The `SHOWCASE.md` batching examples compile as written (after WS7 fixes the
-rest of that file). Test in `rust/sdk/cocoindex/tests/pipeline.rs`: per-item cache hits skip
+rest of that file). Test in `rust/sdk/cocoindex/tests/it/pipeline.rs`: per-item cache hits skip
 the body, misses batch, body-edit (hash change) invalidates, extra-param change invalidates.
 
 ---
@@ -91,7 +91,7 @@ detection, `MemoInput`, the foreign-type newtype pattern, and the argument order
 
 ## WS3 — memo guidance fix (documentation, not a new macro)
 
-**Problem.** `rust/sdk/cocoindex/tests/pipeline.rs` (~2691) calls hand-rolled
+**Problem.** `rust/sdk/cocoindex/tests/it/pipeline.rs` (~2691) calls hand-rolled
 `ctx.memo(&(__COCO_FN_HASH_ANALYZE, input), ...)` "the realistic pattern" for memoizing calls
 that use non-serializable resources. This is wrong on both counts: the memo body closure
 receives an owned `Ctx` (`cached_by_fingerprint_with_state`, `memo.rs:117-126`), so

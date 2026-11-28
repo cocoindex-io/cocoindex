@@ -1,10 +1,12 @@
-use cocoindex_core::engine::context::DataDepRecord;
+use cocoindex_core::engine::context::{DataDepRecord, DataDepVerdicts};
 use cocoindex_core::engine::profile::{DataDepsValidation, EngineProfile};
 use cocoindex_core::state::stable_path::StablePath;
 
 use crate::{
     component::PyComponentProcessor,
-    function::{PyRefreshedDataDep, build_data_dep_records, data_deps_to_pylist},
+    function::{
+        PyDataDepVerdicts, PyRefreshedDataDep, build_data_dep_records, data_deps_to_pylist,
+    },
     prelude::*,
     runtime::{PyAsyncContext, python_objects},
     target_state::{PyTargetActionSinkInner, PyTargetHandler},
@@ -33,16 +35,22 @@ impl EngineProfile for PyEngineProfile {
     /// context around them.
     fn validate_data_deps(
         host_runtime_ctx: &PyAsyncContext,
+        verdicts: Arc<DataDepVerdicts>,
         path: &StablePath,
         records: Vec<DataDepRecord>,
     ) -> Result<impl Future<Output = Result<DataDepsValidation>> + Send + 'static> {
-        let py_records: Py<PyAny> = Python::attach(|py| {
-            data_deps_to_pylist(py, &records).map(|list| list.unbind().into_any())
-        })
-        .from_py_result()?;
-        let fut = python_objects()
-            .validate_data_deps_fn
-            .call(host_runtime_ctx, (path.to_string(), py_records))?;
+        let (py_verdicts, py_records): (Py<PyDataDepVerdicts>, Py<PyAny>) =
+            Python::attach(|py| -> PyResult<_> {
+                Ok((
+                    Py::new(py, PyDataDepVerdicts(verdicts))?,
+                    data_deps_to_pylist(py, &records)?.unbind().into_any(),
+                ))
+            })
+            .from_py_result()?;
+        let fut = python_objects().validate_data_deps_fn.call(
+            host_runtime_ctx,
+            (py_verdicts, path.to_string(), py_records),
+        )?;
         Ok(async move {
             let result = fut.await?;
             Python::attach(|py| -> PyResult<DataDepsValidation> {

@@ -183,7 +183,7 @@ Memo keys (function arguments, `deps` values, change-detected context values) ar
 
 Connector rows are `serde::Serialize` structs with `#[derive(SchemaFields)]`. The connector's `TableSchema::from_row::<Row>(primary_key)` derives the columns from the struct: an `Option<T>` field is a nullable column, every other field is `NOT NULL`.
 
-{/* Rust: rust/sdk/cocoindex/tests/schema_from_row.rs (`postgres_from_row_matches_explicit_schema`), rust/sdk/SHOWCASE.md "Derive connector schemas from row types" (verified) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/schema_from_row.rs (`postgres_from_row_matches_explicit_schema`), rust/sdk/SHOWCASE.md "Derive connector schemas from row types" (verified) */}
 ```rust
 use cocoindex::SchemaFields;
 use cocoindex::connectors::postgres::TableSchema;

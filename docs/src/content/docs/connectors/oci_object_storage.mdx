@@ -36,13 +36,13 @@ The module is compiled with the `oci_object_storage` Cargo feature of the `cocoi
 This connector requires the `oci` SDK. Install with:
 
 ```bash
-pip install cocoindex[oci]
+pip install "cocoindex[oci]"
 ```
 
 For live mode, you also need the Kafka connector to consume OCI Streaming:
 
 ```bash
-pip install cocoindex[kafka]
+pip install "cocoindex[kafka]"
 ```
 :::
 
@@ -648,7 +648,7 @@ The typical setup uses **OCI Streaming**. Configure an [OCI Events Rule](https:/
 
 </Lang>
 
-{/* Rust: rust/sdk/SHOWCASE.md (OCI live view), rust/sdk/cocoindex/tests/oci_live.rs */}
+{/* Rust: rust/sdk/SHOWCASE.md (OCI live view), rust/sdk/cocoindex/tests/it/oci_live.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -707,7 +707,7 @@ ctx.mount_each_live(&"objects", feed, move |_ctx, file: OciFile| {
 
 `events` is any `LiveStream<Vec<u8>>` of raw OCI event JSON payloads, one event per item, such as the Kafka connector's `topic_as_stream(..).payloads()`. Each event is confirmed with a `HEAD` of the object: a present object is an update, a `404` a delete. The walker acknowledges each event to the stream once the object it names has synced (at once when the event is filtered out), so a consumer group's committed offset never passes an unprocessed event.
 
-`OciLiveWalker::logic_version(version)` opts into skipping the startup scan on a rerun whose recorded version matches, and relies on the durable stream to replay the backlog. Bump the version whenever the processing logic changes.
+`OciLiveWalker::logic_version(version)` opts into skipping the startup scan on a rerun whose recorded version matches, and relies on the durable stream to replay the backlog. The version is recorded only after a startup scan in which nothing failed, so a rerun after a failed scan (even one whose failures an exception handler absorbed) scans again. Bump the version whenever the processing logic changes.
 
 </Fragment>
 </LangTabs>

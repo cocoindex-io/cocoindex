@@ -9,7 +9,7 @@ The `valkey` connector provides utilities for writing documents to Valkey with v
 
 import LangTabs from '../../../components/LangTabs.astro';
 
-{/* Rust: rust/sdk/cocoindex/tests/valkey_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/valkey_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -37,7 +37,7 @@ The module is compiled with the `valkey` Cargo feature of the `cocoindex` crate.
 This connector requires additional dependencies. Install with:
 
 ```bash
-pip install cocoindex[valkey]
+pip install "cocoindex[valkey]"
 ```
 
 </Lang>
@@ -132,7 +132,7 @@ The handle's `state_id()` is the server's address and database number as a URI, 
 
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/valkey_target.rs, rust/sdk/cocoindex/src/connectors/valkey.rs (ClientConfig doctest) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/valkey_target.rs, rust/sdk/cocoindex/src/connectors/valkey.rs (ClientConfig doctest) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -185,7 +185,7 @@ Declare a context key for a `valkey::Valkey` to identify your Valkey connection,
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed indexes. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
 
-{/* Rust: rust/sdk/cocoindex/tests/valkey_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/valkey_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -285,7 +285,7 @@ pub async fn mount_index_target_with_options(
 
 <Lang only="rust">
 
-{/* Rust: rust/sdk/cocoindex/tests/valkey_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/valkey_target.rs */}
 
 ```rust
 let index = valkey::mount_index_target_with_options(
@@ -390,7 +390,7 @@ index.declare_document(
 
 Define vector configuration for an index using `IndexSchema`.
 
-{/* Rust: rust/sdk/cocoindex/tests/valkey_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/valkey_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -541,7 +541,7 @@ A batch of document changes is sent in pipelines: one `DEL` for every deleted ke
 
 ### Example
 
-{/* Rust: rust/sdk/cocoindex/tests/valkey_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/valkey_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -639,7 +639,7 @@ index.declare_document(&ctx, doc("d1", vec![0.1, 0.2, 0.3], "hello"))?;
 index.declare_document(&ctx, doc("d2", vec![0.4, 0.5, 0.6], "world"))?;
 ```
 
-There is no example program for Valkey yet; `rust/sdk/cocoindex/tests/valkey_target.rs` is the end-to-end reference.
+There is no example program for Valkey yet; `rust/sdk/cocoindex/tests/it/valkey_target.rs` is the end-to-end reference.
 
 </Fragment>
 </LangTabs>

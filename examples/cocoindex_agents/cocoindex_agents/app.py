@@ -31,6 +31,7 @@ from .tools import (
     agents,
     sources,
     targets,
+    web,
 )
 from .trace import SessionScratch
 
@@ -55,12 +56,18 @@ def builtin_tools() -> list[Tool]:
 
 
 def default_config(
-    default_model: str, extra_tools: list[Tool] | None = None
+    default_model: str,
+    extra_tools: list[Tool] | None = None,
+    search_engine: str = "",
 ) -> AgentsConfig:
+    """``search_engine`` is the identity of a registered ``web.SearchEngine``
+    (``web.default_engine(os.environ).identity``); empty leaves the web kinds
+    unusable, which a flow over folders never notices."""
     return AgentsConfig(
         roles=default_roles(),
         tools=ToolRegistry([*builtin_tools(), *(extra_tools or [])]),
         default_model=default_model,
+        search_engine=search_engine,
     )
 
 
@@ -100,7 +107,10 @@ def main(argv: list[str] | None = None) -> int:
     # directory sits beside the data, as the sample flows keep theirs.
     db_path = pathlib.Path(os.environ.get("COCOINDEX_DB") or ".coco_db")
     env = coco.Environment(coco.Settings.from_env(db_path=db_path))
-    config = default_config(os.environ.get("LLM_MODEL", DEFAULT_MODEL))
+    config = default_config(
+        os.environ.get("LLM_MODEL", DEFAULT_MODEL),
+        search_engine=web.default_engine(os.environ).identity,
+    )
     env.context_provider.provide(MODEL_CLIENT, LiteLLMClient())
     env.context_provider.provide(AGENTS_CONFIG, config)
     app = build_app("cocoindex_agents", " ".join(args), env=env, config=config)

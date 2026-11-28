@@ -92,14 +92,15 @@ class SessionResult:
 
 @dataclass(frozen=True)
 class Item:
-    """One source item as a closed session's input: its key within the source, and the file.
+    """One source item as a closed session's input: its key within the source, and the resource.
 
-    Fingerprinted as a dataclass: the key by value, the file by its own memo
-    key and memo state (path identity, then mtime/content fingerprint).
+    Fingerprinted as a dataclass: the key by value, the resource by its own
+    memo key and memo state (its identity, then its content state: a file's
+    mtime and fingerprint, a page's content digest).
     """
 
     key: str
-    file: FileLike[Any]
+    resource: FileLike[Any]
 
 
 # What a session was mounted for: a source item (closed worker), the partial

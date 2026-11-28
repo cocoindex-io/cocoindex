@@ -1209,7 +1209,11 @@ def _apply_table_actions(
 
         for action in key_actions:
             if action.main_action in ("replace", "delete"):
-                # Drop table
+                # Drop table. `IF EXISTS` already makes a missing table a no-op,
+                # so any error here is genuine: re-raise it so the action fails
+                # instead of the engine recording a drop (or, for "replace", a
+                # `CREATE TABLE IF NOT EXISTS` landing on the old table) that
+                # never happened.
                 try:
                     _execute_ddl_sync(
                         config,
@@ -1217,6 +1221,7 @@ def _apply_table_actions(
                     )
                 except Exception as e:
                     _logger.warning("Failed to drop table %s: %s", key.table_name, e)
+                    raise
 
             if coco.is_non_existence(action.spec):
                 continue

@@ -12,13 +12,15 @@ use crate::engine::context::{
 };
 use crate::engine::deadline::DeadlineContext;
 use crate::engine::execution::{
-    OpenDescendantsVerdict, RestoredComponentMemo, cleanup_tombstone, delete_component_memo,
-    eager_existence_upsert, post_submit_for_build, submit, update_component_memo_states,
-    use_or_invalidate_component_memoization, validate_open_descendants,
+    ChildDeletes, OpenDescendantsVerdict, RestoredComponentMemo, cleanup_tombstone,
+    delete_component_memo, eager_existence_upsert, post_submit_for_build, submit,
+    update_component_memo_states, use_or_invalidate_component_memoization,
+    validate_open_descendants,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
+use crate::state::component_selector::{ComponentSelection, ComponentSelector, MountDecision};
 use crate::state::stable_path::{StablePath, StablePathRef};
 use crate::state::stable_path_set::StablePathSet;
 use crate::state::target_state_path::{TargetProviderDeps, TargetStatePath};
@@ -131,10 +133,11 @@ struct ComponentInner<Prof: EngineProfile> {
     /// next decides whether to execute its body.
     build_semaphore: tokio::sync::Semaphore,
     /// The memo most recently stored under `build_semaphore`, if any. A run
-    /// that finds its own key here on acquiring the permit knows a same-key
-    /// run just completed and stored its result, so it re-checks the memo
-    /// instead of executing again — under `full_reprocess` only when that run
-    /// belonged to the same operation (see `execute_once`).
+    /// that finds its own key here on acquiring the permit, stored since its
+    /// memo fast path looked, knows a same-key run just completed and stored
+    /// its result, so it re-checks the memo instead of executing again — under
+    /// `full_reprocess` only when that run belonged to the same operation (see
+    /// `execute_once`).
     last_stored_memos: Mutex<LastStoredMemos>,
 
     /// Identity registry of child components, keyed by their full StablePath,
@@ -328,6 +331,9 @@ pub(crate) struct ComponentRunOutcome {
     /// outcome's own list is never what a component reports upward about
     /// itself: a component is listed by its parent, not by its own outcome.
     open_children: Vec<StablePath>,
+    /// A selector left out a child of the component or of a descendant, so the
+    /// subtree is not up to date: no memo may say it is.
+    left_out_children: bool,
 }
 
 impl ComponentRunOutcome {
@@ -354,6 +360,7 @@ impl ComponentRunOutcome {
             target_provider_deps,
             cannot_skip,
             open_children: Vec::new(),
+            left_out_children: false,
         }
     }
 
@@ -363,6 +370,7 @@ impl ComponentRunOutcome {
         self.target_provider_deps.extend(other.target_provider_deps);
         self.cannot_skip |= other.cannot_skip;
         self.open_children.extend(other.open_children);
+        self.left_out_children |= other.left_out_children;
     }
 }
 
@@ -651,6 +659,17 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
     }
 }
 
+/// Whether a run reached every component under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunCompleteness {
+    /// The component and every component under it ran without a failure.
+    Complete,
+    /// The component or one under it failed, and the failure went to an
+    /// exception handler that absorbed it, or to the log, rather than to the
+    /// caller; or the run was cancelled.
+    Incomplete,
+}
+
 pub struct ComponentExecutionHandle {
     fut: Pin<Box<dyn Future<Output = SharedResult<()>> + Send + Sync>>,
 }
@@ -658,6 +677,11 @@ pub struct ComponentExecutionHandle {
 impl ComponentExecutionHandle {
     pub fn new(fut: impl Future<Output = SharedResult<()>> + Send + Sync + 'static) -> Self {
         Self { fut: Box::pin(fut) }
+    }
+
+    /// A handle for a mount that does nothing: there is nothing to wait for.
+    pub(crate) fn finished() -> Self {
+        Self::new(async { Ok(()) })
     }
 
     pub async fn ready(self) -> Result<()> {
@@ -672,7 +696,7 @@ struct ComponentBuildOutput<Prof: EngineProfile> {
 
 /// A memo stored by a run of a component under its `build_semaphore`: the
 /// operation that stored it and the key it was stored under.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct StoredMemo {
     operation_generation: u64,
     memo_fp: Fingerprint,
@@ -964,10 +988,15 @@ impl<Prof: EngineProfile> Component<Prof> {
         processor: Prof::ComponentProc,
         deadline: DeadlineContext,
     ) -> Result<ComponentMountRunHandle<Prof>> {
+        // An unselected child runs for its value, not to be reprocessed.
+        let selector = parent_ctx.component_selector();
+        let unselected = selector.is_some_and(|selector| {
+            selector.classify(self.stable_path()) == ComponentSelection::Unselected
+        });
         let child_ctx = self.new_processor_context_for_build(
             Some(parent_ctx),
             parent_ctx.processing_stats().clone(),
-            parent_ctx.full_reprocess(),
+            parent_ctx.full_reprocess() && !unselected,
             parent_ctx.live(), // use_mount inherits live from parent
             parent_ctx.preview_collector().cloned(),
             parent_ctx.host_ctx().clone(),
@@ -976,6 +1005,9 @@ impl<Prof: EngineProfile> Component<Prof> {
             // Orphan-delete failures during this child's commit fall
             // through to the framework's default `error!` log.
             None,
+            // A use_mount child always runs, selected or not: its parent is
+            // waiting for its value.
+            ComponentSelector::scoped_to(selector, self.stable_path()),
         )?;
         self.run(processor, child_ctx, deadline, deadline).await
     }
@@ -988,6 +1020,17 @@ impl<Prof: EngineProfile> Component<Prof> {
         processor: Prof::ComponentProc,
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
+        // An unselected child stops here: not run, and the parent's commit
+        // keeps what the store holds for it (`reconcile_child_existence`).
+        let component_selector =
+            match ComponentSelector::for_mount(parent_ctx.component_selector(), self.stable_path())
+            {
+                MountDecision::Skip => {
+                    parent_ctx.record_skipped_mount(self.stable_path())?;
+                    return Ok(ComponentExecutionHandle::finished());
+                }
+                MountDecision::Run(component_selector) => component_selector,
+            };
         // Store `on_error` on the child's build context too, so the
         // commit-phase GC sweep can cascade it to orphan deletes. The
         // same handler is also passed to `run_in_background` for the
@@ -1000,6 +1043,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.preview_collector().cloned(),
             parent_ctx.host_ctx().clone(),
             on_error.clone(),
+            component_selector,
         )?;
         self.run_in_background(processor, child_ctx, on_error).await
     }
@@ -1151,6 +1195,22 @@ impl<Prof: EngineProfile> Component<Prof> {
         context: ComponentProcessorContext<Prof>,
         on_error: Option<OnError>,
     ) -> Result<ComponentExecutionHandle> {
+        let run = self
+            .run_in_background_to_completeness(processor, context, on_error)
+            .await?;
+        Ok(ComponentExecutionHandle::new(async move {
+            run.await.map(|_| ())
+        }))
+    }
+
+    /// [`Self::run_in_background`], resolving to whether the run reached every
+    /// component under it.
+    pub(crate) async fn run_in_background_to_completeness(
+        self,
+        processor: Prof::ComponentProc,
+        context: ComponentProcessorContext<Prof>,
+        on_error: Option<OnError>,
+    ) -> Result<impl Future<Output = SharedResult<RunCompleteness>> + Send + Sync + 'static> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
         let started = self.start_task(&context)?;
         self.admit_before_spawn(&context, &started).await?;
@@ -1195,10 +1255,16 @@ impl<Prof: EngineProfile> Component<Prof> {
                         }
                     } else {
                         error!("component build failed at {}:\n{err:?}", self.stable_path());
+                        context.processing_stats().record_unhandled_failure();
                         Ok(())
                     };
                     (ComponentRunOutcome::exception(), task_result)
                 }
+            };
+            let completeness = if outcome.has_exception {
+                RunCompleteness::Incomplete
+            } else {
+                RunCompleteness::Complete
             };
             context.admission().finish();
             drop(processor);
@@ -1210,13 +1276,13 @@ impl<Prof: EngineProfile> Component<Prof> {
             if let Some(guard) = child_readiness_guard {
                 guard.resolve(outcome);
             }
-            task_result
+            task_result.map(|()| completeness)
         });
-        Ok(ComponentExecutionHandle::new(async move {
+        Ok(async move {
             join_handle
                 .await
                 .map_err(|e| SharedError::new(internal_error!("task panicked: {e}")))?
-        }))
+        })
     }
 
     pub fn delete(
@@ -1263,6 +1329,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                                 "component delete failed at {}:\n{err:?}",
                                 self.stable_path()
                             );
+                            context.processing_stats().record_unhandled_failure();
                             Ok(())
                         };
                         (ComponentRunOutcome::exception(), task_result)
@@ -1299,6 +1366,9 @@ impl<Prof: EngineProfile> Component<Prof> {
         // Memo states collected from state validation (on cache hit with invalid states)
         // or to be collected after execution (on cache miss).
         let mut memo_states_for_store: Option<MemoStatesPayload<Prof>> = None;
+        // What `last_stored_memos` held when the fast path below looked; the
+        // re-check under the permit compares against it (see there).
+        let mut memo_seen_by_fast_path: Option<StoredMemo> = None;
         let processing_stats = processor_context.processing_stats();
 
         if let Some(processor) = processor {
@@ -1312,6 +1382,15 @@ impl<Prof: EngineProfile> Component<Prof> {
             // operation stored it, which only the permit-holding re-check below can
             // tell, so the fast-path is skipped.
             if !processor_context.full_reprocess() {
+                // Read before the lookup: a store that races with the lookup
+                // then shows as new under the permit and costs one more probe,
+                // rather than going unseen and costing a second execution.
+                memo_seen_by_fast_path = self
+                    .inner
+                    .last_stored_memos
+                    .lock()
+                    .unwrap()
+                    .readable_by(processor_context.app_store());
                 match lookup_component_memo(processor_context, processor, memo_fp_to_store).await? {
                     MemoLookup::Reuse(outcome, output) => {
                         processing_stats.update(processor_name, |stats| {
@@ -1348,23 +1427,37 @@ impl<Prof: EngineProfile> Component<Prof> {
                     // calls on one app that both missed the fast-path above
                     // before either had stored a memo. Re-check the memo now;
                     // a failed run stores none (and records none), so a miss
-                    // falls through to executing. Under `full_reprocess` only
-                    // a memo stored by this same operation qualifies: that is
-                    // the operation's own execution of the component, not a
-                    // cache from a previous run.
+                    // falls through to executing. Only a memo stored since the
+                    // fast path looked qualifies: the one it saw, it already
+                    // probed, and a long-lived component object (the app's
+                    // root, a live component) holds that one on every rerun,
+                    // so probing again would run every memo-state and
+                    // data-dependency validator a second time to the same
+                    // verdict. A store that repeats the seen memo exactly,
+                    // operation and key alike, reads as nothing new: the body
+                    // runs again, which is only redundant. Under
+                    // `full_reprocess`, which skips the fast path, only a memo
+                    // stored by this same operation qualifies: that is the
+                    // operation's own execution of the component, not a cache
+                    // from a previous run.
                     let last_stored_memo = self
                         .inner
                         .last_stored_memos
                         .lock()
                         .unwrap()
                         .readable_by(processor_context.app_store());
+                    let qualifies_for_recheck = |stored: StoredMemo| {
+                        if processor_context.full_reprocess() {
+                            stored.operation_generation == processor_context.operation_generation()
+                        } else {
+                            Some(stored) != memo_seen_by_fast_path
+                        }
+                    };
                     if let Some(processor) = processor
                         && let Some(memo_fp) = memo_fp_to_store
                         && let Some(stored) = last_stored_memo
                         && stored.memo_fp == memo_fp
-                        && (!processor_context.full_reprocess()
-                            || stored.operation_generation
-                                == processor_context.operation_generation())
+                        && qualifies_for_recheck(stored)
                     {
                         match lookup_component_memo(processor_context, processor, memo_fp_to_store)
                             .await?
@@ -1463,9 +1556,43 @@ impl<Prof: EngineProfile> Component<Prof> {
                     }
                 })
                 .await?;
+                // A child delete that the commit's GC sweep owed failed. Its
+                // tombstone stays under this component, and only a later run
+                // of this component sweeps it again, so count it as a failed
+                // descendant: a build stores no memo (and its ancestors none,
+                // through the outcome), so the next update runs it again; a
+                // delete keeps its own tombstone, so its parent's next sweep
+                // deletes it again. The GC-spawned deletes register with this
+                // component's readiness only after it resolved, so their
+                // outcomes never reach `children_outcome`.
+                if submit_output.child_deletes == ChildDeletes::Pending {
+                    children_outcome.has_exception = true;
+                }
 
                 let build_output = match ret {
                     Some(ret) => {
+                        // Two cases leave this subtree owing work to a later
+                        // run, so a memo would wrongly tell the next update
+                        // that it is up to date: a selector left out a child
+                        // here or below (the outcome carries this up, so no
+                        // ancestor stores one either), or a child delete is
+                        // still owed. Drop the stored memo whether or not a
+                        // descendant failed: a failure only skips storing a
+                        // new one, and under `full_reprocess` the next update
+                        // has the same memo key and would hit the old one.
+                        children_outcome.left_out_children |=
+                            processor_context.left_out_children();
+                        if (children_outcome.left_out_children
+                            || submit_output.child_deletes == ChildDeletes::Pending)
+                            && memo_fp_to_store.is_some()
+                        {
+                            delete_component_memo(processor_context).await?;
+                            self.inner
+                                .last_stored_memos
+                                .lock()
+                                .unwrap()
+                                .forget(processor_context.app_store().write_scope());
+                        }
                         if !children_outcome.has_exception {
                             // Collect initial memo states on cache miss if processor has a state handler.
                             let memo_states: MemoStatesPayload<Prof> = if let Some(processor) =
@@ -1513,16 +1640,23 @@ impl<Prof: EngineProfile> Component<Prof> {
                             open_children.sort();
                             open_children.dedup();
                             let has_open_descendants = !open_children.is_empty();
-                            let comp_memo = if let Some((kind_fp, key_fp)) = data_deps.conflict() {
-                                // The run observed one key in two states: no
-                                // stored state can validate its output. Store
-                                // no memo, and drop the previous one: submit has
-                                // replaced the target states, so an older
-                                // entry's return value must not be reused.
+                            let data_dep_conflict = data_deps.conflict();
+                            if let Some((kind_fp, key_fp)) = data_dep_conflict {
                                 debug!(
                                     "{} observed data dependency (kind {kind_fp:?}, key {key_fp:?}) in two states; storing no memo",
                                     processor_context.stable_path()
                                 );
+                            }
+                            // A run that observed one key in two states stores
+                            // no memo and drops the previous one: submit has
+                            // replaced the target states, so an older entry's
+                            // return value must not be reused, and no stored
+                            // state can validate its output. A run that left
+                            // out a child stores none either; its old one is
+                            // already dropped above.
+                            let comp_memo = if children_outcome.left_out_children {
+                                None
+                            } else if data_dep_conflict.is_some() {
                                 if memo_fp_to_store.is_some() {
                                     delete_component_memo(processor_context).await?;
                                     self.inner
@@ -1575,11 +1709,14 @@ impl<Prof: EngineProfile> Component<Prof> {
                         })
                     }
                     None => {
-                        // Delete path. When any descendant delete failed,
-                        // skip `cleanup_tombstone` (symmetric with the
-                        // build branch skipping `post_submit_for_build`)
-                        // — that preserves the tombstone for the next
-                        // reconcile to retry.
+                        // Delete path. When any descendant delete failed
+                        // (including a child delete the GC sweep left
+                        // owed, see above), skip `cleanup_tombstone`
+                        // (symmetric with the build branch skipping
+                        // `post_submit_for_build`) — that preserves the
+                        // tombstone for the next reconcile to retry, and
+                        // with it the way back to the child tombstones
+                        // keyed under this component.
                         //
                         // We do NOT propagate via `Err` from here.
                         // Descendant-failure propagation to awaiting
@@ -1669,6 +1806,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         preview_collector: Option<PreviewActionCollector<Prof>>,
         host_ctx: Arc<Prof::HostCtx>,
         on_error: Option<OnError>,
+        component_selector: Option<ComponentSelector>,
     ) -> Result<ComponentProcessorContext<Prof>> {
         let providers = if let Some(parent_ctx) = parent_ctx {
             let sub_path = self
@@ -1705,6 +1843,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 live,
                 on_error,
                 preview_collector,
+                component_selector,
             ),
         ))
     }
@@ -1717,12 +1856,14 @@ impl<Prof: EngineProfile> Component<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         on_error: Option<OnError>,
     ) -> ComponentProcessorContext<Prof> {
+        // A delete that a preview launches previews too.
+        let preview_collector = parent_ctx.and_then(|parent| parent.preview_collector().cloned());
         ComponentProcessorContext::new(
             self.clone(),
             parent_ctx.cloned(),
             processing_stats,
             host_ctx,
-            ComponentProcessingAction::new_delete(providers, on_error),
+            ComponentProcessingAction::new_delete(providers, on_error, preview_collector),
         )
     }
 }
@@ -1754,6 +1895,8 @@ mod tests {
         ChildHandling, TargetActionSink, TargetActionSinkKeeper, TargetActionWithChildSlot,
         TargetHandler, TargetReconcileOutput, TargetStateProvider, TargetStateProviderRegistry,
     };
+    use crate::inspect::db_inspect::StablePathNodeType;
+    use crate::state::component_selector::ComponentSelector;
     use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::StorageSettings;
     use crate::state_store::test_support::hold_write_batch;
@@ -1909,11 +2052,21 @@ mod tests {
     /// Applies nothing but counts its `apply` calls. With `children`, it
     /// provides a `CountingHandler` counting into the given counter for every
     /// child-bearing action, in the given way: from `child_handlers` or by
-    /// fulfilling the slots in `apply`.
+    /// fulfilling the slots in `apply`. With `failing`, `apply` fails (after
+    /// counting) while the flag is set.
     #[derive(Default)]
     struct NoopSink {
         apply_calls: Arc<AtomicUsize>,
         children: Option<(ChildHandling, Arc<AtomicUsize>)>,
+        failing: Option<Arc<AtomicBool>>,
+        /// `apply` appends its name to a shared list of applied sinks.
+        recording: Option<Recording>,
+    }
+
+    /// Where a [`NoopSink`] records its `apply` calls, and under which name.
+    struct Recording {
+        applied: Arc<Mutex<Vec<String>>>,
+        name: String,
     }
 
     impl NoopSink {
@@ -1923,17 +2076,27 @@ mod tests {
             let sink = Self {
                 apply_calls: apply_calls.clone(),
                 children: Some((child_handling, child_reconcile_calls.clone())),
+                failing: None,
+                recording: None,
             };
             (sink, apply_calls, child_reconcile_calls)
         }
 
         fn child_handler(&self) -> CountingHandler {
             let (_, child_reconcile_calls) = self.children.as_ref().expect("a container sink");
+            let child_sink = NoopSink {
+                recording: self.recording.as_ref().map(|recording| Recording {
+                    applied: recording.applied.clone(),
+                    name: format!("{}/rows", recording.name),
+                }),
+                ..Default::default()
+            };
             CountingHandler {
                 reconcile_calls: child_reconcile_calls.clone(),
-                sink: TargetActionSinkKeeper::new(NoopSink::default()),
+                sink: TargetActionSinkKeeper::new(child_sink),
                 reject: false,
                 change_only: false,
+                plans_deletes: false,
             }
         }
     }
@@ -1962,6 +2125,18 @@ mod tests {
             actions: &[TargetActionWithChildSlot<TestProfile>],
         ) -> crate::prelude::Result<()> {
             self.apply_calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(recording) = &self.recording {
+                recording
+                    .applied
+                    .lock()
+                    .unwrap()
+                    .push(recording.name.clone());
+            }
+            if let Some(failing) = &self.failing
+                && failing.load(Ordering::SeqCst)
+            {
+                cocoindex_utils::client_bail!("injected sink failure");
+            }
             for slot in actions.iter().filter_map(|(_, slot)| slot.as_ref()) {
                 slot.fulfill(self.child_handler())?;
             }
@@ -1969,10 +2144,10 @@ mod tests {
         }
     }
 
-    /// Plans an action for every desired target state (none for a deletion)
-    /// and counts its `reconcile` calls. With `reject`, it rejects every
-    /// desired target state instead, as a connector rejecting a declared
-    /// value does.
+    /// Plans an action for every desired target state (for a deletion, only
+    /// with `plans_deletes`) and counts its `reconcile` calls. With `reject`,
+    /// it rejects every desired target state instead, as a connector
+    /// rejecting a declared value does.
     struct CountingHandler {
         reconcile_calls: Arc<AtomicUsize>,
         sink: TargetActionSinkKeeper<TestProfile>,
@@ -1981,6 +2156,7 @@ mod tests {
         /// nothing for a desired target state the stored records already
         /// hold, and a deletion for one no longer declared.
         change_only: bool,
+        plans_deletes: bool,
     }
 
     impl TargetHandler<TestProfile> for CountingHandler {
@@ -2009,10 +2185,13 @@ mod tests {
                     child_invalidation: None,
                 }));
             }
-            Ok(desired_target_state.map(|_| TargetReconcileOutput {
+            if desired_target_state.is_none() && !self.plans_deletes {
+                return Ok(None);
+            }
+            Ok(Some(TargetReconcileOutput {
                 action: (),
                 sink: self.sink.clone(),
-                tracking_record: Some(TestData(Vec::new())),
+                tracking_record: desired_target_state.map(|_| TestData(Vec::new())),
                 child_invalidation: None,
             }))
         }
@@ -2046,6 +2225,7 @@ mod tests {
         /// The test profile registers no kinds, so no record validates.
         fn validate_data_deps(
             _host_runtime_ctx: &(),
+            _verdicts: Arc<crate::engine::context::DataDepVerdicts>,
             _path: &StablePath,
             records: Vec<crate::engine::context::DataDepRecord>,
         ) -> crate::prelude::Result<
@@ -2083,6 +2263,9 @@ mod tests {
         /// Whether the processor has a memo key (`memo_fp`); a processor
         /// without one re-runs every time and stores no component memo.
         memoized: bool,
+        /// Counts the memo state handler's validations of stored states (a
+        /// memo probe); the initial collection after a body run is not one.
+        validations: Arc<AtomicUsize>,
         on_process: Option<ProcessHook>,
     }
 
@@ -2101,6 +2284,7 @@ mod tests {
                 memo_states_reusable: false,
                 memo_states_changed: false,
                 memoized: true,
+                validations: Arc::new(AtomicUsize::new(0)),
                 on_process: None,
             }
         }
@@ -2126,6 +2310,12 @@ mod tests {
 
         fn with_on_process(mut self, hook: ProcessHook) -> Self {
             self.on_process = Some(hook);
+            self
+        }
+
+        /// Share `counter` across the processors of several runs.
+        fn with_validation_counter(mut self, counter: Arc<AtomicUsize>) -> Self {
+            self.validations = counter;
             self
         }
     }
@@ -2168,7 +2358,7 @@ mod tests {
             &self,
             _host_runtime_ctx: &(),
             _comp_ctx: &ComponentProcessorContext<TestProfile>,
-            _stored_states: Option<MemoStatesPayload<TestProfile>>,
+            stored_states: Option<MemoStatesPayload<TestProfile>>,
         ) -> crate::prelude::Result<
             impl Future<Output = crate::prelude::Result<(MemoStatesPayload<TestProfile>, bool, bool)>>
             + Send
@@ -2177,6 +2367,9 @@ mod tests {
             let advance_clock = self.advance_clock_in_state_handler;
             let reusable = self.memo_states_reusable;
             let changed = self.memo_states_changed;
+            if stored_states.is_some() {
+                self.validations.fetch_add(1, Ordering::SeqCst);
+            }
             Ok(async move {
                 if advance_clock {
                     testing_advance_deadline_clock(Duration::from_secs(2));
@@ -2377,6 +2570,7 @@ mod tests {
                             ctx.live(),
                             None,
                             None,
+                            None,
                         ),
                     );
                     // No token is free and the root's is lent, yet the
@@ -2515,6 +2709,7 @@ mod tests {
                         ctx.target_states_providers()?,
                         ctx.full_reprocess(),
                         ctx.live(),
+                        None,
                         None,
                         None,
                     ),
@@ -2740,6 +2935,39 @@ mod tests {
         assert_eq!(body_runs.load(Ordering::SeqCst), 1);
     }
 
+    /// The re-check under the permit is for a memo stored since the fast path
+    /// looked, and a root that has run before holds a memo the fast path saw.
+    /// Two concurrent reruns of such a root whose stored memo is stale (its
+    /// key changed) still execute the body once: the loser finds the winner's
+    /// memo new under the permit and reuses it.
+    #[tokio::test]
+    async fn concurrent_same_key_reruns_of_a_root_with_a_stale_memo_execute_body_once() {
+        let (app, _dir) = test_app("memo_piggyback_rerun").await;
+        let (first, _) = app
+            .update(
+                TestProcessor::new(
+                    "root",
+                    Fingerprint::from(&"memo_piggyback_rerun/v1").unwrap(),
+                    Arc::new(AtomicBool::new(false)),
+                    false,
+                )
+                .with_reusable_memo_states(),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        first.result().await.unwrap();
+
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let body = counting_body(body_runs.clone(), Duration::from_millis(100));
+        let [first, second] =
+            update_twice_concurrently(&app, "memo_piggyback_rerun/v2", body).await;
+        assert_eq!(first.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(second.unwrap(), TestData(b"ret".to_vec()));
+        assert_eq!(body_runs.load(Ordering::SeqCst), 1);
+    }
+
     /// The re-check under the permit consults the memo store, not only the
     /// key marker: a run that fails stores no memo, so the run queued behind
     /// it executes the body itself instead of reusing a stale result.
@@ -2770,6 +2998,55 @@ mod tests {
             succeeded.into_iter().next().unwrap().unwrap(),
             TestData(b"ret".to_vec())
         );
+    }
+
+    /// A rerun of the app's root whose memo misses probes the memo once. The
+    /// root component object lives as long as the app, so its last stored
+    /// memo carries the rerun's key; the re-check under the permit is for a
+    /// memo stored since the fast path looked, not for the one the fast path
+    /// already probed — a second probe would run every validator again to
+    /// the same verdict.
+    #[tokio::test]
+    async fn a_root_rerun_whose_memo_misses_probes_once() {
+        let (app, _dir) = test_app("root_rerun_probes_once").await;
+        let validations = Arc::new(AtomicUsize::new(0));
+        let body_runs = Arc::new(AtomicUsize::new(0));
+        let memo_fp = Fingerprint::from(&"root_rerun_probes_once").unwrap();
+        let run = |states_reusable: bool| {
+            let processor =
+                TestProcessor::new("root", memo_fp, Arc::new(AtomicBool::new(false)), false)
+                    .with_validation_counter(validations.clone())
+                    .with_on_process(counting_body(body_runs.clone(), Duration::ZERO));
+            let processor = if states_reusable {
+                processor.with_reusable_memo_states()
+            } else {
+                processor
+            };
+            let (handle, _) = app
+                .update(processor, AppUpdateOptions::default(), Arc::new(()), None)
+                .unwrap();
+            async move { handle.result().await.unwrap() }
+        };
+        let counts = || {
+            (
+                validations.load(Ordering::SeqCst),
+                body_runs.load(Ordering::SeqCst),
+            )
+        };
+
+        // Fresh: no memo to probe; the body runs and its states are collected.
+        run(true).await;
+        assert_eq!(counts(), (0, 1));
+        // Unchanged: one probe, which hits.
+        run(true).await;
+        assert_eq!(counts(), (1, 1));
+        // The stored states no longer validate: one probe, which misses, then
+        // the body.
+        run(false).await;
+        assert_eq!(counts(), (2, 2));
+        // Unchanged again: one probe, which hits.
+        run(true).await;
+        assert_eq!(counts(), (3, 2));
     }
 
     /// Run one update whose root runs the same memoizable child component
@@ -2826,6 +3103,7 @@ mod tests {
                             ctx.target_states_providers()?,
                             ctx.full_reprocess(),
                             ctx.live(),
+                            None,
                             None,
                             None,
                         ),
@@ -2925,6 +3203,16 @@ mod tests {
         container_sink: TargetActionSinkKeeper<TestProfile>,
         num_rows: i64,
     ) -> TestProcessor {
+        container_root_with(container_sink, num_rows, None)
+    }
+
+    /// [`container_root`] that also registers a root provider `also` and
+    /// declares one target state through it, after the rows.
+    fn container_root_with(
+        container_sink: TargetActionSinkKeeper<TestProfile>,
+        num_rows: i64,
+        also: Option<(&'static str, TargetActionSinkKeeper<TestProfile>)>,
+    ) -> TestProcessor {
         let new_processor = |name: &str| {
             TestProcessor::new(
                 name,
@@ -2950,6 +3238,7 @@ mod tests {
                                 sink: container_sink,
                                 reject: false,
                                 change_only: false,
+                                plans_deletes: false,
                             },
                         )?;
                         *child_provider.lock().unwrap() = Some(declare_target_state_with_child(
@@ -2967,6 +3256,7 @@ mod tests {
         }));
         new_processor("root").with_on_process(Arc::new(move |ctx| {
             let (table_processor, child_provider) = table_processor.lock().unwrap().take().unwrap();
+            let also = also.clone();
             Box::pin(async move {
                 let table = ctx.component().mount_child(
                     &FnCallContext::new(true),
@@ -2984,6 +3274,26 @@ mod tests {
                         &FnCallContext::default(),
                         rows.clone(),
                         StableKey::Int(i),
+                        (),
+                    )?;
+                }
+                if let Some((name, sink)) = also.clone() {
+                    let provider = register_root_target_state_provider(
+                        &ctx,
+                        name.to_string(),
+                        CountingHandler {
+                            reconcile_calls: Default::default(),
+                            sink,
+                            reject: false,
+                            change_only: false,
+                            plans_deletes: false,
+                        },
+                    )?;
+                    declare_target_state(
+                        &ctx,
+                        &FnCallContext::default(),
+                        provider,
+                        StableKey::Int(0),
                         (),
                     )?;
                 }
@@ -3083,6 +3393,120 @@ mod tests {
         assert_eq!(container_apply_calls.load(Ordering::SeqCst), 1);
     }
 
+    /// A root that registers a root provider routed to `sink` and, with
+    /// `with_kid`, mounts a child `kid` declaring `NUM_KID_ROWS` target states
+    /// through it, which the handler deletes once the child is gone.
+    fn root_with_kid(sink: TargetActionSinkKeeper<TestProfile>, with_kid: bool) -> TestProcessor {
+        const NUM_KID_ROWS: i64 = 2;
+        let new_processor = |name: &str| {
+            TestProcessor::new(
+                name,
+                Fingerprint::from(&format!("root_with_kid/{name}")).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .without_memo()
+        };
+        let kid = new_processor("kid");
+        let kid = Mutex::new(Some(kid));
+        new_processor("root").with_on_process(Arc::new(move |ctx| {
+            let sink = sink.clone();
+            let kid = kid.lock().unwrap().take();
+            Box::pin(async move {
+                let rows = register_root_target_state_provider(
+                    &ctx,
+                    "rows".to_string(),
+                    CountingHandler {
+                        reconcile_calls: Default::default(),
+                        sink,
+                        reject: false,
+                        change_only: true,
+                        plans_deletes: true,
+                    },
+                )?;
+                if with_kid {
+                    let kid = kid.unwrap().with_on_process(Arc::new(move |ctx| {
+                        let rows = rows.clone();
+                        Box::pin(async move {
+                            for i in 0..NUM_KID_ROWS {
+                                declare_target_state(
+                                    &ctx,
+                                    &FnCallContext::default(),
+                                    rows.clone(),
+                                    StableKey::Int(i),
+                                    (),
+                                )?;
+                            }
+                            Ok(TestData(b"kid".to_vec()))
+                        })
+                    }));
+                    ctx.component()
+                        .mount_child(&FnCallContext::new(true), key_path(ctx.component(), "kid"))?
+                        .use_mount(&ctx, kid, DeadlineContext::NONE)
+                        .await?
+                        .result(Some(&ctx))
+                        .await?;
+                }
+                Ok(TestData(b"ret".to_vec()))
+            })
+        }))
+    }
+
+    /// A preview plans the deletion of the target states of a child component
+    /// that the run no longer mounts, applies none of it and writes nothing;
+    /// the update after it applies the deletion.
+    #[tokio::test]
+    async fn preview_plans_the_deletes_of_a_child_no_longer_mounted() {
+        let (app, _dir) = test_app("preview_gone_child").await;
+        let apply_calls = Arc::new(AtomicUsize::new(0));
+        let sink = TargetActionSinkKeeper::new(NoopSink {
+            apply_calls: apply_calls.clone(),
+            ..Default::default()
+        });
+        let update = |with_kid: bool, collector: Option<PreviewActionCollector<TestProfile>>| {
+            let (handle, _) = app
+                .update(
+                    root_with_kid(sink.clone(), with_kid),
+                    AppUpdateOptions::default(),
+                    Arc::new(()),
+                    collector,
+                )
+                .unwrap();
+            handle.result()
+        };
+        update(true, None).await.unwrap();
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 1);
+
+        let contents_before = app_store_contents(&app).await;
+        for _ in 0..2 {
+            let collector = PreviewActionCollector::<TestProfile>::default();
+            update(false, Some(collector.clone())).await.unwrap();
+            assert_eq!(
+                collector.lock().unwrap().len(),
+                2,
+                "one deletion per target state of the gone child"
+            );
+            assert_eq!(
+                apply_calls.load(Ordering::SeqCst),
+                1,
+                "preview applies nothing"
+            );
+            assert!(
+                app_store_contents(&app).await == contents_before,
+                "preview must not write to the state store"
+            );
+        }
+
+        update(false, None).await.unwrap();
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 2);
+        let collector = PreviewActionCollector::<TestProfile>::default();
+        update(false, Some(collector.clone())).await.unwrap();
+        assert!(
+            collector.lock().unwrap().is_empty(),
+            "nothing left to delete"
+        );
+    }
+
     /// A preview that runs a live component writes nothing: not the marker
     /// the component commits (which it still reads back), not the existence
     /// rows and tombstone of the children it updates and deletes, and not
@@ -3101,11 +3525,13 @@ mod tests {
                 Some(collector),
                 Arc::new(()),
                 None,
+                None,
             )
             .unwrap();
         let live_path = StablePath::root().concat_part(StableKey::Str(Arc::from("live")));
         let MountLiveResult { controller, .. } =
             mount_live_prepare(&ctx, &FnCallContext::default(), live_path.clone(), false)
+                .unwrap()
                 .unwrap()
                 .complete()
                 .await
@@ -3192,6 +3618,7 @@ mod tests {
                 Some(collector.clone()),
                 Arc::new(()),
                 None,
+                None,
             )
             .unwrap();
         let provider = register_root_target_state_provider(
@@ -3202,6 +3629,7 @@ mod tests {
                 sink: TargetActionSinkKeeper::new(NoopSink::default()),
                 reject: false,
                 change_only: false,
+                plans_deletes: false,
             },
         )
         .unwrap();
@@ -3224,6 +3652,7 @@ mod tests {
                     false,
                     Some(collector.clone()),
                     Arc::new(()),
+                    None,
                     None,
                 )
                 .unwrap();
@@ -3378,6 +3807,77 @@ mod tests {
         );
     }
 
+    /// `drop_app` reverts the target states of a root provider that a run
+    /// registered at run time (in its build state, not in the environment's
+    /// registry): the handler sees a deletion for each of them, and its sink
+    /// applies it.
+    #[tokio::test]
+    async fn drop_app_reverts_a_root_provider_registered_at_run_time() {
+        let (app, _dir) = test_app("drop_run_time_provider").await;
+        let apply_calls = Arc::new(AtomicUsize::new(0));
+        let reconcile_calls = Arc::new(AtomicUsize::new(0));
+        let root = {
+            let (apply_calls, reconcile_calls) = (apply_calls.clone(), reconcile_calls.clone());
+            TestProcessor::new(
+                "root",
+                Fingerprint::from(&"drop_run_time_provider").unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+            .without_memo()
+            .with_on_process(Arc::new(move |ctx| {
+                let sink = TargetActionSinkKeeper::new(NoopSink {
+                    apply_calls: apply_calls.clone(),
+                    children: None,
+                    failing: None,
+                    recording: None,
+                });
+                let reconcile_calls = reconcile_calls.clone();
+                Box::pin(async move {
+                    let provider = register_root_target_state_provider(
+                        &ctx,
+                        "target".to_string(),
+                        CountingHandler {
+                            reconcile_calls,
+                            sink,
+                            reject: false,
+                            change_only: true,
+                            plans_deletes: false,
+                        },
+                    )?;
+                    for key in [0, 1] {
+                        declare_target_state(
+                            &ctx,
+                            &FnCallContext::default(),
+                            provider.clone(),
+                            StableKey::Int(key),
+                            (),
+                        )?;
+                    }
+                    Ok(TestData(b"ret".to_vec()))
+                })
+            }))
+        };
+        let (handle, _) = app
+            .update(root, AppUpdateOptions::default(), Arc::new(()), None)
+            .unwrap();
+        handle.result().await.unwrap();
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(reconcile_calls.load(Ordering::SeqCst), 2);
+
+        app.drop_app(Arc::new(())).unwrap().result().await.unwrap();
+        assert_eq!(
+            reconcile_calls.load(Ordering::SeqCst),
+            4,
+            "drop reconciles both target states of the run-time provider away"
+        );
+        assert_eq!(
+            apply_calls.load(Ordering::SeqCst),
+            2,
+            "drop applies the deletions through the provider's sink"
+        );
+    }
+
     /// A re-run of an unmemoized component that declares the same target
     /// states, which its handler finds unchanged, writes nothing: neither its
     /// precommit nor its commit has a page to write, so no write txn commits
@@ -3401,6 +3901,8 @@ mod tests {
                 let sink = TargetActionSinkKeeper::new(NoopSink {
                     apply_calls: apply_calls.clone(),
                     children: None,
+                    failing: None,
+                    recording: None,
                 });
                 Box::pin(async move {
                     let provider = register_root_target_state_provider(
@@ -3411,6 +3913,7 @@ mod tests {
                             sink,
                             reject: false,
                             change_only: true,
+                            plans_deletes: false,
                         },
                     )?;
                     for key in keys {
@@ -3567,6 +4070,7 @@ mod tests {
                     None,
                     Arc::new(()),
                     None,
+                    None,
                 )
                 .unwrap();
             let reconcile_calls = Arc::new(AtomicUsize::new(0));
@@ -3578,6 +4082,7 @@ mod tests {
                     sink: TargetActionSinkKeeper::new(NoopSink::default()),
                     reject,
                     change_only: false,
+                    plans_deletes: false,
                 },
             )
             .unwrap();
@@ -3623,5 +4128,538 @@ mod tests {
             2,
             "the accepting precommit runs again to commit without the rejected one"
         );
+    }
+
+    /// A root whose memo key is `run`: it mounts each of `children`, each of
+    /// which records its path in `ran` when its body runs. A child's stored memo
+    /// stays reusable, so that only a miss runs it.
+    fn mounting_root(
+        run: &str,
+        children: &'static [&'static str],
+        ran: &Arc<Mutex<Vec<String>>>,
+    ) -> TestProcessor {
+        let ran = ran.clone();
+        TestProcessor::new(
+            "root",
+            Fingerprint::from(&run).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .with_on_process(Arc::new(move |ctx| {
+            let ran = ran.clone();
+            Box::pin(async move {
+                for child in children {
+                    let ran = ran.clone();
+                    let processor = TestProcessor::new(
+                        child,
+                        Fingerprint::from(child).unwrap(),
+                        Arc::new(AtomicBool::new(false)),
+                        false,
+                    )
+                    .with_reusable_memo_states()
+                    .with_on_process(Arc::new(move |ctx| {
+                        ran.lock().unwrap().push(ctx.stable_path().to_string());
+                        Box::pin(async { Ok(TestData(b"child".to_vec())) })
+                    }));
+                    ctx.component()
+                        .mount_child(&FnCallContext::new(true), key_path(ctx.component(), child))?
+                        .mount(&ctx, processor, None)
+                        .await?;
+                }
+                Ok(TestData(b"root".to_vec()))
+            })
+        }))
+    }
+
+    async fn run_update(app: &App<TestProfile>, root: TestProcessor, options: AppUpdateOptions) {
+        let (handle, _) = app.update(root, options, Arc::new(()), None).unwrap();
+        handle.result().await.unwrap();
+    }
+
+    fn select(key: &str) -> Option<ComponentSelector> {
+        Some(ComponentSelector::new([
+            StablePath::root().concat_part(StableKey::Str(Arc::from(key)))
+        ]))
+    }
+
+    /// Not creating the tombstone in the first place: the child's row, tracking
+    /// record and memo stay byte for byte, whether the root skipped its mount
+    /// ("a", still mounted) or no longer mounts it ("b").
+    #[tokio::test]
+    async fn an_unselected_component_is_not_run_and_keeps_what_the_store_holds_for_it() {
+        let (app, _dir) = test_app("selector_unselected").await;
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        run_update(
+            &app,
+            mounting_root("full", &["a", "b", "c"], &ran),
+            AppUpdateOptions::default(),
+        )
+        .await;
+        assert_eq!(ran.lock().unwrap().len(), 3);
+        ran.lock().unwrap().clear();
+
+        let app_store = app.app_ctx().persisting_app_store();
+        let path = |key: &str| StablePath::root().concat_part(StableKey::Str(Arc::from(key)));
+        let stored = |key: &'static str| {
+            let app_store = app_store.clone();
+            let path = path(key);
+            async move {
+                (
+                    app_store.read_tracking_info(&path).await.unwrap(),
+                    app_store.read_component_memo(&path).await.unwrap(),
+                )
+            }
+        };
+        let (a_before, b_before) = (stored("a").await, stored("b").await);
+        assert!(a_before.0.is_some() && a_before.1.is_some());
+        assert!(b_before.0.is_some() && b_before.1.is_some());
+
+        // A full reprocess, so that a child the selector lets through would run.
+        run_update(
+            &app,
+            mounting_root("selective", &["a", "c"], &ran),
+            AppUpdateOptions {
+                full_reprocess: true,
+                component_selector: select("c"),
+                ..AppUpdateOptions::default()
+            },
+        )
+        .await;
+        assert_eq!(*ran.lock().unwrap(), vec![path("c").to_string()]);
+
+        assert_eq!(stored("a").await, a_before);
+        assert_eq!(stored("b").await, b_before);
+        let key = StableKey::Str(Arc::from("b"));
+        assert_eq!(
+            app_store
+                .read_path_node_type(StablePath::root().as_ref(), &key)
+                .await
+                .unwrap(),
+            Some(StablePathNodeType::Component)
+        );
+        assert!(
+            app_store
+                .list_tombstones(&StablePath::root())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // A run the selector does not limit sees "b" gone.
+        run_update(
+            &app,
+            mounting_root("full again", &["a", "c"], &ran),
+            AppUpdateOptions::default(),
+        )
+        .await;
+        assert_eq!(
+            app_store
+                .read_path_node_type(StablePath::root().as_ref(), &key)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    /// A memo says the subtree is up to date, which a run that left out a child
+    /// cannot say. It stores none, and retires the one it ran over: a later
+    /// update must run the component to reach that child.
+    #[tokio::test]
+    async fn a_run_that_left_out_a_child_stores_no_memo_and_drops_the_stored_one() {
+        let (app, _dir) = test_app("selector_memo").await;
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let app_store = app.app_ctx().persisting_app_store().clone();
+        let root_memo = || {
+            let app_store = app_store.clone();
+            async move {
+                app_store
+                    .read_component_memo(&StablePath::root())
+                    .await
+                    .unwrap()
+            }
+        };
+
+        run_update(
+            &app,
+            mounting_root("same key", &["a", "b"], &ran),
+            AppUpdateOptions::default(),
+        )
+        .await;
+        assert!(root_memo().await.is_some());
+
+        run_update(
+            &app,
+            mounting_root("same key", &["a", "b"], &ran),
+            AppUpdateOptions {
+                full_reprocess: true,
+                component_selector: select("a"),
+                ..AppUpdateOptions::default()
+            },
+        )
+        .await;
+        assert!(root_memo().await.is_none());
+
+        // Nothing left out, though under a selector: the run is complete.
+        let key_path_of =
+            |key: &str| StablePath::root().concat_part(StableKey::Str(Arc::from(key)));
+        run_update(
+            &app,
+            mounting_root("same key", &["a", "b"], &ran),
+            AppUpdateOptions {
+                full_reprocess: true,
+                component_selector: Some(ComponentSelector::new([
+                    key_path_of("a"),
+                    key_path_of("b"),
+                ])),
+                ..AppUpdateOptions::default()
+            },
+        )
+        .await;
+        assert!(root_memo().await.is_some());
+
+        // "b" is on disk, no longer mounted, and not selected: it is left out.
+        run_update(
+            &app,
+            mounting_root("same key", &["a"], &ran),
+            AppUpdateOptions {
+                full_reprocess: true,
+                component_selector: select("a"),
+                ..AppUpdateOptions::default()
+            },
+        )
+        .await;
+        assert!(root_memo().await.is_none());
+
+        // Selecting the root is no limit: the run is an ordinary one.
+        run_update(
+            &app,
+            mounting_root("same key", &["a", "b"], &ran),
+            AppUpdateOptions {
+                component_selector: Some(ComponentSelector::new([StablePath::root()])),
+                ..AppUpdateOptions::default()
+            },
+        )
+        .await;
+        assert!(root_memo().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_unselected_live_component_does_not_mount() {
+        let (app, _dir) = test_app("selector_live").await;
+        let contents_before = app_store_contents(&app).await;
+        let ctx = Component::new(app.app_ctx().clone(), StablePath::root(), None)
+            .new_processor_context_for_build(
+                None,
+                ProcessingStats::new(),
+                false,
+                false,
+                None,
+                Arc::new(()),
+                None,
+                select("selected"),
+            )
+            .unwrap();
+        let live_path = |key: &str| key_path(ctx.component(), key);
+        assert!(
+            mount_live_prepare(
+                &ctx,
+                &FnCallContext::default(),
+                live_path("unselected"),
+                false
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(app_store_contents(&app).await == contents_before);
+        assert!(
+            mount_live_prepare(
+                &ctx,
+                &FnCallContext::default(),
+                live_path("selected"),
+                false
+            )
+            .unwrap()
+            .is_some()
+        );
+    }
+
+    /// The root mounts `m` while `mount` is set; `m` declares nothing and
+    /// mounts `m/l`, which declares one target state through a handler that
+    /// plans its delete, applied by `sink`.
+    fn nested_root(sink: TargetActionSinkKeeper<TestProfile>, mount: bool) -> TestProcessor {
+        fn new_processor(name: &str) -> TestProcessor {
+            TestProcessor::new(
+                name,
+                Fingerprint::from(&format!("nested_root/{name}")).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+                false,
+            )
+        }
+        type ProviderSlot = Arc<Mutex<Option<TargetStateProvider<TestProfile>>>>;
+        let provider: ProviderSlot = Default::default();
+        let leaf = {
+            let provider = provider.clone();
+            new_processor("leaf").with_on_process(Arc::new(move |ctx| {
+                let provider = provider.lock().unwrap().clone().unwrap();
+                Box::pin(async move {
+                    declare_target_state(
+                        &ctx,
+                        &FnCallContext::default(),
+                        provider,
+                        StableKey::Int(0),
+                        (),
+                    )?;
+                    Ok(TestData(b"leaf".to_vec()))
+                })
+            }))
+        };
+        let leaf = Mutex::new(Some(leaf));
+        let mid = new_processor("mid").with_on_process(Arc::new(move |ctx| {
+            let leaf = leaf.lock().unwrap().take().unwrap();
+            Box::pin(async move {
+                let child = ctx
+                    .component()
+                    .mount_child(&FnCallContext::new(true), key_path(ctx.component(), "l"))?;
+                child
+                    .use_mount(&ctx, leaf, DeadlineContext::NONE)
+                    .await?
+                    .result(Some(&ctx))
+                    .await?;
+                Ok(TestData(b"mid".to_vec()))
+            })
+        }));
+        let mid = Mutex::new(Some(mid));
+        new_processor("root").with_on_process(Arc::new(move |ctx| {
+            let mid = mid.lock().unwrap().take().unwrap();
+            let provider = provider.clone();
+            let sink = sink.clone();
+            Box::pin(async move {
+                *provider.lock().unwrap() = Some(register_root_target_state_provider(
+                    &ctx,
+                    "target".to_string(),
+                    CountingHandler {
+                        reconcile_calls: Arc::new(AtomicUsize::new(0)),
+                        sink,
+                        reject: false,
+                        plans_deletes: true,
+                        change_only: false,
+                    },
+                )?);
+                if mount {
+                    let child = ctx
+                        .component()
+                        .mount_child(&FnCallContext::new(true), key_path(ctx.component(), "m"))?;
+                    child
+                        .use_mount(&ctx, mid, DeadlineContext::NONE)
+                        .await?
+                        .result(Some(&ctx))
+                        .await?;
+                }
+                Ok(TestData(b"ret".to_vec()))
+            })
+        }))
+    }
+
+    /// A child delete that fails under a deleted parent keeps the parent's
+    /// tombstone too, so the next update deletes the parent again, and with
+    /// it the child. Were the parent's tombstone cleaned, the child's, keyed
+    /// under the gone parent, would never be swept again.
+    #[tokio::test]
+    async fn a_failed_delete_under_a_deleted_parent_is_retried() {
+        let (app, _dir) = test_app("failed_delete_under_deleted_parent").await;
+        let failing = Arc::new(AtomicBool::new(false));
+        let sink = NoopSink {
+            failing: Some(failing.clone()),
+            ..Default::default()
+        };
+        let apply_calls = sink.apply_calls.clone();
+        let sink = TargetActionSinkKeeper::new(sink);
+        let update = |mount: bool| {
+            let (handle, _) = app
+                .update(
+                    nested_root(sink.clone(), mount),
+                    AppUpdateOptions::default(),
+                    Arc::new(()),
+                    None,
+                )
+                .unwrap();
+            handle.result()
+        };
+        let app_store = app.app_ctx().persisting_app_store();
+        let m = StablePath::root().concat_part(StableKey::Str(Arc::from("m")));
+        let l = StablePath::root().concat_part(StableKey::Str(Arc::from("l")));
+
+        update(true).await.unwrap();
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 1, "the upsert");
+
+        // Unmount `m`; the delete of `m/l`'s target state fails. With no
+        // handler installed, the update still succeeds.
+        failing.store(true, Ordering::SeqCst);
+        update(false).await.unwrap();
+        failing.store(false, Ordering::SeqCst);
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 2, "the failed delete");
+        assert_eq!(app_store.list_tombstones(&m).await.unwrap(), vec![l]);
+        assert_eq!(
+            app_store
+                .list_tombstones(&StablePath::root())
+                .await
+                .unwrap(),
+            vec![m.clone()],
+            "`m` keeps its tombstone while its child's delete is owed"
+        );
+
+        update(false).await.unwrap();
+        assert_eq!(apply_calls.load(Ordering::SeqCst), 3, "the retried delete");
+        assert!(app_store.list_tombstones(&m).await.unwrap().is_empty());
+        assert!(
+            app_store
+                .list_tombstones(&StablePath::root())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        update(false).await.unwrap();
+        assert_eq!(
+            apply_calls.load(Ordering::SeqCst),
+            3,
+            "nothing left to delete"
+        );
+    }
+
+    /// A root processor that registers a run-time root provider per entry of
+    /// `sinks`, in their order, and declares one target state through each.
+    fn declaring_root(
+        test: &str,
+        sinks: Vec<(&'static str, TargetActionSinkKeeper<TestProfile>)>,
+    ) -> TestProcessor {
+        TestProcessor::new(
+            "root",
+            Fingerprint::from(&test).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+            false,
+        )
+        .without_memo()
+        .with_on_process(Arc::new(move |ctx| {
+            let sinks = sinks.clone();
+            Box::pin(async move {
+                for (name, sink) in sinks {
+                    let provider = register_root_target_state_provider(
+                        &ctx,
+                        name.to_string(),
+                        CountingHandler {
+                            reconcile_calls: Default::default(),
+                            sink,
+                            reject: false,
+                            change_only: false,
+                            plans_deletes: true,
+                        },
+                    )?;
+                    declare_target_state(
+                        &ctx,
+                        &FnCallContext::default(),
+                        provider,
+                        StableKey::Int(0),
+                        (),
+                    )?;
+                }
+                Ok(TestData(b"ret".to_vec()))
+            })
+        }))
+    }
+
+    /// Sinks of providers at one depth apply in the order of the providers'
+    /// keys, whatever order the run declared through them, on every run.
+    #[tokio::test]
+    async fn sinks_of_providers_at_one_depth_apply_in_provider_key_order() {
+        let (app, _dir) = test_app("sink_order").await;
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        let sink = |name: &str| {
+            TargetActionSinkKeeper::new(NoopSink {
+                recording: Some(Recording {
+                    applied: applied.clone(),
+                    name: name.to_string(),
+                }),
+                ..Default::default()
+            })
+        };
+        let sinks = vec![("c", sink("c")), ("a", sink("a")), ("b", sink("b"))];
+        for run in 0..8 {
+            applied.lock().unwrap().clear();
+            let (handle, _) = app
+                .update(
+                    declaring_root("sink_order", sinks.clone()),
+                    AppUpdateOptions::default(),
+                    Arc::new(()),
+                    None,
+                )
+                .unwrap();
+            handle.result().await.unwrap();
+            assert_eq!(*applied.lock().unwrap(), ["a", "b", "c"], "run {run}");
+        }
+    }
+
+    /// Sinks of shallower providers apply first, whatever their keys: the
+    /// container's provider is keyed `tables` and the other root provider `z`,
+    /// which sorts after it, yet the rows (depth 1, under `tables`) apply
+    /// last. The key chain alone would put the rows before `z`.
+    #[tokio::test]
+    async fn sinks_of_shallower_providers_apply_first_whatever_their_keys() {
+        let (app, _dir) = test_app("sink_depth_order").await;
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        let recording = |name: &str| Recording {
+            applied: applied.clone(),
+            name: name.to_string(),
+        };
+        let (mut container, _, _) = NoopSink::container(ChildHandling::Factory);
+        container.recording = Some(recording("a"));
+        let container_sink = TargetActionSinkKeeper::new(container);
+        let root_sink = TargetActionSinkKeeper::new(NoopSink {
+            recording: Some(recording("z")),
+            ..Default::default()
+        });
+        for run in 0..8 {
+            applied.lock().unwrap().clear();
+            let root =
+                container_root_with(container_sink.clone(), 2, Some(("z", root_sink.clone())));
+            let (handle, _) = app
+                .update(root, AppUpdateOptions::default(), Arc::new(()), None)
+                .unwrap();
+            handle.result().await.unwrap();
+            assert_eq!(
+                *applied.lock().unwrap(),
+                ["a", "z", "a/rows"],
+                "run {run}: containers before rows, keys within a depth"
+            );
+        }
+    }
+
+    /// A failed sink's error names the target states it was applying: the
+    /// connector's own error says what failed, not where.
+    #[tokio::test]
+    async fn a_failed_sink_names_the_target_states_it_was_applying() {
+        let (app, _dir) = test_app("failing_sink").await;
+        let sink = TargetActionSinkKeeper::new(NoopSink {
+            failing: Some(Arc::new(AtomicBool::new(true))),
+            ..Default::default()
+        });
+        let (handle, _) = app
+            .update(
+                declaring_root("failing_sink", vec![("orders", sink)]),
+                AppUpdateOptions::default(),
+                Arc::new(()),
+                None,
+            )
+            .unwrap();
+        let message = handle
+            .result()
+            .await
+            .expect_err("the sink fails")
+            .to_string();
+        assert!(
+            message.contains("failed to apply changes to target states under @orders"),
+            "{message}"
+        );
+        assert!(message.contains("injected sink failure"), "{message}");
     }
 }

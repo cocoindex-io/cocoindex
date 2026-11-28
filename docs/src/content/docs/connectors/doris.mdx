@@ -10,7 +10,7 @@ The `doris` connector provides utilities for writing rows to Apache Doris databa
 
 import LangTabs from '../../../components/LangTabs.astro';
 
-{/* Rust: rust/sdk/cocoindex/tests/doris_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/doris_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -36,7 +36,7 @@ use cocoindex::connectors::doris::{
 This connector requires additional dependencies. Install with:
 
 ```bash
-pip install cocoindex[doris]
+pip install "cocoindex[doris]"
 ```
 
 :::
@@ -67,7 +67,7 @@ Enable the `doris` Cargo feature of the `cocoindex` crate.
 
 Configure the connection to your Doris cluster:
 
-{/* Rust: rust/sdk/cocoindex/tests/doris_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/doris_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -219,7 +219,7 @@ The key name is load-bearing across runs — it's the stable identity CocoIndex 
 CocoIndex tracks each table by the context key and the table name. The `database` in <Lang only="python">`DorisConnectionConfig`</Lang><Lang only="rust">`DorisConfig`</Lang> is not part of that identity. If you change `database` under the same key, CocoIndex treats it as if you moved the tables there. It assumes that they already exist in the new database, so it does not create them, and it leaves the old database as it is. To write to a new, empty database, use a new context key.
 :::
 
-{/* Rust: rust/sdk/cocoindex/tests/doris_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/doris_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -356,7 +356,7 @@ mount_each!("facts", facts, |file| process_facts(ctx, file, table)).await?;
 
 Once a <Lang only="python">`DorisTableTarget`</Lang><Lang only="rust">`TableTarget`</Lang> is resolved, declare rows to be upserted:
 
-{/* Rust: rust/sdk/cocoindex/tests/doris_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/doris_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -456,7 +456,7 @@ The row type is a struct that derives `SchemaFields` (and `Serialize`). Per-colu
 
 **Example:**
 
-{/* Rust: rust/sdk/cocoindex/tests/schema_from_row.rs, examples/rust/sec_edgar_analytics/src/main.rs (with_vector_schema) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/schema_from_row.rs, examples/rust/sec_edgar_analytics/src/main.rs (with_vector_schema) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -644,7 +644,7 @@ impl VectorIndexDef {
 
 Doris supports inverted indexes for full-text search. Define them with `InvertedIndexDef`:
 
-{/* Rust: rust/sdk/cocoindex/tests/doris_target.rs */}
+{/* Rust: rust/sdk/cocoindex/tests/it/doris_target.rs */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -687,7 +687,7 @@ let target =
 
 Build a vector similarity search SQL query:
 
-{/* Rust: rust/sdk/cocoindex/tests/doris_target.rs, rust/sdk/SHOWCASE.md (verified against doris.rs) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/doris_target.rs, rust/sdk/SHOWCASE.md (verified against doris.rs) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -783,7 +783,7 @@ There is no `connect_async`: queries run on the pool of the `DorisConnection` it
 
 ### Example
 
-{/* Rust: rust/sdk/cocoindex/tests/doris_target.rs (shape of the inverted-index test, with a vector index from doris.rs) */}
+{/* Rust: rust/sdk/cocoindex/tests/it/doris_target.rs (shape of the inverted-index test, with a vector index from doris.rs) */}
 <LangTabs>
 <Fragment slot="python">
 
@@ -894,7 +894,7 @@ app.run(move |ctx| async move {
 .await?;
 ```
 
-`examples/rust/sec_edgar_analytics` is a runnable project: one Doris table with a vector index and an inverted index, fed per file through `mount_each!`. `rust/sdk/cocoindex/tests/doris_target.rs` is the end-to-end test.
+`examples/rust/sec_edgar_analytics` is a runnable project: one Doris table with a vector index and an inverted index, fed per file through `mount_each!`. `rust/sdk/cocoindex/tests/it/doris_target.rs` is the end-to-end test.
 
 </Fragment>
 </LangTabs>

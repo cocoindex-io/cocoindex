@@ -13,6 +13,10 @@ from aiomoto import mock_aws
 
 from cocoindex.connectors import amazon_s3
 from cocoindex.resources.file import PatternFilePathMatcher
+from tests.common.object_store_exclusions import (
+    EXCLUDED_DIRECTORY_CASES,
+    EXCLUSION_TEST_KEYS,
+)
 
 
 @pytest_asyncio.fixture
@@ -168,6 +172,32 @@ class TestAsyncListObjects:
         assert isinstance(items[0][1], amazon_s3.S3File)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prefix", "excluded_patterns", "expected"), EXCLUDED_DIRECTORY_CASES
+)
+async def test_excluded_directory_excludes_the_objects_under_it(
+    prefix: str, excluded_patterns: list[str], expected: list[str]
+) -> None:
+    async with mock_aws():
+        sync_client = boto3.client("s3", region_name="us-east-1")
+        sync_client.create_bucket(Bucket="exclusion-test")
+        for key in EXCLUSION_TEST_KEYS:
+            sync_client.put_object(Bucket="exclusion-test", Key=key, Body=b"x")
+
+        session = aiobotocore.session.get_session()
+        async with session.create_client("s3", region_name="us-east-1") as client:
+            walker = amazon_s3.list_objects(
+                client,
+                "exclusion-test",
+                prefix=prefix,
+                path_matcher=PatternFilePathMatcher(
+                    excluded_patterns=excluded_patterns
+                ),
+            )
+            assert sorted([key async for key, _ in walker.items()]) == expected
+
+
 # ---------------------------------------------------------------------------
 # S3File (async) tests
 # ---------------------------------------------------------------------------
@@ -200,6 +230,26 @@ class TestS3File:
 
         assert await f.read(2) == b""
         assert await f.read() == b""
+
+    async def test_read_helper_partial_reads(self, s3_client: tuple[Any, str]) -> None:
+        """The standalone ``read()`` helper honors ``size``, including 0."""
+        client, bucket_name = s3_client
+        uri = f"s3://{bucket_name}/file1.txt"
+
+        assert await amazon_s3.read(client, uri, size=0) == b""
+        assert await amazon_s3.read(client, uri, size=2) == b"he"
+        assert await amazon_s3.read(client, uri) == b"hello"
+
+    async def test_read_helper_empty_object(self, s3_client: tuple[Any, str]) -> None:
+        """The standalone ``read()`` helper returns b"" for an empty object."""
+        client, bucket_name = s3_client
+        boto3.client("s3", region_name="us-east-1").put_object(
+            Bucket=bucket_name, Key="empty.bin", Body=b""
+        )
+        uri = f"s3://{bucket_name}/empty.bin"
+
+        assert await amazon_s3.read(client, uri, size=0) == b""
+        assert await amazon_s3.read(client, uri) == b""
 
     async def test_read_text(self, s3_client: tuple[Any, str]) -> None:
         """await read_text() returns file content as text."""

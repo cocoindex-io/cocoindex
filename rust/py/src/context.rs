@@ -1,5 +1,5 @@
 use crate::fingerprint::PyFingerprint;
-use crate::function::context_initial_states_to_pydict;
+use crate::function::{PyDataDepVerdicts, context_initial_states_to_pydict};
 use crate::prelude::*;
 
 use crate::deadline::PyDeadlineContext;
@@ -34,6 +34,12 @@ impl PyComponentProcessorContext {
         self.0.live()
     }
 
+    /// The data-dependency verdicts of this context's operation.
+    #[getter]
+    fn data_dep_verdicts(&self) -> PyDataDepVerdicts {
+        PyDataDepVerdicts(self.0.data_dep_verdicts().clone())
+    }
+
     fn join_fn_call(&self, fn_ctx: &PyFnCallContext) -> PyResult<()> {
         self.0.join_fn_call(&fn_ctx.0);
         Ok(())
@@ -62,6 +68,14 @@ impl PyComponentProcessorContext {
     /// resolves asynchronously once the members finish.
     fn end_stats_group(&self) {
         self.0.end_stats_group();
+    }
+
+    /// Count a component failure that no exception handler took ownership of
+    /// (no handler registered, or every handler re-raised). Recorded on the
+    /// root of the stats chain, so failures inside a stats group are covered
+    /// too; drives the exit status of `cocoindex update`.
+    fn record_unhandled_failure(&self) {
+        self.0.processing_stats().record_unhandled_failure();
     }
 
     /// Collect eager initial memo states for the change-detection context fingerprints

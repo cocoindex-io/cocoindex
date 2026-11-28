@@ -12,11 +12,12 @@ use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
 use crate::prelude::*;
 
+use crate::state::component_selector::{ComponentSelection, ComponentSelector};
 use crate::state::stable_path::StableKey;
 
 pub(crate) static TARGET_ID_KEY: LazyLock<StableKey> =
     LazyLock::new(|| StableKey::Symbol("cocoindex/_internal/target_id".into()));
-use crate::state::stable_path_set::ChildStablePathSet;
+use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 use crate::state::target_state_path::{
     TargetProviderDeps, TargetStatePath, TargetStateProviderGeneration,
 };
@@ -62,6 +63,13 @@ struct AppContextInner<Prof: EngineProfile> {
     live_components: parking_lot::Mutex<
         Vec<std::sync::Weak<crate::engine::live_component::LiveComponentState<Prof>>>,
     >,
+
+    /// Root target-state providers (with their attachment providers) that
+    /// this app's runs registered at run time, by path; the latest
+    /// registration of a path wins. Such a provider lives in its run's build
+    /// state only, not in the environment's registry, so `App::drop_app`
+    /// adds these to revert the target states they own.
+    run_root_providers: parking_lot::Mutex<HashMap<TargetStatePath, TargetStateProvider<Prof>>>,
 }
 
 #[derive(Clone)]
@@ -88,8 +96,28 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                     crate::engine::runtime::global_cancellation_token().child_token(),
                 ),
                 live_components: parking_lot::Mutex::new(Vec::new()),
+                run_root_providers: parking_lot::Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    /// Remember root providers a run registered; see `run_root_providers`.
+    pub(crate) fn remember_run_root_providers(
+        &self,
+        providers: impl IntoIterator<Item = (TargetStatePath, TargetStateProvider<Prof>)>,
+    ) {
+        self.inner.run_root_providers.lock().extend(providers);
+    }
+
+    /// The root providers this app's runs registered; see
+    /// `run_root_providers`.
+    pub(crate) fn run_root_providers(&self) -> Vec<(TargetStatePath, TargetStateProvider<Prof>)> {
+        self.inner
+            .run_root_providers
+            .lock()
+            .iter()
+            .map(|(path, provider)| (path.clone(), provider.clone()))
+            .collect()
     }
 
     /// Register a live component for shutdown drain coverage.
@@ -311,6 +339,87 @@ pub(crate) fn decode_data_deps(entries: Vec<db_schema::DataDepEntry<'_>>) -> Vec
             }
         })
         .collect()
+}
+
+/// A stored data-dependency record as one validation sees it: its kind, its
+/// key and the state it was recorded with. Two probes that hold this identity
+/// ask the validator the same question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DataDepIdentity {
+    pub kind_fp: Fingerprint,
+    pub key_fp: Fingerprint,
+    pub state_fp: Fingerprint,
+}
+
+impl DataDepRecord {
+    pub fn identity(&self) -> DataDepIdentity {
+        DataDepIdentity {
+            kind_fp: self.kind_fp,
+            key_fp: self.key_fp,
+            state_fp: self.state_fp,
+        }
+    }
+}
+
+/// What a validator answered for one record identity.
+#[derive(Clone, Debug)]
+pub struct DataDepVerdict {
+    pub memo_valid: bool,
+    /// The state the validator returned, serialized, when it differs from the
+    /// record's; `None` when it is unchanged.
+    pub new_state: Option<bytes::Bytes>,
+}
+
+impl DataDepVerdict {
+    /// The record as this verdict leaves it: as stored, or with the new state.
+    pub fn apply(&self, record: DataDepRecord) -> DataDepRecord {
+        match &self.new_state {
+            None => record,
+            Some(state) => DataDepRecord {
+                state_fp: Fingerprint::from_bytes(state),
+                state: state.clone(),
+                ..record
+            },
+        }
+    }
+}
+
+/// The verdicts of the data-dependency records validated in one operation, by
+/// record identity. Every context of the operation shares one (see
+/// [`ComponentProcessorContext::data_dep_verdicts`]), so a record a probe
+/// validated is not validated again by a later probe in the same operation:
+/// a component's probe and then, when its body re-runs, the probe of a
+/// memoized function beneath it that recorded the same read, or each level
+/// of a chain of flagged ancestors.
+///
+/// An operation acts on the first verdict recorded for an identity. A source
+/// that changes after it is seen by the next operation, which validates the
+/// stored records afresh. Probes of one identity that run concurrently may
+/// each call the validator; [`record`](Self::record) then hands every one the
+/// first verdict, so they still agree. Nothing here persists: the cache lives
+/// as long as the operation's contexts.
+#[derive(Debug, Default)]
+pub struct DataDepVerdicts {
+    verdicts: Mutex<HashMap<DataDepIdentity, DataDepVerdict>>,
+}
+
+impl DataDepVerdicts {
+    /// The verdict this operation already holds for `identity`, if any.
+    pub fn get(&self, identity: &DataDepIdentity) -> Option<DataDepVerdict> {
+        self.verdicts.lock().unwrap().get(identity).cloned()
+    }
+
+    /// Record the verdict a validator just returned for `identity`, and return
+    /// the verdict the operation acts on: this one, or the one a concurrent
+    /// probe recorded first.
+    pub fn record(&self, identity: DataDepIdentity, verdict: DataDepVerdict) -> DataDepVerdict {
+        self.verdicts
+            .lock()
+            .unwrap()
+            .entry(identity)
+            .or_insert(verdict)
+            .clone()
+    }
 }
 
 pub struct FnCallMemo<Prof: EngineProfile> {
@@ -772,6 +881,30 @@ pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     /// `mount_inner_live`'s self-built parent context).
     pub on_error: Option<crate::engine::component::OnError>,
     pub preview_collector: Option<PreviewActionCollector<Prof>>,
+    /// The selector this run is under, scoped by
+    /// [`ComponentSelector::scoped_to`]. See
+    /// [`ComponentProcessorContext::component_selector`].
+    pub component_selector: Option<ComponentSelector>,
+}
+
+/// A change a run refused because the update's selector leaves out components
+/// it would affect: the rebuild or removal of a container target state whose
+/// children the update does not run. The run fails, and the update fails with
+/// the same error when it ends, wherever the run was: a background component's
+/// failure alone only reaches its error handler, and a caller that previews a
+/// slice and then updates it must see the refusal from both.
+#[derive(Clone, Default)]
+pub(crate) struct UpdateRefusal(Arc<parking_lot::Mutex<Option<String>>>);
+
+impl UpdateRefusal {
+    /// Keep the first refusal: it is the one the update reports.
+    pub(crate) fn record(&self, message: &str) {
+        self.0.lock().get_or_insert_with(|| message.to_string());
+    }
+
+    pub(crate) fn take(&self) -> Option<String> {
+        self.0.lock().take()
+    }
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
@@ -786,6 +919,9 @@ pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
     ///
     /// See `specs/core/error_handling.md` for the unified principle.
     pub on_error: Option<crate::engine::component::OnError>,
+    /// The preview collector of the run that launched this delete: in a
+    /// preview, the delete plans its actions into it instead of applying them.
+    pub preview_collector: Option<PreviewActionCollector<Prof>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -810,6 +946,7 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
         live: bool,
         on_error: Option<crate::engine::component::OnError>,
         preview_collector: Option<PreviewActionCollector<Prof>>,
+        component_selector: Option<ComponentSelector>,
     ) -> Self {
         Self::Build(ComponentBuildContext {
             state: Mutex::new(Some(ComponentBuildingState {
@@ -825,17 +962,29 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
             live,
             on_error,
             preview_collector,
+            component_selector,
         })
     }
 
     pub fn new_delete(
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         on_error: Option<crate::engine::component::OnError>,
+        preview_collector: Option<PreviewActionCollector<Prof>>,
     ) -> Self {
         Self::Delete(ComponentDeleteContext {
             providers,
             on_error,
+            preview_collector,
         })
+    }
+
+    /// The collector of a preview run's actions: a build's, or a delete's that
+    /// the preview launched for a component it no longer mounts.
+    fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
+        match self {
+            Self::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
+            Self::Delete(delete_ctx) => delete_ctx.preview_collector.as_ref(),
+        }
     }
 }
 
@@ -847,10 +996,22 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     app_store: AppStore,
     /// See [`ComponentProcessorContext::operation_generation`].
     operation_generation: u64,
+    /// See [`ComponentProcessorContext::data_dep_verdicts`].
+    data_dep_verdicts: Arc<DataDepVerdicts>,
 
     /// This run's in-flight token and the lender its children borrow from;
     /// see [`crate::engine::admission`].
     admission: Admission,
+
+    /// Where a run of this update records that it refused a change for the
+    /// selector's sake (see [`UpdateRefusal`]). One per update: every context
+    /// of the update shares it, live components' runs included.
+    update_refusal: UpdateRefusal,
+
+    /// This run's selector left out a child it mounted or one the store holds,
+    /// so this subtree is not up to date when the run ends. Set by a mount, by
+    /// the commit's existence reconciliation and by its GC sweep.
+    left_out_children: Arc<AtomicBool>,
 
     /// Logic fingerprints accumulated from function calls and child components.
     logic_deps: Mutex<HashSet<Fingerprint>>,
@@ -912,19 +1073,14 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         // store, or in a preview one handle whose writes never persist.
         let app_store = match &parent_context {
             Some(parent) => parent.app_store().clone(),
-            None => match &processing_action {
-                ComponentProcessingAction::Build(build_ctx)
-                    if build_ctx.preview_collector.is_some() =>
-                {
-                    component
-                        .app_ctx()
-                        .persisting_app_store()
-                        .discarding_writes()
+            None => {
+                let persisting_app_store = component.app_ctx().persisting_app_store();
+                if processing_action.preview_collector().is_some() {
+                    persisting_app_store.discarding_writes()
+                } else {
+                    persisting_app_store.clone()
                 }
-                ComponentProcessingAction::Build(_) | ComponentProcessingAction::Delete(_) => {
-                    component.app_ctx().persisting_app_store().clone()
-                }
-            },
+            }
         };
         Self::from_parts(
             component,
@@ -934,6 +1090,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             host_ctx,
             processing_action,
             app_store,
+            None,
         )
     }
 
@@ -942,6 +1099,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// It borrows its in-flight token from `lender`, the run that mounted the
     /// live component, for as long as that run lasts, and reads and writes
     /// the store through `app_store`, that run's handle.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_borrowing_from(
         component: Component<Prof>,
         lender: Option<Lender>,
@@ -950,6 +1108,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
         app_store: AppStore,
+        update_refusal: UpdateRefusal,
     ) -> Self {
         Self::from_parts(
             component,
@@ -959,9 +1118,11 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             host_ctx,
             processing_action,
             app_store,
+            Some(update_refusal),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn from_parts(
         component: Component<Prof>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
@@ -970,10 +1131,20 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
         app_store: AppStore,
+        update_refusal: Option<UpdateRefusal>,
     ) -> Self {
+        let update_refusal = match (&parent_context, update_refusal) {
+            (Some(parent), _) => parent.update_refusal().clone(),
+            (None, Some(update_refusal)) => update_refusal,
+            (None, None) => UpdateRefusal::default(),
+        };
         let operation_generation = match &parent_context {
             Some(parent) => parent.operation_generation(),
             None => component.app_ctx().next_operation_generation(),
+        };
+        let data_dep_verdicts = match &parent_context {
+            Some(parent) => parent.data_dep_verdicts().clone(),
+            None => Arc::default(),
         };
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
@@ -982,7 +1153,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 processing_action,
                 app_store,
                 operation_generation,
+                data_dep_verdicts,
                 admission,
+                update_refusal,
+                left_out_children: Arc::new(AtomicBool::new(false)),
                 logic_deps: Mutex::new(HashSet::new()),
                 data_deps: Mutex::new(DataDeps::default()),
                 target_provider_deps: Mutex::new(TargetProviderDeps::new()),
@@ -1320,13 +1494,128 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.operation_generation
     }
 
-    /// The collector of a preview run's actions. Only a build runs as a
-    /// preview: a preview plans no deletes of components.
+    /// The verdicts of the data-dependency records validated so far in this
+    /// context's operation (see [`DataDepVerdicts`]). It follows
+    /// [`operation_generation`](Self::operation_generation): a context without
+    /// a parent starts an empty one, children share their parent's. A preview
+    /// is an operation of its own, so it validates afresh and keeps its
+    /// verdicts to itself.
+    pub fn data_dep_verdicts(&self) -> &Arc<DataDepVerdicts> {
+        &self.inner.data_dep_verdicts
+    }
+
+    /// The collector of a preview run's actions; see
+    /// [`ComponentProcessingAction::preview_collector`].
     pub(crate) fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
-        match &self.inner.processing_action {
-            ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
+        self.inner.processing_action.preview_collector()
+    }
+
+    /// The selector this run is under. A delete has none: it is reached only
+    /// for a path a selector covers, and removes everything below.
+    pub(crate) fn component_selector(&self) -> Option<&ComponentSelector> {
+        match self.processing_state() {
+            ComponentProcessingAction::Build(build_ctx) => build_ctx.component_selector.as_ref(),
             ComponentProcessingAction::Delete(_) => None,
         }
+    }
+
+    /// The update this run belongs to leaves some components out, wherever this
+    /// run is: inside a selected subtree too. A change this run makes can reach
+    /// those components through what they share, as a container target state.
+    /// A delete does not count: the component it removes is selected and gone,
+    /// so nothing can declare under its containers any more.
+    pub(crate) fn update_leaves_out_components(&self) -> bool {
+        self.component_selector()
+            .is_some_and(|selector| !selector.selects_everything())
+    }
+
+    pub(crate) fn update_refusal(&self) -> &UpdateRefusal {
+        &self.inner.update_refusal
+    }
+
+    pub(crate) fn mark_left_out_children(&self) {
+        self.inner.left_out_children.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn left_out_children(&self) -> bool {
+        self.inner.left_out_children.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn left_out_children_flag(&self) -> Arc<AtomicBool> {
+        self.inner.left_out_children.clone()
+    }
+
+    /// Record a mount at `path` that the selector leaves out. It counts as a
+    /// mount of this run, so a second mount at the path is an error as usual,
+    /// and a directory it lies under counts as declared.
+    pub(crate) fn record_skipped_mount(&self, path: &StablePath) -> Result<()> {
+        self.mark_left_out_children();
+        let sub_path = path.as_ref().strip_parent(self.stable_path().as_ref())?;
+        self.update_building_state(|building_state| {
+            building_state
+                .child_path_set
+                .add_child(sub_path, StablePathSet::Skipped)
+        })
+    }
+
+    /// Whether the selector leaves out a mount at `path`, without recording
+    /// anything: for a host that prepares a mount it would then hand to
+    /// [`Component::mount`], which records the skip itself.
+    pub fn selector_leaves_out(&self, path: &StablePath) -> bool {
+        self.component_selector()
+            .is_some_and(|selector| selector.classify(path) == ComponentSelection::Unselected)
+    }
+
+    /// Whether the selector leaves out a mount at `path`, recording it if so.
+    /// For a host that wants to know before it prepares the mount: building a
+    /// processor can run user code, and costs per item. [`Component::mount`]
+    /// and `mount_live_prepare` decide alike for one that does not ask.
+    pub fn skips_mount(&self, fn_ctx: &FnCallContext, path: &StablePath) -> Result<bool> {
+        let Some(selector) = self.component_selector() else {
+            return Ok(false);
+        };
+        if selector.classify(path) != ComponentSelection::Unselected {
+            return Ok(false);
+        }
+        // Even a skipped child rules out memoizing the function that mounted it.
+        fn_ctx.update(|inner| inner.has_child_components = true);
+        self.record_skipped_mount(path)?;
+        Ok(true)
+    }
+
+    /// The keys a mount of one component per key under `path` (`mount_each`)
+    /// can run: `None` for every key, else only these, which may be none. A
+    /// host that gets a list need not list its source in full: it can read
+    /// just these keys, and with an empty list it need not read at all. The
+    /// run records that it leaves the other keys out, as
+    /// [`Self::skips_mount`] records one skip.
+    ///
+    /// With keys to run, the run also declares `path` a directory, as listing
+    /// the source and skipping the other keys would, whether or not the source
+    /// still holds the keys it reads. A selected key that is gone is then
+    /// deleted even where a component used to be at `path`; that component
+    /// stays until a run covers it.
+    pub fn mount_each_keys(
+        &self,
+        fn_ctx: &FnCallContext,
+        path: &StablePath,
+    ) -> Result<Option<Vec<StableKey>>> {
+        let Some(keys) = self
+            .component_selector()
+            .and_then(|selector| selector.selected_child_keys(path))
+        else {
+            return Ok(None);
+        };
+        fn_ctx.update(|inner| inner.has_child_components = true);
+        self.mark_left_out_children();
+        if !keys.is_empty() {
+            let sub_path = path.as_ref().strip_parent(self.stable_path().as_ref())?;
+            self.update_building_state(|building_state| {
+                building_state.child_path_set.declare_directory(sub_path);
+                Ok(())
+            })?;
+        }
+        Ok(Some(keys))
     }
 
     pub fn live(&self) -> bool {

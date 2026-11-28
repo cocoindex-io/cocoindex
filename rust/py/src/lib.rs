@@ -47,10 +47,14 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<component::PyComponentMountHandle>()?;
     m.add_class::<component::PyComponentMountRunHandle>()?;
     m.add_function(wrap_pyfunction!(component::mount_async, m)?)?;
+    m.add_function(wrap_pyfunction!(component::skips_mount, m)?)?;
+    m.add_function(wrap_pyfunction!(component::mount_each_keys, m)?)?;
     m.add_function(wrap_pyfunction!(component::use_mount_async, m)?)?;
 
     m.add_class::<context::PyComponentProcessorContext>()?;
     m.add_class::<context::PyFnCallContext>()?;
+    m.add_class::<function::PyDataDepVerdict>()?;
+    m.add_class::<function::PyDataDepVerdicts>()?;
 
     m.add_class::<deadline::PyDeadlineContext>()?;
     m.add_function(wrap_pyfunction!(deadline::deadline_none, m)?)?;

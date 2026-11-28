@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cocoindex_core::engine::component::{ComponentProcessor, ComponentProcessorInfo};
 use cocoindex_core::engine::context::{
-    ComponentProcessorContext, DataDepRecord, MemoStatesPayload,
+    ComponentProcessorContext, DataDepRecord, DataDepVerdicts, MemoStatesPayload,
 };
 use cocoindex_core::engine::profile::{DataDepsValidation, EngineProfile, Persist};
 use cocoindex_core::engine::target_state::{
@@ -51,6 +51,7 @@ impl EngineProfile for RustProfile {
     /// its records, validated through the registered [`crate::DataDep`] kinds.
     fn validate_data_deps(
         _host_runtime_ctx: &(),
+        verdicts: Arc<DataDepVerdicts>,
         path: &StablePath,
         records: Vec<DataDepRecord>,
     ) -> cocoindex_utils::error::Result<
@@ -58,7 +59,7 @@ impl EngineProfile for RustProfile {
     > {
         let where_ = format!("component {path}");
         Ok(async move {
-            let outcome = validate_data_deps(records, &where_)
+            let outcome = validate_data_deps(&verdicts, records, &where_)
                 .await
                 .map_err(Error::into_core)?;
             Ok(DataDepsValidation {
@@ -214,6 +215,7 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
         let context = Arc::clone(comp_ctx.host_ctx());
         let state_inputs = self.state_inputs.clone();
         let where_ = format!("component {}", comp_ctx.stable_path());
+        let verdicts = Arc::clone(comp_ctx.data_dep_verdicts());
         let initial_context_states = stored_states
             .is_none()
             .then(|| comp_ctx.collect_context_initial_states());
@@ -238,7 +240,7 @@ impl ComponentProcessor<RustProfile> for BoxedProcessor {
                 // The component's own data dependencies (`use_data_dep`),
                 // validated only when the states still allow a reuse.
                 let data_deps = if can_reuse && !stored_states.data_deps.is_empty() {
-                    let outcome = validate_data_deps(stored_states.data_deps, &where_)
+                    let outcome = validate_data_deps(&verdicts, stored_states.data_deps, &where_)
                         .await
                         .map_err(Error::into_core)?;
                     can_reuse &= outcome.can_reuse;
