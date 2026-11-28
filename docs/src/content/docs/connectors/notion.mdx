@@ -1,0 +1,103 @@
+---
+languages: [python]
+rust_counterpart: connectors
+title: "*Notion* connector"
+description: >
+  Read active pages from a Notion data source as Markdown and use stable page
+  IDs to incrementally maintain derived targets.
+---
+
+The `notion` connector reads pages from a Notion data source. Install its optional
+HTTP dependency:
+
+```bash
+pip install 'cocoindex[notion]'
+```
+
+## As source
+
+Create a Notion connection with **read content** capability, and share the source
+database with it. Set `NOTION_TOKEN` to its token and `NOTION_DATA_SOURCE_ID` to
+the data source's UUID. A database can contain multiple data sources: use the
+data-source ID, rather than the enclosing database's ID. See Notion's
+[data-source API](https://developers.notion.com/reference/query-a-data-source).
+
+`NotionSource(client).items(data_source_id)` yields `(page_id, NotionPage)` pairs.
+Each page contains `page_id`, `title`, `url`, and `markdown`. IDs are normalized
+UUID strings, so duplicate titles and title changes do not change component keys.
+The title is read from the property's `title` type, independent of its name.
+
+The caller owns the `httpx.AsyncClient`, supplies its Authorization header, and
+closes it. The reader pins `Notion-Version: 2026-03-11`, requests Markdown `v2`,
+and sends requests only to `https://api.notion.com` without following redirects.
+
+### Incremental processing
+
+This example mirrors a data source into local Markdown files. Complete the scan
+before mounting any page components: a failed or incomplete scan then fails the
+parent without reconciling a partial set of children.
+
+```python
+import os
+
+import httpx
+import cocoindex as coco
+from cocoindex.connectors import localfs, notion
+
+
+@coco.fn(memo=True)
+def render(page: notion.NotionPage) -> str:
+    return f"# {page.title}\n\n{page.markdown}"
+
+
+@coco.fn
+def process(page: notion.NotionPage, target: localfs.DirTarget) -> None:
+    target.declare_file(f"{page.page_id}.md", render(page))
+
+
+@coco.fn
+async def main() -> None:
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {os.environ['NOTION_TOKEN']}"}
+    ) as client:
+        source = notion.NotionSource(client)
+        pages = [
+            item async for item in source.items(os.environ["NOTION_DATA_SOURCE_ID"])
+        ]
+    target = await localfs.mount_dir_target("./notion-output")
+    await coco.mount_each(process, pages, target)
+
+
+app = coco.App(coco.AppConfig(name="notion_pages"), main)
+```
+
+Save as `main.py` and run `cocoindex update main`. Repeat the command to poll for
+changes. Each scan queries all active pages and re-reads their Markdown. Memoized
+transforms reuse unchanged `NotionPage` values; changed content invalidates them
+even when timestamps have not changed. Pages no longer returned by a successful
+scan have their child components and declared outputs removed. Access changes
+that make a page disappear from the query therefore also remove its outputs.
+
+Do not memoize the scanning function: a cached scan would stop observing external
+changes. Keep credentials and the client outside memoized arguments.
+
+### Errors and limits
+
+- Cursor pagination uses 100 results per request. A repeated cursor or duplicate
+  page fails the scan. Notion's `request_status.type = "incomplete"` (including
+  its 10,000-result query cap) also fails; it never becomes a successful empty or
+  partial snapshot.
+- The [Markdown API](https://developers.notion.com/reference/retrieve-page-markdown)
+  can return truncated content or unknown blocks. The reader fails when
+  `truncated` is true or `unknown_block_ids` is nonempty. It does not recursively
+  recover missing blocks. Notion-flavored Markdown can still contain placeholders
+  for block types unsupported by Notion's exporter; this is not a lossless backup.
+- Transport errors, HTTP 429, and selected server errors retry at most five
+  attempts. HTTP 429 honors numeric `Retry-After`; otherwise exponential backoff
+  applies. Each request has a 30-second HTTP timeout and each retry operation a
+  120-second total deadline, bounded further by any ambient CocoIndex deadline.
+  Cancellation and permanent HTTP errors propagate.
+- Data-source properties other than the title, recursive child-page discovery,
+  attachments, webhooks/live mode, query filters, and Notion writes are outside
+  this reader's scope. Queries and content reads are separate requests, so a scan
+  is not a transactionally consistent Notion snapshot.
